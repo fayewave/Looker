@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="Looker.Controls.ThumbnailStrip"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:vm="using:Looker.ViewModels"
+    mc:Ignorable="d">
+
+    <!--
+        Horizontal filmstrip built on ScrollViewer + ItemsRepeater (NOT ListView). We own this
+        ScrollViewer, so centring the selected cell via ChangeView is a supported operation — reaching
+        into a ListView's *internal* ScrollViewer and calling ChangeView during virtualization
+        failfasts XAML (0xc000027b). ElementPrepared/ElementClearing drive phased thumbnail loading and
+        cancel-on-recycle; selection highlight, hover and click are handled in code since ItemsRepeater
+        has no built-in selection.
+
+        Cell size is NOT fixed here: the strip is user-resizable (drag the grip along its top edge), so
+        the code-behind sets Scroller.Height and every realized cell's Width/Height from StripHeight.
+    -->
+    <Grid>
+        <ScrollViewer
+            x:Name="Scroller"
+            Height="96"
+            HorizontalScrollBarVisibility="Hidden"
+            HorizontalScrollMode="Enabled"
+            VerticalScrollBarVisibility="Disabled"
+            VerticalScrollMode="Disabled"
+            SizeChanged="OnScrollerSizeChanged"
+            ViewChanged="OnScrollerViewChanged">
+            <ItemsRepeater
+                x:Name="Repeater"
+                Margin="8,0"
+                VerticalAlignment="Bottom"
+                ElementClearing="OnElementClearing"
+                ElementPrepared="OnElementPrepared">
+                <ItemsRepeater.Layout>
+                    <StackLayout Orientation="Horizontal" Spacing="4" />
+                </ItemsRepeater.Layout>
+                <ItemsRepeater.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ThumbnailItem">
+                        <!-- Outer Border = the cell (code-behind keys on it). The second child of the inner
+                             Grid is a hover veil the code fades in over the image on pointer-over. -->
+                        <Border
+                            Width="96"
+                            Height="72"
+                            Background="#1FFFFFFF"
+                            BorderBrush="Transparent"
+                            BorderThickness="2"
+                            CornerRadius="4"
+                            ToolTipService.ToolTip="{x:Bind FileName}">
+                            <Grid CornerRadius="2">
+                                <!-- Uniform (not UniformToFill): the whole image shows letterboxed inside the fixed 4:3 cell rather
+                                     than being cropped to fill it; the cell fill (12% white, brighter than the 5% theme card so the
+                                     letterbox bars read against the black strip) shows through the bars. -->
+                                <Image Source="{x:Bind Thumbnail, Mode=OneWay}" Stretch="Uniform" />
+                                <Rectangle Fill="#33FFFFFF" IsHitTestVisible="False" Opacity="0">
+                                    <Rectangle.OpacityTransition>
+                                        <ScalarTransition Duration="0:0:0.08" />
+                                    </Rectangle.OpacityTransition>
+                                </Rectangle>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsRepeater.ItemTemplate>
+            </ItemsRepeater>
+        </ScrollViewer>
+
+        <!-- Edge fades: the strip background (the themed window colour, see SetFadeColor) bleeding over the outermost cells so they trail off
+             instead of being cut at the edge. Each fade hides itself when the strip is scrolled fully to that
+             side (code-behind, ViewChanged) so the first/last thumbnail is never dimmed for nothing. -->
+        <Rectangle
+            x:Name="LeftFade"
+            Width="56"
+            HorizontalAlignment="Left"
+            IsHitTestVisible="False"
+            Opacity="0">
+            <Rectangle.Fill>
+                <LinearGradientBrush x:Name="LeftFadeBrush" StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop Offset="0" Color="#FF000000" />
+                    <GradientStop Offset="1" Color="#00000000" />
+                </LinearGradientBrush>
+            </Rectangle.Fill>
+            <Rectangle.OpacityTransition>
+                <ScalarTransition Duration="0:0:0.15" />
+            </Rectangle.OpacityTransition>
+        </Rectangle>
+        <Rectangle
+            x:Name="RightFade"
+            Width="56"
+            HorizontalAlignment="Right"
+            IsHitTestVisible="False"
+            Opacity="0">
+            <Rectangle.Fill>
+                <LinearGradientBrush x:Name="RightFadeBrush" StartPoint="0,0" EndPoint="1,0">
+                    <GradientStop Offset="0" Color="#00000000" />
+                    <GradientStop Offset="1" Color="#FF000000" />
+                </LinearGradientBrush>
+            </Rectangle.Fill>
+            <Rectangle.OpacityTransition>
+                <ScalarTransition Duration="0:0:0.15" />
+            </Rectangle.OpacityTransition>
+        </Rectangle>
+
+        <!-- Resize grip: an invisible 8px band along the top edge (inside the strip's own height, over the
+             cells' top padding). Drag it to change StripHeight; the line inside lights up on hover/drag.
+             Background must be non-null for hit testing. -->
+        <Border
+            x:Name="Grip"
+            Height="8"
+            VerticalAlignment="Top"
+            Background="Transparent"
+            DoubleTapped="OnGripDoubleTapped"
+            PointerCanceled="OnGripPointerReleased"
+            PointerCaptureLost="OnGripPointerReleased"
+            PointerEntered="OnGripPointerEntered"
+            PointerExited="OnGripPointerExited"
+            PointerMoved="OnGripPointerMoved"
+            PointerPressed="OnGripPointerPressed"
+            PointerReleased="OnGripPointerReleased">
+            <Rectangle
+                x:Name="GripLine"
+                Height="2"
+                VerticalAlignment="Top"
+                Fill="#66FFFFFF"
+                Opacity="0">
+                <Rectangle.OpacityTransition>
+                    <ScalarTransition Duration="0:0:0.1" />
+                </Rectangle.OpacityTransition>
+            </Rectangle>
+        </Border>
+    </Grid>
+</UserControl>

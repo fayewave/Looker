@@ -1,0 +1,36 @@
+# Build output
+bin/
+obj/
+*.binlog
+TestResults/
+AppPackages/
+BundleArtifacts/
+
+# Signing certificates and packaged output (private key — never commit)
+artifacts/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vscode/
+
+# Affinity lock files
+*~lock~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+
+# Local-only: project notes and the Affinity brand source
+CLAUDE.md
+plan.md
+brand/*.af
+brand/screenshots/AE/

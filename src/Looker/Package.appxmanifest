@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:systemai="http://schemas.microsoft.com/appx/manifest/systemai/windows10"
+  IgnorableNamespaces="uap uap3 desktop rescap systemai">
+
+  <Identity
+    Name="fayewave.Looker-PhotoViewer"
+    Publisher="CN=75645224-1CB5-47AA-A845-256EA45E9908"
+    Version="1.0.7.0" />
+
+
+  <Properties>
+    <DisplayName>Looker</DisplayName>
+    <PublisherDisplayName>fayewave</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="x-generate"/>
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Looker"
+        Description="A fast, native photo viewer for Windows 11"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!--
+          File type association (M9): every extension SupportedFormats knows about, so Looker is
+          offered in "Open with" and Settings > Default apps for all of them. Keep this list in sync with
+          Imaging/SupportedFormats.cs — tests/Looker.Tests asserts the two match.
+        -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="image">
+            <uap:DisplayName>Image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcon.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.jpg</uap:FileType>
+              <uap:FileType>.jpeg</uap:FileType>
+              <uap:FileType>.jpe</uap:FileType>
+              <uap:FileType>.jfif</uap:FileType>
+              <uap:FileType>.png</uap:FileType>
+              <uap:FileType>.apng</uap:FileType>
+              <uap:FileType>.bmp</uap:FileType>
+              <uap:FileType>.dib</uap:FileType>
+              <uap:FileType>.gif</uap:FileType>
+              <uap:FileType>.tif</uap:FileType>
+              <uap:FileType>.tiff</uap:FileType>
+              <uap:FileType>.webp</uap:FileType>
+              <uap:FileType>.ico</uap:FileType>
+              <uap:FileType>.cur</uap:FileType>
+              <uap:FileType>.jxr</uap:FileType>
+              <uap:FileType>.wdp</uap:FileType>
+              <uap:FileType>.hdp</uap:FileType>
+              <uap:FileType>.heic</uap:FileType>
+              <uap:FileType>.heif</uap:FileType>
+              <uap:FileType>.hif</uap:FileType>
+              <uap:FileType>.heics</uap:FileType>
+              <uap:FileType>.avif</uap:FileType>
+              <uap:FileType>.avifs</uap:FileType>
+              <uap:FileType>.jxl</uap:FileType>
+              <uap:FileType>.jp2</uap:FileType>
+              <uap:FileType>.j2k</uap:FileType>
+              <uap:FileType>.jpf</uap:FileType>
+              <uap:FileType>.jpx</uap:FileType>
+              <uap:FileType>.j2c</uap:FileType>
+              <uap:FileType>.svg</uap:FileType>
+              <uap:FileType>.pdf</uap:FileType>
+              <uap:FileType>.psd</uap:FileType>
+              <uap:FileType>.psb</uap:FileType>
+              <uap:FileType>.tga</uap:FileType>
+              <uap:FileType>.icb</uap:FileType>
+              <uap:FileType>.vda</uap:FileType>
+              <uap:FileType>.vst</uap:FileType>
+              <uap:FileType>.dds</uap:FileType>
+              <uap:FileType>.pcx</uap:FileType>
+              <uap:FileType>.pnm</uap:FileType>
+              <uap:FileType>.ppm</uap:FileType>
+              <uap:FileType>.pgm</uap:FileType>
+              <uap:FileType>.pbm</uap:FileType>
+              <uap:FileType>.xcf</uap:FileType>
+              <uap:FileType>.qoi</uap:FileType>
+              <uap:FileType>.cr2</uap:FileType>
+              <uap:FileType>.cr3</uap:FileType>
+              <uap:FileType>.crw</uap:FileType>
+              <uap:FileType>.nef</uap:FileType>
+              <uap:FileType>.nrw</uap:FileType>
+              <uap:FileType>.arw</uap:FileType>
+              <uap:FileType>.sr2</uap:FileType>
+              <uap:FileType>.srf</uap:FileType>
+              <uap:FileType>.dng</uap:FileType>
+              <uap:FileType>.orf</uap:FileType>
+              <uap:FileType>.raf</uap:FileType>
+              <uap:FileType>.rw2</uap:FileType>
+              <uap:FileType>.pef</uap:FileType>
+              <uap:FileType>.srw</uap:FileType>
+              <uap:FileType>.3fr</uap:FileType>
+              <uap:FileType>.fff</uap:FileType>
+              <uap:FileType>.rwl</uap:FileType>
+              <uap:FileType>.iiq</uap:FileType>
+              <uap:FileType>.mrw</uap:FileType>
+              <uap:FileType>.dcr</uap:FileType>
+              <uap:FileType>.kdc</uap:FileType>
+              <uap:FileType>.erf</uap:FileType>
+              <uap:FileType>.mef</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+
+        <!-- `Looker photo.jpg` from any terminal (App Execution Alias). The build only substitutes
+             $targetnametoken$ / $targetentrypoint$ on the Application element, so these are literal. -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="Looker.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="Looker.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <systemai:Capability Name="systemAIModels"/>
+  </Capabilities>
+</Package>

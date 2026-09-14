@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="Looker.Controls.InfoPanel"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!--
+        The right-hand info card (M7): EXIF/histogram for the current image. It floats over the viewport
+        (MainWindow overlays it in the viewport column and insets the image fit by PanelWidth) so the
+        checkerboard shows around it. The width is user-resizable: the code-behind sets this control's Width
+        from PanelWidth (default 320) and an 8px grip straddles the card's left edge, exactly like the thumbnail
+        strip's top-edge grip. Rows and the histogram are built imperatively in code-behind (Render) from an
+        InfoSnapshot, matching the project's imperative leaning and keeping this cold path off the binding graph.
+    -->
+    <Grid>
+        <!-- A floating rounded card: solid window-colour fill (themed via SetCardBackground) (the checkerboard runs
+             underneath it) with a slightly brighter stroke so the edge reads. The card's 12px margins are INSIDE
+             the control's width, which is what the host reserves for the image fit. -->
+        <Border
+            x:Name="Card"
+            Margin="12"
+            Background="Black"
+            BorderBrush="{ThemeResource ControlStrokeColorSecondaryBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <ScrollViewer Padding="12,12,12,16" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="14">
+                    <Border
+                        x:Name="HistogramCard"
+                        Padding="6"
+                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                        <!-- Drawn at a fixed 256x120 and scaled to the card's width, so a wider card gets a
+                             proportionally bigger histogram instead of empty space around a small one. -->
+                        <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                            <Canvas
+                                x:Name="HistogramCanvas"
+                                Width="256"
+                                Height="120" />
+                        </Viewbox>
+                    </Border>
+
+                    <StackPanel x:Name="GroupsHost" Spacing="14" />
+
+                    <TextBlock
+                        x:Name="EmptyText"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="No image open"
+                        Visibility="Collapsed" />
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- Resize grip: an 8px hit band straddling the card's left border (the border is at x=12; the band runs
+             8..16) with a 2px line on the border that shows on hover and turns accent while dragging. Background
+             must be non-null for hit testing. -->
+        <Border
+            x:Name="Grip"
+            Width="8"
+            Margin="8,12,0,12"
+            HorizontalAlignment="Left"
+            Background="Transparent"
+            DoubleTapped="OnGripDoubleTapped"
+            PointerCanceled="OnGripPointerReleased"
+            PointerCaptureLost="OnGripPointerReleased"
+            PointerEntered="OnGripPointerEntered"
+            PointerExited="OnGripPointerExited"
+            PointerMoved="OnGripPointerMoved"
+            PointerPressed="OnGripPointerPressed"
+            PointerReleased="OnGripPointerReleased">
+            <Rectangle
+                x:Name="GripLine"
+                Width="2"
+                HorizontalAlignment="Center"
+                Fill="#66FFFFFF"
+                Opacity="0"
+                RadiusX="1"
+                RadiusY="1">
+                <Rectangle.OpacityTransition>
+                    <ScalarTransition Duration="0:0:0.1" />
+                </Rectangle.OpacityTransition>
+            </Rectangle>
+        </Border>
+    </Grid>
+</UserControl>

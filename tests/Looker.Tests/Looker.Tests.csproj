@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!--
+    Link the WinUI-free classes under test directly rather than referencing the WinUI executable
+    (which would drag in the whole WindowsAppSDK runtime). These files carry no XAML/Win2D deps.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Looker\Rendering\ZoomPanController.cs" Link="Linked\ZoomPanController.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\FormatSniffer.cs" Link="Linked\FormatSniffer.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\ImageFormat.cs" Link="Linked\ImageFormat.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\ImageCache.cs" Link="Linked\ImageCache.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\PreloadScheduler.cs" Link="Linked\PreloadScheduler.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\DecoderChain.cs" Link="Linked\DecoderChain.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\PdfLayout.cs" Link="Linked\PdfLayout.cs" />
+    <Compile Include="..\..\src\Looker\Navigation\NaturalSortComparer.cs" Link="Linked\NaturalSortComparer.cs" />
+    <Compile Include="..\..\src\Looker\Navigation\SortMode.cs" Link="Linked\SortMode.cs" />
+    <Compile Include="..\..\src\Looker\Navigation\FolderContext.cs" Link="Linked\FolderContext.cs" />
+    <Compile Include="..\..\src\Looker\Navigation\ExplorerTree.cs" Link="Linked\ExplorerTree.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\SupportedFormats.cs" Link="Linked\SupportedFormats.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\ImageRef.cs" Link="Linked\ImageRef.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\ThumbnailBmp.cs" Link="Linked\ThumbnailBmp.cs" />
+    <Compile Include="..\..\src\Looker\Imaging\PixelUtil.cs" Link="Linked\PixelUtil.cs" />
+    <Compile Include="..\..\src\Looker\Services\CommandLineArgs.cs" Link="Linked\CommandLineArgs.cs" />
+    <Compile Include="..\..\src\Looker\Services\RecentFiles.cs" Link="Linked\RecentFiles.cs" />
+  </ItemGroup>
+
+  <!-- The manifest is read by ManifestAssociationTests to keep the FTA list in sync with SupportedFormats. -->
+  <ItemGroup>
+    <None Include="..\..\src\Looker\Package.appxmanifest" Link="Package.appxmanifest" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

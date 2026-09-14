@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="Looker.Controls.FileExplorer"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!--
+        The left-hand file explorer card: a flat Explorer-style listing of one folder (the open photo's folder
+        until the user navigates): its sub-folders, its images (thumbnails) and its other files (greyed out).
+        Double-clicking a folder lists that folder instead; the breadcrumbs and the Up button go back. It floats
+        over the viewport exactly like the info card on the right (MainWindow overlays it left-aligned and insets
+        the image fit by PanelWidth) and is resizable the same way: an 8px grip straddles its RIGHT border. Rows
+        live in a ScrollViewer + ItemsRepeater we own, for the same reason as the thumbnail strip:
+        centring/scrolling via ChangeView on a ListView's internal ScrollViewer failfasts XAML. Every visual on a
+        row (thumbnail, name, greyed state, selection) is set imperatively in code-behind on ElementPrepared, so
+        the template carries no bindings.
+    -->
+    <Grid>
+        <Border
+            x:Name="Card"
+            Margin="12"
+            Background="Black"
+            BorderBrush="{ThemeResource ControlStrokeColorSecondaryBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Header: browser-style Back / Forward buttons through the folders listed so far (code-behind
+                     history; mouse buttons 4/5 anywhere in the window do the same via MainWindow) and breadcrumbs
+                     from the drive root down to the listed folder. Clicking a crumb lists that ancestor
+                     (code-behind). The stock BreadcrumbBar overflows into an ellipsis flyout on its own; its
+                     item/chevron sizes are theme resources, overridden here to the card's compact text size. -->
+                <Grid Margin="6,6,8,6" ColumnSpacing="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Button
+                        x:Name="BackButton"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="OnBackClicked"
+                        IsEnabled="False"
+                        ToolTipService.ToolTip="Back">
+                        <FontIcon FontSize="13" Glyph="&#xE72B;" />
+                    </Button>
+                    <Button
+                        x:Name="ForwardButton"
+                        Grid.Column="1"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Click="OnForwardClicked"
+                        IsEnabled="False"
+                        ToolTipService.ToolTip="Forward">
+                        <FontIcon FontSize="13" Glyph="&#xE72A;" />
+                    </Button>
+                    <!-- Left margin + 2px column spacing + the crumb button's 1px padding = 6px between the Forward
+                         button and the first crumb's text. -->
+                    <BreadcrumbBar
+                        x:Name="Crumbs"
+                        Grid.Column="2"
+                        Margin="3,0,0,0"
+                        VerticalAlignment="Center"
+                        ItemClicked="OnCrumbClicked">
+                        <BreadcrumbBar.Resources>
+                            <x:Double x:Key="BreadcrumbBarItemThemeFontSize">12</x:Double>
+                            <x:Double x:Key="BreadcrumbBarChevronFontSize">9</x:Double>
+                            <!-- Stock is 2,0: the extra bottom lifts the centred chevron 1px, level with the lifted text. -->
+                            <Thickness x:Key="BreadcrumbBarChevronPadding">2,0,2,2</Thickness>
+                        </BreadcrumbBar.Resources>
+                        <!-- Items are plain strings; the template pins the app font (Inter) explicitly so the crumbs
+                             can't fall back to the system font through the item style's own FontFamily setter. -->
+                        <BreadcrumbBar.ItemTemplate>
+                            <DataTemplate>
+                                <!-- Bottom margin: WinUI centres the crumb in a 20px line box + 1,3 button padding, which
+                                     lands the 12px text a little below the optical centre of the 28px header row
+                                     (measured); the margin lifts it 1px, tuned by eye against the Back/Forward glyphs. -->
+                                <TextBlock
+                                    Margin="0,0,0,2"
+                                    FontFamily="{StaticResource ContentControlThemeFontFamily}"
+                                    FontSize="12"
+                                    Text="{Binding}" />
+                            </DataTemplate>
+                        </BreadcrumbBar.ItemTemplate>
+                    </BreadcrumbBar>
+                </Grid>
+
+                <!-- Divider under the header, edge to edge; the bottom margin is the air between it and the first row
+                     (kept outside the ScrollViewer so row offsets stay index × RowPitch). -->
+                <Rectangle
+                    Grid.Row="1"
+                    Height="1"
+                    Margin="0,0,0,6"
+                    Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                <ScrollViewer
+                    x:Name="Scroller"
+                    Grid.Row="2"
+                    Padding="8,0,8,8"
+                    HorizontalScrollBarVisibility="Disabled"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollBarVisibility="Auto">
+                    <ItemsRepeater
+                        x:Name="Repeater"
+                        ElementClearing="OnElementClearing"
+                        ElementPrepared="OnElementPrepared">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Orientation="Vertical" Spacing="1" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate>
+                                <!-- Row = outer Border (code keys on it; Height must equal RowHeight in code).
+                                     Children of the inner Grid, by index: 0 icon box (Image then folder/file
+                                     glyph), 1 name. -->
+                                <Border
+                                    Height="28"
+                                    Padding="4,0,4,0"
+                                    Background="Transparent"
+                                    BorderBrush="Transparent"
+                                    BorderThickness="1"
+                                    CornerRadius="4">
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid
+                                            Width="28"
+                                            Height="21"
+                                            VerticalAlignment="Center"
+                                            Background="#1FFFFFFF"
+                                            CornerRadius="2">
+                                            <Image Stretch="Uniform" />
+                                            <FontIcon
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"
+                                                FontSize="12"
+                                                Glyph="&#xE8B7;" />
+                                        </Grid>
+                                        <TextBlock
+                                            Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            FontFamily="{StaticResource ContentControlThemeFontFamily}"
+                                            FontSize="12"
+                                            TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <!-- Resize grip: an 8px hit band straddling the card's RIGHT border (the border is at Width-12; the band
+             runs Width-16..Width-8), mirroring the info card's left-edge grip. Background must be non-null for
+             hit testing. -->
+        <Border
+            x:Name="Grip"
+            Width="8"
+            Margin="0,12,8,12"
+            HorizontalAlignment="Right"
+            Background="Transparent"
+            DoubleTapped="OnGripDoubleTapped"
+            PointerCanceled="OnGripPointerReleased"
+            PointerCaptureLost="OnGripPointerReleased"
+            PointerEntered="OnGripPointerEntered"
+            PointerExited="OnGripPointerExited"
+            PointerMoved="OnGripPointerMoved"
+            PointerPressed="OnGripPointerPressed"
+            PointerReleased="OnGripPointerReleased">
+            <Rectangle
+                x:Name="GripLine"
+                Width="2"
+                HorizontalAlignment="Center"
+                Fill="#66FFFFFF"
+                Opacity="0"
+                RadiusX="1"
+                RadiusY="1">
+                <Rectangle.OpacityTransition>
+                    <ScalarTransition Duration="0:0:0.1" />
+                </Rectangle.OpacityTransition>
+            </Rectangle>
+        </Border>
+    </Grid>
+</UserControl>
