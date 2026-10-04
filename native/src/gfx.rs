@@ -107,6 +107,10 @@ pub struct Fonts {
     pub small_icons: IDWriteTextFormat,
     /// 14 px icons: glyphs on text buttons.
     pub body_icons: IDWriteTextFormat,
+    /// 96 px icons: the file glyph standing in for a file Looker can't show.
+    pub hero_icons: IDWriteTextFormat,
+    /// 16 px, wrapping, centred, top-aligned: that file's name.
+    pub subtitle_wrap: IDWriteTextFormat,
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
@@ -549,6 +553,9 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.5)?;
         let overline = inter(11.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let page_title = inter(28.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let subtitle_wrap = inter(16.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
+        subtitle_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
             let f = dw.CreateTextFormat(
                 w!("Segoe Fluent Icons"),
@@ -563,7 +570,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, _ellipsis: ellipsis })
     }
 }
 

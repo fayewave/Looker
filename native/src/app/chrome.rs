@@ -119,6 +119,9 @@ impl App {
     }
 
     pub(super) fn status_parts(&self) -> String {
+        if let Some(s) = self.placeholder_status() {
+            return s;
+        }
         let Some(path) = self.current_path() else { return String::new() };
         let mut parts: Vec<String> = Vec::new();
         let cached = self.viewer.current_entry();
@@ -183,7 +186,7 @@ impl App {
         self.draw_viewport(&mut g);
         let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
         let strip_moving = self.draw_strip(&g);
-        if self.viewer.current.is_some() {
+        if self.viewer.current.is_some() && self.placeholder.is_none() {
             self.draw_page_bar(&g);
         }
         if self.chrome() {
@@ -213,7 +216,7 @@ impl App {
             let y = g.snap((TITLE_H - 16.0) / 2.0);
             g.draw_bitmap(icon, rect(x, y, 16.0, 16.0), 1.0);
         }
-        let title = self.current_path().map(file_name).unwrap_or_else(|| "Looker".into());
+        let title = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()).map(file_name).unwrap_or_else(|| "Looker".into());
         let fg = if self.active { white(0xFF) } else { white(TEXT_TERTIARY) };
         g.text(&wide(&title), &g.fonts.caption, rect(48.0, 0.0, (w - 48.0 - CAPTION_W * 3.0 - 16.0).max(0.0), TITLE_H), fg, Align::Left);
 
@@ -294,8 +297,13 @@ impl App {
             };
             g.text(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
-        if let (Some(l), Some(i)) = (&self.viewer.listing, self.viewer.index) {
-            let label = format!("{} / {}", l.rank[i] + 1, l.total_files);
+        let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {
+            (Some(l), Some(p), _) => l.rank_of(&p.path).map(|r| (r, l.total_files)),
+            (Some(l), None, Some(i)) => Some((l.rank[i], l.total_files)),
+            _ => None,
+        };
+        if let Some((r, n)) = rank {
+            let label = format!("{} / {}", r + 1, n);
             g.text(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
         }
     }
@@ -354,6 +362,7 @@ impl App {
             g.text(&wide("Can't display this file"), &g.fonts.body, v, white(TEXT_SECONDARY), Align::Center);
         }
         self.draw_fade(g, v);
+        self.draw_placeholder(g);
     }
 
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.

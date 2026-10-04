@@ -145,6 +145,12 @@ impl Listing {
         Some(stamp)
     }
 
+    /// Where any visible file, image or not, ranks among all of them (the counter for a file the explorer
+    /// landed on).
+    pub fn rank_of(&self, path: &Path) -> Option<usize> {
+        self.files.iter().position(|f| crate::explorer::same_path(&f.path, path))
+    }
+
     fn reindex(&mut self) {
         self.images.clear();
         self.rank.clear();

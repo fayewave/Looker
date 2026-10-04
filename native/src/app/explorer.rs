@@ -197,6 +197,11 @@ impl App {
         if l.serial != self.explorer.serial {
             return; // superseded
         }
+        // The covering file was renamed or deleted: the photo underneath comes back.
+        if self.placeholder.as_ref().is_some_and(|p| !p.path.exists()) {
+            self.placeholder = None;
+            self.current_changed();
+        }
         let e = &mut self.explorer;
         e.rows = l.rows;
         if e.watcher.is_none() {
@@ -256,10 +261,62 @@ impl App {
     /// Opens a file from the card: an index jump when it is in the open folder, else a full open.
     pub(super) fn open_file(&mut self, path: PathBuf) {
         let at = self.viewer.listing.as_ref().and_then(|l| l.images.iter().position(|e| explorer::same_path(&e.path, &path)));
+        // Back onto the image the placeholder covered: no navigation happens, so announce it again.
+        let reshow = self.placeholder.take().is_some();
         match at {
+            Some(i) if Some(i) == self.viewer.index => {
+                if reshow {
+                    self.current_changed();
+                }
+            }
             Some(i) => self.go_to(i),
             None => self.open(path),
         }
+    }
+
+    /// The explorer landed on a file Looker can't open: a file glyph and its name cover the photo, and the
+    /// title, status row and counter describe that file. The photo stays current (←/→ go on from it); any
+    /// navigation takes the cover down.
+    fn show_placeholder(&mut self, path: PathBuf) {
+        let md = std::fs::metadata(&path).ok();
+        let modified = md.as_ref().map(|m| {
+            let t = m.last_write_time();
+            FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 }
+        });
+        unsafe {
+            let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
+        }
+        self.placeholder = Some(Placeholder { size: md.map(|m| m.len()), modified, path });
+        self.invalidate();
+    }
+
+    /// The status row for the covering file: "PS1 file · 2.1 KB · Modified …" (no size in pixels, no zoom).
+    pub(super) fn placeholder_status(&self) -> Option<String> {
+        let p = self.placeholder.as_ref()?;
+        let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+        let mut parts = vec![if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }];
+        if let Some(s) = p.size {
+            parts.push(format_bytes(s));
+        }
+        if let Some(t) = p.modified {
+            parts.push(format!("Modified {}", format_time(t)));
+        }
+        Some(parts.join("   ·   "))
+    }
+
+    /// Covers the viewport in the window colour, with the glyph and name centred between the cards.
+    pub(super) fn draw_placeholder(&self, g: &Gfx) {
+        let Some(p) = &self.placeholder else { return };
+        g.fill(self.viewport(), rgb(self.theme().window));
+        let a = self.image_area();
+        let name = wide(&file_name(&p.path));
+        let w = (a.right - a.left - 32.0).clamp(1.0, 520.0);
+        let name_h = g.measure_height(&name, &g.fonts.subtitle_wrap, w);
+        let icon_h = 120.0;
+        let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
+        let cx = (a.left + a.right) / 2.0;
+        g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), white(TEXT_SECONDARY), Align::Center);
+        g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), white(0xFF), Align::Center);
     }
 
     /// A row was clicked (or reached with the arrow keys): images open, folders and other files take the cursor.
@@ -267,8 +324,10 @@ impl App {
         let Some(r) = self.explorer.rows.get(i).cloned() else { return };
         self.explorer.cursor = Some(r.path.clone());
         self.explorer.reveal = Some(i);
-        if r.kind == Kind::Image {
-            self.open_file(r.path);
+        match r.kind {
+            Kind::Image => self.open_file(r.path),
+            Kind::Other => self.show_placeholder(r.path),
+            Kind::Drive | Kind::Folder => {}
         }
         self.invalidate();
     }

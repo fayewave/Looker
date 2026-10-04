@@ -176,6 +176,13 @@ enum Caption {
     Close,
 }
 
+/// A file the explorer landed on that Looker can't show (see `show_placeholder`).
+pub(super) struct Placeholder {
+    path: PathBuf,
+    size: Option<u64>,
+    modified: Option<FILETIME>,
+}
+
 struct FileInfo {
     size: u64,
     modified: FILETIME,
@@ -352,6 +359,8 @@ pub struct App {
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
     slideshow: slideshow::Slideshow,
+    /// Covering the photo while the explorer's cursor is on a file Looker can't show.
+    placeholder: Option<Placeholder>,
     /// The slideshow's dissolve from the previous image, while it runs.
     fade: Option<slideshow::Fade>,
     /// What the viewport drew last (the bitmap and where), for the dissolve to start from.
@@ -431,6 +440,7 @@ impl App {
     /// Leaving the current image drops its unsaved rotation preview (the previous image may stay on screen
     /// until the next one lands, so it goes back to its own orientation now).
     fn begin_navigation(&mut self) {
+        self.placeholder = None;
         self.slideshow_navigating();
         self.rotation_saved = false;
         if self.turns != 0 {
@@ -646,7 +656,7 @@ impl App {
     }
 
     fn reveal(&self) {
-        if let Some(path) = self.current_path() {
+        if let Some(path) = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()) {
             self.reveal_path(path);
         }
     }
@@ -902,6 +912,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             skip_placement_save: false,
             wheel_acc: 0.0,
             slideshow: Default::default(),
+            placeholder: None,
             fade: None,
             last_drawn: None,
             pdf_page: 0,
