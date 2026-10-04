@@ -99,7 +99,12 @@ impl App {
     }
 
     pub(super) fn copy_path(&mut self) {
-        let Some(path) = self.current_path() else { return };
+        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+            self.copy_path_of(&path);
+        }
+    }
+
+    pub(super) fn copy_path_of(&mut self, path: &Path) {
         if clipboard::set_text(self.hwnd, &path.to_string_lossy()) {
             self.show_toast("Copied path", false);
         }
@@ -114,7 +119,13 @@ impl App {
 
     /// Asks before recycling. Cancel is the default button, so a stray Enter never deletes.
     pub(super) fn confirm_delete(&mut self, from_keyboard: bool) {
-        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+            self.confirm_delete_path(path, from_keyboard);
+        }
+    }
+
+    /// Any file (the explorer card's menu reaches files outside the open folder).
+    pub(super) fn confirm_delete_path(&mut self, path: PathBuf, from_keyboard: bool) {
         self.close_menu();
         self.hide_tooltip();
         let body = format!("Move \u{201C}{}\u{201D} to the Recycle Bin?", file_name(&path));
@@ -126,7 +137,12 @@ impl App {
 
     /// The rename box opens with just the base name selected, so typing replaces it and keeps the extension.
     pub(super) fn begin_rename(&mut self, from_keyboard: bool) {
-        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+            self.begin_rename_path(path, from_keyboard);
+        }
+    }
+
+    pub(super) fn begin_rename_path(&mut self, path: PathBuf, from_keyboard: bool) {
         let name = file_name(&path);
         let mut edit = TextEdit::new(&name);
         let end = match name.rfind('.') {

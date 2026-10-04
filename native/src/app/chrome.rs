@@ -21,7 +21,8 @@ impl App {
     /// Where the image fits and zooms: the viewport minus the floating cards.
     pub(super) fn image_area(&self) -> D2D_RECT_F {
         let v = self.viewport();
-        D2D_RECT_F { right: (v.right - self.right_inset()).max(v.left + 1.0), ..v }
+        let left = v.left + self.left_inset();
+        D2D_RECT_F { left, right: (v.right - self.right_inset()).max(left + 1.0), ..v }
     }
 
     pub(super) fn caption_rect(&self, c: Caption) -> D2D_RECT_F {
@@ -64,9 +65,7 @@ impl App {
             Tool::Sort | Tool::Delete => has,
             Tool::Rotate => self.can_rotate(),
             Tool::SaveRotation => !self.saving_rotation,
-            Tool::Info | Tool::Strip => has,
-            // Not built yet.
-            Tool::Explorer => false,
+            Tool::Info | Tool::Strip | Tool::Explorer => has,
             _ => has,
         }
     }
@@ -75,6 +74,7 @@ impl App {
     pub(super) fn tooltip_for(&self, h: Hit) -> Option<String> {
         match h {
             Hit::StripCell(i) => self.strip_tooltip(i),
+            Hit::ExplorerRow(_) | Hit::Crumb(_) | Hit::CrumbMore | Hit::ExplorerBack | Hit::ExplorerForward => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }
     }
@@ -172,7 +172,7 @@ impl App {
         g.begin(0x000000);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
-        let card_moving = self.draw_info(&g);
+        let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
         let strip_moving = self.draw_strip(&g);
         if self.chrome() {
             self.draw_title(&g);
@@ -184,6 +184,7 @@ impl App {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
+        self.pump_thumbs();
         if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving {
             self.invalidate();
         }
@@ -222,7 +223,7 @@ impl App {
     }
 
     /// Hover fade and pressed state of a hit, for drawing it.
-    fn state(&mut self, id: Hit, enabled: bool) -> ui::State {
+    pub(super) fn state(&mut self, id: Hit, enabled: bool) -> ui::State {
         let over = self.hover == Some(id) && (self.pressed.is_none() || self.pressed == Some(id));
         let hover = self.fades.get(id, over && enabled);
         ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
@@ -244,6 +245,7 @@ impl App {
             let kind = match t {
                 Tool::Info => ui::Kind::Toggle(self.info_shown()),
                 Tool::Strip => ui::Kind::Toggle(self.strip_shown()),
+                Tool::Explorer => ui::Kind::Toggle(self.explorer_shown()),
                 _ => ui::Kind::Standard,
             };
             let fg = ui::button_frame(g, r, kind, &st);

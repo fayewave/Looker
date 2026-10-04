@@ -21,6 +21,10 @@ pub(super) enum Action {
     ToggleInfo,
     SortField(SortField),
     SortDescending(bool),
+    /// The explorer card: open the item the menu is for (a file in the viewer, a folder as the viewer's folder).
+    OpenItem,
+    /// A crumb folded into "…".
+    Crumb(usize),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -47,7 +51,7 @@ impl App {
             item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, has),
             item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), has),
             Entry::Separator,
-            item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), false),
+            item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), has),
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), has),
             item(Action::ToggleInfo, 0xE946, "Info panel", Some("I"), has),
         ]
@@ -93,11 +97,80 @@ impl App {
         }
     }
 
+    /// The menu for one explorer row: what Explorer offers for that kind of item.
+    pub(super) fn open_item_menu(&mut self, path: PathBuf, kind: crate::explorer::Kind, x: f32, y: f32) {
+        use crate::explorer::Kind;
+        let mut entries = Vec::new();
+        match kind {
+            Kind::Folder | Kind::Drive => {
+                entries.push(item(Action::OpenItem, 0xE8B7, "Open folder", None, true));
+                entries.push(Entry::Separator);
+            }
+            Kind::Image => {
+                entries.push(item(Action::OpenItem, 0xE8A7, "Open", None, true));
+                entries.push(item(Action::Rename, 0xE8AC, "Rename", None, true));
+                entries.push(item(Action::Delete, 0xE74D, "Delete", None, true));
+                entries.push(Entry::Separator);
+            }
+            Kind::Other => {}
+        }
+        entries.push(item(Action::CopyPath, 0xE71B, "Copy path", None, true));
+        entries.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Item(path), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    /// The breadcrumb "…": the folded-away ancestors, top-down.
+    pub(super) fn open_crumb_menu(&mut self) {
+        let hidden = self.hidden_crumbs();
+        let Some(r) = self.hits.rect_of(Hit::CrumbMore) else { return };
+        let entries = hidden
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let glyph = if p == &crate::explorer::Place::Computer { 0xE7F4 } else { 0xE8B7 };
+                item(Action::Crumb(i), glyph, &p.name(), None, true)
+            })
+            .collect();
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Crumbs(hidden), Menu::open(g, entries, r.left, r.bottom + 4.0, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
     /// Runs the item at `index` of the open menu (if enabled) and closes the menu.
     pub(super) fn activate_menu(&mut self, index: usize) {
         let Some(action) = self.menu.as_ref().and_then(|(_, m)| m.action_at(index)) else { return };
-        self.close_menu();
-        self.run_action(action);
+        let kind = self.menu.take().map(|(k, _)| k);
+        self.invalidate();
+        match kind {
+            Some(MenuKind::Item(path)) => self.run_item_action(action, path),
+            Some(MenuKind::Crumbs(places)) => {
+                if let Action::Crumb(i) = action {
+                    if let Some(p) = places.get(i) {
+                        self.explorer_crumb(p.clone());
+                    }
+                }
+            }
+            _ => self.run_action(action),
+        }
+    }
+
+    /// An explorer row's menu: the same actions, on that file.
+    fn run_item_action(&mut self, a: Action, path: PathBuf) {
+        match a {
+            Action::OpenItem if path.is_dir() => self.open_folder(path),
+            Action::OpenItem => self.open_file(path),
+            Action::Rename => self.begin_rename_path(path, false),
+            Action::Delete => self.confirm_delete_path(path, false),
+            Action::CopyPath => self.copy_path_of(&path),
+            Action::Reveal => self.reveal_path(&path),
+            _ => {}
+        }
     }
 
     pub(super) fn run_action(&mut self, a: Action) {
@@ -114,7 +187,8 @@ impl App {
             Action::Rename => self.begin_rename(false),
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleStrip => self.toggle_strip(),
-            Action::ToggleExplorer => {}
+            Action::ToggleExplorer => self.toggle_explorer(),
+            Action::OpenItem | Action::Crumb(_) => {}
         }
     }
 
@@ -125,6 +199,7 @@ impl App {
         self.settings.sort = sort;
         settings::save(&self.settings);
         self.viewer.set_sort(sort);
+        self.explorer.resort(sort);
         let field = match sort.field {
             SortField::Name => "Name",
             SortField::Date => "Date modified",
@@ -134,8 +209,12 @@ impl App {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub(super) enum MenuKind {
     Context,
     Sort,
+    /// An explorer row's menu, for this path.
+    Item(PathBuf),
+    /// The breadcrumb overflow, holding these places.
+    Crumbs(Vec<crate::explorer::Place>),
 }

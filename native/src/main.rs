@@ -11,6 +11,7 @@ mod app;
 mod clipboard;
 mod decode;
 mod engine;
+mod explorer;
 mod fileops;
 mod folder;
 mod format;
@@ -46,7 +47,11 @@ fn main() {
     let mut launch_keys = Vec::new();
     if let Some(p) = &path {
         let (bw, bh) = placement.viewport_px(
-            if settings.info_visible && path.is_some() { settings.info_width } else { 0.0 },
+            if path.is_some() {
+                (if settings.info_visible { settings.info_width } else { 0.0 }) + if settings.explorer_visible { settings.explorer_width } else { 0.0 }
+            } else {
+                0.0
+            },
             if settings.strip_visible && path.is_some() { settings.strip_height } else { 0.0 },
         );
         let sharp = viewer::Viewer::sharp_bucket_for(bw, bh);

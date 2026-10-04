@@ -26,11 +26,15 @@ pub struct Settings {
     pub info_visible: bool,
     /// The info card's width in DIPs, its 12 px margins included (what the image fit leaves free).
     pub info_width: f32,
+    pub explorer_visible: bool,
+    /// The file explorer card's width in DIPs, margins included (the info card's range).
+    pub explorer_width: f32,
     pub strip_visible: bool,
     /// The thumbnail strip's height in DIPs (the cells are 8 less, 4:3).
     pub strip_height: f32,
 }
 
+pub const EXPLORER_WIDTH: f32 = 320.0;
 pub const STRIP_HEIGHT: f32 = 96.0;
 pub const STRIP_MIN: f32 = 56.0;
 pub const STRIP_MAX: f32 = 480.0;
@@ -41,7 +45,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, strip_visible: false, strip_height: STRIP_HEIGHT }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, strip_visible: false, strip_height: STRIP_HEIGHT }
     }
 }
 
@@ -71,6 +75,8 @@ pub fn parse(text: &str) -> Settings {
             "sort" => s.sort = Sort::parse(v).unwrap_or_default(),
             "info_visible" => s.info_visible = v == "1",
             "info_width" => s.info_width = v.parse::<f32>().map_or(INFO_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
+            "explorer_visible" => s.explorer_visible = v == "1",
+            "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(EXPLORER_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
             _ => {}
@@ -88,6 +94,8 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("sort={}\n", s.sort.to_setting()));
     out.push_str(&format!("info_visible={}\n", s.info_visible as i32));
     out.push_str(&format!("info_width={}\n", s.info_width.round()));
+    out.push_str(&format!("explorer_visible={}\n", s.explorer_visible as i32));
+    out.push_str(&format!("explorer_width={}\n", s.explorer_width.round()));
     out.push_str(&format!("strip_visible={}\n", s.strip_visible as i32));
     out.push_str(&format!("strip_height={}\n", s.strip_height.round()));
     out
@@ -121,6 +129,8 @@ mod tests {
             sort: Sort { field: crate::folder::SortField::Date, descending: true },
             info_visible: true,
             info_width: 412.0,
+            explorer_visible: true,
+            explorer_width: 300.0,
             strip_visible: true,
             strip_height: 160.0,
         };

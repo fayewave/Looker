@@ -183,6 +183,9 @@ impl App {
                     if self.strip.drag.is_some() {
                         self.strip_grip_drag(y);
                     }
+                    if self.explorer.drag.is_some() {
+                        self.explorer_grip_drag(x);
+                    }
                     if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.drag = Some((x, y));
@@ -202,7 +205,7 @@ impl App {
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
                     let cursor = match self.hover {
                         Some(Hit::Reveal | Hit::InfoPath) => IDC_HAND,
-                        Some(Hit::InfoGrip) => IDC_SIZEWE,
+                        Some(Hit::InfoGrip | Hit::ExplorerGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::DialogField) => IDC_IBEAM,
                         _ => IDC_ARROW,
@@ -233,6 +236,9 @@ impl App {
                     if h == Some(Hit::StripGrip) {
                         self.strip_grip_press(y);
                     }
+                    if h == Some(Hit::ExplorerGrip) {
+                        self.explorer_grip_press(x);
+                    }
                     if h == Some(Hit::Viewport) && self.view.has_content() {
                         self.drag = Some((x, y));
                     }
@@ -247,12 +253,18 @@ impl App {
                     self.text_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
+                    self.explorer_grip_release();
                     let h = self.hit(x, y);
                     if pressed.is_some() && pressed == h {
                         match h {
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::StripCell(i)) => self.go_to(i),
+                            Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
+                            Some(Hit::ExplorerBack) => self.explorer_back(),
+                            Some(Hit::ExplorerForward) => self.explorer_forward(),
+                            Some(Hit::Crumb(i)) => self.crumb_click(i),
+                            Some(Hit::CrumbMore) => self.open_crumb_menu(),
                             Some(Hit::Open) => self.open_dialog(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
@@ -272,6 +284,10 @@ impl App {
                     }
                     let (x, y) = self.dip_from_lparam(lp);
                     match self.hit(x, y) {
+                        Some(Hit::ExplorerRow(i)) => {
+                            self.close_menu();
+                            self.explorer_menu(i, x, y);
+                        }
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() => {
                             self.open_context_menu(x, y);
                         }
@@ -288,6 +304,16 @@ impl App {
                     if self.hit(x, y) == Some(Hit::StripGrip) {
                         self.strip_grip_reset();
                         return Some(LRESULT(0));
+                    }
+                    if self.hit(x, y) == Some(Hit::ExplorerGrip) {
+                        self.explorer_grip_reset();
+                        return Some(LRESULT(0));
+                    }
+                    if let Some(Hit::ExplorerRow(i)) = self.hit(x, y) {
+                        if self.menu.is_none() && self.dialog.is_none() {
+                            self.explorer_double_click(i);
+                            return Some(LRESULT(0));
+                        }
                     }
                     if self.hit(x, y) == Some(Hit::DialogField) {
                         self.pressed = Some(Hit::DialogField);
@@ -315,6 +341,7 @@ impl App {
                     self.drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
+                    self.explorer_grip_release();
                     None
                 }
                 WM_MOUSEWHEEL => {
@@ -327,6 +354,13 @@ impl App {
                     let (x, y) = self.screen_to_dip(lp);
                     if matches!(self.hit(x, y), Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip)) {
                         self.scroll_strip(delta as f32);
+                        return Some(LRESULT(0));
+                    }
+                    if matches!(
+                        self.hit(x, y),
+                        Some(Hit::ExplorerCard | Hit::ExplorerRow(_) | Hit::ExplorerGrip | Hit::ExplorerBack | Hit::ExplorerForward | Hit::Crumb(_) | Hit::CrumbMore)
+                    ) {
+                        self.scroll_explorer(delta as f32);
                         return Some(LRESULT(0));
                     }
                     if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
@@ -379,6 +413,14 @@ impl App {
                         VK_F2 => self.begin_rename(true),
                         VK_I if !ctrl => self.toggle_info(),
                         VK_T if !ctrl => self.toggle_strip(),
+                        VK_E if !ctrl => self.toggle_explorer(),
+                        VK_UP if self.explorer_shown() => self.explorer_move(-1),
+                        VK_DOWN if self.explorer_shown() => self.explorer_move(1),
+                        VK_RETURN if self.explorer_shown() => {
+                            if !self.explorer_enter() {
+                                return None;
+                            }
+                        }
                         VK_APPS => {
                             let v = self.viewport();
                             self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
@@ -391,6 +433,8 @@ impl App {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
                         TIMER_CARET => self.blink_caret(),
+                        TIMER_EXPLORER => self.explorer_refresh(),
+                        TIMER_FOLDER => self.refresh_folder(),
                         TIMER_THUMBS => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_THUMBS);
                             self.invalidate();
@@ -433,6 +477,30 @@ impl App {
                 WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
                     self.place_ime();
                     None
+                }
+                crate::explorer::WM_EXPLORER_LISTED => {
+                    let l = Box::from_raw(lp.0 as *mut explorer::Listed);
+                    self.on_explorer_listed(*l);
+                    Some(LRESULT(0))
+                }
+                crate::explorer::WM_FOLDER_CHANGED => {
+                    if self.folder_watch.is_some() {
+                        SetTimer(Some(self.hwnd), TIMER_FOLDER, explorer::REFRESH_MS, None);
+                    }
+                    Some(LRESULT(0))
+                }
+                crate::explorer::WM_EXPLORER_CHANGED => {
+                    self.on_explorer_changed();
+                    Some(LRESULT(0))
+                }
+                // Mouse buttons 4 and 5: Back / Forward through the explorer's folders.
+                WM_XBUTTONUP if self.explorer_shown() && self.dialog.is_none() => {
+                    match (wp.0 >> 16) & 0xFFFF {
+                        1 => self.explorer_back(),
+                        2 => self.explorer_forward(),
+                        _ => {}
+                    }
+                    Some(LRESULT(1))
                 }
                 crate::thumbs::WM_THUMBS => {
                     self.on_thumbs();

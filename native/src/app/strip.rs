@@ -37,13 +37,55 @@ pub(super) struct Thumb {
 
 type FileKey = (PathBuf, u64);
 
-pub(super) struct Strip {
+/// Thumbnails for everything that shows them (the strip, the explorer card's rows): one worker pool, one GPU
+/// cache keyed by file (any size at least as big as asked for will do), and the per-frame want list that
+/// drives loading. Each frame, whatever is on screen calls [`Thumbs::want`]; [`App::pump_thumbs`] then submits
+/// what has been on screen long enough and drops queued work for everything that left.
+pub(super) struct Thumbs {
     pool: Option<Arc<thumbs::Pool>>,
     cache: Lru<FileKey, Rc<Thumb>>,
     pending: HashSet<thumbs::Job>,
     failed: HashSet<thumbs::Job>,
-    /// When each waiting cell first came on screen (the load debounce).
+    /// When each waiting item first came on screen (the load debounce).
     seen: HashMap<FileKey, Instant>,
+    wanted: Vec<(thumbs::Job, bool)>,
+}
+
+impl Thumbs {
+    pub fn new() -> Thumbs {
+        Thumbs {
+            pool: None,
+            cache: Lru::new(THUMB_BUDGET),
+            pending: HashSet::new(),
+            failed: HashSet::new(),
+            seen: HashMap::new(),
+            wanted: Vec::new(),
+        }
+    }
+
+    pub fn get(&mut self, path: &Path, stamp: u64) -> Option<Rc<Thumb>> {
+        self.cache.get(&(path.to_path_buf(), stamp)).cloned()
+    }
+
+    /// Ask for a thumbnail of at least `size` px this frame (no-op when one that big is cached). `near`: the
+    /// user is looking right at it, skip the debounce.
+    pub fn want(&mut self, path: &Path, stamp: u64, size: u32, cloud: bool, near: bool) {
+        if self.cache.get(&(path.to_path_buf(), stamp)).is_some_and(|t| t.size >= size) {
+            return;
+        }
+        let job = thumbs::Job { path: path.to_path_buf(), stamp, size, cloud };
+        if !self.failed.contains(&job) {
+            self.wanted.push((job, near));
+        }
+    }
+
+    /// Bitmaps die with their device (WARP to hardware): reload them.
+    pub fn device_lost(&mut self) {
+        self.cache.clear();
+    }
+}
+
+pub(super) struct Strip {
     scroll: f32,
     anim: Option<(f32, f32, Instant)>,
     max_scroll: f32,
@@ -56,11 +98,6 @@ pub(super) struct Strip {
 impl Strip {
     pub fn new() -> Strip {
         Strip {
-            pool: None,
-            cache: Lru::new(THUMB_BUDGET),
-            pending: HashSet::new(),
-            failed: HashSet::new(),
-            seen: HashMap::new(),
             scroll: 0.0,
             anim: None,
             max_scroll: 0.0,
@@ -95,10 +132,15 @@ impl Strip {
             self.scroll = to;
         }
     }
+}
 
-    /// Bitmaps die with their device (WARP to hardware): reload them.
-    pub fn device_lost(&mut self) {
-        self.cache.clear();
+impl Thumb {
+    /// Draws it letterboxed (whole, centred) inside `r`.
+    pub fn draw_fit(&self, g: &Gfx, r: D2D_RECT_F) {
+        let (iw, ih) = (r.right - r.left, r.bottom - r.top);
+        let s = (iw / self.width as f32).min(ih / self.height as f32);
+        let (dw, dh) = (self.width as f32 * s, self.height as f32 * s);
+        g.draw_bitmap(&self.bmp, rect(r.left + (iw - dw) / 2.0, r.top + (ih - dh) / 2.0, dw, dh), 1.0);
     }
 }
 
@@ -183,20 +225,58 @@ impl App {
 
     /// Finished thumbnails: onto the GPU and into the cache.
     pub(super) fn on_thumbs(&mut self) {
-        let Some(pool) = self.strip.pool.clone() else { return };
+        let Some(pool) = self.thumbs.pool.clone() else { return };
         let Some(g) = &self.gfx else { return };
         for done in pool.take_results() {
-            self.strip.pending.remove(&done.job);
+            self.thumbs.pending.remove(&done.job);
             let Some((w, h, px)) = done.image else {
-                self.strip.failed.insert(done.job);
+                self.thumbs.failed.insert(done.job);
                 continue;
             };
             let Ok(bmp) = g.bitmap(w, h, &px) else { continue };
             let key = (done.job.path.clone(), done.job.stamp);
             let thumb = Thumb { size: done.job.size, width: w, height: h, bmp };
-            self.strip.cache.insert(key, Rc::new(thumb), (w * h * 4) as usize);
+            self.thumbs.cache.insert(key, Rc::new(thumb), (w * h * 4) as usize);
         }
         self.invalidate();
+    }
+
+    /// After a frame: load what has been on screen long enough (or is right by the current image), drop
+    /// queued loads for everything that left the screen, and wake again for the ones still waiting.
+    pub(super) fn pump_thumbs(&mut self) {
+        let wanted = std::mem::take(&mut self.thumbs.wanted);
+        if wanted.is_empty() && self.thumbs.pending.is_empty() {
+            self.thumbs.seen.clear();
+            return;
+        }
+        let hwnd = self.hwnd;
+        let t = &mut self.thumbs;
+        let pool = t.pool.get_or_insert_with(|| thumbs::Pool::start(hwnd)).clone();
+        let now = Instant::now();
+        let mut waiting = false;
+        let visible: HashSet<thumbs::Job> = wanted.iter().map(|(j, _)| j.clone()).collect();
+        for (job, near) in wanted {
+            if t.pending.contains(&job) {
+                continue;
+            }
+            let since = *t.seen.entry((job.path.clone(), job.stamp)).or_insert(now);
+            if near || now.duration_since(since).as_millis() >= DEBOUNCE_MS {
+                t.pending.insert(job.clone());
+                pool.submit(job);
+            } else {
+                waiting = true;
+            }
+        }
+        for j in pool.retain(|j| visible.contains(j)) {
+            t.pending.remove(&j);
+        }
+        let on_screen: HashSet<FileKey> = visible.iter().map(|j| (j.path.clone(), j.stamp)).collect();
+        t.seen.retain(|k, _| on_screen.contains(k));
+        if waiting {
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_THUMBS, DEBOUNCE_MS as u32 + 5, None);
+            }
+        }
     }
 
     pub(super) fn strip_tooltip(&self, i: usize) -> Option<String> {
@@ -230,15 +310,10 @@ impl App {
         let (mut scroll, moving) = self.strip.scroll_now();
         scroll = scroll.clamp(0.0, self.strip.max_scroll);
 
-        let pool = self.strip.pool.get_or_insert_with(|| thumbs::Pool::start(self.hwnd)).clone();
         let want = self.thumb_px();
         let top = r.bottom - ch;
         let first = (((scroll - SIDE) / pitch).floor().max(0.0)) as usize;
         let last = (((scroll + view_w - SIDE) / pitch).ceil().max(0.0) as usize).min(n);
-        let mut visible: HashSet<thumbs::Job> = HashSet::new();
-        let mut waiting = false;
-        let now = Instant::now();
-
         g.push_clip(r);
         for i in first..last {
             let Some(e) = self.viewer.listing.as_ref().and_then(|l| l.images.get(i)) else { break };
@@ -251,14 +326,8 @@ impl App {
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
-            let key: FileKey = (path.clone(), stamp);
-            let thumb = self.strip.cache.get(&key).cloned();
-            if let Some(t) = &thumb {
-                let (iw, ih) = (inner.right - inner.left, inner.bottom - inner.top);
-                let s = (iw / t.width as f32).min(ih / t.height as f32);
-                let (dw, dh) = (t.width as f32 * s, t.height as f32 * s);
-                let dest = rect(inner.left + (iw - dw) / 2.0, inner.top + (ih - dh) / 2.0, dw, dh);
-                g.draw_bitmap(&t.bmp, dest, 1.0);
+            if let Some(t) = self.thumbs.get(&path, stamp) {
+                t.draw_fit(g, inner);
             }
             if hover > 0.0 {
                 g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.2 * hover));
@@ -275,39 +344,9 @@ impl App {
             }
 
             // Load it (again, sharper) unless one of the right size is here or on its way.
-            if thumb.as_ref().is_some_and(|t| t.size >= want) {
-                continue;
-            }
-            let job = thumbs::Job { path: path.clone(), stamp, size: want, cloud };
-            if self.strip.failed.contains(&job) {
-                continue;
-            }
-            visible.insert(job.clone());
-            if self.strip.pending.contains(&job) {
-                continue;
-            }
-            let near = sel.is_some_and(|s| s.abs_diff(i) <= NEAR);
-            let since = *self.strip.seen.entry(key).or_insert(now);
-            if near || now.duration_since(since).as_millis() >= DEBOUNCE_MS {
-                self.strip.pending.insert(job.clone());
-                pool.submit(job);
-            } else {
-                waiting = true;
-            }
+            self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
         }
         g.pop_clip();
-
-        // Drop queued loads for cells that scrolled away, and forget when they were seen.
-        for j in pool.retain(|j| visible.contains(j)) {
-            self.strip.pending.remove(&j);
-        }
-        let on_screen: HashSet<FileKey> = visible.iter().map(|j| (j.path.clone(), j.stamp)).collect();
-        self.strip.seen.retain(|k, _| on_screen.contains(k));
-        if waiting {
-            unsafe {
-                SetTimer(Some(self.hwnd), TIMER_THUMBS, DEBOUNCE_MS as u32 + 5, None);
-            }
-        }
 
         // Edge fades where there is more to scroll to.
         let lf = self.fades.get(Hit::StripFadeLeft, scroll > 0.5);

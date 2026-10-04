@@ -4,6 +4,7 @@
 
 mod actions;
 mod chrome;
+mod explorer;
 mod info;
 mod strip;
 mod input;
@@ -63,6 +64,8 @@ const TIMER_TOOLTIP: usize = 5;
 const TIMER_TOAST: usize = 6;
 const TIMER_CARET: usize = 7;
 const TIMER_THUMBS: usize = 8;
+const TIMER_EXPLORER: usize = 9;
+const TIMER_FOLDER: usize = 10;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
@@ -126,6 +129,15 @@ enum Hit {
     StripGrip,
     StripFadeLeft,
     StripFadeRight,
+    /// The file explorer card: its surface, a row by index, the resize grip, Back / Forward, a crumb by
+    /// index, and the "…" that holds the crumbs that don't fit.
+    ExplorerCard,
+    ExplorerRow(usize),
+    ExplorerGrip,
+    ExplorerBack,
+    ExplorerForward,
+    Crumb(usize),
+    CrumbMore,
     /// The info card's surface (scrolls under the wheel), its resize grip and its file-path link.
     InfoCard,
     InfoGrip,
@@ -306,6 +318,12 @@ pub struct App {
     caret_rect: Option<D2D_RECT_F>,
     info_card: info::Card,
     strip: strip::Strip,
+    thumbs: strip::Thumbs,
+    explorer: explorer::Explorer,
+    /// "Open folder": show this folder's first image once its listing lands.
+    pending_folder: Option<PathBuf>,
+    /// Keeps the open folder's listing (navigation, strip, counter) live.
+    folder_watch: Option<(PathBuf, crate::explorer::Watcher)>,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -363,6 +381,7 @@ impl App {
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
         }
+        self.explorer_follow();
         self.invalidate();
     }
 
@@ -445,8 +464,48 @@ impl App {
     }
 
     fn on_listed(&mut self, listing: Listing) {
-        if self.viewer.set_listing(listing) {
+        if self.pending_folder.as_deref().is_some_and(|f| crate::explorer::same_path(f, &listing.folder)) {
+            // "Open folder": its first image becomes current, with the listing it came from.
+            self.pending_folder = None;
+            let Some(first) = listing.images.first().map(|e| e.path.clone()) else {
+                self.show_toast("No images in this folder", false);
+                return;
+            };
+            self.viewer.close();
+            self.show_path(first);
+            self.viewer.set_listing(listing);
             self.invalidate();
+            return;
+        }
+        // A re-list after a change on disk: if the photo on screen is gone, show what slid into its place.
+        let before = self.viewer.index;
+        let folder = listing.folder.clone();
+        if self.viewer.set_listing(listing) {
+            if self.viewer.index.is_none() {
+                let n = self.viewer.image_count();
+                if n == 0 {
+                    self.close();
+                    return;
+                }
+                if let Some(i) = before {
+                    self.viewer.index = None;
+                    self.go_to(i.min(n - 1));
+                }
+            }
+            if self.folder_watch.as_ref().is_none_or(|(f, _)| !crate::explorer::same_path(f, &folder)) {
+                self.folder_watch = crate::explorer::Watcher::start(&folder, self.hwnd, crate::explorer::WM_FOLDER_CHANGED).map(|w| (folder, w));
+            }
+            self.invalidate();
+        }
+    }
+
+    /// The open folder changed on disk: re-list it once the burst settles.
+    fn refresh_folder(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_FOLDER);
+        }
+        if let Some(f) = self.viewer.listing.as_ref().map(|l| l.folder.clone()) {
+            self.list_folder_async(f);
         }
     }
 
@@ -479,6 +538,8 @@ impl App {
     fn close(&mut self) {
         self.begin_navigation();
         self.viewer.close();
+        self.explorer = explorer::Explorer::new();
+        self.folder_watch = None;
         self.info = None;
         self.view.clear();
         unsafe {
@@ -505,7 +566,13 @@ impl App {
     }
 
     fn reveal(&self) {
-        let Some(path) = self.current_path() else { return };
+        if let Some(path) = self.current_path() {
+            self.reveal_path(path);
+        }
+    }
+
+    /// Opens Explorer on the item's folder with the item selected.
+    fn reveal_path(&self, path: &Path) {
         unsafe {
             let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
             if SHParseDisplayName(&HSTRING::from(path.as_os_str()), None, &mut pidl, 0, None).is_ok() && !pidl.is_null() {
@@ -556,8 +623,9 @@ impl App {
             Tool::Delete => self.confirm_delete(false),
             Tool::Info => self.toggle_info(),
             Tool::Strip => self.toggle_strip(),
+            Tool::Explorer => self.toggle_explorer(),
             // Not built yet.
-            Tool::Explorer | Tool::Settings => {}
+            Tool::Settings => {}
         }
     }
 
@@ -602,7 +670,7 @@ impl App {
             return;
         }
         self.viewer.reupload(g);
-        self.strip.device_lost();
+        self.thumbs.device_lost();
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -743,6 +811,10 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             caret_rect: None,
             info_card: info::Card::new(),
             strip: strip::Strip::new(),
+            thumbs: strip::Thumbs::new(),
+            explorer: explorer::Explorer::new(),
+            pending_folder: None,
+            folder_watch: None,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -760,7 +832,12 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         // The viewport `main` predicted (a maximized window is still restored-size until it is shown), so the
         // first requests match the launch decodes already running. WM_SIZE corrects it from here on.
         let (bw, bh) = placement.viewport_px(
-            if app.settings.info_visible && path.is_some() { app.settings.info_width } else { 0.0 },
+            if path.is_some() {
+                (if app.settings.info_visible { app.settings.info_width } else { 0.0 })
+                    + if app.settings.explorer_visible { app.settings.explorer_width } else { 0.0 }
+            } else {
+                0.0
+            },
             if app.settings.strip_visible && path.is_some() { app.settings.strip_height } else { 0.0 },
         );
         app.viewer.set_fit_box(bw, bh);
