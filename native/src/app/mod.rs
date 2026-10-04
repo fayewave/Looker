@@ -597,6 +597,20 @@ impl App {
             .ok();
     }
 
+    /// Another launch handed its file over (single instance): whatever was in the way gives way to it.
+    fn activated(&mut self, path: Option<PathBuf>) {
+        let Some(path) = path.filter(|p| p.is_file()) else { return };
+        self.close_menu();
+        if self.dialog.is_some() {
+            self.dialog_choose(actions::Choice::Cancel);
+        }
+        if self.page.is_some() {
+            self.close_page();
+        }
+        self.stop_slideshow();
+        self.open(path);
+    }
+
     fn open(&mut self, path: PathBuf) {
         self.viewer.close();
         if let Some(folder) = path.parent() {

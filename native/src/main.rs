@@ -17,6 +17,7 @@ mod folder;
 mod format;
 mod gfx;
 mod imaging;
+mod instance;
 mod metadata;
 mod pages;
 mod settings;
@@ -38,6 +39,10 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     let path = std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_file());
+    if !instance::claim_or_forward(path.as_deref()) {
+        trace::mark("handed to the running instance");
+        return;
+    }
     let settings = settings::load();
     let placement = app::initial_placement(&settings);
 

@@ -569,6 +569,12 @@ impl App {
                     }
                     Some(LRESULT(1))
                 }
+                WM_COPYDATA => {
+                    let cds = &*(lp.0 as *const windows::Win32::System::DataExchange::COPYDATASTRUCT);
+                    let Some(path) = crate::instance::received(cds) else { return None };
+                    self.activated(path);
+                    Some(LRESULT(1))
+                }
                 crate::pages::WM_PAGE_RENDERED => {
                     self.on_pages_rendered();
                     Some(LRESULT(0))
