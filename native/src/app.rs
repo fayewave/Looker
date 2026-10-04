@@ -25,6 +25,8 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::decode::{self, Decoded, Job, Pool, Priority};
 use crate::folder::{self, Listing};
+use crate::format::{self, Format};
+use crate::imaging::{MAX_EDGE, VECTOR_MAX_EDGE};
 use crate::gfx::{self, Align, Gfx, contains, rect, rgb, white};
 use crate::view::View;
 
@@ -49,6 +51,7 @@ const WM_LISTED: u32 = WM_APP + 2;
 const WM_GPU_READY: u32 = WM_APP + 3;
 const TIMER_UPGRADE: usize = 1;
 const TIMER_TRACE: usize = 2;
+const TIMER_ANIM: usize = 3;
 
 static APP_ICON: &[u8] = include_bytes!("../../src/Looker/Assets/AppIcon.ico");
 
@@ -108,14 +111,19 @@ enum Caption {
 }
 
 struct Cached {
-    bmp: ID2D1Bitmap1,
-    /// The decoded pixels, kept only while drawing on WARP so the bitmap can be re-made on the GPU.
-    pixels: Option<(u32, u32, Vec<u8>)>,
+    /// One bitmap for a still image; every frame of an animation, with its delay.
+    frames: Vec<(ID2D1Bitmap1, u32)>,
+    width: u32,
+    height: u32,
+    /// The decoded pixels, kept only while drawing on WARP so the bitmaps can be re-made on the GPU.
+    pixels: Option<Vec<Vec<u8>>>,
+    vector: bool,
     long_edge: u32,
     native_w: u32,
     native_h: u32,
-    format: &'static str,
+    format: Format,
     taken: Option<FILETIME>,
+    pages: u32,
 }
 
 struct FileInfo {
@@ -229,6 +237,8 @@ pub struct App {
     view: View,
     view_for: Option<PathBuf>,
     first_image_traced: bool,
+    /// Which frame of an animated current image is on screen.
+    anim_frame: usize,
 
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
@@ -304,9 +314,17 @@ impl App {
         let mut parts: Vec<String> = Vec::new();
         let cached = self.cache.get(path);
         if let Some(c) = cached {
-            parts.push(c.format.to_string());
+            if let Some(name) = format::display_name(c.format, Some(path)) {
+                parts.push(name);
+            }
+            if c.pages > 0 {
+                parts.push(if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) });
+            }
             parts.push(format!("{} × {}", c.native_w, c.native_h));
-            parts.push(format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0));
+            if c.pages == 0 {
+                // a page's 96-dpi size is not a pixel count
+                parts.push(format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0));
+            }
         }
         if let Some(i) = &self.info {
             if i.size > 0 {
@@ -397,6 +415,7 @@ impl App {
 
     fn show_path(&mut self, path: PathBuf) {
         self.current = Some(path.clone());
+        self.restart_animation();
         self.info = std::fs::metadata(&path).ok().map(|m| {
             let t = m.last_write_time();
             FileInfo { size: m.len(), modified: FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 } }
@@ -475,13 +494,16 @@ impl App {
         let Some(path) = self.current.clone() else { return };
         let Some(c) = self.cache.get(&path) else { return };
         let r = self.view.target_rect();
-        let native_long = c.native_w.max(c.native_h);
-        let max = self.gfx.as_ref().map_or(16384, |g| g.max_bitmap_size());
-        let needed = ((r.w.max(r.h) * self.scale() as f64).ceil() as u32).min(native_long).min(max);
+        if c.frames.len() > 1 {
+            return; // animations stay at the fit size: full resolution x N frames explodes memory
+        }
+        let max = self.gfx.as_ref().map_or(MAX_EDGE, |g| g.max_bitmap_size().min(MAX_EDGE));
+        let cap = if c.vector { VECTOR_MAX_EDGE } else { c.native_w.max(c.native_h) };
+        let needed = ((r.w.max(r.h) * self.scale() as f64).ceil() as u32).min(cap).min(max);
         if c.long_edge + 1 >= needed {
             return;
         }
-        let edge = if needed * 10 >= native_long * 7 && native_long <= max { 0 } else { needed };
+        let edge = if !c.vector && needed * 10 >= cap * 7 && cap <= max { 0 } else { needed };
         self.request(&path, edge, edge, Priority::Current);
     }
 
@@ -516,13 +538,30 @@ impl App {
             return;
         }
         let Some(g) = &self.gfx else { return };
-        let Ok(bmp) = g.bitmap(img.width, img.height, &img.pixels) else { return };
-        let pixels = if g.is_warp() { Some((img.width, img.height, img.pixels)) } else { None };
+        let mut frames = Vec::with_capacity(img.frames.len());
+        for fr in &img.frames {
+            let Ok(bmp) = g.bitmap(img.width, img.height, &fr.pixels) else { return };
+            frames.push((bmp, fr.delay_ms));
+        }
+        let pixels = if g.is_warp() { Some(img.frames.into_iter().map(|f| f.pixels).collect()) } else { None };
         self.cache.insert(
             path.clone(),
-            Cached { bmp, pixels, long_edge, native_w: img.native_width, native_h: img.native_height, format: img.format, taken: img.taken },
+            Cached {
+                frames,
+                width: img.width,
+                height: img.height,
+                pixels,
+                vector: img.vector,
+                long_edge,
+                native_w: img.native_width,
+                native_h: img.native_height,
+                format: img.format,
+                taken: img.taken,
+                pages: img.pages,
+            },
         );
         if is_current {
+            self.restart_animation();
             if self.view_for.as_ref() != Some(&path) {
                 self.reset_view(img.native_width, img.native_height);
                 self.view_for = Some(path);
@@ -612,8 +651,8 @@ impl App {
     fn open_dialog(&mut self) {
         unsafe {
             let Ok(dlg) = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) else { return };
-            let pattern = w!("*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.apng;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.webp;*.ico;*.jxr;*.wdp;*.hdp;*.heic;*.heif;*.hif;*.avif;*.jxl;*.dds");
-            let filters = [COMDLG_FILTERSPEC { pszName: w!("Images"), pszSpec: pattern }];
+            let pattern = HSTRING::from(format::EXTENSIONS.iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join(";"));
+            let filters = [COMDLG_FILTERSPEC { pszName: w!("Images"), pszSpec: PCWSTR(pattern.as_ptr()) }];
             let _ = dlg.SetFileTypes(&filters);
             if dlg.Show(Some(self.hwnd)).is_err() {
                 return;
@@ -687,6 +726,39 @@ impl App {
         self.invalidate();
     }
 
+    // --- Animation ----------------------------------------------------------------------------------
+
+    /// Frame 0 of the current image, and the timer for frame 1 when it's animated.
+    fn restart_animation(&mut self) {
+        self.anim_frame = 0;
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
+        }
+        self.arm_animation();
+    }
+
+    fn arm_animation(&self) {
+        let Some(c) = self.current.as_ref().and_then(|p| self.cache.get(p)) else { return };
+        if c.frames.len() > 1 {
+            let delay = c.frames[self.anim_frame % c.frames.len()].1.max(10);
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_ANIM, delay, None);
+            }
+        }
+    }
+
+    fn next_frame(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
+        }
+        let Some(n) = self.current.as_ref().and_then(|p| self.cache.get(p)).map(|c| c.frames.len()) else { return };
+        if n > 1 {
+            self.anim_frame = (self.anim_frame + 1) % n;
+            self.arm_animation();
+            self.invalidate();
+        }
+    }
+
     // --- Devices ------------------------------------------------------------------------------------
 
     fn start_gpu_device(&self) {
@@ -715,15 +787,21 @@ impl App {
         }
         let mut lost = Vec::new();
         for (path, c) in self.cache.iter_mut() {
-            match c.pixels.take().and_then(|(w, h, px)| g.bitmap(w, h, &px).ok()) {
-                Some(bmp) => c.bmp = bmp,
-                None => lost.push(path.clone()),
+            let remade: Option<Vec<ID2D1Bitmap1>> =
+                c.pixels.take().and_then(|all| all.iter().map(|px| g.bitmap(c.width, c.height, px).ok()).collect());
+            match remade {
+                Some(bmps) if bmps.len() == c.frames.len() => {
+                    for (slot, bmp) in c.frames.iter_mut().zip(bmps) {
+                        slot.0 = bmp;
+                    }
+                }
+                _ => lost.push(path.clone()),
             }
         }
         for p in lost {
             self.cache.remove(&p);
         }
-        self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.pixels).ok());
+        self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
             let _ = g.commit_swap();
@@ -861,7 +939,8 @@ impl App {
                 unsafe {
                     g.dev.dc.PushAxisAlignedClip(&v, windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED);
                 }
-                g.draw_bitmap(&c.bmp, dest, 1.0);
+                let frame = &c.frames[self.anim_frame.min(c.frames.len() - 1)].0;
+                g.draw_bitmap(frame, dest, 1.0);
                 unsafe {
                     g.dev.dc.PopAxisAlignedClip();
                 }
@@ -1138,6 +1217,7 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
+                        TIMER_ANIM => self.next_frame(),
                         TIMER_TRACE => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TRACE);
                             crate::trace::flush("1.5 s after the first frame");
@@ -1316,6 +1396,7 @@ pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thr
             view: View::new(),
             view_for: None,
             first_image_traced: false,
+            anim_frame: 0,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -1338,7 +1419,7 @@ pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thr
             match Gfx::attach(dev, text, hwnd, app.client_w, app.client_h, dpi as f32) {
                 Ok(g) => {
                     if let Some(i) = &icon {
-                        app.icon = g.bitmap(i.width, i.height, &i.pixels).ok();
+                        app.icon = g.bitmap(i.width, i.height, &i.frames[0].pixels).ok();
                     }
                     app.icon_pixels = icon;
                     app.gfx = Some(g);

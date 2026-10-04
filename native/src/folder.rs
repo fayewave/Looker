@@ -7,23 +7,13 @@ use std::path::{Path, PathBuf};
 use windows::Win32::UI::Shell::StrCmpLogicalW;
 use windows::core::HSTRING;
 
-/// Formats the spike decodes through WIC (inbox codecs plus the Store extensions when installed).
-const EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "jpe", "jfif", "png", "apng", "bmp", "dib", "gif", "tif", "tiff", "webp", "ico", "jxr", "wdp",
-    "hdp", "heic", "heif", "hif", "avif", "jxl", "dds",
-];
+use crate::format::is_supported;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x40000;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
-
-pub fn is_supported(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
-}
 
 pub struct Entry {
     pub path: PathBuf,
