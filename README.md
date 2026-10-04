@@ -56,12 +56,13 @@ The mouse wheel can step between photos instead of zooming (`Ctrl` + wheel still
 
 ## Build from source
 
-Requires Windows 11, the .NET 10 SDK and Developer Mode. Visual Studio is not needed.
+Requires Windows 11, Rust (stable, MSVC toolchain), the Windows SDK and Developer Mode.
 
 ```powershell
-dotnet build src/Looker/Looker.csproj -c Debug -p:Platform=x64
-Add-AppxPackage -Register "src/Looker/bin/x64/Debug/net8.0-windows10.0.26100.0/win-x64/AppxManifest.xml" -ForceUpdateFromAnyVersion
-dotnet test tests/Looker.Tests -c Debug
+cd native; cargo build --release; cargo test --release; cd ..
+pwsh scripts/Publish-Native.ps1          # install the build as the Looker package
+pwsh scripts/Build-NativePackage.ps1 -Store   # Microsoft Store upload
 ```
 
-Built with WinUI 3 and Win2D.
+Native Rust, drawn with Direct2D and DirectWrite, decoding through WIC. (Looker 1.0 was a WinUI 3 app; its source
+is at the `csharp-final` tag.)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The native Looker's package: the same identity, file associations and alias as the C# app it replaces
-  (src/Looker/Package.appxmanifest), so an install updates in place and keeps its LocalSettings, which the
+  Looker's package: the same identity, file associations and alias as the C# app it replaced (tag
+  csharp-final, src/Looker/Package.appxmanifest), so an install updates in place and keeps its LocalSettings, which the
   native app migrates on first launch. scripts/Publish-Native.ps1 lays it out and registers it.
 -->
 <Package

@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFac
 use super::*;
 
 pub(super) const WM_RECENTS: u32 = WM_APP + 10;
-static WORDMARK: &[u8] = include_bytes!("../../../src/Looker/Assets/Brand/looker_wordmark.svg");
+static WORDMARK: &[u8] = include_bytes!("../../assets/Brand/looker_wordmark.svg");
 const WORDMARK_H: f32 = 52.0;
 const COLUMN_W: f32 = 480.0;
 const ROW_H: f32 = 42.0;

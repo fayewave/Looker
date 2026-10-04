@@ -27,7 +27,7 @@ function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1) {
     New-Item -ItemType Directory $OutDir | Out-Null
     New-Item -ItemType Directory (Join-Path $OutDir 'Assets') | Out-Null
     Copy-Item $exe (Join-Path $OutDir 'Looker.exe')
-    Copy-Item (Join-Path $Root 'src\Looker\Assets\*.png') (Join-Path $OutDir 'Assets')
+    Copy-Item (Join-Path $Root 'native\assets\*.png') (Join-Path $OutDir 'Assets')
 
     $manifest = Get-Content (Join-Path $native 'Package.appxmanifest') -Raw
     if ($Revision -ge 0) {

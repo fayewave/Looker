@@ -18,7 +18,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::core::{Interface, PCWSTR, Result, w};
 
-static INTER: &[u8] = include_bytes!("../../src/Looker/Assets/Fonts/InterVariable.ttf");
+static INTER: &[u8] = include_bytes!("../assets/Fonts/InterVariable.ttf");
 
 pub struct Device {
     d3d: ID3D11Device,

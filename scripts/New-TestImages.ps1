@@ -3,8 +3,8 @@
     Generates a folder of sample images, one per format Looker supports, for manual testing.
 
 .DESCRIPTION
-    Uses the Magick.NET assemblies from the app's Debug build output (build the app first), so the
-    encoders are exactly the ones the app decodes with. Every image is a plasma fractal labelled with
+    Uses Magick.NET from the NuGet cache (Magick.NET-Q8-x64 + Magick.NET.Core, the versions the retired C# app
+    shipped; `dotnet restore` of the csharp-final tag puts them there), or from -BinDir. Every image is a plasma fractal labelled with
     its format so it's obvious in the viewer which file is open. Also emits edge cases: a 300 dpi JPEG
     (the DPI-pixelation gotcha), 16-bit PNG, PNG with alpha, CMYK JPEG, EXIF-rotated JPEG, a large
     6000x4000 JPEG (progressive decode), animated GIF/WebP/APNG/AVIF, and an SVG. Sept 2026 additions:
@@ -19,10 +19,24 @@
 [CmdletBinding()]
 param(
     [string]$OutDir = (Join-Path $env:USERPROFILE 'Pictures\Looker Test Photos'),
-    [string]$BinDir = (Join-Path $PSScriptRoot '..\src\Looker\bin\x64\Debug\net8.0-windows10.0.26100.0\win-x64')
+    [string]$BinDir,
+    [string]$MagickVersion = '14.14.0'
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $BinDir) {
+    # Managed and native DLLs side by side, so the managed one finds Magick.Native next to itself.
+    $nuget = Join-Path $env:USERPROFILE '.nuget\packages'
+    $BinDir = Join-Path ([IO.Path]::GetTempPath()) "looker-magick-$MagickVersion"
+    New-Item -ItemType Directory -Force $BinDir | Out-Null
+    foreach ($src in "magick.net.core\$MagickVersion\lib\net8.0\Magick.NET.Core.dll",
+                     "magick.net-q8-x64\$MagickVersion\lib\net8.0\Magick.NET-Q8-x64.dll",
+                     "magick.net-q8-x64\$MagickVersion\runtimes\win-x64\native\Magick.Native-Q8-x64.dll") {
+        $path = Join-Path $nuget $src
+        if (-not (Test-Path $path)) { throw "Magick.NET $MagickVersion is not in the NuGet cache ($path). Pass -BinDir." }
+        Copy-Item $path $BinDir -Force
+    }
+}
 $BinDir = (Resolve-Path $BinDir).Path
 foreach ($dll in 'Magick.NET.Core.dll', 'Magick.NET-Q8-x64.dll') {
     Add-Type -Path (Join-Path $BinDir $dll)

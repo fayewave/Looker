@@ -73,7 +73,7 @@ const TIMER_FOLDER: usize = 10;
 /// The Store update check, once startup has settled.
 const TIMER_UPDATES: usize = 12;
 
-static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
+static APP_ICON: &[u8] = include_bytes!("../../assets/AppIcon.ico");
 
 /// The hardware device, built in the background after the first frame (see gfx.rs).
 static GPU_DEVICE: std::sync::Mutex<Option<gfx::Sendable<gfx::Device>>> = std::sync::Mutex::new(None);

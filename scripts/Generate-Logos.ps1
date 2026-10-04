@@ -6,7 +6,7 @@
 
         pwsh scripts/Generate-Logos.ps1
 
-    Assets land in src/Looker/Assets; the csproj globs Assets\** so new files need no csproj edit.
+    Assets land in native/assets; the package layout copies every PNG there, so new files need no other edit.
 
 .DESCRIPTION
     The mark is a single <path> exported from Affinity (brand/slices/looker_v*_icon.svg). We parse its
@@ -19,7 +19,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$OutDir = (Join-Path $PSScriptRoot '..\src\Looker\Assets'),
+    [string]$OutDir = (Join-Path $PSScriptRoot '..\native\assets'),
     [string]$MarkSvg = (Join-Path $PSScriptRoot '..\brand\slices\looker_v3_icon.svg'),
     [string]$WordmarkSvg = (Join-Path $PSScriptRoot '..\brand\slices\looker_v3_wordmark.svg'),
     [string]$FullSvg = (Join-Path $PSScriptRoot '..\brand\slices\looker_v3_full.svg')

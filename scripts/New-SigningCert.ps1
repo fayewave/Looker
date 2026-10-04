@@ -7,7 +7,7 @@
     signing succeeds but Add-AppxPackage rejects the package. The cert goes into the current user's
     personal store (for signing) and is exported as:
 
-        artifacts/cert/looker.pfx   private key, password-protected  -> used by Build-Package.ps1
+        artifacts/cert/looker.pfx   private key, password-protected  -> used by Build-NativePackage.ps1
         artifacts/cert/looker.cer   public part                       -> installed on machines that sideload
 
     Run once; re-run to rotate. Prints the thumbprint at the end.
@@ -41,4 +41,4 @@ Write-Host "  Thumbprint : $($cert.Thumbprint)"
 Write-Host "  PFX        : $(Join-Path $OutDir 'looker.pfx')  (password: $Password)"
 Write-Host "  CER        : $(Join-Path $OutDir 'looker.cer')"
 Write-Host ""
-Write-Host "Next: pwsh scripts/Build-Package.ps1 -Thumbprint $($cert.Thumbprint)"
+Write-Host "Next: pwsh scripts/Build-NativePackage.ps1 -Thumbprint $($cert.Thumbprint)"

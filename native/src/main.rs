@@ -88,7 +88,7 @@ fn main() {
                     return None;
                 }
             };
-            let icon = imaging::wic::decode_icon(include_bytes!("../../src/Looker/Assets/AppIcon.ico"), icon_px).ok();
+            let icon = imaging::wic::decode_icon(include_bytes!("../assets/AppIcon.ico"), icon_px).ok();
             Some((gfx::Sendable((dev, text)), icon))
         })
         .expect("spawn gfx init");
