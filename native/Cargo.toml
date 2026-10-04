@@ -16,6 +16,7 @@ xcf = "0.4.0"
 [dependencies.windows]
 version = "0.62.2"
 features = [
+    "ApplicationModel",
     "Data_Pdf",
     "Foundation",
     "Foundation_Collections",

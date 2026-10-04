@@ -142,6 +142,23 @@ impl App {
         Some(bmp)
     }
 
+    /// "Set Looker as your default photo viewer" and an X that hides it for good.
+    fn draw_default_hint(&mut self, g: &Gfx, cx: f32, y: f32) {
+        let label = "Set Looker as your default photo viewer";
+        let bw = (g.measure(&wide(label), &g.fonts.body) + 24.0).ceil();
+        let total = bw + 6.0 + 32.0;
+        let b = rect(g.snap(cx - total / 2.0), g.snap(y), bw, 32.0);
+        let x = rect(b.right + 6.0, b.top, 32.0, 32.0);
+        self.hits.add(Hit::DefaultHint, b);
+        let st = self.state(Hit::DefaultHint, true);
+        let fg = ui::button_frame(g, b, ui::Kind::Standard, &st);
+        g.text(&wide(label), &g.fonts.body, b, fg, Align::Center);
+        self.hits.add(Hit::DefaultHintClose, x);
+        let st = self.state(Hit::DefaultHintClose, true);
+        let fg = ui::button_frame(g, x, ui::Kind::Standard, &st);
+        g.text(&[0xE711], &g.fonts.small_icons, x, fg, Align::Center);
+    }
+
     pub(super) fn draw_landing(&mut self, g: &Gfx) {
         if self.landing.entries.is_none() {
             self.check_recents();
@@ -155,12 +172,18 @@ impl App {
         if has_recent {
             content += 16.0 + 16.0 + 28.0 + 4.0 + entries.len() as f32 * ROW_H;
         }
-        let height = v.bottom - v.top;
+        // The default-app hint sits on the bottom edge, under the scrolling block.
+        let hint = crate::store::packaged() && !self.settings.default_hint_dismissed;
+        let hint_h = if hint { 8.0 + 32.0 + 28.0 } else { 0.0 };
+        let height = (v.bottom - v.top - hint_h).max(0.0);
         self.landing.max_scroll = (content - height).max(0.0);
         self.landing.scroll = self.landing.scroll.min(self.landing.max_scroll);
         let mut y = v.top + ((height - content).max(0.0) * 2.0 / 5.0).round() + 16.0 - self.landing.scroll;
         let cx = (v.left + v.right) / 2.0;
-        g.push_clip(v);
+        if hint {
+            self.draw_default_hint(g, cx, v.bottom - 28.0 - 32.0);
+        }
+        g.push_clip(D2D_RECT_F { bottom: v.bottom - hint_h, ..v });
 
         if let Some(bmp) = self.landing_wordmark(g) {
             let size = unsafe { bmp.GetPixelSize() };

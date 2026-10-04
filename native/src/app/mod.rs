@@ -70,6 +70,8 @@ const TIMER_CARET: usize = 7;
 const TIMER_THUMBS: usize = 8;
 const TIMER_EXPLORER: usize = 9;
 const TIMER_FOLDER: usize = 10;
+/// The Store update check, once startup has settled.
+const TIMER_UPDATES: usize = 12;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
@@ -158,6 +160,9 @@ enum Hit {
     InfoCard,
     InfoGrip,
     InfoPath,
+    /// The landing page's "Set Looker as your default photo viewer" and its X.
+    DefaultHint,
+    DefaultHintClose,
     /// A document's page bar: the pill, and its two buttons.
     PageBar,
     PagePrevious,
@@ -359,6 +364,8 @@ pub struct App {
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
     slideshow: slideshow::Slideshow,
+    /// What the Store last said about updates (the Settings page's Updates block, the toolbar dot).
+    update: crate::store::UpdateStatus,
     /// Covering the photo while the explorer's cursor is on a file Looker can't show.
     placeholder: Option<Placeholder>,
     /// The slideshow's dissolve from the previous image, while it runs.
@@ -906,6 +913,9 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, size_of::<windows::core::BOOL>() as u32);
         crate::trace::mark("window created");
         DragAcceptFiles(hwnd, true); // files and folders dropped from Explorer
+        if crate::store::packaged() {
+            SetTimer(Some(hwnd), TIMER_UPDATES, 1500, None);
+        }
 
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);
@@ -947,6 +957,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             skip_placement_save: false,
             wheel_acc: 0.0,
             slideshow: Default::default(),
+            update: Default::default(),
             placeholder: None,
             fade: None,
             last_drawn: None,

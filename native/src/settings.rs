@@ -46,6 +46,8 @@ pub struct Settings {
     pub strip_height: f32,
     /// How long the slideshow dwells on each image (1-120).
     pub slideshow_seconds: u32,
+    /// The landing page's "Set Looker as your default photo viewer" was dismissed with its X, for good.
+    pub default_hint_dismissed: bool,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -64,7 +66,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, slideshow_seconds: SLIDESHOW_SECONDS }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
     }
 }
 
@@ -126,6 +128,7 @@ pub fn parse(text: &str) -> Settings {
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
+            "default_hint_dismissed" => s.default_hint_dismissed = v == "1",
             "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
             _ => {}
         }
@@ -155,6 +158,7 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("strip_visible={}\n", s.strip_visible as i32));
     out.push_str(&format!("strip_height={}\n", s.strip_height.round()));
     out.push_str(&format!("slideshow_seconds={}\n", s.slideshow_seconds));
+    out.push_str(&format!("default_hint_dismissed={}\n", s.default_hint_dismissed as i32));
     out
 }
 
@@ -241,6 +245,7 @@ pub fn from_legacy(get: impl Fn(&str) -> Option<Legacy>) -> Settings {
     s.zoom_center = int("ZoomAnchor") == Some(1);
     s.dark_grey = int("Theme") == Some(1);
     s.remember_window = flag("RememberWindow").unwrap_or(true);
+    s.default_hint_dismissed = flag("DefaultHintDismissed").unwrap_or(false);
     s.recents_enabled = flag("RecentsEnabled").unwrap_or(true);
     if s.recents_enabled {
         if let Some(Legacy::Str(list)) = get("RecentFiles") {
@@ -293,6 +298,7 @@ mod tests {
             strip_visible: true,
             strip_height: 160.0,
             slideshow_seconds: 9,
+            default_hint_dismissed: true,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

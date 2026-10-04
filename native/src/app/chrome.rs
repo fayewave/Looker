@@ -113,6 +113,7 @@ impl App {
             Hit::Reveal => "Show this file in File Explorer",
             Hit::InfoPath => "Show in File Explorer",
             Hit::PagePrevious => "Previous page (Page Up)",
+            Hit::DefaultHintClose => "Don't show this again",
             Hit::PageNext => "Next page (Page Down)",
             _ => return None,
         })
@@ -274,6 +275,10 @@ impl App {
                 g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 11.0 - 12.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
             } else {
                 g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+            }
+            // The accent dot: the Store has a newer version (the Updates block is at the top of Settings).
+            if t == Tool::Settings && self.update == crate::store::UpdateStatus::Available {
+                g.fill_round(rect(r.left + 27.0, r.top + 4.0, 7.0, 7.0), 3.5, gfx::rgb(ui::ACCENT));
             }
         }
     }

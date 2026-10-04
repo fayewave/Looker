@@ -284,6 +284,8 @@ impl App {
                             Some(Hit::LandingFolder) => self.open_folder_dialog(),
                             Some(Hit::RecentRow(i)) => self.open_recent(i),
                             Some(Hit::RecentClear) => self.clear_recents(),
+                            Some(Hit::DefaultHint) => self.page_link(5),
+                            Some(Hit::DefaultHintClose) => self.dismiss_default_hint(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
@@ -502,6 +504,10 @@ impl App {
                         TIMER_EXPLORER => self.explorer_refresh(),
                         TIMER_FOLDER => self.refresh_folder(),
                         slideshow::TIMER_SLIDESHOW => self.on_slideshow_timer(),
+                        TIMER_UPDATES => {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_UPDATES);
+                            self.check_updates();
+                        }
                         TIMER_THUMBS => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_THUMBS);
                             self.invalidate();
@@ -582,6 +588,11 @@ impl App {
                     }
                     DragFinish(drop);
                     self.dropped(paths);
+                    Some(LRESULT(0))
+                }
+                crate::store::WM_UPDATE_STATUS => {
+                    self.update = crate::store::UpdateStatus::from_u8(wp.0 as u8);
+                    self.invalidate();
                     Some(LRESULT(0))
                 }
                 WM_COPYDATA => {

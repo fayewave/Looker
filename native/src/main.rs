@@ -21,6 +21,7 @@ mod instance;
 mod metadata;
 mod pages;
 mod settings;
+mod store;
 mod textedit;
 mod thumbs;
 mod trace;

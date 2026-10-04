@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::settings::CACHE_CHOICES;
+use crate::store::UpdateStatus;
 
 const PAD_X: f32 = 24.0;
 const PAD_TOP: f32 = 16.0;
@@ -63,6 +64,10 @@ impl App {
 
     pub(super) fn open_page(&mut self) {
         self.stop_slideshow();
+        // The Updates block asks again unless an answer that needs action is in.
+        if matches!(self.update, UpdateStatus::Unknown | UpdateStatus::UpToDate) {
+            self.check_updates();
+        }
         self.close_menu();
         self.hide_tooltip();
         self.page = Some(Page::new());
@@ -150,8 +155,33 @@ impl App {
                     shell_open("https://apps.microsoft.com/detail/9NV130N4C2GZ");
                 }
             }
+            3 => {
+                shell_open(crate::store::STORE_UPDATES);
+            }
+            4 => self.check_updates(),
+            5 => {
+                let uri = crate::store::default_apps_uri();
+                if !shell_open(&uri) {
+                    shell_open("ms-settings:defaultapps");
+                }
+            }
             _ => self.confirm_reset(),
         }
+    }
+
+    pub(super) fn check_updates(&mut self) {
+        if self.update == UpdateStatus::Checking {
+            return;
+        }
+        self.update = UpdateStatus::Checking;
+        crate::store::check_updates(self.hwnd);
+        self.invalidate();
+    }
+
+    pub(super) fn dismiss_default_hint(&mut self) {
+        self.settings.default_hint_dismissed = true;
+        settings::save(&self.settings);
+        self.invalidate();
     }
 
     /// Reset Looker: every setting back to its default, the caches emptied, the saved window forgotten.
@@ -232,6 +262,7 @@ impl App {
 
     /// The preferences column; returns where it ends.
     fn draw_preferences(&mut self, g: &Gfx, x: f32, mut y: f32, w: f32) -> f32 {
+        y = self.draw_updates(g, x, y, w);
         y = self.combo_row(g, x, y, w, "Mouse wheel over the image", Setting::Wheel);
         y = self.combo_row(g, x, y, w, "Zoom towards", Setting::Zoom);
         y = hint(g, x, y, w, "Where the wheel and a double-click zoom into. Ctrl + and Ctrl - always zoom into the middle.");
@@ -252,6 +283,27 @@ impl App {
         y - SPACING
     }
 
+    /// First on the page: the one thing that may need action.
+    fn draw_updates(&mut self, g: &Gfx, x: f32, mut y: f32, w: f32) -> f32 {
+        g.text(&wide_str("Updates"), &g.fonts.body_strong, rect(x, y, w, 20.0), white(0xFF), Align::Left);
+        y += 20.0 + 2.0;
+        let status = match self.update {
+            UpdateStatus::Checking => "Checking for updates\u{2026}",
+            UpdateStatus::UpToDate => "Looker is up to date.",
+            UpdateStatus::Available => "A newer version of Looker is available. Windows installs Store updates automatically; open the Store to get it now.",
+            UpdateStatus::Unknown => "Couldn't check for updates. Updates are delivered automatically through the Microsoft Store.",
+        };
+        let sh = g.measure_height(&wide_str(status), &g.fonts.body_wrap, w).ceil();
+        g.text(&wide_str(status), &g.fonts.body_wrap, rect(x, y, w, sh), white(TEXT_SECONDARY), Align::Left);
+        y += sh + 2.0 + 6.0;
+        let mut bx = x;
+        if self.update == UpdateStatus::Available {
+            bx += self.icon_button(g, bx, y, 0xE896, "Update now in Microsoft Store", Hit::PageLink(3), true) + 8.0;
+        }
+        self.icon_button(g, bx, y, 0xE72C, "Check for updates", Hit::PageLink(4), self.update != UpdateStatus::Checking);
+        y + 32.0 + SPACING
+    }
+
     fn draw_about(&mut self, g: &Gfx, x: f32, mut y: f32, w: f32) -> f32 {
         const LOGO_H: f32 = 44.0;
         if let Some(bmp) = self.landing_wordmark(g) {
@@ -267,10 +319,12 @@ impl App {
         let version = format!("Version {} \u{00B7} {} \u{00B7} native preview", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH);
         g.text(&wide_str(&version), &g.fonts.caption, rect(x, y, w, 16.0), white(TEXT_SECONDARY), Align::Left);
         y += 16.0 + 16.0;
-        let gw = self.icon_button(g, x, y, 0xE943, "GitHub", Hit::PageLink(0));
-        self.icon_button(g, x + gw + 8.0, y, 0xE719, "Microsoft Store", Hit::PageLink(1));
+        let gw = self.icon_button(g, x, y, 0xE943, "GitHub", Hit::PageLink(0), true);
+        self.icon_button(g, x + gw + 8.0, y, 0xE719, "Microsoft Store", Hit::PageLink(1), true);
         y += 32.0 + 16.0;
-        self.icon_button(g, x, y, 0xE7A7, "Reset Looker", Hit::PageLink(2));
+        self.icon_button(g, x, y, 0xE71D, "Set as default photo viewer", Hit::PageLink(5), true);
+        y += 32.0 + 16.0;
+        self.icon_button(g, x, y, 0xE7A7, "Reset Looker", Hit::PageLink(2), true);
         y += 32.0 + 16.0 - 8.0;
         let reset = "Puts every setting back to its default, clears the recent list and the decode cache, and forgets the saved window size. Your photos are not touched.";
         let rh = g.measure_height(&wide_str(reset), &g.fonts.caption_wrap, w).ceil();
@@ -309,11 +363,13 @@ impl App {
     }
 
     /// A standard button with a glyph before its label; returns its width.
-    fn icon_button(&mut self, g: &Gfx, x: f32, y: f32, glyph: u16, label: &str, id: Hit) -> f32 {
+    fn icon_button(&mut self, g: &Gfx, x: f32, y: f32, glyph: u16, label: &str, id: Hit, enabled: bool) -> f32 {
         let w = (14.0 + 8.0 + g.measure(&wide_str(label), &g.fonts.body) + 22.0).ceil();
         let r = rect(g.snap(x), g.snap(y), w, 32.0);
-        self.hits.add(id, r);
-        let st = self.state(id, true);
+        if enabled {
+            self.hits.add(id, r);
+        }
+        let st = self.state(id, enabled);
         let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
         g.text(&[glyph], &g.fonts.body_icons, rect(r.left + 11.0, r.top, 14.0, 32.0), fg, Align::Center);
         g.text(&wide_str(label), &g.fonts.body, rect(r.left + 11.0 + 14.0 + 8.0, r.top, w, 32.0), fg, Align::Left);
