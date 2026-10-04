@@ -146,7 +146,7 @@ impl Thumb {
 
 impl App {
     pub(super) fn strip_shown(&self) -> bool {
-        self.settings.strip_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
+        self.settings.strip_visible && self.panels_allowed()
     }
 
     /// What the strip takes from the bottom of the viewport.
@@ -155,9 +155,9 @@ impl App {
     }
 
     fn strip_rect(&self) -> D2D_RECT_F {
-        let (w, h) = self.size_dip();
-        let top = h - STATUS_H - self.settings.strip_height;
-        D2D_RECT_F { left: 0.0, top, right: w, bottom: h - STATUS_H }
+        let (w, _) = self.size_dip();
+        let bottom = self.content_bottom();
+        D2D_RECT_F { left: 0.0, top: bottom - self.settings.strip_height, right: w, bottom }
     }
 
     fn cell_size(&self) -> (f32, f32) {

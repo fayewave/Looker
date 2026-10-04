@@ -14,8 +14,20 @@ impl App {
         if self.chrome() {
             D2D_RECT_F { left: 0.0, top: TITLE_H + TOOLBAR_H, right: w, bottom: (h - STATUS_H - self.bottom_inset()).max(TITLE_H + TOOLBAR_H) }
         } else {
-            D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h }
+            D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: (h - self.bottom_inset()).max(1.0) }
         }
+    }
+
+    /// Where the content ends at the bottom: above the status row, or the window's edge in fullscreen.
+    pub(super) fn content_bottom(&self) -> f32 {
+        let (_, h) = self.size_dip();
+        if self.chrome() { h - STATUS_H } else { h }
+    }
+
+    /// The cards and the strip follow their toggles while a photo is up, in fullscreen too, but not behind
+    /// a page or during a slideshow (that is the photos alone).
+    pub(super) fn panels_allowed(&self) -> bool {
+        self.viewer.current.is_some() && self.page.is_none() && !self.slideshow.running
     }
 
     /// Where the image fits and zooms: the viewport minus the floating cards.

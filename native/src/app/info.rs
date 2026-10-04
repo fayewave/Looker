@@ -81,7 +81,7 @@ fn format_exif_time(t: ExifTime) -> String {
 
 impl App {
     pub(super) fn info_shown(&self) -> bool {
-        self.settings.info_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
+        self.settings.info_visible && self.panels_allowed()
     }
 
     /// What the card takes from the right of the viewport (its width, margins included).

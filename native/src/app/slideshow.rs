@@ -43,6 +43,7 @@ impl App {
         }
         self.slideshow.running = true;
         self.slideshow.paused = false;
+        self.layout_changed(); // the cards and the strip step aside for the photos
         self.arm_slideshow();
         self.show_toast("Slideshow", false);
     }
@@ -59,6 +60,7 @@ impl App {
         if leave {
             self.toggle_fullscreen();
         }
+        self.layout_changed();
         self.show_toast("Slideshow ended", false);
     }
 

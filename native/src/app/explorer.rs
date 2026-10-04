@@ -101,7 +101,7 @@ impl Explorer {
 
 impl App {
     pub(super) fn explorer_shown(&self) -> bool {
-        self.settings.explorer_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
+        self.settings.explorer_visible && self.panels_allowed()
     }
 
     pub(super) fn left_inset(&self) -> f32 {
