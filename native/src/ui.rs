@@ -110,6 +110,7 @@ pub enum Kind {
     Subtle,
 }
 
+#[derive(Clone, Copy)]
 pub struct State {
     pub hover: f32,
     pub pressed: bool,
@@ -172,10 +173,187 @@ pub fn label(g: &Gfx, text: &str, fmt: &IDWriteTextFormat, r: D2D_RECT_F, fg: D2
 /// A soft drop shadow under a floating surface (flyouts, cards): a few widening, fading rounded rects, which
 /// reads like WinUI's elevation shadow without an effect graph.
 pub fn shadow(g: &Gfx, r: D2D_RECT_F, radius: f32) {
+    shadow_faded(g, r, radius, 1.0);
+}
+
+/// [`shadow`] at an opacity, for surfaces that fade in and out.
+pub fn shadow_faded(g: &Gfx, r: D2D_RECT_F, radius: f32, opacity: f32) {
     for i in 1..=6 {
         let d = i as f32 * 2.0;
         let rr = D2D_RECT_F { left: r.left - d * 0.5, top: r.top - d * 0.2, right: r.right + d * 0.5, bottom: r.bottom + d };
-        g.fill_round(rr, radius + d, rgba(0x000000, 0.07));
+        g.fill_round(rr, radius + d, rgba(0x000000, 0.07 * opacity));
+    }
+}
+
+/// WinUI's keyboard focus visual: a 2 px white ring outside the control with a 1 px dark ring inside it.
+pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
+    let out = D2D_RECT_F { left: r.left - 3.0, top: r.top - 3.0, right: r.right + 3.0, bottom: r.bottom + 3.0 };
+    g.outline_round(out, radius + 3.0, white(0xFF), 2.0);
+    let inner = D2D_RECT_F { left: r.left - 1.0, top: r.top - 1.0, right: r.right + 1.0, bottom: r.bottom + 1.0 };
+    g.outline_round(inner, radius + 1.0, rgba(0x000000, 0.7), 1.0);
+}
+
+/// SurfaceStrokeColorDefault on the dark theme: the hairline round flyouts, dialogs and toasts.
+fn surface_stroke(opacity: f32) -> D2D1_COLOR_F {
+    rgba(0x757575, 0.4 * opacity)
+}
+
+// --- Dialogs -----------------------------------------------------------------------------------------
+
+/// The black theme's two dialog layers (`ThemeColors.DialogOverlay` over `DialogStrip` in the C# app).
+const DIALOG_BODY: u32 = 0x141414;
+const DIALOG_STRIP: u32 = 0x0C0C0C;
+const DIALOG_PAD: f32 = 24.0;
+const DIALOG_MIN_W: f32 = 320.0;
+const DIALOG_MAX_W: f32 = 548.0;
+const DIALOG_TITLE_H: f32 = 28.0;
+const DIALOG_BUTTON_GAP: f32 = 8.0;
+
+pub struct DialogButton<A> {
+    pub label: String,
+    pub action: A,
+}
+
+/// A modal ContentDialog: smoke over the window, a centred card with a title and text, and a strip of
+/// equal-width buttons. The default button is the accent one and starts with keyboard focus.
+pub struct Dialog<A> {
+    pub title: String,
+    pub body: String,
+    pub buttons: Vec<DialogButton<A>>,
+    pub default: usize,
+    pub focus: usize,
+    /// Show the focus ring (the dialog was opened from the keyboard, or Tab was pressed).
+    pub focus_visible: bool,
+}
+
+pub struct DialogLayout {
+    pub card: D2D_RECT_F,
+    pub buttons: Vec<D2D_RECT_F>,
+    title: D2D_RECT_F,
+    body: D2D_RECT_F,
+    strip_top: f32,
+}
+
+impl<A: Copy> Dialog<A> {
+    pub fn new(title: String, body: String, buttons: Vec<DialogButton<A>>, default: usize, from_keyboard: bool) -> Dialog<A> {
+        Dialog { title, body, buttons, default, focus: default, focus_visible: from_keyboard }
+    }
+
+    pub fn layout(&self, g: &Gfx, bounds: D2D_RECT_F) -> DialogLayout {
+        let natural = g.measure(&wide(&self.title), &g.fonts.title).max(g.measure(&wide(&self.body), &g.fonts.body_wrap));
+        let w = (natural.ceil() + DIALOG_PAD * 2.0).clamp(DIALOG_MIN_W, DIALOG_MAX_W).min(bounds.right - bounds.left - 32.0);
+        let inner = w - DIALOG_PAD * 2.0;
+        let body_h = g.measure_height(&wide(&self.body), &g.fonts.body_wrap, inner).ceil();
+        let content_h = DIALOG_PAD + DIALOG_TITLE_H + 12.0 + body_h + DIALOG_PAD;
+        let strip_h = DIALOG_PAD * 2.0 + 32.0;
+        let h = content_h + strip_h;
+        let x = g.snap((bounds.left + bounds.right - w) / 2.0);
+        let y = g.snap((bounds.top + bounds.bottom - h) / 2.0);
+        let card = rect(x, y, w, h);
+        let n = self.buttons.len().max(1) as f32;
+        let bw = (inner - DIALOG_BUTTON_GAP * (n - 1.0)) / n;
+        let by = y + content_h + DIALOG_PAD;
+        let buttons = (0..self.buttons.len()).map(|i| rect(x + DIALOG_PAD + i as f32 * (bw + DIALOG_BUTTON_GAP), by, bw, 32.0)).collect();
+        DialogLayout {
+            card,
+            buttons,
+            title: rect(x + DIALOG_PAD, y + DIALOG_PAD, inner, DIALOG_TITLE_H),
+            body: rect(x + DIALOG_PAD, y + DIALOG_PAD + DIALOG_TITLE_H + 12.0, inner, body_h),
+            strip_top: y + content_h,
+        }
+    }
+
+    /// Tab / arrow keys: the next or previous button, wrapping.
+    pub fn move_focus(&mut self, forward: bool) {
+        let n = self.buttons.len();
+        if n > 0 {
+            self.focus = if forward { (self.focus + 1) % n } else { (self.focus + n - 1) % n };
+        }
+        self.focus_visible = true;
+    }
+
+    pub fn draw(&self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, state: impl Fn(usize) -> State) {
+        g.fill(window, rgba(0x000000, 0x4D as f32 / 255.0)); // SmokeFillColorDefault
+        let c = l.card;
+        shadow(g, c, 8.0);
+        g.fill_round(c, 8.0, rgba(DIALOG_STRIP, 1.0));
+        // The content layer: rounded at the top, square where it meets the button strip.
+        g.fill_round(D2D_RECT_F { bottom: l.strip_top, ..c }, 8.0, rgba(DIALOG_BODY, 1.0));
+        g.fill(D2D_RECT_F { top: l.strip_top - 8.0, bottom: l.strip_top, ..c }, rgba(DIALOG_BODY, 1.0));
+        g.outline_round(c, 8.0, surface_stroke(1.0), g.px());
+        label(g, &self.title, &g.fonts.title, l.title, white(0xFF), Align::Left);
+        label(g, &self.body, &g.fonts.body_wrap, l.body, white(0xFF), Align::Left);
+        for (i, (b, r)) in self.buttons.iter().zip(&l.buttons).enumerate() {
+            let kind = if i == self.default { Kind::Accent } else { Kind::Standard };
+            let fg = button_frame(g, *r, kind, &state(i));
+            label(g, &b.label, &g.fonts.body, *r, fg, Align::Center);
+            if self.focus_visible && i == self.focus {
+                focus_ring(g, *r, 4.0);
+            }
+        }
+    }
+}
+
+// --- Toasts ------------------------------------------------------------------------------------------
+
+/// The OSD toast (OsdOverlay): fades in, holds, fades out. Showing again while one is up replaces the text
+/// and restarts the hold from the current opacity, so a burst (wheel zoom) reads as one steady pill.
+pub struct Toast {
+    pub text: String,
+    start: Instant,
+    from: f32,
+    hold_ms: f32,
+    fade_out_ms: f32,
+}
+
+const TOAST_FADE_IN_MS: f32 = 120.0;
+
+pub enum ToastPhase {
+    /// Moving: draw at this opacity and keep redrawing.
+    Fading(f32),
+    /// Fully shown; nothing changes for this many ms.
+    Holding(u32),
+    Done,
+}
+
+impl Toast {
+    /// `quick`: a continuous readout (zoom %) that is only interesting while it changes.
+    pub fn new(text: String, quick: bool, previous: Option<&Toast>) -> Toast {
+        let from = previous.map_or(0.0, |p| p.opacity());
+        let (hold_ms, fade_out_ms) = if quick { (350.0, 180.0) } else { (1200.0, 400.0) };
+        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms }
+    }
+
+    pub fn phase(&self) -> ToastPhase {
+        let t = self.start.elapsed().as_secs_f32() * 1000.0;
+        if t < TOAST_FADE_IN_MS {
+            ToastPhase::Fading(self.from + (1.0 - self.from) * t / TOAST_FADE_IN_MS)
+        } else if t < self.hold_ms {
+            ToastPhase::Holding((self.hold_ms - t).ceil().max(1.0) as u32)
+        } else if t < self.hold_ms + self.fade_out_ms {
+            ToastPhase::Fading(1.0 - (t - self.hold_ms) / self.fade_out_ms)
+        } else {
+            ToastPhase::Done
+        }
+    }
+
+    fn opacity(&self) -> f32 {
+        match self.phase() {
+            ToastPhase::Fading(a) => a,
+            ToastPhase::Holding(_) => 1.0,
+            ToastPhase::Done => 0.0,
+        }
+    }
+
+    /// Bottom-right of `area`, 16 DIPs in.
+    pub fn draw(&self, g: &Gfx, area: D2D_RECT_F, opacity: f32) {
+        let w = (g.measure(&wide(&self.text), &g.fonts.body_strong) + 28.0).ceil();
+        let h = 36.0;
+        let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h), w, h);
+        shadow_faded(g, r, 8.0, opacity);
+        g.fill_round(r, 8.0, rgba(0x202020, opacity)); // SolidBackgroundFillColorBase
+        g.outline_round(r, 8.0, surface_stroke(opacity), g.px());
+        label(g, &self.text, &g.fonts.body_strong, r, white((255.0 * opacity) as u8), Align::Center);
     }
 }
 

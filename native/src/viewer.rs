@@ -77,6 +77,16 @@ impl Outcome {
     }
 }
 
+/// What deleting a file did to the view.
+pub enum Removed {
+    /// Not the current image: only the folder changed.
+    Other,
+    /// The current image went; the next one is being shown.
+    Current(Outcome),
+    /// It was the folder's last image.
+    Emptied,
+}
+
 pub struct Viewer {
     hwnd: HWND,
     pool: Arc<Pool>,
@@ -240,6 +250,38 @@ impl Viewer {
         self.listing = Some(listing);
         self.schedule_preloads();
         true
+    }
+
+    /// Drops every cached decode and remembered failure of a file (it was rewritten or deleted).
+    pub fn forget(&mut self, path: &Path) {
+        let keys: Vec<Key> = self.cache.keys().filter(|k| k.path == path).cloned().collect();
+        for k in keys {
+            self.cache.remove(&k);
+        }
+        self.failed.retain(|(p, _), _| p != path);
+    }
+
+    /// A file was deleted. When it was the current image, whatever slid into its place is shown (the
+    /// previous one when it was last), or nothing when the folder has no images left.
+    pub fn remove(&mut self, path: &Path, gfx: Option<&Gfx>) -> Removed {
+        self.forget(path);
+        let was_current = self.current.as_ref().is_some_and(|(p, _)| p == path);
+        let Some(l) = &mut self.listing else { return if was_current { Removed::Emptied } else { Removed::Other } };
+        let old = l.images.iter().position(|e| e.path == path);
+        l.remove(path);
+        if !was_current {
+            let cur = self.current.as_ref().map(|(p, _)| p.clone());
+            self.index = cur.and_then(|c| l.images.iter().position(|e| e.path == c));
+            self.schedule_preloads();
+            return Removed::Other;
+        }
+        if l.images.is_empty() {
+            return Removed::Emptied;
+        }
+        let j = old.unwrap_or(0).min(l.images.len() - 1);
+        self.index = None;
+        self.forward = true;
+        Removed::Current(self.show_index(j, gfx))
     }
 
     /// Whether a sharp decode is already enough for this viewport. The bucket is sized for the viewport's long

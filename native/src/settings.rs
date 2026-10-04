@@ -31,9 +31,14 @@ impl Default for Settings {
     }
 }
 
-fn file() -> Option<PathBuf> {
+/// Looker's own data folder (settings, the rendered wallpaper).
+pub fn data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("Looker").join("native").join("settings.txt"))
+    Some(PathBuf::from(base).join("Looker").join("native"))
+}
+
+fn file() -> Option<PathBuf> {
+    Some(data_dir()?.join("settings.txt"))
 }
 
 pub fn parse(text: &str) -> Settings {

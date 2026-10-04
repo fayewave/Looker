@@ -38,6 +38,9 @@ impl App {
             out.push((t, g, rect(x, y, bw, BUTTON_H)));
             x += bw + 4.0;
         }
+        if self.turns != 0 {
+            out.push((Tool::SaveRotation, 0, rect(x, y, SAVE_W, BUTTON_H)));
+        }
         let mut x = w - 12.0;
         for &(t, g) in RIGHT_TOOLS.iter().rev() {
             x -= BUTTON_W;
@@ -52,9 +55,11 @@ impl App {
         match t {
             Tool::Settings => true,
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
-            Tool::Sort => has,
+            Tool::Sort | Tool::Delete => has,
+            Tool::Rotate => self.can_rotate(),
+            Tool::SaveRotation => !self.saving_rotation,
             // Not built yet.
-            Tool::Rotate | Tool::Delete | Tool::Explorer | Tool::Strip | Tool::Info => false,
+            Tool::Explorer | Tool::Strip | Tool::Info => false,
             _ => has,
         }
     }
@@ -71,6 +76,7 @@ impl App {
             Hit::Tool(Tool::Rotate) => "Rotate right (Ctrl+R)",
             Hit::Tool(Tool::Delete) => "Delete (Del)",
             Hit::Tool(Tool::Sort) => "Sort",
+            Hit::Tool(Tool::SaveRotation) => "Save the rotation to the file (Ctrl+S)",
             Hit::Tool(Tool::Home) => "Home",
             Hit::Tool(Tool::Explorer) => "File explorer (E)",
             Hit::Tool(Tool::Strip) => "Thumbnails (T)",
@@ -155,12 +161,12 @@ impl App {
             self.draw_toolbar(&g);
             self.draw_status(&g);
         }
-        self.draw_overlays(&g);
+        let toast_moving = self.draw_overlays(&g);
         if let Err(e) = g.end() {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
-        if self.view.animating() || self.fades.moving {
+        if self.view.animating() || self.fades.moving || toast_moving {
             self.invalidate();
         }
     }
@@ -212,6 +218,11 @@ impl App {
             let open = t == Tool::Sort && matches!(self.menu, Some((menus::MenuKind::Sort, _)));
             let mut st = self.state(id, enabled);
             st.pressed |= open;
+            if t == Tool::SaveRotation {
+                let fg = ui::button_frame(g, r, ui::Kind::Accent, &st);
+                g.text(&wide("Save"), &g.fonts.body, r, fg, Align::Center);
+                continue;
+            }
             let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
             if t == Tool::Sort {
                 g.text(&[glyph], &g.fonts.icons, rect(r.left + 11.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
@@ -269,7 +280,17 @@ impl App {
                 }
                 let frames = c.frames.borrow();
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
-                g.draw_bitmap(frame, dest, 1.0);
+                if self.turns == 0 {
+                    g.draw_bitmap(frame, dest, 1.0);
+                } else {
+                    // `dest` is the turned image's bounds: draw the unturned frame into the box that lands on
+                    // it once turned about the centre (width and height swap for odd turns).
+                    let (cx, cy) = ((dest.left + dest.right) / 2.0, (dest.top + dest.bottom) / 2.0);
+                    let (w, h) = (dest.right - dest.left, dest.bottom - dest.top);
+                    let (dw, dh) = if self.turns & 1 == 1 { (h, w) } else { (w, h) };
+                    let unturned = rect(cx - dw / 2.0, cy - dh / 2.0, dw, dh);
+                    g.with_transform(&quarter_turns(self.turns, cx, cy), || g.draw_bitmap(frame, unturned, 1.0));
+                }
                 unsafe {
                     g.dev.dc.PopAxisAlignedClip();
                 }
@@ -295,8 +316,25 @@ impl App {
         g.text(&wide("Open photo"), &g.fonts.caption, r, fg, Align::Center);
     }
 
-    /// Menus and tooltips, above everything.
-    fn draw_overlays(&mut self, g: &Gfx) {
+    /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.
+    fn draw_overlays(&mut self, g: &Gfx) -> bool {
+        let mut toast_moving = false;
+        if let Some(t) = &self.toast {
+            let area = self.viewport();
+            match t.phase() {
+                ui::ToastPhase::Fading(a) => {
+                    t.draw(g, area, a);
+                    toast_moving = true;
+                }
+                ui::ToastPhase::Holding(ms) => {
+                    t.draw(g, area, 1.0);
+                    unsafe {
+                        SetTimer(Some(self.hwnd), TIMER_TOAST, ms, None);
+                    }
+                }
+                ui::ToastPhase::Done => self.toast = None,
+            }
+        }
         if let Some((_, m)) = &self.menu {
             self.hits.add(Hit::MenuSurface, m.bounds());
             for (i, r) in m.item_rects() {
@@ -312,11 +350,44 @@ impl App {
             };
             m.draw(g, hover, pressed);
         }
+        if self.dialog.is_some() {
+            let (w, h) = self.size_dip();
+            let window = rect(0.0, 0.0, w, h);
+            let layout = self.dialog.as_ref().map(|(_, d)| d.layout(g, window)).unwrap();
+            self.hits.add(Hit::DialogSurface, window);
+            let mut states = Vec::new();
+            for (i, r) in layout.buttons.iter().enumerate() {
+                self.hits.add(Hit::DialogButton(i), *r);
+                states.push(self.state(Hit::DialogButton(i), true));
+            }
+            if let Some((_, d)) = &self.dialog {
+                d.draw(g, &layout, window, |i| states[i]);
+            }
+        }
         if let Some(t) = self.tooltip {
             if let (Some(text), Some(anchor)) = (Self::tooltip_text(t), self.hits.rect_of(t)) {
                 let (w, h) = self.size_dip();
                 ui::tooltip(g, text, anchor, rect(0.0, 0.0, w, h));
             }
         }
+        toast_moving
+    }
+}
+
+/// Turns the drawing `turns` quarter turns clockwise about (cx, cy). Exact, unlike a sin/cos of 90°.
+fn quarter_turns(turns: u8, cx: f32, cy: f32) -> windows_numerics::Matrix3x2 {
+    let (cos, sin) = match turns & 3 {
+        1 => (0.0, 1.0),
+        2 => (-1.0, 0.0),
+        3 => (0.0, -1.0),
+        _ => (1.0, 0.0),
+    };
+    windows_numerics::Matrix3x2 {
+        M11: cos,
+        M12: sin,
+        M21: -sin,
+        M22: cos,
+        M31: cx - (cx * cos - cy * sin),
+        M32: cy - (cx * sin + cy * cos),
     }
 }

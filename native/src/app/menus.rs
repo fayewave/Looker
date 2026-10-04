@@ -2,11 +2,6 @@
 //! their items do, and the clipboard. Items for features that haven't landed yet are shown disabled, in the
 //! C# app's order, so the menu doesn't change shape as they arrive.
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
-use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
-use windows::Win32::System::Ole::CF_UNICODETEXT;
-
 use super::*;
 use crate::folder::{Sort, SortField};
 use crate::ui::{Entry, Menu, MenuItem};
@@ -39,16 +34,17 @@ fn radio(action: Action, label: &str, checked: bool) -> Entry<Action> {
 impl App {
     fn context_entries(&self) -> Vec<Entry<Action>> {
         let has = self.viewer.current.is_some();
+        let rotate = self.can_rotate();
         vec![
-            item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), false),
-            item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), false),
+            item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
+            item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),
             Entry::Separator,
-            item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), false),
+            item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), has),
             item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), has),
             item(Action::Rename, 0xE8AC, "Rename", Some("F2"), false),
-            item(Action::Delete, 0xE74D, "Delete", Some("Del"), false),
+            item(Action::Delete, 0xE74D, "Delete", Some("Del"), has),
             Entry::Separator,
-            item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, false),
+            item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, has),
             item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), has),
             Entry::Separator,
             item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), false),
@@ -107,15 +103,15 @@ impl App {
     pub(super) fn run_action(&mut self, a: Action) {
         match a {
             Action::CopyPath => self.copy_path(),
+            Action::CopyImage => self.copy_image(),
+            Action::RotateRight => self.rotate_preview(true),
+            Action::RotateLeft => self.rotate_preview(false),
+            Action::Delete => self.confirm_delete(false),
+            Action::Wallpaper => self.set_wallpaper(),
             Action::Reveal => self.reveal(),
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.settings.sort }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
-            Action::RotateRight
-            | Action::RotateLeft
-            | Action::CopyImage
-            | Action::Rename
-            | Action::Delete
-            | Action::Wallpaper
+            Action::Rename
             | Action::ToggleExplorer
             | Action::ToggleStrip
             | Action::ToggleInfo => {}
@@ -129,12 +125,12 @@ impl App {
         self.settings.sort = sort;
         settings::save(&self.settings);
         self.viewer.set_sort(sort);
-        self.invalidate();
-    }
-
-    pub(super) fn copy_path(&self) {
-        let Some(path) = self.current_path() else { return };
-        set_clipboard_text(self.hwnd, &path.to_string_lossy());
+        let field = match sort.field {
+            SortField::Name => "Name",
+            SortField::Date => "Date modified",
+            SortField::Size => "Size",
+        };
+        self.show_toast(format!("Sort: {field} {}", if sort.descending { "\u{2193}" } else { "\u{2191}" }), false);
     }
 }
 
@@ -142,29 +138,4 @@ impl App {
 pub(super) enum MenuKind {
     Context,
     Sort,
-}
-
-/// Puts UTF-16 text on the clipboard (CF_UNICODETEXT). The clipboard owns the memory once set.
-pub(super) fn set_clipboard_text(hwnd: HWND, text: &str) -> bool {
-    let mut w: Vec<u16> = text.encode_utf16().collect();
-    w.push(0);
-    unsafe {
-        if OpenClipboard(Some(hwnd)).is_err() {
-            return false;
-        }
-        let _ = EmptyClipboard();
-        let ok = (|| {
-            let mem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2).ok()?;
-            let p = GlobalLock(mem) as *mut u16;
-            if p.is_null() {
-                return None;
-            }
-            std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
-            let _ = GlobalUnlock(mem);
-            SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))).ok()
-        })()
-        .is_some();
-        let _ = CloseClipboard();
-        ok
-    }
 }

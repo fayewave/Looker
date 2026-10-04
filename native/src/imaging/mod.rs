@@ -205,6 +205,26 @@ mod tests {
         println!("{} of {} decoded; failed: {failed:?}", paths.len() - failed.len(), paths.len());
     }
 
+    /// Decodes the one file named by `LOOKER_DECODE` at a fit box and at full size, printing timings.
+    #[test]
+    #[ignore]
+    fn decodes_one_file() {
+        use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2;
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let p = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        for (bw, bh) in [(1280, 1280), (0, 0)] {
+            let t = std::time::Instant::now();
+            match decode(&f, &p, bw, bh, false) {
+                Ok(d) => println!("box {bw}x{bh}: {}x{} native {}x{} in {:.0} ms", d.width, d.height, d.native_width, d.native_height, t.elapsed().as_secs_f64() * 1000.0),
+                Err(e) => println!("box {bw}x{bh}: FAIL {e}"),
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn raw_preview_vs_full_brightness() {

@@ -227,6 +227,7 @@ impl App {
                             Some(Hit::Reveal) => self.reveal(),
                             Some(Hit::Open) => self.open_dialog(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
+                            Some(Hit::DialogButton(i)) => self.dialog_click(i),
                             _ => {}
                         }
                     }
@@ -237,6 +238,9 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_RBUTTONUP => {
+                    if self.dialog.is_some() {
+                        return Some(LRESULT(0));
+                    }
                     let (x, y) = self.dip_from_lparam(lp);
                     match self.hit(x, y) {
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() => {
@@ -248,7 +252,7 @@ impl App {
                 }
                 WM_LBUTTONDBLCLK => {
                     let (x, y) = self.dip_from_lparam(lp);
-                    if self.menu.is_some() {
+                    if self.menu.is_some() || self.dialog.is_some() {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
@@ -269,6 +273,9 @@ impl App {
                     None
                 }
                 WM_MOUSEWHEEL => {
+                    if self.dialog.is_some() {
+                        return Some(LRESULT(0));
+                    }
                     self.close_menu();
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
@@ -284,6 +291,10 @@ impl App {
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let vk = VIRTUAL_KEY(wp.0 as u16);
+                    if self.dialog.is_some() {
+                        self.dialog_key(vk, shift);
+                        return Some(LRESULT(0));
+                    }
                     if self.menu.is_some() {
                         self.menu_key(vk);
                         return Some(LRESULT(0));
@@ -310,6 +321,10 @@ impl App {
                         VK_O if ctrl => self.open_dialog(),
                         VK_E if ctrl => self.reveal(),
                         VK_C if ctrl && shift => self.copy_path(),
+                        VK_C if ctrl => self.copy_image(),
+                        VK_R if ctrl => self.rotate_preview(!shift),
+                        VK_S if ctrl => self.save_rotation(),
+                        VK_DELETE => self.confirm_delete(true),
                         VK_APPS => {
                             let v = self.viewport();
                             self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
@@ -321,6 +336,10 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
+                        TIMER_TOAST => {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
+                            self.invalidate();
+                        }
                         TIMER_TOOLTIP => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
                             if self.menu.is_none() && self.pressed.is_none() {
@@ -344,6 +363,11 @@ impl App {
                 }
                 decode::WM_DECODED => {
                     self.on_decoded();
+                    Some(LRESULT(0))
+                }
+                crate::fileops::WM_FILE_OP => {
+                    let done = Box::from_raw(lp.0 as *mut crate::fileops::Done);
+                    self.on_file_op(*done);
                     Some(LRESULT(0))
                 }
                 WM_GPU_READY => {

@@ -107,6 +107,35 @@ impl Listing {
     pub fn resort(&mut self, sort: Sort) {
         self.sort = sort;
         self.files.sort_by(|a, b| compare(a, b, sort));
+        self.reindex();
+    }
+
+    /// A file was deleted: drop it (the order of the rest stands). Returns whether it was listed.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        let before = self.files.len();
+        self.files.retain(|f| f.path != path);
+        let removed = self.files.len() != before;
+        if removed {
+            self.reindex();
+        }
+        removed
+    }
+
+    /// A file was rewritten (rotation saved): take its new write time and size, in place. Deliberately no
+    /// re-sort, so a date sort doesn't send the photo the user is looking at to the end of the folder.
+    pub fn refresh(&mut self, path: &Path) -> Option<u64> {
+        let md = std::fs::metadata(path).ok()?;
+        let f = self.files.iter_mut().find(|f| f.path == path)?;
+        f.stamp = md.last_write_time();
+        f.size = md.len();
+        let stamp = f.stamp;
+        if let Some(e) = self.images.iter_mut().find(|e| e.path == path) {
+            e.stamp = stamp;
+        }
+        Some(stamp)
+    }
+
+    fn reindex(&mut self) {
         self.images.clear();
         self.rank.clear();
         for (i, f) in self.files.iter().enumerate() {
@@ -187,6 +216,16 @@ mod tests {
         assert_eq!(names(&by_date), ["img10.jpg", "img1.jpg", "img9.jpg"]);
         let by_size_desc = listing(Sort { field: SortField::Size, descending: true });
         assert_eq!(names(&by_size_desc), ["img10.jpg", "img9.jpg", "img1.jpg"]);
+    }
+
+    #[test]
+    fn removing_keeps_the_order_and_the_counter() {
+        let mut l = listing(Sort::default());
+        assert!(l.remove(Path::new("img9.jpg")));
+        assert_eq!(names(&l), ["img1.jpg", "img10.jpg"]);
+        assert_eq!(l.rank, [0, 1]);
+        assert_eq!(l.total_files, 3);
+        assert!(!l.remove(Path::new("img9.jpg")));
     }
 
     #[test]

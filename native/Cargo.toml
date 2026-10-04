@@ -17,6 +17,7 @@ version = "0.62.2"
 features = [
     "Data_Pdf",
     "Foundation",
+    "Foundation_Collections",
     "Graphics_Imaging",
     "Storage",
     "Storage_Streams",

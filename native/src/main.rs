@@ -8,8 +8,10 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod clipboard;
 mod decode;
 mod engine;
+mod fileops;
 mod folder;
 mod format;
 mod gfx;

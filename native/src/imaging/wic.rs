@@ -297,6 +297,10 @@ fn decode_with(f: &IWICImagingFactory, source: &Source, box_w: u32, box_h: u32, 
             }
         }
         if transform != WICBitmapTransformRotate0 {
+            // The flip-rotator reads its source in columns (or bottom-up), and each of those small reads re-runs
+            // the scaler and the JPEG decode beneath it: a 2.5 MP portrait phone photo took 6.6 s. Pull the
+            // scaled pixels into memory once and turn those.
+            src = f.CreateBitmapFromSource(&src, WICBitmapCacheOnLoad)?.into();
             let rot = f.CreateBitmapFlipRotator()?;
             rot.Initialize(&src, transform)?;
             src = rot.into();
@@ -304,6 +308,38 @@ fn decode_with(f: &IWICImagingFactory, source: &Source, box_w: u32, box_h: u32, 
         let straight = convert(f, &src, &GUID_WICPixelFormat32bppBGRA)?;
         let (dw, dh, pixels) = finish(f, &frame, straight)?;
         Ok((Decoded::still(dw, dh, pixels, ow, oh, taken), from_preview))
+    }
+}
+
+/// The file's EXIF orientation (1 = upright, also when it has none).
+pub fn orientation(f: &IWICImagingFactory, path: &Path) -> u16 {
+    unsafe {
+        let Ok(dec) = open(f, &Source::File(path)) else { return 1 };
+        let Ok(frame) = dec.GetFrame(0) else { return 1 };
+        frame.GetMetadataQueryReader().ok().map_or(1, |r| read_orientation(&r))
+    }
+}
+
+/// Writes premultiplied BGRA pixels as a PNG (straight alpha in the file).
+pub fn save_png(f: &IWICImagingFactory, path: &Path, w: u32, h: u32, pbgra: &[u8]) -> Result<()> {
+    unsafe {
+        let bmp = f.CreateBitmapFromMemory(w, h, &GUID_WICPixelFormat32bppPBGRA, w * 4, pbgra)?;
+        let straight = convert(f, &bmp.into(), &GUID_WICPixelFormat32bppBGRA)?;
+        let stream = f.CreateStream()?;
+        stream.InitializeFromFilename(&HSTRING::from(path.as_os_str()), windows::Win32::Foundation::GENERIC_WRITE.0)?;
+        let enc = f.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
+        enc.Initialize(&stream, WICBitmapEncoderNoCache)?;
+        let mut frame = None;
+        let mut options = None;
+        enc.CreateNewFrame(&mut frame, &mut options)?;
+        let frame = frame.ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))?;
+        frame.Initialize(options.as_ref())?;
+        frame.SetSize(w, h)?;
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        frame.SetPixelFormat(&mut fmt)?;
+        frame.WriteSource(&straight, std::ptr::null())?;
+        frame.Commit()?;
+        enc.Commit()
     }
 }
 

@@ -2,6 +2,7 @@
 //! Layout (DIPs, as in MainWindow.xaml): title bar 48 / toolbar 40 / viewport / status row 28.
 
 
+mod actions;
 mod chrome;
 mod input;
 mod menus;
@@ -27,6 +28,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
+use crate::clipboard;
 use crate::decode::{self, Decoded, Pool};
 use crate::engine::Key;
 use crate::folder::{self, Listing};
@@ -44,6 +46,8 @@ const CAPTION_W: f32 = 46.0;
 const BUTTON_W: f32 = 40.0;
 const BUTTON_H: f32 = 32.0;
 const SORT_W: f32 = 60.0;
+/// The accent "Save" button that appears while a rotation preview is unsaved.
+const SAVE_W: f32 = 56.0;
 const DEFAULT_W: f32 = 1200.0;
 const DEFAULT_H: f32 = 800.0;
 
@@ -54,6 +58,7 @@ const WM_GPU_READY: u32 = WM_APP + 3;
 const TIMER_UPGRADE: usize = 1;
 const TIMER_TRACE: usize = 2;
 const TIMER_TOOLTIP: usize = 5;
+const TIMER_TOAST: usize = 6;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
@@ -71,6 +76,7 @@ enum Tool {
     Rotate,
     Delete,
     Sort,
+    SaveRotation,
     Home,
     Explorer,
     Strip,
@@ -107,6 +113,10 @@ enum Hit {
     MenuItem(usize),
     /// The menu's padding and separators: inside the menu, but nothing to click.
     MenuSurface,
+    /// A dialog's button, by index.
+    DialogButton(usize),
+    /// Everything under a dialog's smoke: modal, nothing to click.
+    DialogSurface,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -255,6 +265,13 @@ pub struct App {
     menu: Option<(menus::MenuKind, ui::Menu<menus::Action>)>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
+    dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
+    toast: Option<ui::Toast>,
+    /// Clockwise quarter turns of the unsaved rotation preview.
+    turns: u8,
+    saving_rotation: bool,
+    /// The rotation was saved: keep the preview until the re-decoded file's first frame lands.
+    rotation_saved: bool,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -289,6 +306,11 @@ impl App {
     /// Applies what a viewer call says: a new image resets the zoom (and may want a sharper decode).
     fn apply(&mut self, out: Outcome) {
         if let Some((nw, nh)) = out.reset_view {
+            if self.rotation_saved {
+                // The saved file's first frame: it carries the rotation itself now.
+                self.turns = 0;
+                self.rotation_saved = false;
+            }
             self.reset_view(nw, nh);
             self.schedule_upgrade();
         }
@@ -310,14 +332,29 @@ impl App {
         self.invalidate();
     }
 
+    /// Leaving the current image drops its unsaved rotation preview (the previous image may stay on screen
+    /// until the next one lands, so it goes back to its own orientation now).
+    fn begin_navigation(&mut self) {
+        self.rotation_saved = false;
+        if self.turns != 0 {
+            self.turns = 0;
+            if let Some((nw, nh)) = self.viewer.shown.as_ref().map(|e| (e.native_w, e.native_h)) {
+                self.reset_view(nw, nh);
+            }
+        }
+    }
+
     fn show_path(&mut self, path: PathBuf) {
+        self.begin_navigation();
         let stamp = crate::engine::stamp(&path);
         let out = self.viewer.show(path, stamp, self.gfx.as_ref());
         self.apply(out);
         self.current_changed();
     }
 
+    /// Fit a new image (or the current one, turned by the rotation preview).
     fn reset_view(&mut self, nw: u32, nh: u32) {
+        let (nw, nh) = if self.turns & 1 == 1 { (nh, nw) } else { (nw, nh) };
         let v = self.viewport();
         self.view.reset((v.right - v.left) as f64, (v.bottom - v.top) as f64, nw as f64, nh as f64, self.scale() as f64);
     }
@@ -346,6 +383,10 @@ impl App {
     }
 
     fn step(&mut self, delta: isize) {
+        if self.viewer.image_count() < 2 {
+            return;
+        }
+        self.begin_navigation();
         let out = self.viewer.step(delta, self.gfx.as_ref());
         self.apply(out);
         self.current_changed();
@@ -358,6 +399,7 @@ impl App {
         }
         let j = if last { n - 1 } else { 0 };
         if Some(j) != self.viewer.index {
+            self.begin_navigation();
             let out = self.viewer.show_index(j, self.gfx.as_ref());
             self.apply(out);
             self.current_changed();
@@ -397,6 +439,7 @@ impl App {
     }
 
     fn close(&mut self) {
+        self.begin_navigation();
         self.viewer.close();
         self.info = None;
         self.view.clear();
@@ -470,8 +513,11 @@ impl App {
             Tool::Fullscreen => self.toggle_fullscreen(),
             Tool::Home => self.close(),
             Tool::Sort => self.toggle_sort_menu(),
+            Tool::Rotate => self.rotate_preview(true),
+            Tool::SaveRotation => self.save_rotation(),
+            Tool::Delete => self.confirm_delete(false),
             // Not built yet.
-            Tool::Rotate | Tool::Delete | Tool::Explorer | Tool::Strip | Tool::Info | Tool::Settings => {}
+            Tool::Explorer | Tool::Strip | Tool::Info | Tool::Settings => {}
         }
     }
 
@@ -480,8 +526,12 @@ impl App {
         self.after_zoom();
     }
 
+    /// A zoom gesture: re-decode sharper if needed, and flash the new zoom level.
     fn after_zoom(&mut self) {
         self.schedule_upgrade();
+        if self.view.has_content() {
+            self.show_toast(format!("{:.0}%", self.view.zoom_percent()), true);
+        }
         self.invalidate();
     }
 
@@ -643,6 +693,11 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             fades: ui::Fades::new(),
             menu: None,
             tooltip: None,
+            dialog: None,
+            toast: None,
+            turns: 0,
+            saving_rotation: false,
+            rotation_saved: false,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
