@@ -177,6 +177,9 @@ impl App {
                     if self.text_drag.is_some() {
                         self.field_drag(x);
                     }
+                    if self.info_card.drag.is_some() {
+                        self.info_grip_drag(x);
+                    }
                     if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.drag = Some((x, y));
@@ -195,7 +198,8 @@ impl App {
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
                     let cursor = match self.hover {
-                        Some(Hit::Reveal) => IDC_HAND,
+                        Some(Hit::Reveal | Hit::InfoPath) => IDC_HAND,
+                        Some(Hit::InfoGrip) => IDC_SIZEWE,
                         Some(Hit::DialogField) => IDC_IBEAM,
                         _ => IDC_ARROW,
                     };
@@ -219,6 +223,9 @@ impl App {
                     if h == Some(Hit::DialogField) {
                         self.field_press(x, false);
                     }
+                    if h == Some(Hit::InfoGrip) {
+                        self.info_grip_press(x);
+                    }
                     if h == Some(Hit::Viewport) && self.view.has_content() {
                         self.drag = Some((x, y));
                     }
@@ -231,11 +238,12 @@ impl App {
                     let pressed = self.pressed.take();
                     let was_drag = self.drag.take().is_some();
                     self.text_drag = None;
+                    self.info_grip_release();
                     let h = self.hit(x, y);
                     if pressed.is_some() && pressed == h {
                         match h {
                             Some(Hit::Tool(t)) => self.act(t),
-                            Some(Hit::Reveal) => self.reveal(),
+                            Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::Open) => self.open_dialog(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
@@ -264,6 +272,10 @@ impl App {
                 }
                 WM_LBUTTONDBLCLK => {
                     let (x, y) = self.dip_from_lparam(lp);
+                    if self.hit(x, y) == Some(Hit::InfoGrip) {
+                        self.info_grip_reset();
+                        return Some(LRESULT(0));
+                    }
                     if self.hit(x, y) == Some(Hit::DialogField) {
                         self.pressed = Some(Hit::DialogField);
                         SetCapture(self.hwnd);
@@ -275,7 +287,7 @@ impl App {
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
-                        let v = self.viewport();
+                        let v = self.image_area();
                         self.view.toggle_fit_actual((x - v.left) as f64, (y - v.top) as f64);
                         self.after_zoom();
                     } else {
@@ -288,6 +300,7 @@ impl App {
                 }
                 WM_CAPTURECHANGED => {
                     self.drag = None;
+                    self.info_grip_release();
                     None
                 }
                 WM_MOUSEWHEEL => {
@@ -298,8 +311,12 @@ impl App {
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
+                    if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
+                        self.scroll_info(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
-                        let v = self.viewport();
+                        let v = self.image_area();
                         self.view.zoom_at(1.2f64.powf(delta / 120.0), (x - v.left) as f64, (y - v.top) as f64);
                         self.after_zoom();
                     }
@@ -328,10 +345,8 @@ impl App {
                         VK_F if !ctrl => self.act(Tool::Fit),
                         VK_0 if ctrl => self.act(Tool::Fit),
                         VK_1 => {
-                            self.view.actual_size_at(
-                                ((self.viewport().right - self.viewport().left) / 2.0) as f64,
-                                ((self.viewport().bottom - self.viewport().top) / 2.0) as f64,
-                            );
+                            let a = self.image_area();
+                            self.view.actual_size_at(((a.right - a.left) / 2.0) as f64, ((a.bottom - a.top) / 2.0) as f64);
                             self.after_zoom();
                         }
                         VK_OEM_PLUS | VK_ADD if ctrl => self.act(Tool::ZoomIn),
@@ -344,6 +359,7 @@ impl App {
                         VK_S if ctrl => self.save_rotation(),
                         VK_DELETE => self.confirm_delete(true),
                         VK_F2 => self.begin_rename(true),
+                        VK_I if !ctrl => self.toggle_info(),
                         VK_APPS => {
                             let v = self.viewport();
                             self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
@@ -395,6 +411,11 @@ impl App {
                     self.place_ime();
                     None
                 }
+                info::WM_EXIF => {
+                    let r = Box::from_raw(lp.0 as *mut info::ExifResult);
+                    self.on_exif(*r);
+                    Some(LRESULT(0))
+                }
                 crate::fileops::WM_FILE_OP => {
                     let done = Box::from_raw(lp.0 as *mut crate::fileops::Done);
                     self.on_file_op(*done);
@@ -420,13 +441,8 @@ impl App {
                         if let Some(g) = &mut self.gfx {
                             let _ = g.resize(self.client_w, self.client_h, self.dpi as f32);
                         }
-                        let v = self.viewport();
-                        let s = self.scale() as f64;
-                        self.view.set_viewport((v.right - v.left) as f64, (v.bottom - v.top) as f64, s);
-                        let (bw, bh) = self.fit_box();
-                        self.viewer.set_fit_box(bw, bh);
+                        self.layout_changed();
                         self.render();
-                        self.schedule_upgrade();
                     }
                     Some(LRESULT(0))
                 }

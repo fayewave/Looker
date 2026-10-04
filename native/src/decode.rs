@@ -157,7 +157,12 @@ impl Pool {
             let result = match &factory {
                 Some(f) => crate::imaging::decode(f, &job.key.path, bw, bh, still),
                 None => Err("WIC is unavailable".into()),
-            };
+            }
+            .map(|mut d| {
+                // ~1 ms for a screen-size decode; the info card then has it the moment the image lands.
+                d.histogram = d.frames.first().map(|f| Box::new(crate::metadata::Histogram::of(&f.pixels)));
+                d
+            });
             match &result {
                 Ok(d) => crate::trace::mark(format!(
                     "decode done  {name} {}x{} (native {}x{})",

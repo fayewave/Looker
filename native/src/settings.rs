@@ -23,11 +23,18 @@ pub struct Settings {
     pub remember_window: bool,
     /// The toolbar sort, applied to every folder.
     pub sort: Sort,
+    pub info_visible: bool,
+    /// The info card's width in DIPs, its 12 px margins included (what the image fit leaves free).
+    pub info_width: f32,
 }
+
+pub const INFO_WIDTH: f32 = 320.0;
+pub const INFO_MIN: f32 = 260.0;
+pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default() }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH }
     }
 }
 
@@ -55,6 +62,8 @@ pub fn parse(text: &str) -> Settings {
             }
             "remember_window" => s.remember_window = v != "0" && !v.eq_ignore_ascii_case("false"),
             "sort" => s.sort = Sort::parse(v).unwrap_or_default(),
+            "info_visible" => s.info_visible = v == "1",
+            "info_width" => s.info_width = v.parse::<f32>().map_or(INFO_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             _ => {}
         }
     }
@@ -68,6 +77,8 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("remember_window={}\n", s.remember_window as i32));
     out.push_str(&format!("sort={}\n", s.sort.to_setting()));
+    out.push_str(&format!("info_visible={}\n", s.info_visible as i32));
+    out.push_str(&format!("info_width={}\n", s.info_width.round()));
     out
 }
 
@@ -97,6 +108,8 @@ mod tests {
             window: Some(SavedWindow { left: -1900, top: 40, right: -100, bottom: 1000, maximized: true }),
             remember_window: true,
             sort: Sort { field: crate::folder::SortField::Date, descending: true },
+            info_visible: true,
+            info_width: 412.0,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

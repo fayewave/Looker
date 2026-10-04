@@ -47,6 +47,7 @@ pub struct Entry {
     pub taken: Option<FILETIME>,
     pub pages: u32,
     pub vector: bool,
+    pub histogram: Option<Rc<crate::metadata::Histogram>>,
     /// The decoded pixels, kept only while drawing on WARP so the bitmaps can be re-made on the GPU.
     pixels: RefCell<Option<Vec<Vec<u8>>>>,
 }
@@ -72,6 +73,7 @@ impl Entry {
             taken: self.taken,
             pages: self.pages,
             vector: self.vector,
+            histogram: self.histogram.clone(),
             pixels: RefCell::new(self.pixels.borrow_mut().take()),
         }
     }
@@ -634,6 +636,7 @@ fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
         taken: img.taken,
         pages: img.pages,
         vector: img.vector,
+        histogram: img.histogram.map(Rc::from),
         pixels: RefCell::new(pixels),
     })
 }

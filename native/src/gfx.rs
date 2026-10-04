@@ -94,6 +94,10 @@ pub struct Fonts {
     pub body_wrap: IDWriteTextFormat,
     /// 20 px semibold: dialog titles.
     pub title: IDWriteTextFormat,
+    /// 12 px, wrapping, top-aligned, 16 px lines (CaptionTextBlockStyle): info card rows.
+    pub caption_wrap: IDWriteTextFormat,
+    /// 11 px semibold: info card group titles.
+    pub overline: IDWriteTextFormat,
     /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons).
     pub icons: IDWriteTextFormat,
     pub caption_icons: IDWriteTextFormat,
@@ -447,6 +451,39 @@ impl Gfx {
         }
     }
 
+    fn path(&self, points: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry> {
+        let (&first, rest) = points.split_first()?;
+        unsafe {
+            let geo = self.dev.dc.GetFactory().ok()?.CreatePathGeometry().ok()?;
+            let sink = geo.Open().ok()?;
+            let pt = |(x, y): (f32, f32)| windows_numerics::Vector2 { X: x, Y: y };
+            sink.BeginFigure(pt(first), if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+            let rest: Vec<_> = rest.iter().map(|&p| pt(p)).collect();
+            sink.AddLines(&rest);
+            sink.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+            sink.Close().ok()?;
+            Some(geo)
+        }
+    }
+
+    pub fn fill_polygon(&self, points: &[(f32, f32)], color: D2D1_COLOR_F) {
+        if let Some(geo) = self.path(points, true) {
+            unsafe {
+                self.brush.SetColor(&color);
+                self.dev.dc.FillGeometry(&geo, &self.brush, None);
+            }
+        }
+    }
+
+    pub fn polyline(&self, points: &[(f32, f32)], color: D2D1_COLOR_F, width: f32) {
+        if let Some(geo) = self.path(points, false) {
+            unsafe {
+                self.brush.SetColor(&color);
+                self.dev.dc.DrawGeometry(&geo, &self.brush, width, None);
+            }
+        }
+    }
+
     pub fn push_clip(&self, r: D2D_RECT_F) {
         unsafe { self.dev.dc.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED) }
     }
@@ -486,6 +523,11 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         body_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         body_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 20.0, 15.0)?;
+        let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        caption_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
+        caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.5)?;
+        let overline = inter(11.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
             let f = dw.CreateTextFormat(
                 w!("Segoe Fluent Icons"),
@@ -500,7 +542,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, _ellipsis: ellipsis })
     }
 }
 

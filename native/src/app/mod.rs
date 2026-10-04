@@ -4,6 +4,7 @@
 
 mod actions;
 mod chrome;
+mod info;
 mod input;
 mod menus;
 
@@ -116,6 +117,10 @@ enum Hit {
     MenuSurface,
     /// A dialog's button, by index.
     DialogButton(usize),
+    /// The info card's surface (scrolls under the wheel), its resize grip and its file-path link.
+    InfoCard,
+    InfoGrip,
+    InfoPath,
     /// Everything under a dialog's smoke: modal, nothing to click.
     DialogSurface,
     /// A dialog's text box, and its clear button.
@@ -145,8 +150,9 @@ pub struct Placement {
 }
 
 impl Placement {
-    /// The viewport the first image will be fitted into, in device pixels.
-    pub fn viewport_px(&self) -> (u32, u32) {
+    /// The space the first image will be fitted into, in device pixels: the viewport minus what the info
+    /// card (if it will show) takes from the right, in DIPs.
+    pub fn viewport_px(&self, right_inset: f32) -> (u32, u32) {
         let s = self.dpi as f32 / 96.0;
         let (w, h) = if self.maximized {
             ((self.work.right - self.work.left).max(1) as u32, (self.work.bottom - self.work.top).max(1) as u32)
@@ -154,7 +160,8 @@ impl Placement {
             client_size_for(self)
         };
         let vh = h as f32 - (TITLE_H + TOOLBAR_H + STATUS_H) * s;
-        (w, vh.max(1.0) as u32)
+        let vw = w as f32 - right_inset * s;
+        (vw.max(1.0) as u32, vh.max(1.0) as u32)
     }
 }
 
@@ -236,6 +243,14 @@ fn format_time(ft: FILETIME) -> String {
         if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err() {
             return String::new();
         }
+        format_local(&local)
+    }
+}
+
+/// A local time in the user's short date + short time format.
+fn format_local(local: &SYSTEMTIME) -> String {
+    unsafe {
+        let local = *local;
         let mut d = [0u16; 64];
         let mut t = [0u16; 64];
         let dn = GetDateFormatEx(PCWSTR::null(), DATE_SHORTDATE, Some(&local), PCWSTR::null(), Some(&mut d), PCWSTR::null());
@@ -280,6 +295,7 @@ pub struct App {
     text_drag: Option<usize>,
     /// Where the text box caret was last drawn (DIPs): the IME composition window goes there.
     caret_rect: Option<D2D_RECT_F>,
+    info_card: info::Card,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -306,7 +322,7 @@ impl App {
 
     /// The device-pixel box a fit decode targets.
     fn fit_box(&self) -> (u32, u32) {
-        let v = self.viewport();
+        let v = self.image_area();
         let s = self.scale();
         (((v.right - v.left) * s).ceil().max(1.0) as u32, ((v.bottom - v.top) * s).ceil().max(1.0) as u32)
     }
@@ -363,7 +379,7 @@ impl App {
     /// Fit a new image (or the current one, turned by the rotation preview).
     fn reset_view(&mut self, nw: u32, nh: u32) {
         let (nw, nh) = if self.turns & 1 == 1 { (nh, nw) } else { (nw, nh) };
-        let v = self.viewport();
+        let v = self.image_area();
         self.view.reset((v.right - v.left) as f64, (v.bottom - v.top) as f64, nw as f64, nh as f64, self.scale() as f64);
     }
 
@@ -524,8 +540,9 @@ impl App {
             Tool::Rotate => self.rotate_preview(true),
             Tool::SaveRotation => self.save_rotation(),
             Tool::Delete => self.confirm_delete(false),
+            Tool::Info => self.toggle_info(),
             // Not built yet.
-            Tool::Explorer | Tool::Strip | Tool::Info | Tool::Settings => {}
+            Tool::Explorer | Tool::Strip | Tool::Settings => {}
         }
     }
 
@@ -708,6 +725,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             rotation_saved: false,
             text_drag: None,
             caret_rect: None,
+            info_card: info::Card::new(),
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -724,7 +742,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         app.viewer.adopt_pending(launch_keys);
         // The viewport `main` predicted (a maximized window is still restored-size until it is shown), so the
         // first requests match the launch decodes already running. WM_SIZE corrects it from here on.
-        let (bw, bh) = placement.viewport_px();
+        let (bw, bh) = placement.viewport_px(if app.settings.info_visible && path.is_some() { app.settings.info_width } else { 0.0 });
         app.viewer.set_fit_box(bw, bh);
 
         if let Some(Some((ready, icon))) = gfx_thread.join().ok() {

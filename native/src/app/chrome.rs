@@ -18,6 +18,12 @@ impl App {
         }
     }
 
+    /// Where the image fits and zooms: the viewport minus the floating cards.
+    pub(super) fn image_area(&self) -> D2D_RECT_F {
+        let v = self.viewport();
+        D2D_RECT_F { right: (v.right - self.right_inset()).max(v.left + 1.0), ..v }
+    }
+
     pub(super) fn caption_rect(&self, c: Caption) -> D2D_RECT_F {
         let (w, _) = self.size_dip();
         let i = match c {
@@ -58,8 +64,9 @@ impl App {
             Tool::Sort | Tool::Delete => has,
             Tool::Rotate => self.can_rotate(),
             Tool::SaveRotation => !self.saving_rotation,
+            Tool::Info => has,
             // Not built yet.
-            Tool::Explorer | Tool::Strip | Tool::Info => false,
+            Tool::Explorer | Tool::Strip => false,
             _ => has,
         }
     }
@@ -83,6 +90,7 @@ impl App {
             Hit::Tool(Tool::Info) => "Info panel (I)",
             Hit::Tool(Tool::Settings) => "Settings (Ctrl+,)",
             Hit::Reveal => "Show this file in File Explorer",
+            Hit::InfoPath => "Show in File Explorer",
             _ => return None,
         })
     }
@@ -156,6 +164,7 @@ impl App {
         g.begin(0x000000);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
+        let card_moving = self.draw_info(&g);
         if self.chrome() {
             self.draw_title(&g);
             self.draw_toolbar(&g);
@@ -166,7 +175,7 @@ impl App {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
-        if self.view.animating() || self.fades.moving || toast_moving {
+        if self.view.animating() || self.fades.moving || toast_moving || card_moving {
             self.invalidate();
         }
     }
@@ -223,7 +232,8 @@ impl App {
                 g.text(&wide("Save"), &g.fonts.body, r, fg, Align::Center);
                 continue;
             }
-            let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
+            let kind = if t == Tool::Info { ui::Kind::Toggle(self.info_shown()) } else { ui::Kind::Standard };
+            let fg = ui::button_frame(g, r, kind, &st);
             if t == Tool::Sort {
                 g.text(&[glyph], &g.fonts.icons, rect(r.left + 11.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
                 g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 11.0 - 12.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
@@ -269,11 +279,12 @@ impl App {
         if let Some(c) = self.viewer.shown.clone() {
             {
                 let r = self.view.frame();
+                let a = self.image_area();
                 let dest = D2D_RECT_F {
-                    left: v.left + r.x as f32,
-                    top: v.top + r.y as f32,
-                    right: v.left + (r.x + r.w) as f32,
-                    bottom: v.top + (r.y + r.h) as f32,
+                    left: a.left + r.x as f32,
+                    top: a.top + r.y as f32,
+                    right: a.left + (r.x + r.w) as f32,
+                    bottom: a.top + (r.y + r.h) as f32,
                 };
                 unsafe {
                     g.dev.dc.PushAxisAlignedClip(&v, windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED);
@@ -320,7 +331,7 @@ impl App {
     fn draw_overlays(&mut self, g: &Gfx) -> bool {
         let mut toast_moving = false;
         if let Some(t) = &self.toast {
-            let area = self.viewport();
+            let area = self.image_area();
             match t.phase() {
                 ui::ToastPhase::Fading(a) => {
                     t.draw(g, area, a);

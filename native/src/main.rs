@@ -16,6 +16,7 @@ mod folder;
 mod format;
 mod gfx;
 mod imaging;
+mod metadata;
 mod settings;
 mod textedit;
 mod trace;
@@ -43,7 +44,7 @@ fn main() {
     // enough to need one) then sharp, both at the front of the queue.
     let mut launch_keys = Vec::new();
     if let Some(p) = &path {
-        let (bw, bh) = placement.viewport_px();
+        let (bw, bh) = placement.viewport_px(if settings.info_visible && path.is_some() { settings.info_width } else { 0.0 });
         let sharp = viewer::Viewer::sharp_bucket_for(bw, bh);
         let stamp = engine::stamp(p);
         if viewer::Viewer::uses_low_tier(sharp) {

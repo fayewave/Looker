@@ -8,6 +8,7 @@ description = "Looker, a fast photo viewer for Windows (native rebuild)"
 hayro-jpeg2000 = "0.4.0"
 image = { version = "0.25.10", default-features = false, features = ["gif", "png", "webp", "tga", "pnm", "qoi", "ico", "dds"] }
 jxl-oxide = { version = "0.12.6", features = ["moxcms"] }
+kamadak-exif = "0.6.1"
 windows-core = "0.62"
 windows-numerics = "0.3"
 xcf = "0.4.0"

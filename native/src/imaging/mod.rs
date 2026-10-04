@@ -42,6 +42,8 @@ pub struct Decoded {
     pub vector: bool,
     /// Page count of a document (PDF); 0 for an image.
     pub pages: u32,
+    /// Of the first frame, filled in by the decode pool (the info card's histogram).
+    pub histogram: Option<Box<crate::metadata::Histogram>>,
 }
 
 impl Decoded {
@@ -56,6 +58,7 @@ impl Decoded {
             taken,
             vector: false,
             pages: 0,
+            histogram: None,
         }
     }
 }

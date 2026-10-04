@@ -49,7 +49,7 @@ impl App {
             Entry::Separator,
             item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), false),
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), false),
-            item(Action::ToggleInfo, 0xE946, "Info panel", Some("I"), false),
+            item(Action::ToggleInfo, 0xE946, "Info panel", Some("I"), has),
         ]
     }
 
@@ -112,9 +112,8 @@ impl App {
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.settings.sort }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
             Action::Rename => self.begin_rename(false),
-            Action::ToggleExplorer
-            | Action::ToggleStrip
-            | Action::ToggleInfo => {}
+            Action::ToggleInfo => self.toggle_info(),
+            Action::ToggleExplorer | Action::ToggleStrip => {}
         }
     }
 
