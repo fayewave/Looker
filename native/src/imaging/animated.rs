@@ -78,5 +78,5 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
         // A one-frame GIF is a still image; it's decoded already, so keep it.
         out[0].delay_ms = 0;
     }
-    Ok(Some(Decoded { width: w, height: h, frames: out, native_width: nw, native_height: nh, format: Format::Unknown, taken: None, vector: false, pages: 0, histogram: None }))
+    Ok(Some(Decoded { width: w, height: h, frames: out, native_width: nw, native_height: nh, format: Format::Unknown, taken: None, vector: false, pages: 0, page_sizes: Vec::new(), page_scale: 1.0, histogram: None }))
 }

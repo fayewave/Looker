@@ -100,6 +100,8 @@ impl App {
             Hit::Tool(Tool::Settings) => "Settings (Ctrl+,)",
             Hit::Reveal => "Show this file in File Explorer",
             Hit::InfoPath => "Show in File Explorer",
+            Hit::PagePrevious => "Previous page (Page Up)",
+            Hit::PageNext => "Next page (Page Down)",
             _ => return None,
         })
     }
@@ -115,7 +117,8 @@ impl App {
             if c.pages > 0 {
                 parts.push(if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) });
             }
-            parts.push(format!("{} × {}", c.native_w, c.native_h));
+            let (w, h) = self.current_dims().unwrap_or((c.native_w, c.native_h));
+            parts.push(format!("{w} × {h}"));
             if c.pages == 0 {
                 // a page's 96-dpi size is not a pixel count
                 parts.push(format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0));
@@ -168,6 +171,9 @@ impl App {
         self.draw_viewport(&mut g);
         let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
         let strip_moving = self.draw_strip(&g);
+        if self.viewer.current.is_some() {
+            self.draw_page_bar(&g);
+        }
         if self.chrome() {
             self.draw_title(&g);
             self.draw_toolbar(&g);
@@ -290,6 +296,10 @@ impl App {
             return;
         }
         g.checkerboard(v);
+        let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
+        if doc.is_none() {
+            self.want_pages(Vec::new());
+        }
         if let Some(c) = self.viewer.shown.clone() {
             {
                 let r = self.view.frame();
@@ -305,7 +315,9 @@ impl App {
                 }
                 let frames = c.frames.borrow();
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
-                if self.turns == 0 {
+                if let Some(d) = &doc {
+                    self.draw_pages(g, d, dest, v);
+                } else if self.turns == 0 {
                     g.draw_bitmap(frame, dest, 1.0);
                 } else {
                     // `dest` is the turned image's bounds: draw the unturned frame into the box that lands on

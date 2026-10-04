@@ -26,6 +26,7 @@ use crate::folder::Listing;
 use crate::format::Format;
 use crate::gfx::Gfx;
 use crate::imaging::{MAX_EDGE, VECTOR_MAX_EDGE};
+use crate::pages::Layout;
 
 pub const TIMER_SETTLE: usize = 4;
 pub const TIMER_ANIM: usize = 3;
@@ -48,6 +49,12 @@ pub struct Entry {
     pub pages: u32,
     pub vector: bool,
     pub histogram: Option<Rc<crate::metadata::Histogram>>,
+    /// A document's page strip (PDF); `None` for an image.
+    pub layout: Option<Rc<Layout>>,
+    /// Render pixels per page pixel for every page of this decode (`frames[0]` is page 1).
+    pub page_scale: f64,
+    /// Pages after the first rendered so far (slot 0 stays empty: page 1 is `frames[0]`).
+    pages_resident: RefCell<Vec<Option<ID2D1Bitmap1>>>,
     /// The decoded pixels, kept only while drawing on WARP so the bitmaps can be re-made on the GPU.
     pixels: RefCell<Option<Vec<Vec<u8>>>>,
 }
@@ -57,7 +64,62 @@ impl Entry {
         self.frames.borrow().len() > 1
     }
     fn bytes(&self) -> usize {
-        self.width as usize * self.height as usize * 4 * self.frames.borrow().len()
+        match &self.layout {
+            // Budgeted at what its pages can grow to, like the C# page set.
+            Some(l) => self.page_bytes() * l.pages.len().min(self.resident_limit()),
+            None => self.width as usize * self.height as usize * 4 * self.frames.borrow().len(),
+        }
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.layout.as_ref().map_or(0, |l| l.pages.len())
+    }
+
+    /// The bitmap size page `i` renders to in this decode.
+    pub fn page_pixels(&self, i: usize) -> (u32, u32) {
+        let Some(r) = self.layout.as_ref().and_then(|l| l.pages.get(i)) else { return (self.width, self.height) };
+        crate::imaging::pdf::page_pixels((r.w as f32, r.h as f32), self.page_scale)
+    }
+
+    fn page_bytes(&self) -> usize {
+        self.layout.as_ref().map_or(0, |l| {
+            let (w, h) = crate::imaging::pdf::page_pixels((l.max_w as f32, l.max_h as f32), self.page_scale);
+            w as usize * h as usize * 4
+        })
+    }
+
+    fn resident_limit(&self) -> usize {
+        crate::pages::resident_limit(self.page_bytes())
+    }
+
+    /// Page `i` when it has rendered (page 1 always has).
+    pub fn page_bitmap(&self, i: usize) -> Option<ID2D1Bitmap1> {
+        if i == 0 {
+            return self.frames.borrow().first().map(|f| f.0.clone());
+        }
+        self.pages_resident.borrow().get(i).cloned().flatten()
+    }
+
+    /// A page rendered: keep it, first dropping the page furthest from `near` when at the limit.
+    pub fn store_page(&self, i: usize, bmp: ID2D1Bitmap1, near: usize) {
+        let mut slots = self.pages_resident.borrow_mut();
+        if i == 0 || i >= slots.len() {
+            return;
+        }
+        let resident: Vec<usize> = (1..slots.len()).filter(|&p| slots[p].is_some()).collect();
+        if let Some(v) = crate::pages::victim(&resident, near, self.resident_limit()) {
+            slots[v] = None;
+        }
+        slots[i] = Some(bmp);
+    }
+
+    /// The long edge a decode bucket measures, as decoded and at full size: the image's, or a document's
+    /// longest page edge.
+    fn unit(&self) -> (u32, u32) {
+        match &self.layout {
+            Some(l) => ((l.max_edge() * self.page_scale).round() as u32, l.max_edge().round() as u32),
+            None => (self.width.max(self.height), self.native_w.max(self.native_h)),
+        }
     }
 
     /// The same decode under another key (the file was renamed). Bitmaps are shared, not copied.
@@ -74,6 +136,9 @@ impl Entry {
             pages: self.pages,
             vector: self.vector,
             histogram: self.histogram.clone(),
+            layout: self.layout.clone(),
+            page_scale: self.page_scale,
+            pages_resident: RefCell::new(self.pages_resident.borrow().clone()),
             pixels: RefCell::new(self.pixels.borrow_mut().take()),
         }
     }
@@ -181,6 +246,22 @@ impl Viewer {
     pub fn current_entry(&self) -> Option<&Rc<Entry>> {
         let (p, s) = self.current.as_ref()?;
         self.shown.as_ref().filter(|e| &e.key.path == p && e.key.stamp == *s)
+    }
+
+    /// The decode a rendered page belongs to, if it is still around.
+    pub fn entry_for(&self, key: &Key) -> Option<Rc<Entry>> {
+        if let Some(s) = self.shown.as_ref().filter(|s| s.key == *key) {
+            return Some(s.clone());
+        }
+        self.cache.values().find(|e| e.key == *key).cloned()
+    }
+
+    /// Page `i` of a file from any of its decodes: another tier stands in, stretched, while this one's
+    /// render is on its way (a zoom upgrade doesn't flash white pages).
+    pub fn page_stand_in(&self, path: &Path, stamp: u64, i: usize) -> Option<ID2D1Bitmap1> {
+        let mut tiers: Vec<&Rc<Entry>> = self.cache.values().filter(|e| e.key.path == path && e.key.stamp == stamp).collect();
+        tiers.sort_by_key(|e| std::cmp::Reverse(e.key.bucket));
+        tiers.into_iter().find_map(|e| e.page_bitmap(i))
     }
 
     pub fn image_count(&self) -> usize {
@@ -473,17 +554,17 @@ impl Viewer {
         self.window = set;
     }
 
-    /// Zoomed or resized past what is on screen: decode sharper. `needed` is the drawn long edge in device px.
+    /// Zoomed or resized past what is on screen: decode sharper. `needed` is the drawn long edge in device px
+    /// (of the image, or of a document's longest page).
     pub fn upgrade(&mut self, needed: u32, max_bitmap: u32) -> Outcome {
         let Some(e) = self.current_entry().cloned() else { return Outcome::default() };
         if e.animated() {
             return Outcome::default(); // full resolution x N frames explodes memory
         }
         let max = max_bitmap.min(MAX_EDGE);
-        let native = e.native_w.max(e.native_h);
+        let (have, native) = e.unit();
         let cap = if e.vector { VECTOR_MAX_EDGE } else { native };
         let needed = needed.min(cap).min(max);
-        let have = e.width.max(e.height);
         if have + 1 >= needed {
             return Outcome::default();
         }
@@ -605,6 +686,10 @@ impl Viewer {
             entries.push(s.clone());
         }
         for e in entries {
+            // Rendered pages belong to the old device; the next draw asks for them again.
+            for slot in e.pages_resident.borrow_mut().iter_mut() {
+                *slot = None;
+            }
             let Some(all) = e.pixels.borrow_mut().take() else { continue };
             let remade: Option<Vec<ID2D1Bitmap1>> = all.iter().map(|px| gfx.bitmap(e.width, e.height, px).ok()).collect();
             match remade {
@@ -636,6 +721,8 @@ fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
         frames.push((g.bitmap(img.width, img.height, &f.pixels).ok()?, f.delay_ms));
     }
     let pixels = g.is_warp().then(|| img.frames.into_iter().map(|f| f.pixels).collect());
+    let layout = (!img.page_sizes.is_empty()).then(|| Rc::new(Layout::compute(&img.page_sizes)));
+    let slots = img.page_sizes.len();
     Some(Entry {
         key,
         frames: RefCell::new(frames),
@@ -648,6 +735,9 @@ fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
         pages: img.pages,
         vector: img.vector,
         histogram: img.histogram.map(Rc::from),
+        layout,
+        page_scale: img.page_scale,
+        pages_resident: RefCell::new(vec![None; slots]),
         pixels: RefCell::new(pixels),
     })
 }

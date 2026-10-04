@@ -18,6 +18,7 @@ mod format;
 mod gfx;
 mod imaging;
 mod metadata;
+mod pages;
 mod settings;
 mod textedit;
 mod thumbs;

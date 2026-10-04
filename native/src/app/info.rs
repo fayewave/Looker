@@ -203,7 +203,8 @@ impl App {
             if let Some(t) = format::display_name(e.format, Some(path)) {
                 out.push(row("Type", t));
             }
-            out.push(row("Dimensions", format!("{} × {}", e.native_w, e.native_h)));
+            let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
+            out.push(row("Dimensions", format!("{w} × {h}")));
             if e.pages == 0 {
                 out.push(row("Megapixels", format!("{:.1} MP", e.native_w as f64 * e.native_h as f64 / 1_000_000.0)));
             }

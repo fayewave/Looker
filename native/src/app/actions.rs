@@ -93,8 +93,9 @@ impl App {
     /// image editors alike.
     pub(super) fn copy_image(&mut self) {
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        let page = self.pdf_page_of_current();
         fileops::spawn(self.hwnd, false, move || {
-            let image = fileops::full_image(&path);
+            let image = fileops::full_image(&path, page);
             Done::Copied { path, image }
         });
     }
@@ -113,7 +114,8 @@ impl App {
 
     pub(super) fn set_wallpaper(&mut self) {
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
-        fileops::spawn(self.hwnd, false, move || Done::Wallpaper { ok: fileops::set_wallpaper(&path) });
+        let page = self.pdf_page_of_current();
+        fileops::spawn(self.hwnd, false, move || Done::Wallpaper { ok: fileops::set_wallpaper(&path, page) });
     }
 
     // --- Delete -------------------------------------------------------------------------------------

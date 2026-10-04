@@ -284,9 +284,15 @@ fn replace_file(temp: &Path, dest: &Path) -> Result<(), String> {
 
 // --- Pixels for the clipboard and the wallpaper -----------------------------------------------------
 
-/// The whole image (first frame, first page) at full size, capped at the largest bitmap edge.
-pub fn full_image(path: &Path) -> Option<Image> {
+/// The whole image (first frame) at full size, capped at the largest bitmap edge; for a document, `page`.
+pub fn full_image(path: &Path, page: usize) -> Option<Image> {
     let f = wic()?;
+    if format::sniff_file(path) == Format::Pdf {
+        let (width, height, pixels) = imaging::pdf::render_page_of(&f, path, page)
+            .map_err(|e| crate::trace::mark(format!("page render failed: {e}")))
+            .ok()?;
+        return Some(Image { width, height, pixels });
+    }
     let d = imaging::decode(&f, path, imaging::MAX_EDGE, imaging::MAX_EDGE, true)
         .map_err(|e| crate::trace::mark(format!("full decode failed: {e}")))
         .ok()?;
@@ -298,12 +304,12 @@ pub fn full_image(path: &Path) -> Option<Image> {
 
 /// Sets the desktop wallpaper. JPEG, PNG and BMP are used as they are; anything else is rendered to a PNG in
 /// Looker's data folder first, so every format Looker opens works.
-pub fn set_wallpaper(path: &Path) -> bool {
+pub fn set_wallpaper(path: &Path, page: usize) -> bool {
     let image_path = match format::sniff_file(path) {
         Format::Jpeg | Format::Png | Format::Bmp => path.to_path_buf(),
         _ => {
             let Some(dest) = crate::settings::data_dir().map(|d| d.join("wallpaper.png")) else { return false };
-            let (Some(img), Some(f)) = (full_image(path), wic()) else { return false };
+            let (Some(img), Some(f)) = (full_image(path, page), wic()) else { return false };
             if let Some(dir) = dest.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
@@ -354,7 +360,7 @@ mod tests {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
         let src = PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
-        let img = full_image(&src).expect("decodes");
+        let img = full_image(&src, 0).expect("decodes");
         let out = std::env::temp_dir().join("looker-wallpaper-test.png");
         imaging::wic::save_png(&wic().unwrap(), &out, img.width, img.height, &img.pixels).unwrap();
         println!("{}x{} -> {}", img.width, img.height, out.display());

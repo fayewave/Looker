@@ -4,6 +4,7 @@
 
 mod actions;
 mod chrome;
+mod document;
 mod explorer;
 mod info;
 mod landing;
@@ -156,6 +157,10 @@ enum Hit {
     InfoCard,
     InfoGrip,
     InfoPath,
+    /// A document's page bar: the pill, and its two buttons.
+    PageBar,
+    PagePrevious,
+    PageNext,
     /// Everything under a dialog's smoke: modal, nothing to click.
     DialogSurface,
     /// A dialog's text box, and its clear button.
@@ -345,6 +350,12 @@ pub struct App {
     skip_placement_save: bool,
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
+    /// The page of a document the bar points at (zero-based).
+    pdf_page: usize,
+    renderer: crate::pages::Renderer,
+    /// The render thread has a wish list (so an empty one is sent once, to cancel it).
+    pages_wanted: bool,
+    page_failed: std::collections::HashSet<(Key, usize)>,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -432,9 +443,17 @@ impl App {
 
     /// Fit a new image (or the current one, turned by the rotation preview).
     fn reset_view(&mut self, nw: u32, nh: u32) {
-        let (nw, nh) = if self.turns & 1 == 1 { (nh, nw) } else { (nw, nh) };
         let v = self.image_area();
-        self.view.reset((v.right - v.left) as f64, (v.bottom - v.top) as f64, nw as f64, nh as f64, self.scale() as f64);
+        let (vw, vh) = ((v.right - v.left) as f64, (v.bottom - v.top) as f64);
+        // A document opens on its first page: the strip is the content, the page the fit reference.
+        if let Some(e) = self.viewer.shown.clone().filter(|e| e.layout.is_some()) {
+            let l = e.layout.as_ref().unwrap();
+            self.pdf_page = 0;
+            self.view.reset(vw, vh, l.width, l.height, self.scale() as f64, Self::first_page_focus(&e));
+            return;
+        }
+        let (nw, nh) = if self.turns & 1 == 1 { (nh, nw) } else { (nw, nh) };
+        self.view.reset(vw, vh, nw as f64, nh as f64, self.scale() as f64, None);
     }
 
     /// Zoomed or resized past what the on-screen bitmap was decoded for: re-decode sharper, debounced.
@@ -449,7 +468,15 @@ impl App {
             let _ = KillTimer(Some(self.hwnd), TIMER_UPGRADE);
         }
         let r = self.view.target_rect();
-        let needed = (r.w.max(r.h) * self.scale() as f64).ceil() as u32;
+        // A bucket measures an image's long edge, or a document's longest page edge.
+        let drawn = match self.current_doc() {
+            Some(e) => {
+                let l = e.layout.as_ref().unwrap();
+                r.w / l.width * l.max_edge()
+            }
+            None => r.w.max(r.h),
+        };
+        let needed = (drawn * self.scale() as f64).ceil() as u32;
         let max = self.gfx.as_ref().map_or(16384, |g| g.max_bitmap_size());
         let out = self.viewer.upgrade(needed, max);
         self.apply(out);
@@ -679,6 +706,7 @@ impl App {
 
     /// A zoom gesture: re-decode sharper if needed, and flash the new zoom level.
     fn after_zoom(&mut self) {
+        self.sync_page_to_view();
         self.schedule_upgrade();
         if self.view.has_content() {
             self.show_toast(format!("{:.0}%", self.view.zoom_percent()), true);
@@ -863,6 +891,10 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             page: None,
             skip_placement_save: false,
             wheel_acc: 0.0,
+            pdf_page: 0,
+            renderer: crate::pages::Renderer::start(hwnd),
+            pages_wanted: false,
+            page_failed: Default::default(),
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),

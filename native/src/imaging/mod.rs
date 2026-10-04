@@ -5,7 +5,7 @@
 
 mod animated;
 mod fallback;
-mod pdf;
+pub mod pdf;
 mod raster;
 pub mod svg;
 pub mod wic;
@@ -42,6 +42,10 @@ pub struct Decoded {
     pub vector: bool,
     /// Page count of a document (PDF); 0 for an image.
     pub pages: u32,
+    /// A document's page sizes in 96-dpi pixels (empty for an image), and the render pixels per page pixel
+    /// every page of this decode uses (`frames[0]` is page 1 at that scale).
+    pub page_sizes: Vec<(f32, f32)>,
+    pub page_scale: f64,
     /// Of the first frame, filled in by the decode pool (the info card's histogram).
     pub histogram: Option<Box<crate::metadata::Histogram>>,
 }
@@ -58,6 +62,8 @@ impl Decoded {
             taken,
             vector: false,
             pages: 0,
+            page_sizes: Vec::new(),
+            page_scale: 1.0,
             histogram: None,
         }
     }

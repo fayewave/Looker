@@ -198,6 +198,7 @@ impl App {
                     }
                     if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
+                        self.sync_page_to_view(); // dragging across a document moves the page bar along
                         self.drag = Some((x, y));
                         self.invalidate();
                     }
@@ -286,6 +287,8 @@ impl App {
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
+                            Some(Hit::PagePrevious) => self.turn_page(-1),
+                            Some(Hit::PageNext) => self.turn_page(1),
                             _ => {}
                         }
                     }
@@ -437,6 +440,8 @@ impl App {
                     match vk {
                         VK_LEFT => self.step(-1),
                         VK_RIGHT => self.step(1),
+                        VK_PRIOR if self.page_count() > 1 => self.turn_page(-1),
+                        VK_NEXT if self.page_count() > 1 => self.turn_page(1),
                         VK_HOME => self.jump(false),
                         VK_END => self.jump(true),
                         VK_F11 => self.toggle_fullscreen(),
@@ -550,6 +555,10 @@ impl App {
                         _ => {}
                     }
                     Some(LRESULT(1))
+                }
+                crate::pages::WM_PAGE_RENDERED => {
+                    self.on_pages_rendered();
+                    Some(LRESULT(0))
                 }
                 crate::thumbs::WM_THUMBS => {
                     self.on_thumbs();
