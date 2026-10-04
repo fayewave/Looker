@@ -445,7 +445,19 @@ impl App {
                         VK_HOME => self.jump(false),
                         VK_END => self.jump(true),
                         VK_F11 => self.toggle_fullscreen(),
+                        // Escape steps out: the slideshow, then fullscreen, then the window.
+                        VK_ESCAPE if self.slideshow.running => self.stop_slideshow(),
                         VK_ESCAPE if self.fullscreen.is_some() => self.toggle_fullscreen(),
+                        VK_ESCAPE => {
+                            let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                        }
+                        VK_F5 => self.toggle_slideshow(),
+                        VK_SPACE => {
+                            // Pauses a slideshow, else an animation.
+                            if !self.slideshow_play_pause() && self.viewer.toggle_animation_pause() {
+                                self.invalidate();
+                            }
+                        }
                         VK_F if !ctrl => self.act(Tool::Fit),
                         VK_0 if ctrl => self.act(Tool::Fit),
                         VK_1 => {
@@ -489,6 +501,7 @@ impl App {
                         TIMER_CARET => self.blink_caret(),
                         TIMER_EXPLORER => self.explorer_refresh(),
                         TIMER_FOLDER => self.refresh_folder(),
+                        slideshow::TIMER_SLIDESHOW => self.on_slideshow_timer(),
                         TIMER_THUMBS => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_THUMBS);
                             self.invalidate();

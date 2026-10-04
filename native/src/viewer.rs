@@ -190,6 +190,8 @@ pub struct Viewer {
     pub shown: Option<Rc<Entry>>,
     pub error: Option<String>,
     pub anim_frame: usize,
+    /// Space stopped the animation on its current frame.
+    anim_paused: bool,
     forward: bool,
     last_nav: Option<Instant>,
     /// The sharp bucket for the current viewport.
@@ -214,6 +216,7 @@ impl Viewer {
             shown: None,
             error: None,
             anim_frame: 0,
+            anim_paused: false,
             forward: true,
             last_nav: None,
             sharp: engine::bucket_for(LOW_DIM),
@@ -643,8 +646,25 @@ impl Viewer {
 
     // --- Animation ----------------------------------------------------------------------------------
 
+    /// Space: freezes the current image's animation on its frame, or lets it run on. False for a still image.
+    pub fn toggle_animation_pause(&mut self) -> bool {
+        if !self.current_entry().is_some_and(|e| e.animated()) {
+            return false;
+        }
+        self.anim_paused = !self.anim_paused;
+        if self.anim_paused {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
+            }
+        } else {
+            self.arm_animation();
+        }
+        true
+    }
+
     fn restart_animation(&mut self) {
         self.anim_frame = 0;
+        self.anim_paused = false;
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
         }
@@ -652,6 +672,9 @@ impl Viewer {
     }
 
     fn arm_animation(&self) {
+        if self.anim_paused {
+            return;
+        }
         let Some(e) = self.current_entry() else { return };
         let frames = e.frames.borrow();
         if frames.len() > 1 {

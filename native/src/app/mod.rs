@@ -12,6 +12,7 @@ mod strip;
 mod input;
 mod menus;
 mod page;
+mod slideshow;
 
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -350,6 +351,11 @@ pub struct App {
     skip_placement_save: bool,
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
+    slideshow: slideshow::Slideshow,
+    /// The slideshow's dissolve from the previous image, while it runs.
+    fade: Option<slideshow::Fade>,
+    /// What the viewport drew last (the bitmap and where), for the dissolve to start from.
+    last_drawn: Option<(ID2D1Bitmap1, D2D_RECT_F)>,
     /// The page of a document the bar points at (zero-based).
     pdf_page: usize,
     renderer: crate::pages::Renderer,
@@ -390,6 +396,7 @@ impl App {
     /// Applies what a viewer call says: a new image resets the zoom (and may want a sharper decode).
     fn apply(&mut self, out: Outcome) {
         if let Some((nw, nh)) = out.reset_view {
+            self.image_swapped();
             if self.rotation_saved {
                 // The saved file's first frame: it carries the rotation itself now.
                 self.turns = 0;
@@ -424,6 +431,7 @@ impl App {
     /// Leaving the current image drops its unsaved rotation preview (the previous image may stay on screen
     /// until the next one lands, so it goes back to its own orientation now).
     fn begin_navigation(&mut self) {
+        self.slideshow_navigating();
         self.rotation_saved = false;
         if self.turns != 0 {
             self.turns = 0;
@@ -588,6 +596,7 @@ impl App {
     }
 
     fn close(&mut self) {
+        self.stop_slideshow();
         self.begin_navigation();
         self.viewer.close();
         self.explorer = explorer::Explorer::new();
@@ -656,6 +665,7 @@ impl App {
     fn toggle_fullscreen(&mut self) {
         unsafe {
             if let Some(wp) = self.fullscreen.take() {
+                self.fullscreen_left();
                 SetWindowLongPtrW(self.hwnd, GWL_STYLE, (WS_OVERLAPPEDWINDOW | WS_VISIBLE).0 as isize);
                 let _ = SetWindowPlacement(self.hwnd, &wp);
                 let _ = SetWindowPos(self.hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -891,6 +901,9 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             page: None,
             skip_placement_save: false,
             wheel_acc: 0.0,
+            slideshow: Default::default(),
+            fade: None,
+            last_drawn: None,
             pdf_page: 0,
             renderer: crate::pages::Renderer::start(hwnd),
             pages_wanted: false,

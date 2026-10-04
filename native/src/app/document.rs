@@ -119,7 +119,12 @@ impl App {
                 continue;
             }
             match e.page_bitmap(i) {
-                Some(b) => g.draw_bitmap(&b, r, 1.0),
+                Some(b) => {
+                    g.draw_bitmap(&b, r, 1.0);
+                    if i == self.pdf_page {
+                        self.last_drawn = Some((b, r));
+                    }
+                }
                 None => {
                     match self.viewer.page_stand_in(&e.key.path, e.key.stamp, i) {
                         Some(b) => g.draw_bitmap(&b, r, 1.0),

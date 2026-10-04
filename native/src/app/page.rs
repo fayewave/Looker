@@ -62,6 +62,7 @@ impl App {
     }
 
     pub(super) fn open_page(&mut self) {
+        self.stop_slideshow();
         self.close_menu();
         self.hide_tooltip();
         self.page = Some(Page::new());

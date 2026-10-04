@@ -189,7 +189,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving {
+        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving || self.fade.is_some() {
             self.invalidate();
         }
     }
@@ -296,6 +296,7 @@ impl App {
             return;
         }
         g.checkerboard(v);
+        self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
         if doc.is_none() {
             self.want_pages(Vec::new());
@@ -319,6 +320,7 @@ impl App {
                     self.draw_pages(g, d, dest, v);
                 } else if self.turns == 0 {
                     g.draw_bitmap(frame, dest, 1.0);
+                    self.last_drawn = Some((frame.clone(), dest));
                 } else {
                     // `dest` is the turned image's bounds: draw the unturned frame into the box that lands on
                     // it once turned about the centre (width and height swap for odd turns).
@@ -339,6 +341,7 @@ impl App {
         } else if self.viewer.error.is_some() {
             g.text(&wide("Can't display this file"), &g.fonts.body, v, white(TEXT_SECONDARY), Align::Center);
         }
+        self.draw_fade(g, v);
     }
 
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.

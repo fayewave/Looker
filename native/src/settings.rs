@@ -44,6 +44,8 @@ pub struct Settings {
     pub strip_visible: bool,
     /// The thumbnail strip's height in DIPs (the cells are 8 less, 4:3).
     pub strip_height: f32,
+    /// How long the slideshow dwells on each image (1-120).
+    pub slideshow_seconds: u32,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -52,6 +54,7 @@ pub const CACHE_MB: u32 = 512;
 /// The choices the Settings page offers for the decode cache.
 pub const CACHE_CHOICES: [u32; 5] = [128, 256, 512, 1024, 2048];
 pub const STRIP_HEIGHT: f32 = 96.0;
+pub const SLIDESHOW_SECONDS: u32 = 4;
 pub const STRIP_MIN: f32 = 56.0;
 pub const STRIP_MAX: f32 = 480.0;
 
@@ -61,7 +64,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, slideshow_seconds: SLIDESHOW_SECONDS }
     }
 }
 
@@ -123,6 +126,7 @@ pub fn parse(text: &str) -> Settings {
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
+            "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
             _ => {}
         }
     }
@@ -150,6 +154,7 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("strip_visible={}\n", s.strip_visible as i32));
     out.push_str(&format!("strip_height={}\n", s.strip_height.round()));
+    out.push_str(&format!("slideshow_seconds={}\n", s.slideshow_seconds));
     out
 }
 
@@ -191,6 +196,7 @@ mod tests {
             recents: vec![PathBuf::from(r"C:\a b\one.jpg"), PathBuf::from(r"D:\two.png")],
             strip_visible: true,
             strip_height: 160.0,
+            slideshow_seconds: 9,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());
