@@ -159,7 +159,103 @@ pub fn format(s: &Settings) -> String {
 }
 
 pub fn load() -> Settings {
-    file().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| parse(&t)).unwrap_or_default()
+    let Some(f) = file() else { return Settings::default() };
+    match std::fs::read_to_string(&f) {
+        Ok(t) => parse(&t),
+        // First launch: carry the C# app's preferences over when running as its package (same identity).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match legacy_store() {
+            Some(s) => {
+                crate::trace::mark("settings migrated from the C# app");
+                save(&s);
+                s
+            }
+            None => Settings::default(),
+        },
+        Err(_) => Settings::default(),
+    }
+}
+
+// --- Migration from the C# app ----------------------------------------------------------------------
+
+/// A value in the C# app's LocalSettings.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Legacy {
+    Int(i32),
+    Bool(bool),
+    Str(String),
+}
+
+/// The C# app's LocalSettings (`ApplicationData.Current`), readable only with its package identity: `None`
+/// when unpackaged, or when the store is empty (a fresh install has nothing to carry over).
+fn legacy_store() -> Option<Settings> {
+    use windows::Foundation::IPropertyValue;
+    use windows::Foundation::PropertyType;
+    use windows::core::{HSTRING, Interface};
+    let values = windows::Storage::ApplicationData::Current().ok()?.LocalSettings().ok()?.Values().ok()?;
+    if values.Size().ok()? == 0 {
+        return None;
+    }
+    let get = |key: &str| -> Option<Legacy> {
+        let v = values.Lookup(&HSTRING::from(key)).ok()?;
+        let v: IPropertyValue = v.cast().ok()?;
+        match v.Type().ok()? {
+            PropertyType::Int32 => v.GetInt32().ok().map(Legacy::Int),
+            PropertyType::Boolean => v.GetBoolean().ok().map(Legacy::Bool),
+            PropertyType::String => v.GetString().ok().map(|s| Legacy::Str(s.to_string_lossy())),
+            _ => None,
+        }
+    };
+    Some(from_legacy(get))
+}
+
+/// Maps the C# app's keys (`SettingsService.cs`) onto these settings; anything missing or of the wrong type
+/// keeps its default, and the ranges are clamped as the C# app does.
+pub fn from_legacy(get: impl Fn(&str) -> Option<Legacy>) -> Settings {
+    use crate::folder::SortField;
+    let int = |k: &str| match get(k) {
+        Some(Legacy::Int(i)) => Some(i),
+        _ => None,
+    };
+    let flag = |k: &str| match get(k) {
+        Some(Legacy::Bool(b)) => Some(b),
+        _ => None,
+    };
+    let mut s = Settings::default();
+    s.sort = Sort {
+        field: match int("SortField") {
+            Some(1) => SortField::Date,
+            Some(2) => SortField::Size,
+            _ => SortField::Name,
+        },
+        descending: int("SortDirection") == Some(1),
+    };
+    s.strip_visible = flag("StripVisible").unwrap_or(false);
+    s.strip_height = int("StripHeight").map_or(STRIP_HEIGHT, |h| (h as f32).clamp(STRIP_MIN, STRIP_MAX));
+    s.info_visible = flag("InfoVisible").unwrap_or(false);
+    s.info_width = int("InfoWidth").map_or(INFO_WIDTH, |w| (w as f32).clamp(INFO_MIN, INFO_MAX));
+    s.explorer_visible = flag("ExplorerVisible").unwrap_or(false);
+    s.explorer_width = int("ExplorerWidth").map_or(EXPLORER_WIDTH, |w| (w as f32).clamp(INFO_MIN, INFO_MAX));
+    s.slideshow_seconds = int("SlideshowSeconds").map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120) as u32);
+    s.cache_mb = int("CacheBudgetMB").map_or(CACHE_MB, |m| m.clamp(128, 2048) as u32);
+    s.wheel_navigates = int("WheelMode") == Some(1);
+    s.zoom_center = int("ZoomAnchor") == Some(1);
+    s.dark_grey = int("Theme") == Some(1);
+    s.remember_window = flag("RememberWindow").unwrap_or(true);
+    s.recents_enabled = flag("RecentsEnabled").unwrap_or(true);
+    if s.recents_enabled {
+        if let Some(Legacy::Str(list)) = get("RecentFiles") {
+            s.recents = list.split('\n').filter(|l| !l.is_empty()).take(RECENT_CAPACITY).map(PathBuf::from).collect();
+        }
+    }
+    // Physical pixels, outer bounds of the restored window.
+    if s.remember_window {
+        if let (Some(x), Some(y), Some(w), Some(h)) = (int("WindowX"), int("WindowY"), int("WindowW"), int("WindowH")) {
+            if w > 0 && h > 0 {
+                s.window = Some(SavedWindow { left: x, top: y, right: x + w, bottom: y + h, maximized: flag("WasMaximized").unwrap_or(false) });
+            }
+        }
+    }
+    s
 }
 
 pub fn save(s: &Settings) {
@@ -215,6 +311,40 @@ mod tests {
         assert_eq!(s.recents.iter().filter(|r| r.ends_with("10.jpg")).count(), 1);
         s.recents_enabled = false;
         assert!(!s.push_recent(&PathBuf::from(r"C:\p\new.jpg")));
+    }
+
+    #[test]
+    fn carries_the_csharp_settings_over() {
+        use std::collections::HashMap;
+        let m: HashMap<&str, Legacy> = [
+            ("SortField", Legacy::Int(1)),
+            ("SortDirection", Legacy::Int(1)),
+            ("StripVisible", Legacy::Bool(true)),
+            ("StripHeight", Legacy::Int(9999)),
+            ("InfoWidth", Legacy::Int(400)),
+            ("Theme", Legacy::Int(1)),
+            ("WheelMode", Legacy::Int(1)),
+            ("CacheBudgetMB", Legacy::Int(1024)),
+            ("RecentFiles", Legacy::Str("C:\\a.jpg\nD:\\b.png\n".into())),
+            ("WindowX", Legacy::Int(-1900)),
+            ("WindowY", Legacy::Int(40)),
+            ("WindowW", Legacy::Int(1600)),
+            ("WindowH", Legacy::Int(900)),
+            ("WasMaximized", Legacy::Bool(true)),
+            ("ExplorerVisible", Legacy::Str("not a bool".into())),
+        ]
+        .into_iter()
+        .collect();
+        let s = from_legacy(|k| m.get(k).cloned());
+        assert_eq!(s.sort, Sort { field: crate::folder::SortField::Date, descending: true });
+        assert!(s.strip_visible && s.dark_grey && s.wheel_navigates && !s.zoom_center);
+        assert_eq!(s.strip_height, STRIP_MAX);
+        assert_eq!(s.info_width, 400.0);
+        assert_eq!(s.cache_mb, 1024);
+        assert!(!s.explorer_visible, "a wrongly typed value keeps its default");
+        assert_eq!(s.recents, vec![PathBuf::from("C:\\a.jpg"), PathBuf::from("D:\\b.png")]);
+        assert_eq!(s.window, Some(SavedWindow { left: -1900, top: 40, right: -300, bottom: 940, maximized: true }));
+        assert_eq!(from_legacy(|_| None), Settings::default());
     }
 
     #[test]
