@@ -600,15 +600,35 @@ impl App {
     /// Another launch handed its file over (single instance): whatever was in the way gives way to it.
     fn activated(&mut self, path: Option<PathBuf>) {
         let Some(path) = path.filter(|p| p.is_file()) else { return };
-        self.close_menu();
         if self.dialog.is_some() {
             self.dialog_choose(actions::Choice::Cancel);
         }
+        self.make_way();
+        self.open(path);
+    }
+
+    /// A file is about to open from outside the viewer: menus, the Settings page and a slideshow give way.
+    fn make_way(&mut self) {
+        self.close_menu();
         if self.page.is_some() {
             self.close_page();
         }
         self.stop_slideshow();
-        self.open(path);
+    }
+
+    /// Files dropped on the window: a folder wins over loose files (it opens in the viewer at its first
+    /// image), else the first file Looker can show. Ignored under a dialog, which is modal.
+    fn dropped(&mut self, paths: Vec<PathBuf>) {
+        if self.dialog.is_some() {
+            return;
+        }
+        if let Some(folder) = paths.iter().find(|p| p.is_dir()) {
+            self.make_way();
+            self.open_folder(folder.clone());
+        } else if let Some(file) = paths.into_iter().find(|p| p.is_file() && format::is_supported(p)) {
+            self.make_way();
+            self.open(file);
+        }
     }
 
     fn open(&mut self, path: PathBuf) {
@@ -885,6 +905,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         let dark = windows::core::BOOL(1);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, size_of::<windows::core::BOOL>() as u32);
         crate::trace::mark("window created");
+        DragAcceptFiles(hwnd, true); // files and folders dropped from Explorer
 
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);

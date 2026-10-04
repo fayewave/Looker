@@ -569,6 +569,21 @@ impl App {
                     }
                     Some(LRESULT(1))
                 }
+                WM_DROPFILES => {
+                    let drop = HDROP(wp.0 as _);
+                    let n = DragQueryFileW(drop, u32::MAX, None);
+                    let mut paths = Vec::new();
+                    for i in 0..n {
+                        let len = DragQueryFileW(drop, i, None) as usize;
+                        let mut buf = vec![0u16; len + 1];
+                        DragQueryFileW(drop, i, Some(&mut buf));
+                        buf.truncate(len);
+                        paths.push(PathBuf::from(<std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&buf)));
+                    }
+                    DragFinish(drop);
+                    self.dropped(paths);
+                    Some(LRESULT(0))
+                }
                 WM_COPYDATA => {
                     let cds = &*(lp.0 as *const windows::Win32::System::DataExchange::COPYDATASTRUCT);
                     let Some(path) = crate::instance::received(cds) else { return None };
