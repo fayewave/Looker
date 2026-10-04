@@ -316,7 +316,7 @@ impl App {
         let th = g.measure_height(&wide_str(tagline), &g.fonts.body_wrap, w).ceil();
         g.text(&wide_str(tagline), &g.fonts.body_wrap, rect(x, y, w, th), white(TEXT_SECONDARY), Align::Left);
         y += th + 16.0;
-        let version = format!("Version {} \u{00B7} {} \u{00B7} native preview", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH);
+        let version = format!("Version {} \u{00B7} {}", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH);
         g.text(&wide_str(&version), &g.fonts.caption, rect(x, y, w, 16.0), white(TEXT_SECONDARY), Align::Left);
         y += 16.0 + 16.0;
         let gw = self.icon_button(g, x, y, 0xE943, "GitHub", Hit::PageLink(0), true);
