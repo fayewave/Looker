@@ -92,10 +92,19 @@ impl Settings {
     }
 }
 
-/// Looker's own data folder (settings, the rendered wallpaper).
+/// Looker's own data folder (settings, the rendered wallpaper): the package's LocalState when packaged,
+/// else `%LOCALAPPDATA%\Looker\native`. Not the shared path when packaged: the package's file system view
+/// would read a dev build's settings there and the C# app's settings would never be migrated.
 pub fn data_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("Looker").join("native"))
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+        Some(match crate::store::family_name() {
+            Some(family) => base.join("Packages").join(family).join("LocalState"),
+            None => base.join("Looker").join("native"),
+        })
+    })
+    .clone()
 }
 
 fn file() -> Option<PathBuf> {

@@ -39,7 +39,25 @@ impl UpdateStatus {
 /// Running with package identity (the MSIX). `LOOKER_PACKAGED_UI=1` shows the packaged-only UI in a dev
 /// build, for checking its layout.
 pub fn packaged() -> bool {
-    std::env::var_os("LOOKER_PACKAGED_UI").is_some() || Package::Current().is_ok()
+    std::env::var_os("LOOKER_PACKAGED_UI").is_some() || family_name().is_some()
+}
+
+/// The package family name when running packaged (a kernel call, microseconds: fine at startup).
+pub fn family_name() -> Option<String> {
+    use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFamilyName;
+    let mut len = 0u32;
+    unsafe {
+        // Unpackaged: APPMODEL_ERROR_NO_PACKAGE. Packaged: ERROR_INSUFFICIENT_BUFFER with the length.
+        let _ = GetCurrentPackageFamilyName(&mut len, None);
+        if len == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize];
+        if GetCurrentPackageFamilyName(&mut len, Some(windows::core::PWSTR(buf.as_mut_ptr()))).is_err() {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]))
+    }
 }
 
 /// Asks the Store on a worker thread (a network call: never on the startup path); the answer is posted.

@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn manifest_associations_match_supported_extensions() {
-        let manifest = include_str!("../../src/Looker/Package.appxmanifest");
+        let manifest = include_str!("../Package.appxmanifest");
         let mut listed: Vec<String> = manifest
             .split("<uap:FileType>")
             .skip(1)
