@@ -1,0 +1,449 @@
+//! GPU drawing: a D3D11 device, a flip-model swap chain hosted in DirectComposition, a Direct2D device
+//! context and DirectWrite with Inter loaded from memory.
+//!
+//! Two devices, on purpose. Creating the hardware D3D11 device loads the GPU vendor's user-mode driver
+//! (NVIDIA: ~120 ms on every launch, holding the loader lock the whole time). So the first frames are drawn
+//! on a WARP (CPU) device, which is ready in a few ms, and the hardware device is built once the window is up
+//! and swapped in under the same DirectComposition visual. Text formats are device-independent and survive
+//! the switch; bitmaps and brushes are re-created.
+
+use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Graphics::Direct2D::Common::*;
+use windows::Win32::Graphics::Direct2D::*;
+use windows::Win32::Graphics::Direct3D::*;
+use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::DirectComposition::*;
+use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
+use windows::core::{Interface, PCWSTR, Result, w};
+
+static INTER: &[u8] = include_bytes!("../../src/Looker/Assets/Fonts/InterVariable.ttf");
+
+pub struct Device {
+    d3d: ID3D11Device,
+    pub dc: ID2D1DeviceContext,
+    pub warp: bool,
+}
+
+/// COM pointers made on an init thread, handed to the UI thread (used by one thread at a time).
+pub struct Sendable<T>(pub T);
+unsafe impl<T> Send for Sendable<T> {}
+
+pub fn create_device(warp: bool) -> Result<Device> {
+    unsafe {
+        let mut d3d = None;
+        D3D11CreateDevice(
+            None,
+            if warp { D3D_DRIVER_TYPE_WARP } else { D3D_DRIVER_TYPE_HARDWARE },
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0]),
+            D3D11_SDK_VERSION,
+            Some(&mut d3d),
+            None,
+            None,
+        )?;
+        let d3d: ID3D11Device = d3d.unwrap();
+        crate::trace::mark(if warp { "gfx: D3D11 device (WARP)" } else { "gfx: D3D11 device (hardware)" });
+        let dxgi: IDXGIDevice1 = d3d.cast()?;
+        let _ = dxgi.SetMaximumFrameLatency(1);
+        let factory: ID2D1Factory1 = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+        let dev = factory.CreateDevice(&dxgi)?;
+        let dc = dev.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+        dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        crate::trace::mark("gfx: D2D device context");
+        Ok(Device { d3d, dc, warp })
+    }
+}
+
+/// DirectWrite with Inter registered from memory: device-independent.
+pub struct Text {
+    pub dwrite: IDWriteFactory5,
+    inter: IDWriteFontCollection1,
+    /// NUL-terminated family name as DirectWrite reports it.
+    inter_family: Vec<u16>,
+}
+
+pub fn init_text() -> Result<Text> {
+    unsafe {
+        let dwrite: IDWriteFactory5 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let loader = dwrite.CreateInMemoryFontFileLoader()?;
+        dwrite.RegisterFontFileLoader(&loader)?;
+        let file = loader.CreateInMemoryFontFileReference(&dwrite, INTER.as_ptr() as _, INTER.len() as u32, None)?;
+        let builder = dwrite.CreateFontSetBuilder()?;
+        builder.AddFontFile(&file)?;
+        let set = builder.CreateFontSet()?;
+        let inter = dwrite.CreateFontCollectionFromFontSet(&set)?;
+        let family = inter.GetFontFamily(0)?;
+        let names = family.GetFamilyNames()?;
+        let len = names.GetStringLength(0)? as usize;
+        let mut inter_family = vec![0u16; len + 1];
+        names.GetString(0, &mut inter_family)?;
+        crate::trace::mark("gfx: Inter loaded");
+        Ok(Text { dwrite, inter, inter_family })
+    }
+}
+
+pub struct Fonts {
+    /// 12 px: title bar caption and status row.
+    pub caption: IDWriteTextFormat,
+    pub body: IDWriteTextFormat,
+    pub body_strong: IDWriteTextFormat,
+    /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons).
+    pub icons: IDWriteTextFormat,
+    pub caption_icons: IDWriteTextFormat,
+    _ellipsis: Vec<IDWriteInlineObject>,
+}
+
+pub struct Gfx {
+    pub dev: Device,
+    pub text: Text,
+    swap: IDXGISwapChain1,
+    comp: IDCompositionDevice,
+    _target: IDCompositionTarget,
+    visual: IDCompositionVisual,
+    size: (u32, u32),
+    target: Option<ID2D1Bitmap1>,
+    pub brush: ID2D1SolidColorBrush,
+    pub fonts: Fonts,
+    pub dpi: f32,
+    checker: Option<(ID2D1BitmapBrush1, f32)>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Align {
+    Left,
+    Right,
+    Center,
+}
+
+pub fn rgb(hex: u32) -> D2D1_COLOR_F {
+    rgba(hex, 1.0)
+}
+
+pub fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F {
+        r: ((hex >> 16) & 0xFF) as f32 / 255.0,
+        g: ((hex >> 8) & 0xFF) as f32 / 255.0,
+        b: (hex & 0xFF) as f32 / 255.0,
+        a,
+    }
+}
+
+/// White at an alpha byte, as the WinUI theme resources are written (`#24FFFFFF` = `white(0x24)`).
+pub fn white(alpha: u8) -> D2D1_COLOR_F {
+    rgba(0xFFFFFF, alpha as f32 / 255.0)
+}
+
+pub fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
+    D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h }
+}
+
+pub fn contains(r: &D2D_RECT_F, x: f32, y: f32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+impl Gfx {
+    pub fn attach(dev: Device, text: Text, hwnd: HWND, width: u32, height: u32, dpi: f32) -> Result<Gfx> {
+        unsafe {
+            let swap = swap_chain(&dev, width, height)?;
+            let dxgi: IDXGIDevice = dev.d3d.cast()?;
+            let comp: IDCompositionDevice = DCompositionCreateDevice(&dxgi)?;
+            let target = comp.CreateTargetForHwnd(hwnd, true)?;
+            let visual = comp.CreateVisual()?;
+            visual.SetContent(&swap)?;
+            target.SetRoot(&visual)?;
+            comp.Commit()?;
+            crate::trace::mark("gfx: swap chain + DirectComposition");
+            let brush = dev.dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
+            let fonts = make_fonts(&text)?;
+            let mut g = Gfx {
+                dev,
+                text,
+                swap,
+                comp,
+                _target: target,
+                visual,
+                size: (width, height),
+                target: None,
+                brush,
+                fonts,
+                dpi,
+                checker: None,
+            };
+            g.make_target()?;
+            Ok(g)
+        }
+    }
+
+    /// Moves drawing to another device (WARP to hardware). Every bitmap made on the old device is invalid
+    /// afterwards; the caller re-uploads its own. Call `end()` after drawing so the new swap chain has a frame
+    /// before the visual shows it.
+    pub fn switch_device(&mut self, dev: Device) -> Result<()> {
+        unsafe {
+            let swap = swap_chain(&dev, self.size.0, self.size.1)?;
+            let brush = dev.dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
+            self.dev.dc.SetTarget(None);
+            self.target = None;
+            self.checker = None;
+            self.swap = swap;
+            self.brush = brush;
+            self.dev = dev;
+            self.make_target()
+        }
+    }
+
+    /// Points the visual at the current swap chain (after `switch_device` and a first frame on it).
+    pub fn commit_swap(&self) -> Result<()> {
+        unsafe {
+            self.visual.SetContent(&self.swap)?;
+            self.comp.Commit()
+        }
+    }
+
+    pub fn is_warp(&self) -> bool {
+        self.dev.warp
+    }
+
+    fn make_target(&mut self) -> Result<()> {
+        unsafe {
+            let surface: IDXGISurface = self.swap.GetBuffer(0)?;
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                dpiX: self.dpi,
+                dpiY: self.dpi,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let bmp = self.dev.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+            self.dev.dc.SetTarget(&bmp);
+            self.dev.dc.SetDpi(self.dpi, self.dpi);
+            self.target = Some(bmp);
+            Ok(())
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32, dpi: f32) -> Result<()> {
+        self.size = (width, height);
+        unsafe {
+            self.dev.dc.SetTarget(None);
+            self.target = None;
+            if dpi != self.dpi {
+                self.checker = None;
+            }
+            self.dpi = dpi;
+            self.swap.ResizeBuffers(0, width.max(1), height.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            self.make_target()
+        }
+    }
+
+    pub fn begin(&self, bg: u32) {
+        unsafe {
+            self.dev.dc.BeginDraw();
+            self.dev.dc.Clear(Some(&rgb(bg)));
+        }
+    }
+
+    pub fn end(&self) -> Result<()> {
+        unsafe {
+            self.dev.dc.EndDraw(None, None)?;
+            self.swap.Present(1, DXGI_PRESENT(0)).ok()
+        }
+    }
+
+    pub fn max_bitmap_size(&self) -> u32 {
+        unsafe { self.dev.dc.GetMaximumBitmapSize() }
+    }
+
+    /// Premultiplied BGRA pixels → GPU bitmap (96 dpi; always drawn into an explicit rect).
+    pub fn bitmap(&self, width: u32, height: u32, pixels: &[u8]) -> Result<ID2D1Bitmap1> {
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            self.dev.dc.CreateBitmap(
+                D2D_SIZE_U { width, height },
+                Some(pixels.as_ptr() as _),
+                width * 4,
+                &props,
+            )
+        }
+    }
+
+    pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) {
+        unsafe {
+            self.dev.dc.DrawBitmap(bmp, Some(&dest), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None);
+        }
+    }
+
+    /// The preview-area checkerboard: two near-blacks a hair apart in 8-DIP squares, rendered at the
+    /// display's DPI so the squares stay crisp and whole-pixel, anchored at the viewport's top-left.
+    pub fn checkerboard(&mut self, r: D2D_RECT_F) {
+        const DARK: u32 = 0x0F0F0F;
+        const LIGHT: u32 = 0x161616;
+        let scale = self.dpi / 96.0;
+        if self.checker.as_ref().is_none_or(|(_, d)| *d != self.dpi) {
+            let cell = (8.0 * scale).round().max(1.0) as u32;
+            let n = cell * 2;
+            let mut px = vec![0u8; (n * n * 4) as usize];
+            for y in 0..n {
+                for x in 0..n {
+                    let c = if (x < cell) == (y < cell) { LIGHT } else { DARK };
+                    let i = ((y * n + x) * 4) as usize;
+                    px[i] = (c & 0xFF) as u8;
+                    px[i + 1] = ((c >> 8) & 0xFF) as u8;
+                    px[i + 2] = ((c >> 16) & 0xFF) as u8;
+                    px[i + 3] = 0xFF;
+                }
+            }
+            unsafe {
+                let props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    dpiX: self.dpi,
+                    dpiY: self.dpi,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                    colorContext: std::mem::ManuallyDrop::new(None),
+                };
+                let Ok(tile) = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: n, height: n }, Some(px.as_ptr() as _), n * 4, &props) else {
+                    return;
+                };
+                let bp = D2D1_BITMAP_BRUSH_PROPERTIES1 {
+                    extendModeX: D2D1_EXTEND_MODE_WRAP,
+                    extendModeY: D2D1_EXTEND_MODE_WRAP,
+                    interpolationMode: D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                };
+                let Ok(brush) = self.dev.dc.CreateBitmapBrush(&tile, Some(&bp), None) else { return };
+                self.checker = Some((brush, self.dpi));
+            }
+        }
+        if let Some((brush, _)) = &self.checker {
+            unsafe {
+                brush.SetTransform(&windows_numerics::Matrix3x2::translation(r.left, r.top));
+                self.dev.dc.FillRectangle(&r, brush);
+            }
+        }
+    }
+
+    pub fn fill(&self, r: D2D_RECT_F, color: D2D1_COLOR_F) {
+        unsafe {
+            self.brush.SetColor(&color);
+            self.dev.dc.FillRectangle(&r, &self.brush);
+        }
+    }
+
+    pub fn fill_round(&self, r: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
+        unsafe {
+            self.brush.SetColor(&color);
+            self.dev.dc.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, &self.brush);
+        }
+    }
+
+    pub fn outline_round(&self, r: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F, width: f32) {
+        unsafe {
+            self.brush.SetColor(&color);
+            let h = width / 2.0;
+            let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
+            self.dev.dc.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, &self.brush, width, None);
+        }
+    }
+
+    /// One device pixel, in DIPs: for hairlines that stay crisp at any scale.
+    pub fn px(&self) -> f32 {
+        96.0 / self.dpi
+    }
+
+    /// Rounds a DIP coordinate to the nearest device pixel.
+    pub fn snap(&self, v: f32) -> f32 {
+        let s = self.dpi / 96.0;
+        (v * s).round() / s
+    }
+
+    pub fn text(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+        unsafe {
+            let _ = fmt.SetTextAlignment(match align {
+                Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
+                Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
+                Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
+            });
+            self.brush.SetColor(&color);
+            self.dev.dc.DrawText(s, fmt, &r, &self.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+        }
+    }
+
+    /// Width of a single line of text, in DIPs.
+    pub fn measure(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
+        unsafe {
+            let Ok(layout) = self.text.dwrite.CreateTextLayout(s, fmt, 10_000.0, 100.0) else { return 0.0 };
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if layout.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 }
+        }
+    }
+}
+
+fn make_fonts(core: &Text) -> Result<Fonts> {
+    unsafe {
+        let dw = &core.dwrite;
+        let fam = PCWSTR(core.inter_family.as_ptr());
+        let mut ellipsis = Vec::new();
+        let mut inter = |size: f32, weight: DWRITE_FONT_WEIGHT| -> Result<IDWriteTextFormat> {
+            let f = dw.CreateTextFormat(fam, &core.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
+            prep(&f)?;
+            let sign = dw.CreateEllipsisTrimmingSign(&f)?;
+            f.SetTrimming(&DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 }, &sign)?;
+            ellipsis.push(sign);
+            Ok(f)
+        };
+        let caption = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let body = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let body_strong = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let icon = |size: f32| -> Result<IDWriteTextFormat> {
+            let f = dw.CreateTextFormat(
+                w!("Segoe Fluent Icons"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("en-us"),
+            )?;
+            prep(&f)?;
+            f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            Ok(f)
+        };
+        Ok(Fonts { caption, body, body_strong, icons: icon(16.0)?, caption_icons: icon(10.0)?, _ellipsis: ellipsis })
+    }
+}
+
+fn swap_chain(dev: &Device, width: u32, height: u32) -> Result<IDXGISwapChain1> {
+    unsafe {
+        let dxgi: IDXGIDevice = dev.d3d.cast()?;
+        let adapter = dxgi.GetAdapter()?;
+        let factory: IDXGIFactory2 = adapter.GetParent()?;
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: width.max(1),
+            Height: height.max(1),
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            Scaling: DXGI_SCALING_STRETCH,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            ..Default::default()
+        };
+        factory.CreateSwapChainForComposition(&dev.d3d, &desc, None)
+    }
+}
+
+fn prep(f: &IDWriteTextFormat) -> Result<()> {
+    unsafe {
+        f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        Ok(())
+    }
+}

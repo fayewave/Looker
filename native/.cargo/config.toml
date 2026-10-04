@@ -1,0 +1,3 @@
+# Build output lives outside Dropbox: syncing locks fresh build files mid-link (os error 32).
+[build]
+target-dir = "C:/Users/fayem/AppData/Local/Looker/native-target"
