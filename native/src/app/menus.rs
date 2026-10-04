@@ -48,7 +48,7 @@ impl App {
             item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), has),
             Entry::Separator,
             item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), false),
-            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), false),
+            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), has),
             item(Action::ToggleInfo, 0xE946, "Info panel", Some("I"), has),
         ]
     }
@@ -113,7 +113,8 @@ impl App {
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
             Action::Rename => self.begin_rename(false),
             Action::ToggleInfo => self.toggle_info(),
-            Action::ToggleExplorer | Action::ToggleStrip => {}
+            Action::ToggleStrip => self.toggle_strip(),
+            Action::ToggleExplorer => {}
         }
     }
 

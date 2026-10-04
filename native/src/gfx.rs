@@ -484,6 +484,22 @@ impl Gfx {
         }
     }
 
+    /// A left-to-right linear gradient across `r` (the strip's edge fades).
+    pub fn fill_hgradient(&self, r: D2D_RECT_F, left: D2D1_COLOR_F, right: D2D1_COLOR_F) {
+        unsafe {
+            let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: left }, D2D1_GRADIENT_STOP { position: 1.0, color: right }];
+            let rt: &ID2D1RenderTarget = &self.dev.dc;
+            let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: windows_numerics::Vector2 { X: r.left, Y: r.top },
+                endPoint: windows_numerics::Vector2 { X: r.right, Y: r.top },
+            };
+            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                self.dev.dc.FillRectangle(&r, &b);
+            }
+        }
+    }
+
     pub fn push_clip(&self, r: D2D_RECT_F) {
         unsafe { self.dev.dc.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED) }
     }

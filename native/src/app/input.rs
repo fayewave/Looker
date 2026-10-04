@@ -24,7 +24,7 @@ impl App {
         if self.hover != h {
             self.hover = h;
             self.hide_tooltip();
-            if h.and_then(Self::tooltip_text).is_some() && self.menu.is_none() {
+            if h.and_then(|h| self.tooltip_for(h)).is_some() && self.menu.is_none() {
                 unsafe {
                     SetTimer(Some(self.hwnd), TIMER_TOOLTIP, ui::TOOLTIP_DELAY_MS, None);
                 }
@@ -180,6 +180,9 @@ impl App {
                     if self.info_card.drag.is_some() {
                         self.info_grip_drag(x);
                     }
+                    if self.strip.drag.is_some() {
+                        self.strip_grip_drag(y);
+                    }
                     if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.drag = Some((x, y));
@@ -200,6 +203,7 @@ impl App {
                     let cursor = match self.hover {
                         Some(Hit::Reveal | Hit::InfoPath) => IDC_HAND,
                         Some(Hit::InfoGrip) => IDC_SIZEWE,
+                        Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::DialogField) => IDC_IBEAM,
                         _ => IDC_ARROW,
                     };
@@ -226,6 +230,9 @@ impl App {
                     if h == Some(Hit::InfoGrip) {
                         self.info_grip_press(x);
                     }
+                    if h == Some(Hit::StripGrip) {
+                        self.strip_grip_press(y);
+                    }
                     if h == Some(Hit::Viewport) && self.view.has_content() {
                         self.drag = Some((x, y));
                     }
@@ -239,11 +246,13 @@ impl App {
                     let was_drag = self.drag.take().is_some();
                     self.text_drag = None;
                     self.info_grip_release();
+                    self.strip_grip_release();
                     let h = self.hit(x, y);
                     if pressed.is_some() && pressed == h {
                         match h {
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
+                            Some(Hit::StripCell(i)) => self.go_to(i),
                             Some(Hit::Open) => self.open_dialog(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
@@ -276,6 +285,10 @@ impl App {
                         self.info_grip_reset();
                         return Some(LRESULT(0));
                     }
+                    if self.hit(x, y) == Some(Hit::StripGrip) {
+                        self.strip_grip_reset();
+                        return Some(LRESULT(0));
+                    }
                     if self.hit(x, y) == Some(Hit::DialogField) {
                         self.pressed = Some(Hit::DialogField);
                         SetCapture(self.hwnd);
@@ -301,6 +314,7 @@ impl App {
                 WM_CAPTURECHANGED => {
                     self.drag = None;
                     self.info_grip_release();
+                    self.strip_grip_release();
                     None
                 }
                 WM_MOUSEWHEEL => {
@@ -311,6 +325,10 @@ impl App {
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
+                    if matches!(self.hit(x, y), Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip)) {
+                        self.scroll_strip(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
                         self.scroll_info(delta as f32);
                         return Some(LRESULT(0));
@@ -360,6 +378,7 @@ impl App {
                         VK_DELETE => self.confirm_delete(true),
                         VK_F2 => self.begin_rename(true),
                         VK_I if !ctrl => self.toggle_info(),
+                        VK_T if !ctrl => self.toggle_strip(),
                         VK_APPS => {
                             let v = self.viewport();
                             self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
@@ -372,6 +391,10 @@ impl App {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
                         TIMER_CARET => self.blink_caret(),
+                        TIMER_THUMBS => {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_THUMBS);
+                            self.invalidate();
+                        }
                         TIMER_TOAST => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
                             self.invalidate();
@@ -410,6 +433,10 @@ impl App {
                 WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
                     self.place_ime();
                     None
+                }
+                crate::thumbs::WM_THUMBS => {
+                    self.on_thumbs();
+                    Some(LRESULT(0))
                 }
                 info::WM_EXIF => {
                     let r = Box::from_raw(lp.0 as *mut info::ExifResult);

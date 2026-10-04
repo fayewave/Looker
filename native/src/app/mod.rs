@@ -5,6 +5,7 @@
 mod actions;
 mod chrome;
 mod info;
+mod strip;
 mod input;
 mod menus;
 
@@ -61,6 +62,7 @@ const TIMER_TRACE: usize = 2;
 const TIMER_TOOLTIP: usize = 5;
 const TIMER_TOAST: usize = 6;
 const TIMER_CARET: usize = 7;
+const TIMER_THUMBS: usize = 8;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
@@ -117,6 +119,13 @@ enum Hit {
     MenuSurface,
     /// A dialog's button, by index.
     DialogButton(usize),
+    /// The thumbnail strip: its surface (the wheel scrolls it), a cell by image index, the resize grip, and
+    /// two ids that only carry the edge fades' animation.
+    Strip,
+    StripCell(usize),
+    StripGrip,
+    StripFadeLeft,
+    StripFadeRight,
     /// The info card's surface (scrolls under the wheel), its resize grip and its file-path link.
     InfoCard,
     InfoGrip,
@@ -151,15 +160,15 @@ pub struct Placement {
 
 impl Placement {
     /// The space the first image will be fitted into, in device pixels: the viewport minus what the info
-    /// card (if it will show) takes from the right, in DIPs.
-    pub fn viewport_px(&self, right_inset: f32) -> (u32, u32) {
+    /// card and the thumbnail strip (if they will show) take from the right and the bottom, in DIPs.
+    pub fn viewport_px(&self, right_inset: f32, bottom_inset: f32) -> (u32, u32) {
         let s = self.dpi as f32 / 96.0;
         let (w, h) = if self.maximized {
             ((self.work.right - self.work.left).max(1) as u32, (self.work.bottom - self.work.top).max(1) as u32)
         } else {
             client_size_for(self)
         };
-        let vh = h as f32 - (TITLE_H + TOOLBAR_H + STATUS_H) * s;
+        let vh = h as f32 - (TITLE_H + TOOLBAR_H + STATUS_H + bottom_inset) * s;
         let vw = w as f32 - right_inset * s;
         (vw.max(1.0) as u32, vh.max(1.0) as u32)
     }
@@ -296,6 +305,7 @@ pub struct App {
     /// Where the text box caret was last drawn (DIPs): the IME composition window goes there.
     caret_rect: Option<D2D_RECT_F>,
     info_card: info::Card,
+    strip: strip::Strip,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -421,10 +431,14 @@ impl App {
         if n == 0 {
             return;
         }
-        let j = if last { n - 1 } else { 0 };
-        if Some(j) != self.viewer.index {
+        self.go_to(if last { n - 1 } else { 0 });
+    }
+
+    /// Shows the folder's image at `i` (Home/End, a strip click).
+    fn go_to(&mut self, i: usize) {
+        if Some(i) != self.viewer.index && i < self.viewer.image_count() {
             self.begin_navigation();
-            let out = self.viewer.show_index(j, self.gfx.as_ref());
+            let out = self.viewer.show_index(i, self.gfx.as_ref());
             self.apply(out);
             self.current_changed();
         }
@@ -541,8 +555,9 @@ impl App {
             Tool::SaveRotation => self.save_rotation(),
             Tool::Delete => self.confirm_delete(false),
             Tool::Info => self.toggle_info(),
+            Tool::Strip => self.toggle_strip(),
             // Not built yet.
-            Tool::Explorer | Tool::Strip | Tool::Settings => {}
+            Tool::Explorer | Tool::Settings => {}
         }
     }
 
@@ -587,6 +602,7 @@ impl App {
             return;
         }
         self.viewer.reupload(g);
+        self.strip.device_lost();
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -726,6 +742,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             text_drag: None,
             caret_rect: None,
             info_card: info::Card::new(),
+            strip: strip::Strip::new(),
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -742,7 +759,10 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         app.viewer.adopt_pending(launch_keys);
         // The viewport `main` predicted (a maximized window is still restored-size until it is shown), so the
         // first requests match the launch decodes already running. WM_SIZE corrects it from here on.
-        let (bw, bh) = placement.viewport_px(if app.settings.info_visible && path.is_some() { app.settings.info_width } else { 0.0 });
+        let (bw, bh) = placement.viewport_px(
+            if app.settings.info_visible && path.is_some() { app.settings.info_width } else { 0.0 },
+            if app.settings.strip_visible && path.is_some() { app.settings.strip_height } else { 0.0 },
+        );
         app.viewer.set_fit_box(bw, bh);
 
         if let Some(Some((ready, icon))) = gfx_thread.join().ok() {

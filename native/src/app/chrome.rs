@@ -12,7 +12,7 @@ impl App {
     pub(super) fn viewport(&self) -> D2D_RECT_F {
         let (w, h) = self.size_dip();
         if self.chrome() {
-            D2D_RECT_F { left: 0.0, top: TITLE_H + TOOLBAR_H, right: w, bottom: (h - STATUS_H).max(TITLE_H + TOOLBAR_H) }
+            D2D_RECT_F { left: 0.0, top: TITLE_H + TOOLBAR_H, right: w, bottom: (h - STATUS_H - self.bottom_inset()).max(TITLE_H + TOOLBAR_H) }
         } else {
             D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h }
         }
@@ -64,10 +64,18 @@ impl App {
             Tool::Sort | Tool::Delete => has,
             Tool::Rotate => self.can_rotate(),
             Tool::SaveRotation => !self.saving_rotation,
-            Tool::Info => has,
+            Tool::Info | Tool::Strip => has,
             // Not built yet.
-            Tool::Explorer | Tool::Strip => false,
+            Tool::Explorer => false,
             _ => has,
+        }
+    }
+
+    /// A tooltip for anything: the static ones below, or a thumbnail's file name.
+    pub(super) fn tooltip_for(&self, h: Hit) -> Option<String> {
+        match h {
+            Hit::StripCell(i) => self.strip_tooltip(i),
+            _ => Self::tooltip_text(h).map(String::from),
         }
     }
 
@@ -165,6 +173,7 @@ impl App {
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
         let card_moving = self.draw_info(&g);
+        let strip_moving = self.draw_strip(&g);
         if self.chrome() {
             self.draw_title(&g);
             self.draw_toolbar(&g);
@@ -175,7 +184,7 @@ impl App {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
-        if self.view.animating() || self.fades.moving || toast_moving || card_moving {
+        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving {
             self.invalidate();
         }
     }
@@ -232,7 +241,11 @@ impl App {
                 g.text(&wide("Save"), &g.fonts.body, r, fg, Align::Center);
                 continue;
             }
-            let kind = if t == Tool::Info { ui::Kind::Toggle(self.info_shown()) } else { ui::Kind::Standard };
+            let kind = match t {
+                Tool::Info => ui::Kind::Toggle(self.info_shown()),
+                Tool::Strip => ui::Kind::Toggle(self.strip_shown()),
+                _ => ui::Kind::Standard,
+            };
             let fg = ui::button_frame(g, r, kind, &st);
             if t == Tool::Sort {
                 g.text(&[glyph], &g.fonts.icons, rect(r.left + 11.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
@@ -385,9 +398,9 @@ impl App {
             }
         }
         if let Some(t) = self.tooltip {
-            if let (Some(text), Some(anchor)) = (Self::tooltip_text(t), self.hits.rect_of(t)) {
+            if let (Some(text), Some(anchor)) = (self.tooltip_for(t), self.hits.rect_of(t)) {
                 let (w, h) = self.size_dip();
-                ui::tooltip(g, text, anchor, rect(0.0, 0.0, w, h));
+                ui::tooltip(g, &text, anchor, rect(0.0, 0.0, w, h));
             }
         }
         toast_moving
