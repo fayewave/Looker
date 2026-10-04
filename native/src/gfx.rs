@@ -98,11 +98,15 @@ pub struct Fonts {
     pub caption_wrap: IDWriteTextFormat,
     /// 11 px semibold: info card group titles.
     pub overline: IDWriteTextFormat,
+    /// 28 px semibold (TitleTextBlockStyle): a page's title.
+    pub page_title: IDWriteTextFormat,
     /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons).
     pub icons: IDWriteTextFormat,
     pub caption_icons: IDWriteTextFormat,
     /// 12 px icons: a text box's clear button.
     pub small_icons: IDWriteTextFormat,
+    /// 14 px icons: glyphs on text buttons.
+    pub body_icons: IDWriteTextFormat,
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
@@ -544,6 +548,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.5)?;
         let overline = inter(11.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let page_title = inter(28.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
             let f = dw.CreateTextFormat(
                 w!("Segoe Fluent Icons"),
@@ -558,7 +563,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, _ellipsis: ellipsis })
     }
 }
 

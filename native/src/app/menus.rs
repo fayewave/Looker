@@ -27,6 +27,8 @@ pub(super) enum Action {
     Crumb(usize),
     /// The landing page: forget one recent file.
     RemoveRecent,
+    /// A ComboBox's item, by index.
+    Choose(usize),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -163,6 +165,11 @@ impl App {
         match kind {
             Some(MenuKind::Item(path)) => self.run_item_action(action, path),
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::Combo(which)) => {
+                if let Action::Choose(i) = action {
+                    self.choose(which, i);
+                }
+            }
             Some(MenuKind::Crumbs(places)) => {
                 if let Action::Crumb(i) = action {
                     if let Some(p) = places.get(i) {
@@ -202,7 +209,7 @@ impl App {
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
-            Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent => {}
+            Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent | Action::Choose(_) => {}
         }
     }
 
@@ -233,4 +240,6 @@ pub(super) enum MenuKind {
     Crumbs(Vec<crate::explorer::Place>),
     /// A recent file on the landing page.
     Recent(PathBuf),
+    /// A Settings drop-down.
+    Combo(page::Setting),
 }

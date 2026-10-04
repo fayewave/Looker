@@ -271,6 +271,17 @@ impl Viewer {
         true
     }
 
+    /// The decode cache's memory budget (Settings).
+    pub fn set_budget(&mut self, bytes: usize) {
+        self.cache.budget = bytes.max(64 << 20);
+    }
+
+    /// Forgets every cached decode (Reset Looker); what is on screen stays until the next navigation.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+        self.failed.clear();
+    }
+
     /// Drops every cached decode and remembered failure of a file (it was rewritten or deleted).
     pub fn forget(&mut self, path: &Path) {
         let keys: Vec<Key> = self.cache.keys().filter(|k| k.path == path).cloned().collect();

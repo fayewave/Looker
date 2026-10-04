@@ -58,12 +58,12 @@ impl App {
     }
 
     pub(super) fn tool_enabled(&self, t: Tool) -> bool {
-        let has = self.viewer.current.is_some();
+        let has = self.viewer.current.is_some() && self.page.is_none();
         match t {
             Tool::Settings => true,
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
             Tool::Sort | Tool::Delete => has,
-            Tool::Rotate => self.can_rotate(),
+            Tool::Rotate => has && self.can_rotate(),
             Tool::SaveRotation => !self.saving_rotation,
             Tool::Info | Tool::Strip | Tool::Explorer => has,
             _ => has,
@@ -163,7 +163,7 @@ impl App {
         let Some(mut g) = self.gfx.take() else { return };
         self.hits.clear();
         self.fades.begin();
-        g.begin(0x000000);
+        g.begin(self.theme().window);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
         let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
@@ -171,7 +171,11 @@ impl App {
         if self.chrome() {
             self.draw_title(&g);
             self.draw_toolbar(&g);
-            self.draw_status(&g);
+            if self.page.is_some() {
+                self.draw_page(&g);
+            } else {
+                self.draw_status(&g);
+            }
         }
         let toast_moving = self.draw_overlays(&g);
         if let Err(e) = g.end() {
@@ -240,6 +244,7 @@ impl App {
                 Tool::Info => ui::Kind::Toggle(self.info_shown()),
                 Tool::Strip => ui::Kind::Toggle(self.strip_shown()),
                 Tool::Explorer => ui::Kind::Toggle(self.explorer_shown()),
+                Tool::Settings => ui::Kind::Toggle(self.page.is_some()),
                 _ => ui::Kind::Standard,
             };
             let fg = ui::button_frame(g, r, kind, &st);
@@ -378,7 +383,8 @@ impl App {
             }
             let clear = self.state(Hit::DialogFieldClear, true);
             if let Some((_, d)) = &mut self.dialog {
-                self.caret_rect = d.draw(g, &layout, window, &states, field_hover, clear);
+                let theme = ui::Theme::new(self.settings.dark_grey);
+                self.caret_rect = d.draw(g, &layout, window, theme, &states, field_hover, clear);
             }
         }
         if let Some(t) = self.tooltip {

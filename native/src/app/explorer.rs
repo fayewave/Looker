@@ -101,7 +101,7 @@ impl Explorer {
 
 impl App {
     pub(super) fn explorer_shown(&self) -> bool {
-        self.settings.explorer_visible && self.viewer.current.is_some() && self.chrome()
+        self.settings.explorer_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
     }
 
     pub(super) fn left_inset(&self) -> f32 {
@@ -394,7 +394,7 @@ impl App {
             return false;
         }
         self.hits.add(Hit::ExplorerCard, card);
-        g.fill_round(card, 8.0, rgb(0x000000));
+        g.fill_round(card, 8.0, rgb(self.theme().window));
         g.outline_round(card, 8.0, white(0x18), g.px());
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
 

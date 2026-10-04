@@ -146,7 +146,7 @@ impl Thumb {
 
 impl App {
     pub(super) fn strip_shown(&self) -> bool {
-        self.settings.strip_visible && self.viewer.current.is_some() && self.chrome()
+        self.settings.strip_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
     }
 
     /// What the strip takes from the bottom of the viewport.
@@ -351,11 +351,12 @@ impl App {
         // Edge fades where there is more to scroll to.
         let lf = self.fades.get(Hit::StripFadeLeft, scroll > 0.5);
         let rf = self.fades.get(Hit::StripFadeRight, self.strip.max_scroll - scroll > 0.5);
+        let win = self.theme().window;
         if lf > 0.0 {
-            g.fill_hgradient(rect(r.left, r.top, FADE_W, r.bottom - r.top), gfx::rgba(0x000000, lf), gfx::rgba(0x000000, 0.0));
+            g.fill_hgradient(rect(r.left, r.top, FADE_W, r.bottom - r.top), gfx::rgba(win, lf), gfx::rgba(win, 0.0));
         }
         if rf > 0.0 {
-            g.fill_hgradient(rect(r.right - FADE_W, r.top, FADE_W, r.bottom - r.top), gfx::rgba(0x000000, 0.0), gfx::rgba(0x000000, rf));
+            g.fill_hgradient(rect(r.right - FADE_W, r.top, FADE_W, r.bottom - r.top), gfx::rgba(win, 0.0), gfx::rgba(win, rf));
         }
 
         // The grip: the top band, a line that shows on hover and turns accent while dragging.

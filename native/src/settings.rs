@@ -29,6 +29,14 @@ pub struct Settings {
     pub explorer_visible: bool,
     /// The file explorer card's width in DIPs, margins included (the info card's range).
     pub explorer_width: f32,
+    /// The mouse wheel over the image steps through the folder instead of zooming (Ctrl+wheel still zooms).
+    pub wheel_navigates: bool,
+    /// Pointer zooms (wheel, double-click) aim at the middle of the view rather than the pointer.
+    pub zoom_center: bool,
+    /// The dark grey (#1F1F1F) theme instead of black.
+    pub dark_grey: bool,
+    /// How much memory decoded photos may take, in MB.
+    pub cache_mb: u32,
     /// Remember recently shown photos (the landing page's list). Off records nothing.
     pub recents_enabled: bool,
     /// Most recently shown first, at most [`RECENT_CAPACITY`].
@@ -40,6 +48,9 @@ pub struct Settings {
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
 pub const RECENT_CAPACITY: usize = 12;
+pub const CACHE_MB: u32 = 512;
+/// The choices the Settings page offers for the decode cache.
+pub const CACHE_CHOICES: [u32; 5] = [128, 256, 512, 1024, 2048];
 pub const STRIP_HEIGHT: f32 = 96.0;
 pub const STRIP_MIN: f32 = 56.0;
 pub const STRIP_MAX: f32 = 480.0;
@@ -50,7 +61,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT }
     }
 }
 
@@ -104,6 +115,10 @@ pub fn parse(text: &str) -> Settings {
             "info_width" => s.info_width = v.parse::<f32>().map_or(INFO_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             "explorer_visible" => s.explorer_visible = v == "1",
             "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(EXPLORER_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
+            "wheel" => s.wheel_navigates = v == "navigate",
+            "zoom_anchor" => s.zoom_center = v == "center",
+            "theme" => s.dark_grey = v == "dark_grey",
+            "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
             "recents_enabled" => s.recents_enabled = v != "0",
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
@@ -125,6 +140,10 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("info_width={}\n", s.info_width.round()));
     out.push_str(&format!("explorer_visible={}\n", s.explorer_visible as i32));
     out.push_str(&format!("explorer_width={}\n", s.explorer_width.round()));
+    out.push_str(&format!("wheel={}\n", if s.wheel_navigates { "navigate" } else { "zoom" }));
+    out.push_str(&format!("zoom_anchor={}\n", if s.zoom_center { "center" } else { "pointer" }));
+    out.push_str(&format!("theme={}\n", if s.dark_grey { "dark_grey" } else { "black" }));
+    out.push_str(&format!("cache_mb={}\n", s.cache_mb));
     out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
     for r in &s.recents {
         out.push_str(&format!("recent={}\n", r.display()));
@@ -164,6 +183,10 @@ mod tests {
             info_width: 412.0,
             explorer_visible: true,
             explorer_width: 300.0,
+            wheel_navigates: true,
+            zoom_center: true,
+            dark_grey: true,
+            cache_mb: 1024,
             recents_enabled: true,
             recents: vec![PathBuf::from(r"C:\a b\one.jpg"), PathBuf::from(r"D:\two.png")],
             strip_visible: true,

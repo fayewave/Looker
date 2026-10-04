@@ -12,6 +12,16 @@ impl App {
         (x / self.scale(), y / self.scale())
     }
 
+    /// Where a pointer zoom aims, in image-area coordinates: the pointer, or the middle (Settings).
+    pub(super) fn zoom_anchor(&self, x: f32, y: f32) -> (f64, f64) {
+        let a = self.image_area();
+        if self.settings.zoom_center {
+            (((a.right - a.left) / 2.0) as f64, ((a.bottom - a.top) / 2.0) as f64)
+        } else {
+            ((x - a.left) as f64, (y - a.top) as f64)
+        }
+    }
+
     pub(super) fn screen_to_dip(&self, lp: LPARAM) -> (f32, f32) {
         let mut pt = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
         unsafe {
@@ -266,6 +276,10 @@ impl App {
                             Some(Hit::Crumb(i)) => self.crumb_click(i),
                             Some(Hit::CrumbMore) => self.open_crumb_menu(),
                             Some(Hit::Open) => self.open_dialog(),
+                            Some(Hit::PageBack) => self.close_page(),
+                            Some(Hit::Combo(s)) => self.open_combo(s),
+                            Some(Hit::Toggle(s)) => self.toggle_setting(s),
+                            Some(Hit::PageLink(i)) => self.page_link(i),
                             Some(Hit::LandingFolder) => self.open_folder_dialog(),
                             Some(Hit::RecentRow(i)) => self.open_recent(i),
                             Some(Hit::RecentClear) => self.clear_recents(),
@@ -333,8 +347,8 @@ impl App {
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
-                        let v = self.image_area();
-                        self.view.toggle_fit_actual((x - v.left) as f64, (y - v.top) as f64);
+                        let (ax, ay) = self.zoom_anchor(x, y);
+                        self.view.toggle_fit_actual(ax, ay);
                         self.after_zoom();
                     } else {
                         // A double-click on a button is two clicks.
@@ -359,6 +373,10 @@ impl App {
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
+                    if self.page.is_some() {
+                        self.scroll_page(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if self.viewer.current.is_none() {
                         self.scroll_landing(delta as f32);
                         return Some(LRESULT(0));
@@ -379,8 +397,19 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
-                        let v = self.image_area();
-                        self.view.zoom_at(1.2f64.powf(delta / 120.0), (x - v.left) as f64, (y - v.top) as f64);
+                        let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                        if self.settings.wheel_navigates && !ctrl {
+                            // A notch a step: down is next. Fine-grained wheels add up to a notch first.
+                            self.wheel_acc += delta;
+                            while self.wheel_acc.abs() >= 120.0 {
+                                let dir = -self.wheel_acc.signum();
+                                self.wheel_acc += dir * 120.0;
+                                self.step(dir as isize);
+                            }
+                            return Some(LRESULT(0));
+                        }
+                        let (ax, ay) = self.zoom_anchor(x, y);
+                        self.view.zoom_at(1.2f64.powf(delta / 120.0), ax, ay);
                         self.after_zoom();
                     }
                     Some(LRESULT(0))
@@ -398,6 +427,13 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     self.hide_tooltip();
+                    // A page has the keyboard to itself: Escape closes it, nothing else reaches the viewer.
+                    if self.page.is_some() {
+                        if vk == VK_ESCAPE || (vk == VK_OEM_COMMA && ctrl) {
+                            self.close_page();
+                        }
+                        return Some(LRESULT(0));
+                    }
                     match vk {
                         VK_LEFT => self.step(-1),
                         VK_RIGHT => self.step(1),
@@ -414,6 +450,7 @@ impl App {
                         }
                         VK_OEM_PLUS | VK_ADD if ctrl => self.act(Tool::ZoomIn),
                         VK_OEM_MINUS | VK_SUBTRACT if ctrl => self.act(Tool::ZoomOut),
+                        VK_OEM_COMMA if ctrl => self.open_page(),
                         VK_O if ctrl && shift => self.open_folder_dialog(),
                         VK_O if ctrl => self.open_dialog(),
                         VK_E if ctrl => self.reveal(),

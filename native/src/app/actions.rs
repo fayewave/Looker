@@ -21,6 +21,7 @@ pub(super) enum Choice {
 pub(super) enum DialogKind {
     Delete(PathBuf),
     Rename(PathBuf),
+    Reset,
 }
 
 impl App {
@@ -171,7 +172,7 @@ impl App {
 
     // --- Dialog plumbing ----------------------------------------------------------------------------
 
-    fn open_dialog_ui(&mut self, kind: DialogKind, d: Dialog<Choice>) {
+    pub(super) fn open_dialog_ui(&mut self, kind: DialogKind, d: Dialog<Choice>) {
         self.close_menu();
         self.hide_tooltip();
         let field = d.field.is_some();
@@ -362,6 +363,7 @@ impl App {
             return;
         }
         match kind {
+            DialogKind::Reset => self.reset_app(),
             DialogKind::Rename(path) => {
                 let name = d.field.map(|f| f.edit.text()).unwrap_or_default();
                 if name.trim().is_empty() {

@@ -10,6 +10,7 @@ mod landing;
 mod strip;
 mod input;
 mod menus;
+mod page;
 
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -117,6 +118,14 @@ enum Hit {
     Reveal,
     Open,
     Viewport,
+    /// The Settings page: its surface (the wheel scrolls it), Back, a drop-down, a switch (and the id its
+    /// slide animates under), a link button (GitHub, Store, Reset).
+    PageSurface,
+    PageBack,
+    Combo(page::Setting),
+    Toggle(page::Setting),
+    ToggleAnim(page::Setting),
+    PageLink(u8),
     /// The landing page: "Open a folder", a recent file by index, and Clear (Open is "Open a file").
     LandingFolder,
     RecentRow(usize),
@@ -330,6 +339,12 @@ pub struct App {
     /// Keeps the open folder's listing (navigation, strip, counter) live.
     folder_watch: Option<(PathBuf, crate::explorer::Watcher)>,
     landing: landing::Landing,
+    /// The Settings page, while open.
+    page: Option<page::Page>,
+    /// After Reset Looker, closing must not save the window placement again.
+    skip_placement_save: bool,
+    /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
+    wheel_acc: f64,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -653,8 +668,7 @@ impl App {
             Tool::Info => self.toggle_info(),
             Tool::Strip => self.toggle_strip(),
             Tool::Explorer => self.toggle_explorer(),
-            // Not built yet.
-            Tool::Settings => {}
+            Tool::Settings => self.toggle_page(),
         }
     }
 
@@ -724,7 +738,7 @@ impl App {
 
     /// Saved on close only while "remember window placement" is on.
     fn save_placement(&mut self) {
-        if !self.settings.remember_window {
+        if !self.settings.remember_window || self.skip_placement_save {
             return;
         }
         let r = self.normal_rect;
@@ -846,6 +860,9 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             pending_folder: None,
             folder_watch: None,
             landing: landing::Landing::new(),
+            page: None,
+            skip_placement_save: false,
+            wheel_acc: 0.0,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -860,6 +877,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         // The launch decodes were submitted before the window existed; mark them pending so they aren't
         // requested twice.
         app.viewer.adopt_pending(launch_keys);
+        let budget = (app.settings.cache_mb as usize) << 20;
+        app.viewer.set_budget(budget);
         // The viewport `main` predicted (a maximized window is still restored-size until it is shown), so the
         // first requests match the launch decodes already running. WM_SIZE corrects it from here on.
         let (bw, bh) = placement.viewport_px(

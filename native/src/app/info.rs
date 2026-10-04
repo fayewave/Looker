@@ -81,7 +81,7 @@ fn format_exif_time(t: ExifTime) -> String {
 
 impl App {
     pub(super) fn info_shown(&self) -> bool {
-        self.settings.info_visible && self.viewer.current.is_some() && self.chrome()
+        self.settings.info_visible && self.viewer.current.is_some() && self.chrome() && self.page.is_none()
     }
 
     /// What the card takes from the right of the viewport (its width, margins included).
@@ -240,7 +240,7 @@ impl App {
             return false;
         }
         self.hits.add(Hit::InfoCard, card);
-        g.fill_round(card, 8.0, rgb(0x000000));
+        g.fill_round(card, 8.0, rgb(self.theme().window));
         g.outline_round(card, 8.0, white(0x18), g.px()); // ControlStrokeColorSecondary
 
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };

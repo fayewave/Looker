@@ -20,6 +20,25 @@ pub const ACCENT: u32 = 0xF52524;
 pub const TEXT_SECONDARY: u8 = 0xC5;
 pub const TEXT_TERTIARY: u8 = 0x8B;
 pub const TEXT_DISABLED: u8 = 0x5D;
+/// The few colours a theme drives (the C# `ThemeColors`): the window and card fill, and the two dialog
+/// layers. Buttons, text, the accent and the checkerboard are the same in every theme.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Theme {
+    pub window: u32,
+    pub dialog_strip: u32,
+    pub dialog_body: u32,
+}
+
+impl Theme {
+    pub fn new(dark_grey: bool) -> Theme {
+        if dark_grey {
+            Theme { window: 0x1F1F1F, dialog_strip: 0x262626, dialog_body: 0x2E2E2E }
+        } else {
+            Theme { window: 0x000000, dialog_strip: 0x0C0C0C, dialog_body: 0x141414 }
+        }
+    }
+}
+
 /// WinUI's brush transition for pointer-over states.
 const FADE_MS: f32 = 83.0;
 
@@ -201,9 +220,6 @@ fn surface_stroke(opacity: f32) -> D2D1_COLOR_F {
 
 // --- Dialogs -----------------------------------------------------------------------------------------
 
-/// The black theme's two dialog layers (`ThemeColors.DialogOverlay` over `DialogStrip` in the C# app).
-const DIALOG_BODY: u32 = 0x141414;
-const DIALOG_STRIP: u32 = 0x0C0C0C;
 const DIALOG_PAD: f32 = 24.0;
 const DIALOG_MIN_W: f32 = 320.0;
 const DIALOG_MAX_W: f32 = 548.0;
@@ -332,14 +348,14 @@ impl<A: Copy> Dialog<A> {
     }
 
     /// Draws the dialog. Returns the caret rect while the text box has focus (for placing the IME window).
-    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
+    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, theme: Theme, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
         g.fill(window, rgba(0x000000, 0x4D as f32 / 255.0)); // SmokeFillColorDefault
         let c = l.card;
         shadow(g, c, 8.0);
-        g.fill_round(c, 8.0, rgba(DIALOG_STRIP, 1.0));
+        g.fill_round(c, 8.0, rgba(theme.dialog_strip, 1.0));
         // The content layer: rounded at the top, square where it meets the button strip.
-        g.fill_round(D2D_RECT_F { bottom: l.strip_top, ..c }, 8.0, rgba(DIALOG_BODY, 1.0));
-        g.fill(D2D_RECT_F { top: l.strip_top - 8.0, bottom: l.strip_top, ..c }, rgba(DIALOG_BODY, 1.0));
+        g.fill_round(D2D_RECT_F { bottom: l.strip_top, ..c }, 8.0, rgba(theme.dialog_body, 1.0));
+        g.fill(D2D_RECT_F { top: l.strip_top - 8.0, bottom: l.strip_top, ..c }, rgba(theme.dialog_body, 1.0));
         g.outline_round(c, 8.0, surface_stroke(1.0), g.px());
         label(g, &self.title, &g.fonts.title, l.title, white(0xFF), Align::Left);
         if !self.body.is_empty() {
@@ -347,7 +363,7 @@ impl<A: Copy> Dialog<A> {
         }
         let focused = self.focus == Focus::Field;
         let caret = match (&mut self.field, l.field) {
-            (Some(f), Some(r)) => f.draw(g, r, DIALOG_BODY, focused, field_hover, l.field_clear.map(|cr| (cr, clear))),
+            (Some(f), Some(r)) => f.draw(g, r, theme.dialog_body, focused, field_hover, l.field_clear.map(|cr| (cr, clear))),
             _ => None,
         };
         for (i, (b, r)) in self.buttons.iter().zip(&l.buttons).enumerate() {
@@ -549,6 +565,8 @@ pub enum Entry<A> {
 
 pub struct Menu<A> {
     pub entries: Vec<Entry<A>>,
+    /// A ComboBox's drop-down: as wide as the box, the selected item over it, marked with an accent pill.
+    pub combo: bool,
     /// Top-left in DIPs, already clamped into the window.
     pub x: f32,
     pub y: f32,
@@ -576,7 +594,7 @@ impl<A: Copy> Menu<A> {
         }
         let lead = if any_icon || any_check { 12.0 + 16.0 + 12.0 } else { 12.0 };
         let width = (lead + text_w + if accel_w > 0.0 { 24.0 + accel_w } else { 0.0 } + 12.0 + MENU_PAD * 2.0).max(120.0);
-        let mut m = Menu { entries, x, y, width, cursor: None };
+        let mut m = Menu { entries, combo: false, x, y, width, cursor: None };
         let h = m.height();
         if m.x + width > bounds.right - 4.0 {
             m.x = (x - width).max(bounds.left + 4.0);
@@ -584,6 +602,17 @@ impl<A: Copy> Menu<A> {
         if m.y + h > bounds.bottom - 4.0 {
             m.y = (y - h).max(bounds.top + 4.0);
         }
+        m
+    }
+
+    /// A ComboBox's drop-down over `field`, placed so the selected item sits on top of it (WinUI does the
+    /// same), then nudged inside `bounds`.
+    pub fn combo(entries: Vec<Entry<A>>, field: D2D_RECT_F, bounds: D2D_RECT_F) -> Menu<A> {
+        let selected = entries.iter().position(|e| matches!(e, Entry::Item(i) if i.checked)).unwrap_or(0);
+        let mut m = Menu { entries, combo: true, x: field.left, y: 0.0, width: field.right - field.left, cursor: Some(selected) };
+        let h = m.height();
+        let y = field.top - MENU_PAD - selected as f32 * MENU_ITEM_H + ((field.bottom - field.top) - MENU_ITEM_H) / 2.0;
+        m.y = y.min(bounds.bottom - 4.0 - h).max(bounds.top + 4.0);
         m
     }
 
@@ -662,7 +691,14 @@ impl<A: Copy> Menu<A> {
                         g.fill_round(r, 4.0, fill);
                     }
                     let mut x = r.left + 12.0;
-                    if any_lead {
+                    if self.combo {
+                        if it.checked {
+                            if !on {
+                                g.fill_round(r, 4.0, white(0x0F));
+                            }
+                            g.fill_round(rect(r.left, r.top + (MENU_ITEM_H - 16.0) / 2.0, 3.0, 16.0), 1.5, rgba(ACCENT, 1.0));
+                        }
+                    } else if any_lead {
                         if it.checked {
                             // RadioMenuFlyoutItem's bullet.
                             let d = rect(x + 5.0, r.top + MENU_ITEM_H / 2.0 - 3.0, 6.0, 6.0);
@@ -682,6 +718,40 @@ impl<A: Copy> Menu<A> {
             }
         }
     }
+}
+
+// --- ComboBox and ToggleSwitch -----------------------------------------------------------------------
+
+/// A closed ComboBox (the header is drawn by the caller): the value and a chevron in a control-fill box.
+pub fn combo_box(g: &Gfx, r: D2D_RECT_F, value: &str, s: &State, open: bool) {
+    let fill = if s.pressed || open { white(0x08) } else { lerp(white(0x0F), white(0x15), s.hover) };
+    g.fill_round(r, 4.0, fill);
+    g.outline_round(r, 4.0, white(0x12), g.px());
+    label(g, value, &g.fonts.body, rect(r.left + 12.0, r.top, (r.right - r.left - 44.0).max(0.0), r.bottom - r.top), white(0xFF), Align::Left);
+    g.text(&[0xE70D], &g.fonts.small_icons, rect(r.right - 32.0, r.top, 20.0, r.bottom - r.top), white(TEXT_SECONDARY), Align::Center);
+}
+
+pub const SWITCH_W: f32 = 40.0;
+pub const SWITCH_H: f32 = 20.0;
+
+/// A ToggleSwitch's track and knob in `r` (40 x 20), `on` eased 0..1 so the knob slides and the track fades
+/// between the outlined off look and the accent fill.
+pub fn toggle_switch(g: &Gfx, r: D2D_RECT_F, on: f32, s: &State) {
+    let off_fill = lerp(rgba(0x000000, 0.1), white(0x0B), s.hover);
+    let on_fill = lerp(rgba(ACCENT, 1.0), rgba(ACCENT, 0.9), s.hover);
+    g.fill_round(r, 10.0, lerp(off_fill, on_fill, on));
+    if on < 1.0 {
+        g.outline_round(r, 10.0, rgba(0xFFFFFF, (0x8B as f32 / 255.0) * (1.0 - on)), 1.0);
+    }
+    // The knob: 12 px at rest, 14 on hover, a 17 x 14 pill while pressed.
+    let (kw, kh) = if s.pressed { (17.0, 14.0) } else if s.hover > 0.5 { (14.0, 14.0) } else { (12.0, 12.0) };
+    let left = r.left + 4.0;
+    let right = r.right - 4.0 - kw;
+    let kx = left + (right - left) * on;
+    let ky = (r.top + r.bottom - kh) / 2.0;
+    // Off: secondary text colour; on: the text-on-accent colour (black on the dark theme).
+    let knob = lerp(white(TEXT_SECONDARY), rgba(0x000000, 1.0), on);
+    g.fill_round(rect(kx, ky, kw, kh), kh / 2.0, knob);
 }
 
 // --- Tooltips ----------------------------------------------------------------------------------------

@@ -127,7 +127,7 @@ impl App {
         self.invalidate();
     }
 
-    fn wordmark(&mut self, g: &Gfx) -> Option<ID2D1Bitmap1> {
+    pub(super) fn landing_wordmark(&mut self, g: &Gfx) -> Option<ID2D1Bitmap1> {
         if let Some((dpi, bmp)) = &self.landing.wordmark {
             if *dpi == g.dpi {
                 return Some(bmp.clone());
@@ -162,7 +162,7 @@ impl App {
         let cx = (v.left + v.right) / 2.0;
         g.push_clip(v);
 
-        if let Some(bmp) = self.wordmark(g) {
+        if let Some(bmp) = self.landing_wordmark(g) {
             let size = unsafe { bmp.GetPixelSize() };
             let w = WORDMARK_H * size.width as f32 / size.height.max(1) as f32;
             g.draw_bitmap(&bmp, rect(g.snap(cx - w / 2.0), g.snap(y), w, WORDMARK_H), 1.0);
