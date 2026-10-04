@@ -17,6 +17,8 @@ const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
 
 pub struct Entry {
     pub path: PathBuf,
+    /// Last-write time, part of the cache key.
+    pub stamp: u64,
     /// Online-only cloud file (Dropbox/OneDrive placeholder): reading even its header downloads it, so it
     /// is never preloaded.
     pub cloud: bool,
@@ -36,7 +38,7 @@ fn natural(a: &HSTRING, b: &HSTRING) -> Ordering {
 }
 
 pub fn list(folder: &Path) -> Listing {
-    let mut files: Vec<(HSTRING, PathBuf, bool, bool)> = Vec::new();
+    let mut files: Vec<(HSTRING, PathBuf, bool, bool, u64)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(folder) {
         for e in rd.flatten() {
             let Ok(md) = e.metadata() else { continue };
@@ -51,15 +53,15 @@ pub fn list(folder: &Path) -> Listing {
             let path = e.path();
             let name = HSTRING::from(e.file_name().as_os_str());
             let supported = is_supported(&path);
-            files.push((name, path, supported, cloud));
+            files.push((name, path, supported, cloud, md.last_write_time()));
         }
     }
     files.sort_by(|a, b| natural(&a.0, &b.0));
     let mut images = Vec::new();
     let mut rank = Vec::new();
-    for (i, (_, path, supported, cloud)) in files.iter().enumerate() {
+    for (i, (_, path, supported, cloud, stamp)) in files.iter().enumerate() {
         if *supported {
-            images.push(Entry { path: path.clone(), cloud: *cloud });
+            images.push(Entry { path: path.clone(), stamp: *stamp, cloud: *cloud });
             rank.push(i);
         }
     }

@@ -1,7 +1,10 @@
 //! The decode pool: a priority queue of jobs and a few worker threads that run [`crate::imaging::decode`].
+//! Decodes can't be cancelled once running (WIC has no cancellation), so the queue is where work is
+//! shed: jobs that leave the preload window are dropped before they start, and a queued neighbour that
+//! becomes current is moved to the front rather than decoded twice.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -10,6 +13,7 @@ use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFac
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
+use crate::engine::{self, Key};
 pub use crate::imaging::Decoded;
 
 /// Posted to the window when results are waiting in [`Pool::take_results`].
@@ -23,17 +27,12 @@ pub enum Priority {
 }
 
 pub struct Job {
-    pub path: PathBuf,
-    /// Decode to fit inside this box (device pixels), never upscaling. `(0, 0)` = full resolution.
-    pub box_w: u32,
-    pub box_h: u32,
+    pub key: Key,
     pub priority: Priority,
 }
 
 pub struct Done {
-    pub path: PathBuf,
-    pub box_w: u32,
-    pub box_h: u32,
+    pub key: Key,
     pub result: std::result::Result<Decoded, String>,
 }
 
@@ -73,7 +72,9 @@ impl Pool {
     pub fn submit(&self, job: Job) {
         let mut q = self.queue.lock().unwrap();
         if job.priority == Priority::Current {
-            q.push_front(job);
+            // Behind other current-image work (the placeholder before the sharp decode), ahead of preloads.
+            let at = q.iter().position(|j| j.priority != Priority::Current).unwrap_or(q.len());
+            q.insert(at, job);
         } else {
             q.push_back(job);
         }
@@ -81,13 +82,24 @@ impl Pool {
         self.wake.notify_one();
     }
 
-    /// Drops queued (not yet started) jobs the predicate rejects; returns their paths.
-    pub fn retain(&self, keep: impl Fn(&Job) -> bool) -> Vec<PathBuf> {
+    /// Makes a queued job current-priority. False when it isn't queued (running already, or never submitted).
+    pub fn promote(&self, key: &Key) -> bool {
+        let mut q = self.queue.lock().unwrap();
+        let Some(i) = q.iter().position(|j| &j.key == key) else { return false };
+        let mut job = q.remove(i).unwrap();
+        job.priority = Priority::Current;
+        let at = q.iter().position(|j| j.priority != Priority::Current).unwrap_or(q.len());
+        q.insert(at, job);
+        true
+    }
+
+    /// Drops queued (not yet started) jobs the predicate rejects; returns their keys.
+    pub fn retain(&self, keep: impl Fn(&Job) -> bool) -> Vec<Key> {
         let mut dropped = Vec::new();
         self.queue.lock().unwrap().retain(|j| {
             let k = keep(j);
             if !k {
-                dropped.push(j.path.clone());
+                dropped.push(j.key.clone());
             }
             k
         });
@@ -98,11 +110,11 @@ impl Pool {
         std::mem::take(&mut *self.results.lock().unwrap())
     }
 
-    /// Blocks until a result for `path` is in, or `timeout_ms` passes. Startup only.
+    /// Blocks until any result for `path` is in, or `timeout_ms` passes. Startup only.
     pub fn wait_for(&self, path: &Path, timeout_ms: u64) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
-            if self.results.lock().unwrap().iter().any(|d| d.path == path) {
+            if self.results.lock().unwrap().iter().any(|d| d.key.path == path) {
                 return true;
             }
             if std::time::Instant::now() >= deadline {
@@ -137,10 +149,13 @@ impl Pool {
                     q = self.wake.wait(q).unwrap();
                 }
             };
-            let name = job.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            crate::trace::mark(format!("decode start {name} box={}x{} {:?}", job.box_w, job.box_h, job.priority));
+            let name = job.key.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            crate::trace::mark(format!("decode start {name} bucket={} {:?}", job.key.bucket, job.priority));
+            let (bw, bh) = engine::box_for(job.key.bucket);
+            // The placeholder tier is a still first frame, even for an animation.
+            let still = job.key.bucket == engine::LOW;
             let result = match &factory {
-                Some(f) => crate::imaging::decode(f, &job.path, job.box_w, job.box_h),
+                Some(f) => crate::imaging::decode(f, &job.key.path, bw, bh, still),
                 None => Err("WIC is unavailable".into()),
             };
             match &result {
@@ -150,9 +165,8 @@ impl Pool {
                 )),
                 Err(e) => crate::trace::mark(format!("decode FAIL  {name}: {e}")),
             }
-            self.results.lock().unwrap().push(Done { path: job.path, box_w: job.box_w, box_h: job.box_h, result });
+            self.results.lock().unwrap().push(Done { key: job.key, result });
             self.notify();
         }
     }
 }
-

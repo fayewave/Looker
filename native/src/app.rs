@@ -1,7 +1,6 @@
 //! The window: a plain Win32 window with the system caption removed and everything inside drawn by us.
 //! Layout (DIPs, as in MainWindow.xaml): title bar 48 / toolbar 40 / viewport / status row 28.
 
-use std::collections::HashMap;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,10 +22,12 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::decode::{self, Decoded, Job, Pool, Priority};
+use crate::decode::{self, Decoded, Pool};
+use crate::engine::Key;
 use crate::folder::{self, Listing};
-use crate::format::{self, Format};
-use crate::imaging::{MAX_EDGE, VECTOR_MAX_EDGE};
+use crate::format;
+use crate::settings::{self, SavedWindow, Settings};
+use crate::viewer::{self, Outcome, Viewer};
 use crate::gfx::{self, Align, Gfx, contains, rect, rgb, white};
 use crate::view::View;
 
@@ -51,7 +52,6 @@ const WM_LISTED: u32 = WM_APP + 2;
 const WM_GPU_READY: u32 = WM_APP + 3;
 const TIMER_UPGRADE: usize = 1;
 const TIMER_TRACE: usize = 2;
-const TIMER_ANIM: usize = 3;
 
 static APP_ICON: &[u8] = include_bytes!("../../src/Looker/Assets/AppIcon.ico");
 
@@ -110,37 +110,29 @@ enum Caption {
     Close,
 }
 
-struct Cached {
-    /// One bitmap for a still image; every frame of an animation, with its delay.
-    frames: Vec<(ID2D1Bitmap1, u32)>,
-    width: u32,
-    height: u32,
-    /// The decoded pixels, kept only while drawing on WARP so the bitmaps can be re-made on the GPU.
-    pixels: Option<Vec<Vec<u8>>>,
-    vector: bool,
-    long_edge: u32,
-    native_w: u32,
-    native_h: u32,
-    format: Format,
-    taken: Option<FILETIME>,
-    pages: u32,
-}
-
 struct FileInfo {
     size: u64,
     modified: FILETIME,
 }
 
 pub struct Placement {
+    /// The restored window rect.
     pub rect: RECT,
     pub dpi: u32,
+    pub maximized: bool,
+    /// The work area of the monitor the window opens on (a maximized window's client area).
+    pub work: RECT,
 }
 
 impl Placement {
     /// The viewport the first image will be fitted into, in device pixels.
     pub fn viewport_px(&self) -> (u32, u32) {
         let s = self.dpi as f32 / 96.0;
-        let (w, h) = client_size_for(self);
+        let (w, h) = if self.maximized {
+            ((self.work.right - self.work.left).max(1) as u32, (self.work.bottom - self.work.top).max(1) as u32)
+        } else {
+            client_size_for(self)
+        };
         let vh = h as f32 - (TITLE_H + TOOLBAR_H + STATUS_H) * s;
         (w, vh.max(1.0) as u32)
     }
@@ -159,8 +151,26 @@ fn client_size_for(p: &Placement) -> (u32, u32) {
     (((p.rect.right - p.rect.left) - 2 * fx).max(1) as u32, ((p.rect.bottom - p.rect.top) - fy).max(1) as u32)
 }
 
+/// The saved window placement when it is still on a connected monitor, else the default window.
+pub fn initial_placement(settings: &Settings) -> Placement {
+    if let Some(w) = settings.window.filter(|_| settings.remember_window) {
+        let rect = RECT { left: w.left, top: w.top, right: w.right, bottom: w.bottom };
+        unsafe {
+            let mon = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL);
+            if !mon.is_invalid() {
+                let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+                let _ = GetMonitorInfoW(mon, &mut mi);
+                let (mut dx, mut dy) = (96u32, 96u32);
+                let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+                return Placement { rect, dpi: dx, maximized: w.maximized, work: mi.rcWork };
+            }
+        }
+    }
+    default_placement()
+}
+
 /// Default window: 1200 × 800 DIPs centred on the primary monitor's work area.
-pub fn initial_placement() -> Placement {
+fn default_placement() -> Placement {
     unsafe {
         let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
@@ -176,7 +186,7 @@ pub fn initial_placement() -> Placement {
         let h = ((DEFAULT_H * s) as i32 + fy).min(wh * 9 / 10);
         let x = work.left + (ww - w) / 2;
         let y = work.top + (wh - h) / 2;
-        Placement { rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, dpi: dx }
+        Placement { rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, dpi: dx, maximized: false, work }
     }
 }
 
@@ -226,19 +236,13 @@ pub struct App {
     maximized: bool,
     fullscreen: Option<WINDOWPLACEMENT>,
 
-    pool: Arc<Pool>,
-    listing: Option<Listing>,
-    index: Option<usize>,
-    current: Option<PathBuf>,
+    viewer: Viewer,
+    settings: Settings,
+    /// The window rect while restored (not maximized, minimized or fullscreen): what is saved on close.
+    normal_rect: RECT,
     info: Option<FileInfo>,
-    cache: HashMap<PathBuf, Cached>,
-    failed: HashMap<PathBuf, String>,
-    pending: HashMap<PathBuf, (u32, u32)>,
     view: View,
-    view_for: Option<PathBuf>,
     first_image_traced: bool,
-    /// Which frame of an animated current image is on screen.
-    anim_frame: usize,
 
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
@@ -300,19 +304,23 @@ impl App {
         out
     }
 
+    fn current_path(&self) -> Option<&Path> {
+        self.viewer.current.as_ref().map(|(p, _)| p.as_path())
+    }
+
     fn tool_enabled(&self, t: Tool) -> bool {
-        let has = self.current.is_some();
+        let has = self.viewer.current.is_some();
         match t {
             Tool::Settings => true,
-            Tool::Previous | Tool::Next => has && self.listing.as_ref().is_some_and(|l| l.images.len() > 1),
+            Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
             _ => has,
         }
     }
 
     fn status_parts(&self) -> String {
-        let Some(path) = &self.current else { return String::new() };
+        let Some(path) = self.current_path() else { return String::new() };
         let mut parts: Vec<String> = Vec::new();
-        let cached = self.cache.get(path);
+        let cached = self.viewer.current_entry();
         if let Some(c) = cached {
             if let Some(name) = format::display_name(c.format, Some(path)) {
                 parts.push(name);
@@ -344,7 +352,7 @@ impl App {
 
     fn reveal_rect(&self) -> Option<D2D_RECT_F> {
         let g = self.gfx.as_ref()?;
-        self.current.as_ref()?;
+        self.viewer.current.as_ref()?;
         let (_, h) = self.size_dip();
         let tw = g.measure(&wide(&self.status_parts()), &g.fonts.caption);
         let lw = g.measure(&wide("Open in Explorer"), &g.fonts.caption);
@@ -371,7 +379,7 @@ impl App {
                 }
             }
         }
-        if self.current.is_none() && contains(&self.open_rect(), x, y) {
+        if self.viewer.current.is_none() && contains(&self.open_rect(), x, y) {
             return Some(Hit::Open);
         }
         if contains(&self.viewport(), x, y) {
@@ -389,33 +397,20 @@ impl App {
         (((v.right - v.left) * s).ceil().max(1.0) as u32, ((v.bottom - v.top) * s).ceil().max(1.0) as u32)
     }
 
-    fn request(&mut self, path: &Path, bw: u32, bh: u32, priority: Priority) {
-        if let Some(&(pw, ph)) = self.pending.get(path) {
-            let covers = (pw == 0 && ph == 0) || (bw != 0 && pw >= bw && ph >= bh);
-            if covers {
-                return;
-            }
+    /// Applies what a viewer call says: a new image resets the zoom (and may want a sharper decode).
+    fn apply(&mut self, out: Outcome) {
+        if let Some((nw, nh)) = out.reset_view {
+            self.reset_view(nw, nh);
+            self.schedule_upgrade();
         }
-        if self.failed.contains_key(path) {
-            return;
+        if out.redraw {
+            self.invalidate();
         }
-        self.pending.insert(path.to_path_buf(), (bw, bh));
-        self.pool.submit(Job { path: path.to_path_buf(), box_w: bw, box_h: bh, priority });
     }
 
-    fn show_index(&mut self, i: usize) {
-        let Some(l) = &self.listing else { return };
-        if i >= l.images.len() {
-            return;
-        }
-        let path = l.images[i].path.clone();
-        self.index = Some(i);
-        self.show_path(path);
-    }
-
-    fn show_path(&mut self, path: PathBuf) {
-        self.current = Some(path.clone());
-        self.restart_animation();
+    /// After every navigation: title, status-row file facts.
+    fn current_changed(&mut self) {
+        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         self.info = std::fs::metadata(&path).ok().map(|m| {
             let t = m.last_write_time();
             FileInfo { size: m.len(), modified: FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 } }
@@ -423,61 +418,19 @@ impl App {
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
         }
-        if let Some(c) = self.cache.get(&path) {
-            let (nw, nh) = (c.native_w, c.native_h);
-            self.reset_view(nw, nh);
-            self.view_for = Some(path.clone());
-        } else {
-            self.view.clear();
-            self.view_for = None;
-        }
-        if !self.cache.contains_key(&path) {
-            let (bw, bh) = self.fit_box();
-            self.request(&path, bw, bh, Priority::Current);
-        }
-        self.schedule_preloads();
-        self.schedule_upgrade();
         self.invalidate();
+    }
+
+    fn show_path(&mut self, path: PathBuf) {
+        let stamp = crate::engine::stamp(&path);
+        let out = self.viewer.show(path, stamp, self.gfx.as_ref());
+        self.apply(out);
+        self.current_changed();
     }
 
     fn reset_view(&mut self, nw: u32, nh: u32) {
         let v = self.viewport();
         self.view.reset((v.right - v.left) as f64, (v.bottom - v.top) as f64, nw as f64, nh as f64, self.scale() as f64);
-    }
-
-    /// Preload ±1, ±2 at the fit size; drop queued work for images that left the window and evict the cache.
-    fn schedule_preloads(&mut self) {
-        let Some(cur) = self.current.clone() else { return };
-        let mut wanted: Vec<PathBuf> = vec![cur.clone()];
-        let mut preload: Vec<PathBuf> = Vec::new();
-        if let (Some(l), Some(i)) = (&self.listing, self.index) {
-            for d in [1isize, -1, 2, -2] {
-                let j = i as isize + d;
-                if j >= 0 && (j as usize) < l.images.len() {
-                    let e = &l.images[j as usize];
-                    wanted.push(e.path.clone());
-                    if !e.cloud {
-                        preload.push(e.path.clone());
-                    }
-                }
-            }
-            for d in [3isize, -3] {
-                let j = i as isize + d;
-                if j >= 0 && (j as usize) < l.images.len() {
-                    wanted.push(l.images[j as usize].path.clone());
-                }
-            }
-        }
-        for p in self.pool.retain(|j| wanted.contains(&j.path)) {
-            self.pending.remove(&p);
-        }
-        self.cache.retain(|p, _| wanted.contains(p));
-        let (bw, bh) = self.fit_box();
-        for p in preload {
-            if !self.cache.contains_key(&p) {
-                self.request(&p, bw, bh, Priority::Preload);
-            }
-        }
     }
 
     /// Zoomed or resized past what the on-screen bitmap was decoded for: re-decode sharper, debounced.
@@ -491,115 +444,41 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_UPGRADE);
         }
-        let Some(path) = self.current.clone() else { return };
-        let Some(c) = self.cache.get(&path) else { return };
         let r = self.view.target_rect();
-        if c.frames.len() > 1 {
-            return; // animations stay at the fit size: full resolution x N frames explodes memory
-        }
-        let max = self.gfx.as_ref().map_or(MAX_EDGE, |g| g.max_bitmap_size().min(MAX_EDGE));
-        let cap = if c.vector { VECTOR_MAX_EDGE } else { c.native_w.max(c.native_h) };
-        let needed = ((r.w.max(r.h) * self.scale() as f64).ceil() as u32).min(cap).min(max);
-        if c.long_edge + 1 >= needed {
-            return;
-        }
-        let edge = if !c.vector && needed * 10 >= cap * 7 && cap <= max { 0 } else { needed };
-        self.request(&path, edge, edge, Priority::Current);
+        let needed = (r.w.max(r.h) * self.scale() as f64).ceil() as u32;
+        let max = self.gfx.as_ref().map_or(16384, |g| g.max_bitmap_size());
+        let out = self.viewer.upgrade(needed, max);
+        self.apply(out);
     }
 
     fn on_decoded(&mut self) {
-        let results = self.pool.take_results();
-        for d in results {
-            if self.pending.get(&d.path) == Some(&(d.box_w, d.box_h)) {
-                self.pending.remove(&d.path);
-            }
-            match d.result {
-                Ok(img) => self.adopt(d.path, img),
-                Err(e) => {
-                    if self.current.as_ref() == Some(&d.path) && !self.cache.contains_key(&d.path) {
-                        self.invalidate();
-                    }
-                    if !self.cache.contains_key(&d.path) {
-                        self.failed.insert(d.path, e);
-                    }
-                }
-            }
-        }
-    }
-
-    fn adopt(&mut self, path: PathBuf, img: Decoded) {
-        let long_edge = img.width.max(img.height);
-        if self.cache.get(&path).is_some_and(|c| c.long_edge >= long_edge) {
-            return;
-        }
-        let is_current = self.current.as_ref() == Some(&path);
-        // A finished preload that has since left the window is not worth a GPU upload.
-        if !is_current && !self.listing.as_ref().is_some_and(|l| l.images.iter().any(|e| e.path == path)) {
-            return;
-        }
-        let Some(g) = &self.gfx else { return };
-        let mut frames = Vec::with_capacity(img.frames.len());
-        for fr in &img.frames {
-            let Ok(bmp) = g.bitmap(img.width, img.height, &fr.pixels) else { return };
-            frames.push((bmp, fr.delay_ms));
-        }
-        let pixels = if g.is_warp() { Some(img.frames.into_iter().map(|f| f.pixels).collect()) } else { None };
-        self.cache.insert(
-            path.clone(),
-            Cached {
-                frames,
-                width: img.width,
-                height: img.height,
-                pixels,
-                vector: img.vector,
-                long_edge,
-                native_w: img.native_width,
-                native_h: img.native_height,
-                format: img.format,
-                taken: img.taken,
-                pages: img.pages,
-            },
-        );
-        if is_current {
-            self.restart_animation();
-            if self.view_for.as_ref() != Some(&path) {
-                self.reset_view(img.native_width, img.native_height);
-                self.view_for = Some(path);
-                self.schedule_upgrade();
-            }
-            self.invalidate();
-        }
+        let out = self.viewer.on_results(self.gfx.as_ref());
+        self.apply(out);
     }
 
     fn step(&mut self, delta: isize) {
-        let (Some(l), Some(i)) = (&self.listing, self.index) else { return };
-        let n = l.images.len() as isize;
-        let j = (i as isize + delta).clamp(0, n - 1) as usize;
-        if j != i {
-            self.show_index(j);
-        }
+        let out = self.viewer.step(delta, self.gfx.as_ref());
+        self.apply(out);
+        self.current_changed();
     }
 
     fn jump(&mut self, last: bool) {
-        let Some(l) = &self.listing else { return };
-        if l.images.is_empty() {
+        let n = self.viewer.image_count();
+        if n == 0 {
             return;
         }
-        let j = if last { l.images.len() - 1 } else { 0 };
-        if Some(j) != self.index {
-            self.show_index(j);
+        let j = if last { n - 1 } else { 0 };
+        if Some(j) != self.viewer.index {
+            let out = self.viewer.show_index(j, self.gfx.as_ref());
+            self.apply(out);
+            self.current_changed();
         }
     }
 
     fn on_listed(&mut self, listing: Listing) {
-        let Some(cur) = self.current.clone() else { return };
-        if listing.folder.as_path() != cur.parent().unwrap_or(Path::new("")) {
-            return;
+        if self.viewer.set_listing(listing) {
+            self.invalidate();
         }
-        self.index = listing.images.iter().position(|e| e.path == cur);
-        self.listing = Some(listing);
-        self.schedule_preloads();
-        self.invalidate();
     }
 
     fn list_folder_async(&self, folder: PathBuf) {
@@ -620,12 +499,7 @@ impl App {
     }
 
     fn open(&mut self, path: PathBuf) {
-        self.listing = None;
-        self.index = None;
-        self.cache.clear();
-        self.failed.clear();
-        self.pending.clear();
-        let _ = self.pool.retain(|_| false);
+        self.viewer.close();
         if let Some(folder) = path.parent() {
             self.list_folder_async(folder.to_path_buf());
         }
@@ -633,15 +507,9 @@ impl App {
     }
 
     fn close(&mut self) {
-        self.listing = None;
-        self.index = None;
-        self.current = None;
+        self.viewer.close();
         self.info = None;
-        self.cache.clear();
-        self.pending.clear();
-        let _ = self.pool.retain(|_| false);
         self.view.clear();
-        self.view_for = None;
         unsafe {
             let _ = SetWindowTextW(self.hwnd, w!("Looker"));
         }
@@ -666,7 +534,7 @@ impl App {
     }
 
     fn reveal(&self) {
-        let Some(path) = &self.current else { return };
+        let Some(path) = self.current_path() else { return };
         unsafe {
             let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
             if SHParseDisplayName(&HSTRING::from(path.as_os_str()), None, &mut pidl, 0, None).is_ok() && !pidl.is_null() {
@@ -726,39 +594,6 @@ impl App {
         self.invalidate();
     }
 
-    // --- Animation ----------------------------------------------------------------------------------
-
-    /// Frame 0 of the current image, and the timer for frame 1 when it's animated.
-    fn restart_animation(&mut self) {
-        self.anim_frame = 0;
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
-        }
-        self.arm_animation();
-    }
-
-    fn arm_animation(&self) {
-        let Some(c) = self.current.as_ref().and_then(|p| self.cache.get(p)) else { return };
-        if c.frames.len() > 1 {
-            let delay = c.frames[self.anim_frame % c.frames.len()].1.max(10);
-            unsafe {
-                SetTimer(Some(self.hwnd), TIMER_ANIM, delay, None);
-            }
-        }
-    }
-
-    fn next_frame(&mut self) {
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
-        }
-        let Some(n) = self.current.as_ref().and_then(|p| self.cache.get(p)).map(|c| c.frames.len()) else { return };
-        if n > 1 {
-            self.anim_frame = (self.anim_frame + 1) % n;
-            self.arm_animation();
-            self.invalidate();
-        }
-    }
-
     // --- Devices ------------------------------------------------------------------------------------
 
     fn start_gpu_device(&self) {
@@ -785,37 +620,13 @@ impl App {
             crate::trace::mark(format!("device switch failed: {e}"));
             return;
         }
-        let mut lost = Vec::new();
-        for (path, c) in self.cache.iter_mut() {
-            let remade: Option<Vec<ID2D1Bitmap1>> =
-                c.pixels.take().and_then(|all| all.iter().map(|px| g.bitmap(c.width, c.height, px).ok()).collect());
-            match remade {
-                Some(bmps) if bmps.len() == c.frames.len() => {
-                    for (slot, bmp) in c.frames.iter_mut().zip(bmps) {
-                        slot.0 = bmp;
-                    }
-                }
-                _ => lost.push(path.clone()),
-            }
-        }
-        for p in lost {
-            self.cache.remove(&p);
-        }
+        self.viewer.reupload(g);
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
             let _ = g.commit_swap();
         }
         crate::trace::mark("switched to the hardware device");
-        // Whatever was current but not re-made (it was mid-decode) is requested again.
-        if let Some(cur) = self.current.clone() {
-            if !self.cache.contains_key(&cur) {
-                self.view_for = None;
-                let (bw, bh) = self.fit_box();
-                self.request(&cur, bw, bh, Priority::Current);
-            }
-        }
-        self.schedule_preloads();
     }
 
     // --- Drawing ------------------------------------------------------------------------------------
@@ -851,7 +662,7 @@ impl App {
             let y = g.snap((TITLE_H - 16.0) / 2.0);
             g.draw_bitmap(icon, rect(x, y, 16.0, 16.0), 1.0);
         }
-        let title = self.current.as_ref().map(|p| file_name(p)).unwrap_or_else(|| "Looker".into());
+        let title = self.current_path().map(file_name).unwrap_or_else(|| "Looker".into());
         let fg = if self.active { white(0xFF) } else { white(TEXT_TERTIARY) };
         g.text(&wide(&title), &g.fonts.caption, rect(48.0, 0.0, (w - 48.0 - CAPTION_W * 3.0 - 16.0).max(0.0), TITLE_H), fg, Align::Left);
 
@@ -914,7 +725,7 @@ impl App {
             let c = if self.hover == Some(Hit::Reveal) { white(0xFF) } else { white(TEXT_SECONDARY) };
             g.text(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
-        if let (Some(l), Some(i)) = (&self.listing, self.index) {
+        if let (Some(l), Some(i)) = (&self.viewer.listing, self.viewer.index) {
             let label = format!("{} / {}", l.rank[i] + 1, l.total_files);
             g.text(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
         }
@@ -922,13 +733,13 @@ impl App {
 
     fn draw_viewport(&mut self, g: &mut Gfx) {
         let v = self.viewport();
-        let Some(path) = self.current.clone() else {
+        if self.viewer.current.is_none() {
             self.draw_landing(g);
             return;
-        };
+        }
         g.checkerboard(v);
-        if let Some(c) = self.cache.get(&path) {
-            if self.view_for.as_ref() == Some(&path) {
+        if let Some(c) = self.viewer.shown.clone() {
+            {
                 let r = self.view.frame();
                 let dest = D2D_RECT_F {
                     left: v.left + r.x as f32,
@@ -939,7 +750,8 @@ impl App {
                 unsafe {
                     g.dev.dc.PushAxisAlignedClip(&v, windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED);
                 }
-                let frame = &c.frames[self.anim_frame.min(c.frames.len() - 1)].0;
+                let frames = c.frames.borrow();
+                let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
                 g.draw_bitmap(frame, dest, 1.0);
                 unsafe {
                     g.dev.dc.PopAxisAlignedClip();
@@ -949,7 +761,7 @@ impl App {
                     crate::trace::mark("first frame with the image drawn");
                 }
             }
-        } else if self.failed.contains_key(&path) {
+        } else if self.viewer.error.is_some() {
             g.text(&wide("Can't display this file"), &g.fonts.body, v, white(TEXT_SECONDARY), Align::Center);
         }
     }
@@ -970,6 +782,30 @@ impl App {
         };
         g.fill_round(r, 4.0, fill);
         g.text(&wide("Open photo"), &g.fonts.caption, r, white(0xFF), Align::Center);
+    }
+
+    // --- Placement ----------------------------------------------------------------------------------
+
+    fn track_normal_rect(&mut self) {
+        unsafe {
+            if self.fullscreen.is_none() && !IsZoomed(self.hwnd).as_bool() && !IsIconic(self.hwnd).as_bool() {
+                let mut r = RECT::default();
+                if GetWindowRect(self.hwnd, &mut r).is_ok() && r.right > r.left && r.bottom > r.top {
+                    self.normal_rect = r;
+                }
+            }
+        }
+    }
+
+    /// Saved on close only while "remember window placement" is on.
+    fn save_placement(&mut self) {
+        if !self.settings.remember_window {
+            return;
+        }
+        let r = self.normal_rect;
+        let maximized = self.fullscreen.is_none() && unsafe { IsZoomed(self.hwnd).as_bool() };
+        self.settings.window = Some(SavedWindow { left: r.left, top: r.top, right: r.right, bottom: r.bottom, maximized });
+        settings::save(&self.settings);
     }
 
     // --- Window messages ----------------------------------------------------------------------------
@@ -1217,7 +1053,12 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
-                        TIMER_ANIM => self.next_frame(),
+                        viewer::TIMER_ANIM => {
+                            if self.viewer.next_frame() {
+                                self.invalidate();
+                            }
+                        }
+                        viewer::TIMER_SETTLE => self.viewer.on_settle_timer(),
                         TIMER_TRACE => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TRACE);
                             crate::trace::flush("1.5 s after the first frame");
@@ -1243,6 +1084,7 @@ impl App {
                     self.client_w = (lp.0 & 0xFFFF) as u32;
                     self.client_h = ((lp.0 >> 16) & 0xFFFF) as u32;
                     self.maximized = wp.0 as u32 == SIZE_MAXIMIZED;
+                    self.track_normal_rect();
                     if self.client_w > 0 && self.client_h > 0 {
                         if let Some(g) = &mut self.gfx {
                             let _ = g.resize(self.client_w, self.client_h, self.dpi as f32);
@@ -1250,6 +1092,8 @@ impl App {
                         let v = self.viewport();
                         let s = self.scale() as f64;
                         self.view.set_viewport((v.right - v.left) as f64, (v.bottom - v.top) as f64, s);
+                        let (bw, bh) = self.fit_box();
+                        self.viewer.set_fit_box(bw, bh);
                         self.render();
                         self.schedule_upgrade();
                     }
@@ -1279,6 +1123,14 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_ERASEBKGND => Some(LRESULT(1)),
+                WM_MOVE | WM_EXITSIZEMOVE => {
+                    self.track_normal_rect();
+                    None
+                }
+                WM_CLOSE => {
+                    self.save_placement();
+                    None
+                }
                 WM_DESTROY => {
                     crate::trace::flush("window closed");
                     PostQuitMessage(0);
@@ -1334,7 +1186,7 @@ fn load_icon(bytes: &[u8], size: i32) -> Option<HICON> {
     unsafe { CreateIconFromResourceEx(&bytes[off..off + len], true, 0x0003_0000, size, size, LR_DEFAULTCOLOR).ok() }
 }
 
-pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thread: std::thread::JoinHandle<Option<(gfx::Sendable<(gfx::Device, gfx::Text)>, Option<Decoded>)>>) {
+pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, placement: Placement, pool: Arc<Pool>, gfx_thread: std::thread::JoinHandle<Option<(gfx::Sendable<(gfx::Device, gfx::Text)>, Option<Decoded>)>>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         let instance: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
@@ -1385,18 +1237,12 @@ pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thr
             active: true,
             maximized: false,
             fullscreen: None,
-            pool: pool.clone(),
-            listing: None,
-            index: None,
-            current: None,
+            viewer: Viewer::new(hwnd, pool.clone()),
+            settings,
+            normal_rect: placement.rect,
             info: None,
-            cache: HashMap::new(),
-            failed: HashMap::new(),
-            pending: HashMap::new(),
             view: View::new(),
-            view_for: None,
             first_image_traced: false,
-            anim_frame: 0,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -1408,11 +1254,13 @@ pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thr
             cap_pressed: None,
         });
 
-        // The launch decode was submitted before the window existed; mark it pending so it isn't requested twice.
-        if let Some(p) = &path {
-            let (bw, bh) = placement.viewport_px();
-            app.pending.insert(p.clone(), (bw, bh));
-        }
+        // The launch decodes were submitted before the window existed; mark them pending so they aren't
+        // requested twice.
+        app.viewer.adopt_pending(launch_keys);
+        // The viewport `main` predicted (a maximized window is still restored-size until it is shown), so the
+        // first requests match the launch decodes already running. WM_SIZE corrects it from here on.
+        let (bw, bh) = placement.viewport_px();
+        app.viewer.set_fit_box(bw, bh);
 
         if let Some(Some((ready, icon))) = gfx_thread.join().ok() {
             let (dev, text) = ready.0;
@@ -1449,7 +1297,7 @@ pub fn run(path: Option<PathBuf>, placement: Placement, pool: Arc<Pool>, gfx_thr
         pool.set_window(hwnd);
         app.render();
         crate::trace::mark("first frame presented");
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, if placement.maximized { SW_SHOWMAXIMIZED } else { SW_SHOW });
         crate::trace::mark("window shown");
         app.start_gpu_device();
         SetTimer(Some(hwnd), TIMER_TRACE, 1500, None);

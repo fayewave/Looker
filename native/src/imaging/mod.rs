@@ -131,15 +131,16 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32) 
     }
 }
 
-/// Decodes `path` to fit `box_w × box_h` device pixels (`(0, 0)` = full size).
-pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+/// Decodes `path` to fit `box_w × box_h` device pixels (`(0, 0)` = full size). `still` asks for the first
+/// frame only (the placeholder tier), skipping the animation decoders.
+pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still: bool) -> Result<Decoded, String> {
     let fmt = format::sniff_file(path);
-    let steps = plan(fmt);
+    let steps: Vec<Step> = plan(fmt).iter().copied().filter(|s| !(still && *s == Step::Animated)).collect();
     if steps.is_empty() {
         return Err(format!("no decoder for {fmt:?}"));
     }
     let mut errors = Vec::new();
-    for &step in steps {
+    for &step in &steps {
         match run(f, step, path, box_w, box_h) {
             Ok(Some(mut d)) => {
                 d.format = fmt;
@@ -184,7 +185,7 @@ mod tests {
         for p in &paths {
             let t = std::time::Instant::now();
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
-            match decode(&f, p, 1200, 800) {
+            match decode(&f, p, 1200, 800, false) {
                 Ok(d) => println!(
                     "ok   {name:<44} {:?} {}x{} native {}x{} frames {} {:.0} ms",
                     d.format,
@@ -220,8 +221,8 @@ mod tests {
         };
         for name in ["74 RAW MEF Mamiya ZD.mef", "62 RAW SRW Samsung EX1.srw", "45 DNG DJI drone.dng"] {
             let p = dir.join(name);
-            let fit = decode(&f, &p, 1200, 800).unwrap();
-            let full = decode(&f, &p, 0, 0).unwrap();
+            let fit = decode(&f, &p, 1200, 800, false).unwrap();
+            let full = decode(&f, &p, 0, 0, false).unwrap();
             println!("{name}: fit {}x{} mean {}  full {}x{} mean {}", fit.width, fit.height, mean(&fit), full.width, full.height, mean(&full));
         }
     }

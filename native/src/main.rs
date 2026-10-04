@@ -9,12 +9,15 @@
 
 mod app;
 mod decode;
+mod engine;
 mod folder;
 mod format;
 mod gfx;
 mod imaging;
+mod settings;
 mod trace;
 mod view;
+mod viewer;
 
 use std::path::PathBuf;
 
@@ -27,13 +30,25 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     let path = std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_file());
-    let placement = app::initial_placement();
+    let settings = settings::load();
+    let placement = app::initial_placement(&settings);
 
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(2, 4));
     let pool = decode::Pool::start(workers);
+    // The same keys the viewer will ask for once the window exists: placeholder (when the window is big
+    // enough to need one) then sharp, both at the front of the queue.
+    let mut launch_keys = Vec::new();
     if let Some(p) = &path {
         let (bw, bh) = placement.viewport_px();
-        pool.submit(decode::Job { path: p.clone(), box_w: bw, box_h: bh, priority: decode::Priority::Current });
+        let sharp = viewer::Viewer::sharp_bucket_for(bw, bh);
+        let stamp = engine::stamp(p);
+        if viewer::Viewer::uses_low_tier(sharp) {
+            launch_keys.push(engine::Key::new(p, stamp, engine::LOW));
+        }
+        launch_keys.push(engine::Key::new(p, stamp, sharp));
+        for k in &launch_keys {
+            pool.submit(decode::Job { key: k.clone(), priority: decode::Priority::Current });
+        }
     }
     trace::mark("launch decode submitted");
 
@@ -57,5 +72,5 @@ fn main() {
         })
         .expect("spawn gfx init");
 
-    app::run(path, placement, pool, gfx_thread);
+    app::run(path, launch_keys, settings, placement, pool, gfx_thread);
 }
