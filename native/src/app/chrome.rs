@@ -52,8 +52,33 @@ impl App {
         match t {
             Tool::Settings => true,
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
+            Tool::Sort => has,
+            // Not built yet.
+            Tool::Rotate | Tool::Delete | Tool::Explorer | Tool::Strip | Tool::Info => false,
             _ => has,
         }
+    }
+
+    /// Tooltip text, as in MainWindow.xaml.
+    pub(super) fn tooltip_text(h: Hit) -> Option<&'static str> {
+        Some(match h {
+            Hit::Tool(Tool::Previous) => "Previous (←)",
+            Hit::Tool(Tool::Next) => "Next (→)",
+            Hit::Tool(Tool::ZoomOut) => "Zoom out (Ctrl+-)",
+            Hit::Tool(Tool::Fit) => "Fit to window (F)",
+            Hit::Tool(Tool::ZoomIn) => "Zoom in (Ctrl++)",
+            Hit::Tool(Tool::Fullscreen) => "Fullscreen (F11)",
+            Hit::Tool(Tool::Rotate) => "Rotate right (Ctrl+R)",
+            Hit::Tool(Tool::Delete) => "Delete (Del)",
+            Hit::Tool(Tool::Sort) => "Sort",
+            Hit::Tool(Tool::Home) => "Home",
+            Hit::Tool(Tool::Explorer) => "File explorer (E)",
+            Hit::Tool(Tool::Strip) => "Thumbnails (T)",
+            Hit::Tool(Tool::Info) => "Info panel (I)",
+            Hit::Tool(Tool::Settings) => "Settings (Ctrl+,)",
+            Hit::Reveal => "Show this file in File Explorer",
+            _ => return None,
+        })
     }
 
     pub(super) fn status_parts(&self) -> String {
@@ -105,26 +130,9 @@ impl App {
         rect(cx - 70.0, cy + 8.0, 140.0, 32.0)
     }
 
+    /// What is under a point, from the regions the last frame drew.
     pub(super) fn hit(&self, x: f32, y: f32) -> Option<Hit> {
-        if self.chrome() {
-            for (t, _, r) in self.tool_rects() {
-                if contains(&r, x, y) {
-                    return Some(Hit::Tool(t));
-                }
-            }
-            if let Some(r) = self.reveal_rect() {
-                if contains(&r, x, y) {
-                    return Some(Hit::Reveal);
-                }
-            }
-        }
-        if self.viewer.current.is_none() && contains(&self.open_rect(), x, y) {
-            return Some(Hit::Open);
-        }
-        if contains(&self.viewport(), x, y) {
-            return Some(Hit::Viewport);
-        }
-        None
+        self.hits.at(x, y)
     }
 
     // --- Drawing ------------------------------------------------------------------------------------
@@ -137,18 +145,22 @@ impl App {
 
     pub(super) fn render(&mut self) {
         let Some(mut g) = self.gfx.take() else { return };
+        self.hits.clear();
+        self.fades.begin();
         g.begin(0x000000);
+        // Bottom to top: hits added later win.
+        self.draw_viewport(&mut g);
         if self.chrome() {
             self.draw_title(&g);
             self.draw_toolbar(&g);
             self.draw_status(&g);
         }
-        self.draw_viewport(&mut g);
+        self.draw_overlays(&g);
         if let Err(e) = g.end() {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
-        if self.view.animating() {
+        if self.view.animating() || self.fades.moving {
             self.invalidate();
         }
     }
@@ -185,22 +197,22 @@ impl App {
         }
     }
 
-    pub(super) fn draw_toolbar(&self, g: &Gfx) {
+    /// Hover fade and pressed state of a hit, for drawing it.
+    fn state(&mut self, id: Hit, enabled: bool) -> ui::State {
+        let over = self.hover == Some(id) && (self.pressed.is_none() || self.pressed == Some(id));
+        let hover = self.fades.get(id, over && enabled);
+        ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
+    }
+
+    pub(super) fn draw_toolbar(&mut self, g: &Gfx) {
         for (t, glyph, r) in self.tool_rects() {
             let enabled = self.tool_enabled(t);
-            let id = Some(Hit::Tool(t));
-            let fill = if !enabled {
-                white(0x0B)
-            } else if self.pressed == id && self.hover == id {
-                white(0x1C)
-            } else if self.hover == id && self.pressed.is_none() {
-                white(0x33)
-            } else {
-                white(0x24)
-            };
-            g.fill_round(r, 4.0, fill);
-            g.outline_round(r, 4.0, white(0x12), g.px());
-            let fg = if enabled { white(0xFF) } else { white(TEXT_DISABLED) };
+            let id = Hit::Tool(t);
+            self.hits.add(id, r);
+            let open = t == Tool::Sort && matches!(self.menu, Some((menus::MenuKind::Sort, _)));
+            let mut st = self.state(id, enabled);
+            st.pressed |= open;
+            let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
             if t == Tool::Sort {
                 g.text(&[glyph], &g.fonts.icons, rect(r.left + 11.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
                 g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 11.0 - 12.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
@@ -210,7 +222,7 @@ impl App {
         }
     }
 
-    pub(super) fn draw_status(&self, g: &Gfx) {
+    pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
         let y = h - STATUS_H + 4.0;
         let row_h = STATUS_H - 10.0;
@@ -220,7 +232,13 @@ impl App {
         }
         g.text(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
         if let Some(r) = self.reveal_rect() {
-            let c = if self.hover == Some(Hit::Reveal) { white(0xFF) } else { white(TEXT_SECONDARY) };
+            self.hits.add(Hit::Reveal, r);
+            let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
+            let c = if self.pressed == Some(Hit::Reveal) {
+                white(TEXT_TERTIARY)
+            } else {
+                white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8)
+            };
             g.text(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
         if let (Some(l), Some(i)) = (&self.viewer.listing, self.viewer.index) {
@@ -231,6 +249,7 @@ impl App {
 
     pub(super) fn draw_viewport(&mut self, g: &mut Gfx) {
         let v = self.viewport();
+        self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
             self.draw_landing(g);
             return;
@@ -264,21 +283,40 @@ impl App {
         }
     }
 
-    pub(super) fn draw_landing(&self, g: &Gfx) {
+    pub(super) fn draw_landing(&mut self, g: &Gfx) {
         let v = self.viewport();
         let cy = (v.top + v.bottom) / 2.0;
         g.text(&wide("Looker"), &g.fonts.body_strong, rect(v.left, cy - 40.0, v.right - v.left, 24.0), white(0xFF), Align::Center);
         g.text(&wide("Open a photo to start  ·  Ctrl+O"), &g.fonts.caption, rect(v.left, cy - 16.0, v.right - v.left, 18.0), white(TEXT_SECONDARY), Align::Center);
         let r = self.open_rect();
-        let hover = self.hover == Some(Hit::Open);
-        let fill = if self.pressed == Some(Hit::Open) && hover {
-            gfx::rgba(ACCENT, 0.8)
-        } else if hover {
-            gfx::rgba(ACCENT, 0.9)
-        } else {
-            rgb(ACCENT)
-        };
-        g.fill_round(r, 4.0, fill);
-        g.text(&wide("Open photo"), &g.fonts.caption, r, white(0xFF), Align::Center);
+        self.hits.add(Hit::Open, r);
+        let st = self.state(Hit::Open, true);
+        let fg = ui::button_frame(g, r, ui::Kind::Accent, &st);
+        g.text(&wide("Open photo"), &g.fonts.caption, r, fg, Align::Center);
+    }
+
+    /// Menus and tooltips, above everything.
+    fn draw_overlays(&mut self, g: &Gfx) {
+        if let Some((_, m)) = &self.menu {
+            self.hits.add(Hit::MenuSurface, m.bounds());
+            for (i, r) in m.item_rects() {
+                self.hits.add(Hit::MenuItem(i), r);
+            }
+            let hover = match self.hover {
+                Some(Hit::MenuItem(i)) => Some(i),
+                _ => None,
+            };
+            let pressed = match self.pressed {
+                Some(Hit::MenuItem(i)) if hover == Some(i) => Some(i),
+                _ => None,
+            };
+            m.draw(g, hover, pressed);
+        }
+        if let Some(t) = self.tooltip {
+            if let (Some(text), Some(anchor)) = (Self::tooltip_text(t), self.hits.rect_of(t)) {
+                let (w, h) = self.size_dip();
+                ui::tooltip(g, text, anchor, rect(0.0, 0.0, w, h));
+            }
+        }
     }
 }

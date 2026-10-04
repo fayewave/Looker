@@ -16,6 +16,7 @@ mod gfx;
 mod imaging;
 mod settings;
 mod trace;
+mod ui;
 mod view;
 mod viewer;
 

@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use crate::folder::Sort;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SavedWindow {
     /// The restored (not maximized) window rect, screen coordinates.
@@ -19,11 +21,13 @@ pub struct Settings {
     pub window: Option<SavedWindow>,
     /// "Remember window size and position" (default on). Off clears the saved placement.
     pub remember_window: bool,
+    /// The toolbar sort, applied to every folder.
+    pub sort: Sort,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true }
+        Settings { window: None, remember_window: true, sort: Sort::default() }
     }
 }
 
@@ -45,6 +49,7 @@ pub fn parse(text: &str) -> Settings {
                 }
             }
             "remember_window" => s.remember_window = v != "0" && !v.eq_ignore_ascii_case("false"),
+            "sort" => s.sort = Sort::parse(v).unwrap_or_default(),
             _ => {}
         }
     }
@@ -57,6 +62,7 @@ pub fn format(s: &Settings) -> String {
         out.push_str(&format!("window={} {} {} {} {}\n", w.left, w.top, w.right, w.bottom, w.maximized as i32));
     }
     out.push_str(&format!("remember_window={}\n", s.remember_window as i32));
+    out.push_str(&format!("sort={}\n", s.sort.to_setting()));
     out
 }
 
@@ -82,7 +88,11 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let s = Settings { window: Some(SavedWindow { left: -1900, top: 40, right: -100, bottom: 1000, maximized: true }), remember_window: true };
+        let s = Settings {
+            window: Some(SavedWindow { left: -1900, top: 40, right: -100, bottom: 1000, maximized: true }),
+            remember_window: true,
+            sort: Sort { field: crate::folder::SortField::Date, descending: true },
+        };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());
     }

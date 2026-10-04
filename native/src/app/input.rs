@@ -23,7 +23,41 @@ impl App {
     pub(super) fn set_hover(&mut self, h: Option<Hit>) {
         if self.hover != h {
             self.hover = h;
+            self.hide_tooltip();
+            if h.and_then(Self::tooltip_text).is_some() && self.menu.is_none() {
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_TOOLTIP, ui::TOOLTIP_DELAY_MS, None);
+                }
+            }
             self.invalidate();
+        }
+    }
+
+    pub(super) fn hide_tooltip(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
+        }
+        if self.tooltip.take().is_some() {
+            self.invalidate();
+        }
+    }
+
+    /// Keys while a menu is open: it has them all (arrows, Enter, Escape), like a WinUI flyout.
+    fn menu_key(&mut self, vk: VIRTUAL_KEY) {
+        match vk {
+            VK_ESCAPE => self.close_menu(),
+            VK_UP | VK_DOWN => {
+                if let Some((_, m)) = &mut self.menu {
+                    m.move_cursor(vk == VK_DOWN);
+                }
+                self.invalidate();
+            }
+            VK_RETURN | VK_SPACE => {
+                if let Some(i) = self.menu.as_ref().and_then(|(_, m)| m.cursor) {
+                    self.activate_menu(i);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -153,6 +187,7 @@ impl App {
                 WM_MOUSELEAVE => {
                     self.tracking = false;
                     self.set_hover(None);
+                    self.hide_tooltip();
                     Some(LRESULT(0))
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
@@ -162,8 +197,17 @@ impl App {
                 }
                 WM_LBUTTONDOWN => {
                     let (x, y) = self.dip_from_lparam(lp);
-                    SetCapture(self.hwnd);
+                    self.hide_tooltip();
                     let h = self.hit(x, y);
+                    // Light dismiss: a press outside an open menu only closes it.
+                    if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface)) {
+                        let reopening_sort = h == Some(Hit::Tool(Tool::Sort));
+                        self.close_menu();
+                        if !reopening_sort {
+                            return Some(LRESULT(0));
+                        }
+                    }
+                    SetCapture(self.hwnd);
                     self.pressed = h;
                     if h == Some(Hit::Viewport) && self.view.has_content() {
                         self.drag = Some((x, y));
@@ -182,6 +226,7 @@ impl App {
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal) => self.reveal(),
                             Some(Hit::Open) => self.open_dialog(),
+                            Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             _ => {}
                         }
                     }
@@ -191,8 +236,22 @@ impl App {
                     self.invalidate();
                     Some(LRESULT(0))
                 }
+                WM_RBUTTONUP => {
+                    let (x, y) = self.dip_from_lparam(lp);
+                    match self.hit(x, y) {
+                        Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() => {
+                            self.open_context_menu(x, y);
+                        }
+                        _ => self.close_menu(),
+                    }
+                    Some(LRESULT(0))
+                }
                 WM_LBUTTONDBLCLK => {
                     let (x, y) = self.dip_from_lparam(lp);
+                    if self.menu.is_some() {
+                        // Treat as a fresh press: it may dismiss the menu or pick an item.
+                        return self.handle(WM_LBUTTONDOWN, wp, lp);
+                    }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
                         let v = self.viewport();
                         self.view.toggle_fit_actual((x - v.left) as f64, (y - v.top) as f64);
@@ -210,6 +269,8 @@ impl App {
                     None
                 }
                 WM_MOUSEWHEEL => {
+                    self.close_menu();
+                    self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
@@ -221,7 +282,13 @@ impl App {
                 }
                 WM_KEYDOWN => {
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                    let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let vk = VIRTUAL_KEY(wp.0 as u16);
+                    if self.menu.is_some() {
+                        self.menu_key(vk);
+                        return Some(LRESULT(0));
+                    }
+                    self.hide_tooltip();
                     match vk {
                         VK_LEFT => self.step(-1),
                         VK_RIGHT => self.step(1),
@@ -242,6 +309,11 @@ impl App {
                         VK_OEM_MINUS | VK_SUBTRACT if ctrl => self.act(Tool::ZoomOut),
                         VK_O if ctrl => self.open_dialog(),
                         VK_E if ctrl => self.reveal(),
+                        VK_C if ctrl && shift => self.copy_path(),
+                        VK_APPS => {
+                            let v = self.viewport();
+                            self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
+                        }
                         _ => return None,
                     }
                     Some(LRESULT(0))
@@ -249,6 +321,13 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
+                        TIMER_TOOLTIP => {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
+                            if self.menu.is_none() && self.pressed.is_none() {
+                                self.tooltip = self.hover;
+                                self.invalidate();
+                            }
+                        }
                         viewer::TIMER_ANIM => {
                             if self.viewer.next_frame() {
                                 self.invalidate();
@@ -281,6 +360,8 @@ impl App {
                     self.client_h = ((lp.0 >> 16) & 0xFFFF) as u32;
                     self.maximized = wp.0 as u32 == SIZE_MAXIMIZED;
                     self.track_normal_rect();
+                    self.menu = None;
+                    self.tooltip = None;
                     if self.client_w > 0 && self.client_h > 0 {
                         if let Some(g) = &mut self.gfx {
                             let _ = g.resize(self.client_w, self.client_h, self.dpi as f32);
@@ -308,6 +389,10 @@ impl App {
                 }
                 WM_ACTIVATE => {
                     self.active = (wp.0 & 0xFFFF) as u32 != WA_INACTIVE;
+                    if !self.active {
+                        self.close_menu();
+                        self.hide_tooltip();
+                    }
                     self.invalidate();
                     None
                 }

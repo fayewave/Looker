@@ -259,6 +259,15 @@ impl Viewer {
         e.width.max(e.height) + 1 >= needed
     }
 
+    /// Re-sorts the open folder in place; the current image stays current.
+    pub fn set_sort(&mut self, sort: crate::folder::Sort) {
+        let Some(l) = &mut self.listing else { return };
+        l.resort(sort);
+        let cur = self.current.as_ref().map(|(p, _)| p.clone());
+        self.index = cur.and_then(|c| l.images.iter().position(|e| e.path == c));
+        self.schedule_preloads();
+    }
+
     /// The largest cached decode of this file (any tier).
     fn best_cached(&mut self, path: &Path, stamp: u64) -> Option<Rc<Entry>> {
         let best = self

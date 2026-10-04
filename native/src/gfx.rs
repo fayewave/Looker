@@ -140,10 +140,6 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
     D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h }
 }
 
-pub fn contains(r: &D2D_RECT_F, x: f32, y: f32) -> bool {
-    x >= r.left && x < r.right && y >= r.top && y < r.bottom
-}
-
 impl Gfx {
     pub fn attach(dev: Device, text: Text, hwnd: HWND, width: u32, height: u32, dpi: f32) -> Result<Gfx> {
         unsafe {
@@ -355,6 +351,11 @@ impl Gfx {
     /// One device pixel, in DIPs: for hairlines that stay crisp at any scale.
     pub fn px(&self) -> f32 {
         96.0 / self.dpi
+    }
+
+    /// A one-device-pixel horizontal hairline.
+    pub fn hline(&self, x: f32, y: f32, w: f32, color: D2D1_COLOR_F) {
+        self.fill(rect(x, y, w, self.px()), color);
     }
 
     /// Rounds a DIP coordinate to the nearest device pixel.

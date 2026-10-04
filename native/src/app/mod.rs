@@ -4,6 +4,7 @@
 
 mod chrome;
 mod input;
+mod menus;
 
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -32,7 +33,8 @@ use crate::folder::{self, Listing};
 use crate::format;
 use crate::settings::{self, SavedWindow, Settings};
 use crate::viewer::{self, Outcome, Viewer};
-use crate::gfx::{self, Align, Gfx, contains, rect, rgb, white};
+use crate::gfx::{self, Align, Gfx, rect, rgb, white};
+use crate::ui::{self, TEXT_DISABLED, TEXT_SECONDARY, TEXT_TERTIARY, contains};
 use crate::view::View;
 
 const TITLE_H: f32 = 48.0;
@@ -45,24 +47,20 @@ const SORT_W: f32 = 60.0;
 const DEFAULT_W: f32 = 1200.0;
 const DEFAULT_H: f32 = 800.0;
 
-const ACCENT: u32 = 0xF52524;
 const CLOSE_RED: u32 = 0xC42B1C;
-/// TextFillColorSecondary / Tertiary / Disabled on the dark theme.
-const TEXT_SECONDARY: u8 = 0xC5;
-const TEXT_TERTIARY: u8 = 0x8B;
-const TEXT_DISABLED: u8 = 0x5D;
 
 const WM_LISTED: u32 = WM_APP + 2;
 const WM_GPU_READY: u32 = WM_APP + 3;
 const TIMER_UPGRADE: usize = 1;
 const TIMER_TRACE: usize = 2;
+const TIMER_TOOLTIP: usize = 5;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
 /// The hardware device, built in the background after the first frame (see gfx.rs).
 static GPU_DEVICE: std::sync::Mutex<Option<gfx::Sendable<gfx::Device>>> = std::sync::Mutex::new(None);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 enum Tool {
     Previous,
     Next,
@@ -99,12 +97,16 @@ const RIGHT_TOOLS: &[(Tool, u16)] = &[
     (Tool::Settings, 0xE713),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 enum Hit {
     Tool(Tool),
     Reveal,
     Open,
     Viewport,
+    /// An entry of the open menu, by index.
+    MenuItem(usize),
+    /// The menu's padding and separators: inside the menu, but nothing to click.
+    MenuSurface,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -248,6 +250,11 @@ pub struct App {
     view: View,
     first_image_traced: bool,
 
+    hits: ui::Hits<Hit>,
+    fades: ui::Fades<Hit>,
+    menu: Option<(menus::MenuKind, ui::Menu<menus::Action>)>,
+    /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
+    tooltip: Option<Hit>,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -365,10 +372,11 @@ impl App {
 
     fn list_folder_async(&self, folder: PathBuf) {
         let hwnd = self.hwnd.0 as isize;
+        let sort = self.settings.sort;
         std::thread::Builder::new()
             .name("listing".into())
             .spawn(move || {
-                let listing = folder::list(&folder);
+                let listing = folder::list(&folder, sort);
                 crate::trace::mark(format!("folder listed: {} images of {} files", listing.images.len(), listing.total_files));
                 let ptr = Box::into_raw(Box::new(listing));
                 unsafe {
@@ -461,8 +469,9 @@ impl App {
             }
             Tool::Fullscreen => self.toggle_fullscreen(),
             Tool::Home => self.close(),
-            // Not in the spike yet.
-            Tool::Rotate | Tool::Delete | Tool::Sort | Tool::Explorer | Tool::Strip | Tool::Info | Tool::Settings => {}
+            Tool::Sort => self.toggle_sort_menu(),
+            // Not built yet.
+            Tool::Rotate | Tool::Delete | Tool::Explorer | Tool::Strip | Tool::Info | Tool::Settings => {}
         }
     }
 
@@ -630,6 +639,10 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             info: None,
             view: View::new(),
             first_image_traced: false,
+            hits: ui::Hits::new(),
+            fades: ui::Fades::new(),
+            menu: None,
+            tooltip: None,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
