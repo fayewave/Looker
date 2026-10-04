@@ -74,6 +74,7 @@ impl App {
     pub(super) fn tooltip_for(&self, h: Hit) -> Option<String> {
         match h {
             Hit::StripCell(i) => self.strip_tooltip(i),
+            Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
             Hit::ExplorerRow(_) | Hit::Crumb(_) | Hit::CrumbMore | Hit::ExplorerBack | Hit::ExplorerForward => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }
@@ -143,13 +144,6 @@ impl App {
         let tw = g.measure(&wide(&self.status_parts()), &g.fonts.caption);
         let lw = g.measure(&wide("Open in Explorer"), &g.fonts.caption);
         Some(rect(12.0 + tw + 16.0, h - STATUS_H + 4.0, lw, STATUS_H - 10.0))
-    }
-
-    pub(super) fn open_rect(&self) -> D2D_RECT_F {
-        let v = self.viewport();
-        let cx = (v.left + v.right) / 2.0;
-        let cy = (v.top + v.bottom) / 2.0;
-        rect(cx - 70.0, cy + 8.0, 140.0, 32.0)
     }
 
     /// What is under a point, from the regions the last frame drew.
@@ -328,18 +322,6 @@ impl App {
         } else if self.viewer.error.is_some() {
             g.text(&wide("Can't display this file"), &g.fonts.body, v, white(TEXT_SECONDARY), Align::Center);
         }
-    }
-
-    pub(super) fn draw_landing(&mut self, g: &Gfx) {
-        let v = self.viewport();
-        let cy = (v.top + v.bottom) / 2.0;
-        g.text(&wide("Looker"), &g.fonts.body_strong, rect(v.left, cy - 40.0, v.right - v.left, 24.0), white(0xFF), Align::Center);
-        g.text(&wide("Open a photo to start  ·  Ctrl+O"), &g.fonts.caption, rect(v.left, cy - 16.0, v.right - v.left, 18.0), white(TEXT_SECONDARY), Align::Center);
-        let r = self.open_rect();
-        self.hits.add(Hit::Open, r);
-        let st = self.state(Hit::Open, true);
-        let fg = ui::button_frame(g, r, ui::Kind::Accent, &st);
-        g.text(&wide("Open photo"), &g.fonts.caption, r, fg, Align::Center);
     }
 
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.

@@ -25,6 +25,8 @@ pub(super) enum Action {
     OpenItem,
     /// A crumb folded into "…".
     Crumb(usize),
+    /// The landing page: forget one recent file.
+    RemoveRecent,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -123,6 +125,17 @@ impl App {
         self.invalidate();
     }
 
+    /// A recent file's menu on the landing page.
+    pub(super) fn open_recent_menu(&mut self, i: usize, x: f32, y: f32) {
+        let Some(path) = self.recent_path(i) else { return };
+        let entries = vec![item(Action::RemoveRecent, 0xE711, "Remove from recent", None, true)];
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Recent(path), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
     /// The breadcrumb "…": the folded-away ancestors, top-down.
     pub(super) fn open_crumb_menu(&mut self) {
         let hidden = self.hidden_crumbs();
@@ -149,6 +162,7 @@ impl App {
         self.invalidate();
         match kind {
             Some(MenuKind::Item(path)) => self.run_item_action(action, path),
+            Some(MenuKind::Recent(path)) => self.remove_recent(&path),
             Some(MenuKind::Crumbs(places)) => {
                 if let Action::Crumb(i) = action {
                     if let Some(p) = places.get(i) {
@@ -188,7 +202,7 @@ impl App {
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
-            Action::OpenItem | Action::Crumb(_) => {}
+            Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent => {}
         }
     }
 
@@ -217,4 +231,6 @@ pub(super) enum MenuKind {
     Item(PathBuf),
     /// The breadcrumb overflow, holding these places.
     Crumbs(Vec<crate::explorer::Place>),
+    /// A recent file on the landing page.
+    Recent(PathBuf),
 }

@@ -84,6 +84,11 @@ pub fn intrinsic_size(text: &str) -> Option<(f64, f64)> {
 
 pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    render(f, &bytes, box_w, box_h)
+}
+
+/// An SVG document in memory, rendered to fit the box (the landing page's wordmark, embedded in the exe).
+pub fn render(f: &IWICImagingFactory, bytes: &[u8], box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let (box_w, box_h) = if box_w == 0 || box_h == 0 { (VECTOR_MAX_EDGE, VECTOR_MAX_EDGE) } else { (box_w, box_h) };
     let (bw, bh) = intrinsic_size(&String::from_utf8_lossy(&bytes[..bytes.len().min(64 * 1024)]))
         .unwrap_or((box_w.max(box_h) as f64, box_w.max(box_h) as f64));
@@ -105,7 +110,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
         let rt = factory()?.CreateWicBitmapRenderTarget(&bmp, &props).map_err(e)?;
         let dc: ID2D1DeviceContext5 = rt.cast().map_err(|_| "this Windows has no Direct2D SVG renderer".to_string())?;
         let stream = f.CreateStream().map_err(e)?;
-        stream.InitializeFromMemory(&bytes).map_err(e)?;
+        stream.InitializeFromMemory(bytes).map_err(e)?;
         let stream: IStream = stream.cast().map_err(e)?;
         let doc = dc.CreateSvgDocument(&stream, D2D_SIZE_F { width: bw as f32, height: bh as f32 }).map_err(e)?;
         dc.BeginDraw();

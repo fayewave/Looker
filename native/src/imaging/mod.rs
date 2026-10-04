@@ -7,7 +7,7 @@ mod animated;
 mod fallback;
 mod pdf;
 mod raster;
-mod svg;
+pub mod svg;
 pub mod wic;
 
 use std::path::Path;

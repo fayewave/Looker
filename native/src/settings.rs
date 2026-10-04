@@ -29,12 +29,17 @@ pub struct Settings {
     pub explorer_visible: bool,
     /// The file explorer card's width in DIPs, margins included (the info card's range).
     pub explorer_width: f32,
+    /// Remember recently shown photos (the landing page's list). Off records nothing.
+    pub recents_enabled: bool,
+    /// Most recently shown first, at most [`RECENT_CAPACITY`].
+    pub recents: Vec<PathBuf>,
     pub strip_visible: bool,
     /// The thumbnail strip's height in DIPs (the cells are 8 less, 4:3).
     pub strip_height: f32,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
+pub const RECENT_CAPACITY: usize = 12;
 pub const STRIP_HEIGHT: f32 = 96.0;
 pub const STRIP_MIN: f32 = 56.0;
 pub const STRIP_MAX: f32 = 480.0;
@@ -45,7 +50,29 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, strip_visible: false, strip_height: STRIP_HEIGHT }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT }
+    }
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
+}
+
+impl Settings {
+    /// A photo was shown: to the front of the recent list (once, case-insensitively), trimmed to capacity.
+    /// False when nothing changed (it was already first, or recents are off), so the caller skips the save.
+    pub fn push_recent(&mut self, path: &std::path::Path) -> bool {
+        if !self.recents_enabled || self.recents.first().is_some_and(|f| same_file(f, path)) {
+            return false;
+        }
+        self.recents.retain(|r| !same_file(r, path));
+        self.recents.insert(0, path.to_path_buf());
+        self.recents.truncate(RECENT_CAPACITY);
+        true
+    }
+
+    pub fn remove_recent(&mut self, path: &std::path::Path) {
+        self.recents.retain(|r| !same_file(r, path));
     }
 }
 
@@ -77,6 +104,8 @@ pub fn parse(text: &str) -> Settings {
             "info_width" => s.info_width = v.parse::<f32>().map_or(INFO_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             "explorer_visible" => s.explorer_visible = v == "1",
             "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(EXPLORER_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
+            "recents_enabled" => s.recents_enabled = v != "0",
+            "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
             _ => {}
@@ -96,6 +125,10 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("info_width={}\n", s.info_width.round()));
     out.push_str(&format!("explorer_visible={}\n", s.explorer_visible as i32));
     out.push_str(&format!("explorer_width={}\n", s.explorer_width.round()));
+    out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
+    for r in &s.recents {
+        out.push_str(&format!("recent={}\n", r.display()));
+    }
     out.push_str(&format!("strip_visible={}\n", s.strip_visible as i32));
     out.push_str(&format!("strip_height={}\n", s.strip_height.round()));
     out
@@ -131,11 +164,28 @@ mod tests {
             info_width: 412.0,
             explorer_visible: true,
             explorer_width: 300.0,
+            recents_enabled: true,
+            recents: vec![PathBuf::from(r"C:\a b\one.jpg"), PathBuf::from(r"D:\two.png")],
             strip_visible: true,
             strip_height: 160.0,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());
+    }
+
+    #[test]
+    fn recents_move_to_the_front_and_cap() {
+        let mut s = Settings::default();
+        for i in 0..15 {
+            assert!(s.push_recent(&PathBuf::from(format!(r"C:\p\{i}.jpg"))));
+        }
+        assert_eq!(s.recents.len(), RECENT_CAPACITY);
+        assert!(!s.push_recent(&PathBuf::from(r"c:\P\14.JPG"))); // already first
+        assert!(s.push_recent(&PathBuf::from(r"C:\p\10.jpg")));
+        assert_eq!(s.recents[0], PathBuf::from(r"C:\p\10.jpg"));
+        assert_eq!(s.recents.iter().filter(|r| r.ends_with("10.jpg")).count(), 1);
+        s.recents_enabled = false;
+        assert!(!s.push_recent(&PathBuf::from(r"C:\p\new.jpg")));
     }
 
     #[test]

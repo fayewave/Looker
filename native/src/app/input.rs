@@ -266,6 +266,9 @@ impl App {
                             Some(Hit::Crumb(i)) => self.crumb_click(i),
                             Some(Hit::CrumbMore) => self.open_crumb_menu(),
                             Some(Hit::Open) => self.open_dialog(),
+                            Some(Hit::LandingFolder) => self.open_folder_dialog(),
+                            Some(Hit::RecentRow(i)) => self.open_recent(i),
+                            Some(Hit::RecentClear) => self.clear_recents(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
@@ -287,6 +290,10 @@ impl App {
                         Some(Hit::ExplorerRow(i)) => {
                             self.close_menu();
                             self.explorer_menu(i, x, y);
+                        }
+                        Some(Hit::RecentRow(i)) => {
+                            self.close_menu();
+                            self.open_recent_menu(i, x, y);
                         }
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() => {
                             self.open_context_menu(x, y);
@@ -352,6 +359,10 @@ impl App {
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
+                    if self.viewer.current.is_none() {
+                        self.scroll_landing(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if matches!(self.hit(x, y), Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip)) {
                         self.scroll_strip(delta as f32);
                         return Some(LRESULT(0));
@@ -403,6 +414,7 @@ impl App {
                         }
                         VK_OEM_PLUS | VK_ADD if ctrl => self.act(Tool::ZoomIn),
                         VK_OEM_MINUS | VK_SUBTRACT if ctrl => self.act(Tool::ZoomOut),
+                        VK_O if ctrl && shift => self.open_folder_dialog(),
                         VK_O if ctrl => self.open_dialog(),
                         VK_E if ctrl => self.reveal(),
                         VK_C if ctrl && shift => self.copy_path(),
@@ -504,6 +516,11 @@ impl App {
                 }
                 crate::thumbs::WM_THUMBS => {
                     self.on_thumbs();
+                    Some(LRESULT(0))
+                }
+                landing::WM_RECENTS => {
+                    let list = Box::from_raw(lp.0 as *mut Vec<landing::Recent>);
+                    self.on_recents(*list);
                     Some(LRESULT(0))
                 }
                 info::WM_EXIF => {

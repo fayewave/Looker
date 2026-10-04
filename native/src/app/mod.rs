@@ -6,6 +6,7 @@ mod actions;
 mod chrome;
 mod explorer;
 mod info;
+mod landing;
 mod strip;
 mod input;
 mod menus;
@@ -116,6 +117,10 @@ enum Hit {
     Reveal,
     Open,
     Viewport,
+    /// The landing page: "Open a folder", a recent file by index, and Clear (Open is "Open a file").
+    LandingFolder,
+    RecentRow(usize),
+    RecentClear,
     /// An entry of the open menu, by index.
     MenuItem(usize),
     /// The menu's padding and separators: inside the menu, but nothing to click.
@@ -324,6 +329,7 @@ pub struct App {
     pending_folder: Option<PathBuf>,
     /// Keeps the open folder's listing (navigation, strip, counter) live.
     folder_watch: Option<(PathBuf, crate::explorer::Watcher)>,
+    landing: landing::Landing,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -380,6 +386,10 @@ impl App {
         });
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
+        }
+        // Browsing counts as recent, not only explicit opens.
+        if self.settings.push_recent(&path) {
+            settings::save(&self.settings);
         }
         self.explorer_follow();
         self.invalidate();
@@ -540,6 +550,7 @@ impl App {
         self.viewer.close();
         self.explorer = explorer::Explorer::new();
         self.folder_watch = None;
+        self.landing.stale();
         self.info = None;
         self.view.clear();
         unsafe {
@@ -562,6 +573,24 @@ impl App {
             let path = PathBuf::from(name.to_string().unwrap_or_default());
             CoTaskMemFree(Some(name.0 as _));
             self.open(path);
+        }
+    }
+
+    /// Ctrl+Shift+O / "Open a folder": pick a folder and show its first image.
+    fn open_folder_dialog(&mut self) {
+        unsafe {
+            let Ok(dlg) = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) else { return };
+            if let Ok(o) = dlg.GetOptions() {
+                let _ = dlg.SetOptions(o | FOS_PICKFOLDERS);
+            }
+            if dlg.Show(Some(self.hwnd)).is_err() {
+                return;
+            }
+            let Ok(item) = dlg.GetResult() else { return };
+            let Ok(name) = item.GetDisplayName(SIGDN_FILESYSPATH) else { return };
+            let path = PathBuf::from(name.to_string().unwrap_or_default());
+            CoTaskMemFree(Some(name.0 as _));
+            self.open_folder(path);
         }
     }
 
@@ -671,6 +700,7 @@ impl App {
         }
         self.viewer.reupload(g);
         self.thumbs.device_lost();
+        self.landing.device_lost();
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -815,6 +845,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             explorer: explorer::Explorer::new(),
             pending_folder: None,
             folder_watch: None,
+            landing: landing::Landing::new(),
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
