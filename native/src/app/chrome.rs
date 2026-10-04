@@ -360,8 +360,17 @@ impl App {
                 self.hits.add(Hit::DialogButton(i), *r);
                 states.push(self.state(Hit::DialogButton(i), true));
             }
-            if let Some((_, d)) = &self.dialog {
-                d.draw(g, &layout, window, |i| states[i]);
+            let mut field_hover = 0.0;
+            if let Some(r) = layout.field {
+                self.hits.add(Hit::DialogField, r);
+                field_hover = self.state(Hit::DialogField, true).hover;
+            }
+            if let Some(r) = layout.field_clear {
+                self.hits.add(Hit::DialogFieldClear, r);
+            }
+            let clear = self.state(Hit::DialogFieldClear, true);
+            if let Some((_, d)) = &mut self.dialog {
+                self.caret_rect = d.draw(g, &layout, window, &states, field_hover, clear);
             }
         }
         if let Some(t) = self.tooltip {

@@ -58,6 +58,23 @@ impl Entry {
     fn bytes(&self) -> usize {
         self.width as usize * self.height as usize * 4 * self.frames.borrow().len()
     }
+
+    /// The same decode under another key (the file was renamed). Bitmaps are shared, not copied.
+    fn rekeyed(&self, key: Key) -> Entry {
+        Entry {
+            key,
+            frames: RefCell::new(self.frames.borrow().clone()),
+            width: self.width,
+            height: self.height,
+            native_w: self.native_w,
+            native_h: self.native_h,
+            format: self.format,
+            taken: self.taken,
+            pages: self.pages,
+            vector: self.vector,
+            pixels: RefCell::new(self.pixels.borrow_mut().take()),
+        }
+    }
 }
 
 /// What the window must do after a viewer call.
@@ -259,6 +276,45 @@ impl Viewer {
             self.cache.remove(&k);
         }
         self.failed.retain(|(p, _), _| p != path);
+    }
+
+    /// A file was renamed: its decodes move to the new name, so the pixels on screen stay put and nothing is
+    /// decoded again, and the folder re-sorts with the current image still current.
+    pub fn renamed(&mut self, from: &Path, to: &Path) {
+        let mut moved: Vec<(Rc<Entry>, Rc<Entry>)> = Vec::new();
+        let keys: Vec<Key> = self.cache.keys().filter(|k| k.path == from).cloned().collect();
+        for k in keys {
+            let Some(old) = self.cache.remove(&k) else { continue };
+            let key = Key::new(to, k.stamp, k.bucket);
+            let new = Rc::new(old.rekeyed(key.clone()));
+            self.cache.insert(key, new.clone(), new.bytes());
+            moved.push((old, new));
+        }
+        if let Some(s) = self.shown.clone().filter(|s| s.key.path == from) {
+            let new = moved
+                .iter()
+                .find(|(o, _)| Rc::ptr_eq(o, &s))
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| Rc::new(s.rekeyed(Key::new(to, s.key.stamp, s.key.bucket))));
+            self.shown = Some(new);
+        }
+        let failed: Vec<_> = self.failed.keys().filter(|(p, _)| p == from).cloned().collect();
+        for (p, stamp) in failed {
+            if let Some(e) = self.failed.remove(&(p, stamp)) {
+                self.failed.insert((to.to_path_buf(), stamp), e);
+            }
+        }
+        if let Some((p, _)) = &mut self.current {
+            if p == from {
+                *p = to.to_path_buf();
+            }
+        }
+        if let Some(l) = &mut self.listing {
+            l.rename(from, to);
+            let cur = self.current.as_ref().map(|(p, _)| p.clone());
+            self.index = cur.and_then(|c| l.images.iter().position(|e| e.path == c));
+        }
+        self.schedule_preloads();
     }
 
     /// A file was deleted. When it was the current image, whatever slid into its place is shown (the

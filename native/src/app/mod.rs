@@ -59,6 +59,7 @@ const TIMER_UPGRADE: usize = 1;
 const TIMER_TRACE: usize = 2;
 const TIMER_TOOLTIP: usize = 5;
 const TIMER_TOAST: usize = 6;
+const TIMER_CARET: usize = 7;
 
 static APP_ICON: &[u8] = include_bytes!("../../../src/Looker/Assets/AppIcon.ico");
 
@@ -117,6 +118,9 @@ enum Hit {
     DialogButton(usize),
     /// Everything under a dialog's smoke: modal, nothing to click.
     DialogSurface,
+    /// A dialog's text box, and its clear button.
+    DialogField,
+    DialogFieldClear,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -272,6 +276,10 @@ pub struct App {
     saving_rotation: bool,
     /// The rotation was saved: keep the preview until the re-decoded file's first frame lands.
     rotation_saved: bool,
+    /// A drag-select in a text box, from this caret position.
+    text_drag: Option<usize>,
+    /// Where the text box caret was last drawn (DIPs): the IME composition window goes there.
+    caret_rect: Option<D2D_RECT_F>,
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
@@ -698,6 +706,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             turns: 0,
             saving_rotation: false,
             rotation_saved: false,
+            text_drag: None,
+            caret_rect: None,
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
@@ -731,6 +741,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             }
         }
 
+        app.set_ime(false);
         let app_ptr = Box::into_raw(app);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, app_ptr as isize);
         let app = &mut *app_ptr;

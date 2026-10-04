@@ -13,6 +13,7 @@ use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 
 use crate::gfx::{Align, Gfx, rect, rgba, white};
+use crate::textedit::TextEdit;
 
 pub const ACCENT: u32 = 0xF52524;
 /// TextFillColorSecondary / Tertiary / Disabled on the dark theme.
@@ -212,16 +213,32 @@ const DIALOG_BUTTON_GAP: f32 = 8.0;
 pub struct DialogButton<A> {
     pub label: String,
     pub action: A,
+    /// A disabled button can't be clicked or focused (Rename with an empty name).
+    pub enabled: bool,
 }
 
-/// A modal ContentDialog: smoke over the window, a centred card with a title and text, and a strip of
-/// equal-width buttons. The default button is the accent one and starts with keyboard focus.
+impl<A> DialogButton<A> {
+    pub fn new(label: &str, action: A) -> DialogButton<A> {
+        DialogButton { label: label.into(), action, enabled: true }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Field,
+    Button(usize),
+}
+
+/// A modal ContentDialog: smoke over the window, a centred card with a title, text and/or a text box, and a
+/// strip of equal-width buttons. The default button is the accent one; it has keyboard focus to start with,
+/// unless there is a text box, which then does (Enter in it presses the default button).
 pub struct Dialog<A> {
     pub title: String,
     pub body: String,
+    pub field: Option<TextField>,
     pub buttons: Vec<DialogButton<A>>,
     pub default: usize,
-    pub focus: usize,
+    pub focus: Focus,
     /// Show the focus ring (the dialog was opened from the keyboard, or Tab was pressed).
     pub focus_visible: bool,
 }
@@ -229,6 +246,9 @@ pub struct Dialog<A> {
 pub struct DialogLayout {
     pub card: D2D_RECT_F,
     pub buttons: Vec<D2D_RECT_F>,
+    pub field: Option<D2D_RECT_F>,
+    /// The text box's clear button, while it shows.
+    pub field_clear: Option<D2D_RECT_F>,
     title: D2D_RECT_F,
     body: D2D_RECT_F,
     strip_top: f32,
@@ -236,15 +256,30 @@ pub struct DialogLayout {
 
 impl<A: Copy> Dialog<A> {
     pub fn new(title: String, body: String, buttons: Vec<DialogButton<A>>, default: usize, from_keyboard: bool) -> Dialog<A> {
-        Dialog { title, body, buttons, default, focus: default, focus_visible: from_keyboard }
+        Dialog { title, body, field: None, buttons, default, focus: Focus::Button(default), focus_visible: from_keyboard }
+    }
+
+    /// Adds a text box, which takes the keyboard focus.
+    pub fn with_field(mut self, field: TextField) -> Dialog<A> {
+        self.field = Some(field);
+        self.focus = Focus::Field;
+        self
+    }
+
+    pub fn field_focused(&self) -> bool {
+        self.focus == Focus::Field && self.field.is_some()
     }
 
     pub fn layout(&self, g: &Gfx, bounds: D2D_RECT_F) -> DialogLayout {
-        let natural = g.measure(&wide(&self.title), &g.fonts.title).max(g.measure(&wide(&self.body), &g.fonts.body_wrap));
+        let mut natural = g.measure(&wide(&self.title), &g.fonts.title).max(g.measure(&wide(&self.body), &g.fonts.body_wrap));
+        if self.field.is_some() {
+            natural = natural.max(FIELD_MIN_W);
+        }
         let w = (natural.ceil() + DIALOG_PAD * 2.0).clamp(DIALOG_MIN_W, DIALOG_MAX_W).min(bounds.right - bounds.left - 32.0);
         let inner = w - DIALOG_PAD * 2.0;
-        let body_h = g.measure_height(&wide(&self.body), &g.fonts.body_wrap, inner).ceil();
-        let content_h = DIALOG_PAD + DIALOG_TITLE_H + 12.0 + body_h + DIALOG_PAD;
+        let body_h = if self.body.is_empty() { 0.0 } else { g.measure_height(&wide(&self.body), &g.fonts.body_wrap, inner).ceil() };
+        let field_h = if self.field.is_some() { FIELD_H + if body_h > 0.0 { 12.0 } else { 0.0 } } else { 0.0 };
+        let content_h = DIALOG_PAD + DIALOG_TITLE_H + 12.0 + body_h + field_h + DIALOG_PAD;
         let strip_h = DIALOG_PAD * 2.0 + 32.0;
         let h = content_h + strip_h;
         let x = g.snap((bounds.left + bounds.right - w) / 2.0);
@@ -254,25 +289,50 @@ impl<A: Copy> Dialog<A> {
         let bw = (inner - DIALOG_BUTTON_GAP * (n - 1.0)) / n;
         let by = y + content_h + DIALOG_PAD;
         let buttons = (0..self.buttons.len()).map(|i| rect(x + DIALOG_PAD + i as f32 * (bw + DIALOG_BUTTON_GAP), by, bw, 32.0)).collect();
+        let body_top = y + DIALOG_PAD + DIALOG_TITLE_H + 12.0;
+        let field = self.field.as_ref().map(|_| rect(x + DIALOG_PAD, body_top + field_h - FIELD_H + body_h, inner, FIELD_H));
+        let field_clear = match (&self.field, field) {
+            (Some(f), Some(r)) if self.focus == Focus::Field && !f.edit.units().is_empty() => Some(TextField::clear_rect(r)),
+            _ => None,
+        };
         DialogLayout {
             card,
             buttons,
+            field,
+            field_clear,
             title: rect(x + DIALOG_PAD, y + DIALOG_PAD, inner, DIALOG_TITLE_H),
-            body: rect(x + DIALOG_PAD, y + DIALOG_PAD + DIALOG_TITLE_H + 12.0, inner, body_h),
+            body: rect(x + DIALOG_PAD, body_top, inner, body_h),
             strip_top: y + content_h,
         }
     }
 
-    /// Tab / arrow keys: the next or previous button, wrapping.
+    /// Tab / arrow keys: the next or previous focusable thing (the text box, then enabled buttons), wrapping.
     pub fn move_focus(&mut self, forward: bool) {
-        let n = self.buttons.len();
-        if n > 0 {
-            self.focus = if forward { (self.focus + 1) % n } else { (self.focus + n - 1) % n };
+        let mut order: Vec<Focus> = Vec::new();
+        if self.field.is_some() {
+            order.push(Focus::Field);
         }
+        order.extend(self.buttons.iter().enumerate().filter(|(_, b)| b.enabled).map(|(i, _)| Focus::Button(i)));
+        if order.is_empty() {
+            return;
+        }
+        let n = order.len();
+        let at = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[if forward { (at + 1) % n } else { (at + n - 1) % n }];
         self.focus_visible = true;
     }
 
-    pub fn draw(&self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, state: impl Fn(usize) -> State) {
+    /// What Enter does: the focused button, or the default one from the text box.
+    pub fn enter_action(&self) -> Option<A> {
+        let i = match self.focus {
+            Focus::Field => self.default,
+            Focus::Button(i) => i,
+        };
+        self.buttons.get(i).filter(|b| b.enabled).map(|b| b.action)
+    }
+
+    /// Draws the dialog. Returns the caret rect while the text box has focus (for placing the IME window).
+    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
         g.fill(window, rgba(0x000000, 0x4D as f32 / 255.0)); // SmokeFillColorDefault
         let c = l.card;
         shadow(g, c, 8.0);
@@ -282,15 +342,123 @@ impl<A: Copy> Dialog<A> {
         g.fill(D2D_RECT_F { top: l.strip_top - 8.0, bottom: l.strip_top, ..c }, rgba(DIALOG_BODY, 1.0));
         g.outline_round(c, 8.0, surface_stroke(1.0), g.px());
         label(g, &self.title, &g.fonts.title, l.title, white(0xFF), Align::Left);
-        label(g, &self.body, &g.fonts.body_wrap, l.body, white(0xFF), Align::Left);
+        if !self.body.is_empty() {
+            label(g, &self.body, &g.fonts.body_wrap, l.body, white(0xFF), Align::Left);
+        }
+        let focused = self.focus == Focus::Field;
+        let caret = match (&mut self.field, l.field) {
+            (Some(f), Some(r)) => f.draw(g, r, DIALOG_BODY, focused, field_hover, l.field_clear.map(|cr| (cr, clear))),
+            _ => None,
+        };
         for (i, (b, r)) in self.buttons.iter().zip(&l.buttons).enumerate() {
             let kind = if i == self.default { Kind::Accent } else { Kind::Standard };
-            let fg = button_frame(g, *r, kind, &state(i));
+            let st = State { enabled: b.enabled, ..buttons.get(i).copied().unwrap_or(State { hover: 0.0, pressed: false, enabled: true }) };
+            let fg = button_frame(g, *r, kind, &st);
             label(g, &b.label, &g.fonts.body, *r, fg, Align::Center);
-            if self.focus_visible && i == self.focus {
+            if self.focus_visible && self.focus == Focus::Button(i) {
                 focus_ring(g, *r, 4.0);
             }
         }
+        caret
+    }
+}
+
+// --- Text box ----------------------------------------------------------------------------------------
+
+pub const FIELD_H: f32 = 32.0;
+/// A dialog's text box is at least this wide (the rename box's MinWidth).
+const FIELD_MIN_W: f32 = 320.0;
+/// TextControlThemePadding (10, 5, 6, 6) plus the 1 px border.
+const FIELD_PAD_L: f32 = 11.0;
+const FIELD_PAD_R: f32 = 7.0;
+const FIELD_CLEAR_W: f32 = 30.0;
+
+/// A single-line TextBox: the [`TextEdit`] model plus its horizontal scroll and caret blink.
+pub struct TextField {
+    pub edit: TextEdit,
+    scroll: f32,
+    /// The caret's blink phase (reset to visible on every edit or move).
+    pub caret_on: bool,
+}
+
+/// `over` composited onto an opaque `base` (WinUI's translucent control fills, made opaque so two layers
+/// of the box can be stacked).
+fn over(base: u32, c: D2D1_COLOR_F) -> D2D1_COLOR_F {
+    let b = rgba(base, 1.0);
+    D2D1_COLOR_F { r: b.r + (c.r - b.r) * c.a, g: b.g + (c.g - b.g) * c.a, b: b.b + (c.b - b.b) * c.a, a: 1.0 }
+}
+
+impl TextField {
+    pub fn new(edit: TextEdit) -> TextField {
+        TextField { edit, scroll: 0.0, caret_on: true }
+    }
+
+    pub fn clear_rect(r: D2D_RECT_F) -> D2D_RECT_F {
+        rect(r.right - FIELD_CLEAR_W - 2.0, r.top + 4.0, FIELD_CLEAR_W, r.bottom - r.top - 8.0)
+    }
+
+    fn text_rect(r: D2D_RECT_F, with_clear: bool) -> D2D_RECT_F {
+        let right = if with_clear { r.right - FIELD_CLEAR_W - 2.0 } else { r.right - FIELD_PAD_R };
+        D2D_RECT_F { left: r.left + FIELD_PAD_L, right, ..r }
+    }
+
+    /// The caret position under DIP `x` (mouse press or drag), for a box drawn at `r`.
+    pub fn position_at(&self, g: &Gfx, r: D2D_RECT_F, with_clear: bool, x: f32) -> usize {
+        let tr = Self::text_rect(r, with_clear);
+        match g.layout(self.edit.units(), &g.fonts.body, r.bottom - r.top) {
+            Some(l) => g.position_at(&l, x - tr.left + self.scroll),
+            None => 0,
+        }
+    }
+
+    /// Draws the box over a `base`-coloured surface; `clear` is the clear button's rect and state while it
+    /// shows. Returns the caret rect when focused.
+    pub fn draw(&mut self, g: &Gfx, r: D2D_RECT_F, base: u32, focused: bool, hover: f32, clear: Option<(D2D_RECT_F, State)>) -> Option<D2D_RECT_F> {
+        // Fill, with the bottom edge as WinUI draws it: a 2 px accent line when focused, else a 1 px strong
+        // stroke under the faint border.
+        let fill = if focused { over(base, rgba(0x1E1E1E, 0.7)) } else { over(base, lerp(white(0x0F), white(0x15), hover)) };
+        let (edge, edge_h) = if focused { (rgba(ACCENT, 1.0), 2.0) } else { (over(base, white(0x8B)), g.px()) };
+        g.fill_round(r, 4.0, edge);
+        g.fill_round(D2D_RECT_F { bottom: r.bottom - edge_h, ..r }, 4.0, fill);
+        g.outline_round(D2D_RECT_F { bottom: r.bottom - edge_h + g.px(), ..r }, 4.0, white(0x12), g.px());
+
+        let tr = Self::text_rect(r, clear.is_some());
+        let Some(layout) = g.layout(self.edit.units(), &g.fonts.body, r.bottom - r.top) else { return None };
+        let width = tr.right - tr.left;
+        let (cx, ctop, ch) = g.caret_at(&layout, self.edit.caret());
+        // Keep the caret in view, and never scroll further than the text needs.
+        if cx - self.scroll > width - 1.0 {
+            self.scroll = cx - width + 1.0;
+        }
+        if cx - self.scroll < 0.0 {
+            self.scroll = cx;
+        }
+        self.scroll = self.scroll.min((g.layout_width(&layout) - width + 1.0).max(0.0)).max(0.0);
+
+        g.push_clip(tr);
+        let x0 = tr.left - self.scroll;
+        let (a, b) = self.edit.selection();
+        if focused && a != b {
+            let (xa, _, _) = g.caret_at(&layout, a);
+            let (xb, _, _) = g.caret_at(&layout, b);
+            g.fill(rect(x0 + xa, r.top + ctop, xb - xa, ch), rgba(ACCENT, 1.0));
+        }
+        g.draw_layout(&layout, x0, r.top, white(0xFF));
+        let caret = rect(g.snap(x0 + cx), r.top + ctop, 1.0, ch);
+        if focused && self.caret_on {
+            g.fill(caret, white(0xFF));
+        }
+        g.pop_clip();
+
+        if let Some((cr, st)) = clear {
+            let (fill, _, _) = colors(Kind::Subtle, &st);
+            if fill.a > 0.0 {
+                g.fill_round(cr, 4.0, fill);
+            }
+            let fg = if st.pressed { white(TEXT_TERTIARY) } else { white(TEXT_SECONDARY) };
+            g.text(&[0xE894], &g.fonts.small_icons, cr, fg, Align::Center);
+        }
+        focused.then_some(caret)
     }
 }
 

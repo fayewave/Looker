@@ -97,6 +97,8 @@ pub struct Fonts {
     /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons).
     pub icons: IDWriteTextFormat,
     pub caption_icons: IDWriteTextFormat,
+    /// 12 px icons: a text box's clear button.
+    pub small_icons: IDWriteTextFormat,
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
@@ -376,7 +378,7 @@ impl Gfx {
                 Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
             });
             self.brush.SetColor(&color);
-            self.dev.dc.DrawText(s, fmt, &r, &self.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+            self.dev.dc.DrawText(s, fmt, &r, &self.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL);
         }
     }
 
@@ -396,6 +398,61 @@ impl Gfx {
             let mut m = DWRITE_TEXT_METRICS::default();
             if layout.GetMetrics(&mut m).is_ok() { m.height } else { 0.0 }
         }
+    }
+
+    /// A single-line, left-aligned layout of `s`, `height` tall (text vertically centred): for text boxes,
+    /// which need caret positions and hit-testing.
+    pub fn layout(&self, s: &[u16], fmt: &IDWriteTextFormat, height: f32) -> Option<IDWriteTextLayout> {
+        unsafe {
+            let l = self.text.dwrite.CreateTextLayout(s, fmt, 100_000.0, height).ok()?;
+            l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok()?;
+            l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok()?;
+            Some(l)
+        }
+    }
+
+    pub fn draw_layout(&self, l: &IDWriteTextLayout, x: f32, y: f32, color: D2D1_COLOR_F) {
+        unsafe {
+            self.brush.SetColor(&color);
+            self.dev.dc.DrawTextLayout(windows_numerics::Vector2 { X: x, Y: y }, l, &self.brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+        }
+    }
+
+    /// Where the caret sits before UTF-16 position `pos`: (x, line top, line height), layout-relative.
+    pub fn caret_at(&self, l: &IDWriteTextLayout, pos: usize) -> (f32, f32, f32) {
+        unsafe {
+            let (mut x, mut y) = (0.0f32, 0.0f32);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if l.HitTestTextPosition(pos as u32, false, &mut x, &mut y, &mut m).is_ok() { (x, m.top, m.height) } else { (0.0, 0.0, 0.0) }
+        }
+    }
+
+    /// The UTF-16 position nearest to layout-relative `x` (the side of a character the point is on).
+    pub fn position_at(&self, l: &IDWriteTextLayout, x: f32) -> usize {
+        unsafe {
+            let mut trailing = windows::core::BOOL(0);
+            let mut inside = windows::core::BOOL(0);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if l.HitTestPoint(x, 1.0, &mut trailing, &mut inside, &mut m).is_err() {
+                return 0;
+            }
+            (m.textPosition + if trailing.as_bool() { m.length } else { 0 }) as usize
+        }
+    }
+
+    pub fn layout_width(&self, l: &IDWriteTextLayout) -> f32 {
+        unsafe {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if l.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 }
+        }
+    }
+
+    pub fn push_clip(&self, r: D2D_RECT_F) {
+        unsafe { self.dev.dc.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED) }
+    }
+
+    pub fn pop_clip(&self) {
+        unsafe { self.dev.dc.PopAxisAlignedClip() }
     }
 
     /// Draws with a transform (DIPs) applied, restoring identity afterwards.
@@ -443,7 +500,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, icons: icon(16.0)?, caption_icons: icon(10.0)?, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, _ellipsis: ellipsis })
     }
 }
 

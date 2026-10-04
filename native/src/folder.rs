@@ -121,6 +121,16 @@ impl Listing {
         removed
     }
 
+    /// A file was renamed: it moves to its sorted place under the new name. Returns whether it was listed.
+    pub fn rename(&mut self, from: &Path, to: &Path) -> bool {
+        let Some(f) = self.files.iter_mut().find(|f| f.path == from) else { return false };
+        f.path = to.to_path_buf();
+        f.name = HSTRING::from(to.file_name().unwrap_or_default());
+        f.supported = is_supported(to);
+        self.resort(self.sort);
+        true
+    }
+
     /// A file was rewritten (rotation saved): take its new write time and size, in place. Deliberately no
     /// re-sort, so a date sort doesn't send the photo the user is looking at to the end of the folder.
     pub fn refresh(&mut self, path: &Path) -> Option<u64> {

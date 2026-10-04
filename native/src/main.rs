@@ -17,6 +17,7 @@ mod format;
 mod gfx;
 mod imaging;
 mod settings;
+mod textedit;
 mod trace;
 mod ui;
 mod view;

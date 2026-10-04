@@ -41,7 +41,7 @@ impl App {
             Entry::Separator,
             item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), has),
             item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), has),
-            item(Action::Rename, 0xE8AC, "Rename", Some("F2"), false),
+            item(Action::Rename, 0xE8AC, "Rename", Some("F2"), has),
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), has),
             Entry::Separator,
             item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, has),
@@ -111,8 +111,8 @@ impl App {
             Action::Reveal => self.reveal(),
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.settings.sort }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
-            Action::Rename
-            | Action::ToggleExplorer
+            Action::Rename => self.begin_rename(false),
+            Action::ToggleExplorer
             | Action::ToggleStrip
             | Action::ToggleInfo => {}
         }

@@ -42,6 +42,7 @@ pub enum Done {
     Rotated { path: PathBuf, ok: bool },
     Recycled { path: PathBuf, ok: bool },
     Wallpaper { ok: bool },
+    Renamed { from: PathBuf, to: Result<PathBuf, String> },
     /// The decode for "Copy image" (None when the file couldn't be decoded: the file still goes on the
     /// clipboard, just without a bitmap).
     Copied { path: PathBuf, image: Option<Image> },
@@ -100,6 +101,42 @@ pub fn recycle(path: &Path, owner: isize) -> bool {
             false
         }
     }
+}
+
+// --- Rename -----------------------------------------------------------------------------------------
+
+/// The path a rename to `new_name` would produce: trimmed, with the original extension kept when the new
+/// name has none (the dialog pre-selects only the base name). Err with a message the toast can show.
+pub fn rename_target(path: &Path, new_name: &str) -> Result<PathBuf, String> {
+    let name = new_name.trim().trim_end_matches('.');
+    if name.is_empty() {
+        return Err("Type a name".into());
+    }
+    if name.chars().any(|c| c.is_control() || r#"<>:"/\|?*"#.contains(c)) {
+        return Err("A file name can't contain any of these characters: \\ / : * ? \" < > |".into());
+    }
+    let mut name = name.to_string();
+    if Path::new(&name).extension().is_none_or(|e| e.is_empty()) {
+        if let Some(ext) = path.extension().filter(|e| !e.is_empty()) {
+            name.push('.');
+            name.push_str(&ext.to_string_lossy());
+        }
+    }
+    Ok(path.with_file_name(name))
+}
+
+/// Renames in place. A case-only change is a real rename; an existing other file is never replaced.
+pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
+    let to = rename_target(path, new_name)?;
+    if to == path {
+        return Ok(to);
+    }
+    let same_file = to.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
+    if !same_file && std::fs::symlink_metadata(&to).is_ok() {
+        return Err(format!("There's already a file called \u{201C}{}\u{201D}", to.file_name().unwrap_or_default().to_string_lossy()));
+    }
+    std::fs::rename(path, &to).map_err(|e| format!("Couldn't rename: {e}"))?;
+    Ok(to)
 }
 
 // --- Rotate -----------------------------------------------------------------------------------------
@@ -321,6 +358,16 @@ mod tests {
         let out = std::env::temp_dir().join("looker-wallpaper-test.png");
         imaging::wic::save_png(&wic().unwrap(), &out, img.width, img.height, &img.pixels).unwrap();
         println!("{}x{} -> {}", img.width, img.height, out.display());
+    }
+
+    #[test]
+    fn rename_keeps_the_extension_unless_given_one() {
+        let p = Path::new(r"C:\pics\holiday.jpg");
+        assert_eq!(rename_target(p, " beach ").unwrap(), Path::new(r"C:\pics\beach.jpg"));
+        assert_eq!(rename_target(p, "beach.").unwrap(), Path::new(r"C:\pics\beach.jpg"));
+        assert_eq!(rename_target(p, "beach.png").unwrap(), Path::new(r"C:\pics\beach.png"));
+        assert!(rename_target(p, "  ").is_err());
+        assert!(rename_target(p, "a/b").is_err());
     }
 
     #[test]

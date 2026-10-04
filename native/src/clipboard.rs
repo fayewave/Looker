@@ -6,8 +6,10 @@ use std::path::Path;
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::Graphics::Gdi::{BI_BITFIELDS, BITMAPV5HEADER};
-use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::UI::Shell::DROPFILES;
 use windows::core::w;
@@ -64,6 +66,28 @@ fn utf16z(s: &str) -> Vec<u8> {
 
 pub fn set_text(hwnd: HWND, text: &str) -> bool {
     with_clipboard(hwnd, || put(CF_UNICODETEXT.0 as u32, &utf16z(text)))
+}
+
+/// The clipboard's text, if it has any (paste into a text box).
+pub fn get_text(hwnd: HWND) -> Option<String> {
+    unsafe {
+        OpenClipboard(Some(hwnd)).ok()?;
+        let text = (|| {
+            let h = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+            let mem = HGLOBAL(h.0);
+            let p = GlobalLock(mem) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let max = GlobalSize(mem) / 2;
+            let len = (0..max).take_while(|&i| *p.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+            let _ = GlobalUnlock(mem);
+            Some(s)
+        })();
+        let _ = CloseClipboard();
+        text
+    }
 }
 
 /// The file (CF_HDROP, marked as a copy) and, when it decoded, its pixels (CF_DIBV5).

@@ -174,6 +174,9 @@ impl App {
                         self.tracking = true;
                     }
                     self.set_cap_hover(None);
+                    if self.text_drag.is_some() {
+                        self.field_drag(x);
+                    }
                     if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.drag = Some((x, y));
@@ -191,7 +194,11 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
-                    let cursor = if self.hover == Some(Hit::Reveal) { IDC_HAND } else { IDC_ARROW };
+                    let cursor = match self.hover {
+                        Some(Hit::Reveal) => IDC_HAND,
+                        Some(Hit::DialogField) => IDC_IBEAM,
+                        _ => IDC_ARROW,
+                    };
                     SetCursor(LoadCursorW(None, cursor).ok());
                     Some(LRESULT(1))
                 }
@@ -209,6 +216,9 @@ impl App {
                     }
                     SetCapture(self.hwnd);
                     self.pressed = h;
+                    if h == Some(Hit::DialogField) {
+                        self.field_press(x, false);
+                    }
                     if h == Some(Hit::Viewport) && self.view.has_content() {
                         self.drag = Some((x, y));
                     }
@@ -220,6 +230,7 @@ impl App {
                     let (x, y) = self.dip_from_lparam(lp);
                     let pressed = self.pressed.take();
                     let was_drag = self.drag.take().is_some();
+                    self.text_drag = None;
                     let h = self.hit(x, y);
                     if pressed.is_some() && pressed == h {
                         match h {
@@ -228,6 +239,7 @@ impl App {
                             Some(Hit::Open) => self.open_dialog(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
+                            Some(Hit::DialogFieldClear) => self.field_clear(),
                             _ => {}
                         }
                     }
@@ -252,6 +264,12 @@ impl App {
                 }
                 WM_LBUTTONDBLCLK => {
                     let (x, y) = self.dip_from_lparam(lp);
+                    if self.hit(x, y) == Some(Hit::DialogField) {
+                        self.pressed = Some(Hit::DialogField);
+                        SetCapture(self.hwnd);
+                        self.field_press(x, true);
+                        return Some(LRESULT(0));
+                    }
                     if self.menu.is_some() || self.dialog.is_some() {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
@@ -292,7 +310,7 @@ impl App {
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let vk = VIRTUAL_KEY(wp.0 as u16);
                     if self.dialog.is_some() {
-                        self.dialog_key(vk, shift);
+                        self.dialog_key(vk, shift, ctrl);
                         return Some(LRESULT(0));
                     }
                     if self.menu.is_some() {
@@ -325,6 +343,7 @@ impl App {
                         VK_R if ctrl => self.rotate_preview(!shift),
                         VK_S if ctrl => self.save_rotation(),
                         VK_DELETE => self.confirm_delete(true),
+                        VK_F2 => self.begin_rename(true),
                         VK_APPS => {
                             let v = self.viewport();
                             self.open_context_menu((v.left + v.right) / 2.0, (v.top + v.bottom) / 2.0);
@@ -336,6 +355,7 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
+                        TIMER_CARET => self.blink_caret(),
                         TIMER_TOAST => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
                             self.invalidate();
@@ -364,6 +384,16 @@ impl App {
                 decode::WM_DECODED => {
                     self.on_decoded();
                     Some(LRESULT(0))
+                }
+                WM_CHAR => {
+                    if self.dialog.is_some() {
+                        self.dialog_char(wp.0 as u16);
+                    }
+                    Some(LRESULT(0))
+                }
+                WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
+                    self.place_ime();
+                    None
                 }
                 crate::fileops::WM_FILE_OP => {
                     let done = Box::from_raw(lp.0 as *mut crate::fileops::Done);
