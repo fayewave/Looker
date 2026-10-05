@@ -354,7 +354,9 @@ impl App {
             self.draw_landing(g);
             return;
         }
-        g.checkerboard(v);
+        if self.settings.checkerboard {
+            g.checkerboard(v);
+        }
         self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
         if doc.is_none() {

@@ -30,6 +30,7 @@ pub(super) enum Setting {
     Cache,
     Recents,
     Window,
+    Checkerboard,
 }
 
 pub(super) struct Page {
@@ -53,7 +54,7 @@ fn choices(s: &Settings, which: Setting) -> (Vec<&'static str>, usize) {
             vec!["128 MB", "256 MB", "512 MB", "1 GB", "2 GB"],
             CACHE_CHOICES.iter().position(|&m| m >= s.cache_mb).unwrap_or(2),
         ),
-        Setting::Recents | Setting::Window => (Vec::new(), 0),
+        Setting::Recents | Setting::Window | Setting::Checkerboard => (Vec::new(), 0),
     }
 }
 
@@ -117,7 +118,7 @@ impl App {
                 s.cache_mb = CACHE_CHOICES[i.min(CACHE_CHOICES.len() - 1)];
                 self.viewer.set_budget((s.cache_mb as usize) << 20);
             }
-            Setting::Recents | Setting::Window => {}
+            Setting::Recents | Setting::Window | Setting::Checkerboard => {}
         }
         settings::save(&self.settings);
         self.invalidate();
@@ -139,6 +140,7 @@ impl App {
                     s.window = None; // the next launch opens the default window
                 }
             }
+            Setting::Checkerboard => s.checkerboard = !s.checkerboard,
             _ => {}
         }
         settings::save(&self.settings);
@@ -268,6 +270,8 @@ impl App {
         y = hint(g, x, y, w, "Where the wheel and a double-click zoom into. Ctrl + and Ctrl - always zoom into the middle.");
         y = self.combo_row(g, x, y, w, "Theme", Setting::Theme);
         y = hint(g, x, y, w, "The checkerboard behind a photo stays the same in both themes.");
+        y = self.toggle_row(g, x, y, "Checkerboard background", Setting::Checkerboard, self.settings.checkerboard);
+        y = hint(g, x, y, w, "The squares behind the photo, which show where it is transparent. Off: the theme's plain background.");
         y = self.toggle_row(g, x, y, "Recent photos", Setting::Recents, self.settings.recents_enabled);
         y = hint(g, x, y, w, "Shows the photos you looked at last on the landing page. Turning it off also forgets the current list.");
         y = self.toggle_row(g, x, y, "Remember window size and position", Setting::Window, self.settings.remember_window);
