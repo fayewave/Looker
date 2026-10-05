@@ -5,9 +5,14 @@
 
 .DESCRIPTION
       1. cargo build --release (target dir is %LOCALAPPDATA%\Looker\native-target, outside Dropbox);
-      2. lays the package out in %LOCALAPPDATA%\Looker\native-pkg-<Platform> (NativeLayout.ps1): Looker.exe, the
-         logo PNGs from native/assets, native/Package.appxmanifest with a unique revision stamped in
-         (registering the same version from another folder is a silent no-op) and resources.pri;
+      2. lays the package out (NativeLayout.ps1): Looker.exe, the logo PNGs from native/assets,
+         native/Package.appxmanifest with a unique revision stamped in (registering the same version from another
+         folder is a silent no-op) and resources.pri. The layout alternates between
+         %LOCALAPPDATA%\Looker\native-pkg-<Platform>-a and -b, always the one the registered package is NOT
+         installed from: deleting and recreating the folder under a registered dev-mode package breaks its file
+         activation for good (Explorer: "The parameter is incorrect", AppModel-Runtime event 203, 0x80070057,
+         while Start-menu launches still work), and re-registering from the same folder doesn't repair it.
+         Registering from the other folder does;
       3. registers it with -ForceUpdateFromAnyVersion. LocalSettings survive (never Remove-AppxPackage: that
          wipes them), so the first packaged launch migrates the C# app's preferences.
 
@@ -22,14 +27,25 @@
 param(
     [ValidateSet('x64')]
     [string]$Platform = 'x64',
-    [string]$OutDir = (Join-Path $env:LOCALAPPDATA "Looker\native-pkg-$Platform")
+    [string]$OutDir
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $PSScriptRoot 'NativeLayout.ps1')
 
 if (Get-Process Looker -ErrorAction SilentlyContinue) {
-    throw 'Looker is running; close it first (re-registration replaces the files it runs from).'
+    throw 'Looker is running; close it first (re-registration replaces the package it runs from).'
+}
+
+# Never rebuild the folder the package is registered from (see .DESCRIPTION): use the other one.
+$installed = (Get-AppxPackage -Name 'fayewave.Looker-PhotoViewer').InstallLocation
+if (-not $OutDir) {
+    $a = Join-Path $env:LOCALAPPDATA "Looker\native-pkg-$Platform-a"
+    $b = Join-Path $env:LOCALAPPDATA "Looker\native-pkg-$Platform-b"
+    $OutDir = if ($installed -and [IO.Path]::GetFullPath($installed) -eq [IO.Path]::GetFullPath($a)) { $b } else { $a }
+}
+elseif ($installed -and [IO.Path]::GetFullPath($installed).TrimEnd('\') -eq [IO.Path]::GetFullPath($OutDir).TrimEnd('\')) {
+    throw "$OutDir is the folder Looker is registered from; rebuilding it would break opening files from Explorer. Use another folder."
 }
 
 # Unique revision per publish (16-bit field): minutes since midnight, so consecutive runs differ.
