@@ -195,7 +195,7 @@ impl App {
         let (_, h) = self.size_dip();
         let tw = g.measure(&wide(&self.status_parts()), &g.fonts.caption);
         let lw = g.measure(&wide("Open in Explorer"), &g.fonts.caption);
-        Some(rect(12.0 + tw + 16.0, h - STATUS_H + 4.0, lw, STATUS_H - 10.0))
+        Some(rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H))
     }
 
     /// What is under a point, from the regions the last frame drew.
@@ -319,8 +319,9 @@ impl App {
 
     pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
-        let y = h - STATUS_H + 4.0;
-        let row_h = STATUS_H - 10.0;
+        // Centred in the whole row (an inset box sat the text 1.5 px high).
+        let y = h - STATUS_H;
+        let row_h = STATUS_H;
         let text = self.status_parts();
         if text.is_empty() {
             return;
