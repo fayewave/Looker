@@ -222,8 +222,12 @@ impl App {
                 }
                 let id = Hit::RecentRow(i);
                 self.hits.add(id, row);
+                // Brighter than a subtle button's states: the rows are large and sit on the plain window fill.
                 let st = self.state_out(id, true);
-                ui::button_frame(g, row, ui::Kind::Subtle, &st);
+                let fill = if st.pressed { white(0x2E) } else { gfx::rgba(0xFFFFFF, 0x1C as f32 / 255.0 * st.hover) };
+                if fill.a > 0.0 {
+                    g.fill_round(row, 4.0, fill);
+                }
                 let tb = rect(row.left + 6.0, row.top + 3.0, THUMB_W, THUMB_H);
                 g.fill_round(tb, 4.0, white(0x15)); // ControlFillColorSecondary
                 if let Some(t) = self.thumbs.get(&e.path, e.stamp) {

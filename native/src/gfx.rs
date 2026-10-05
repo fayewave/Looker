@@ -136,6 +136,9 @@ pub enum Align {
     Center,
 }
 
+/// The checkerboard's darker square: also the plain viewport fill when the checkerboard is off.
+pub const CHECKER_DARK: u32 = 0x0F0F0F;
+
 pub fn rgb(hex: u32) -> D2D1_COLOR_F {
     rgba(hex, 1.0)
 }
@@ -298,7 +301,7 @@ impl Gfx {
     /// The preview-area checkerboard: two near-blacks a hair apart in 8-DIP squares, rendered at the
     /// display's DPI so the squares stay crisp and whole-pixel, anchored at the viewport's top-left.
     pub fn checkerboard(&mut self, r: D2D_RECT_F) {
-        const DARK: u32 = 0x0F0F0F;
+        const DARK: u32 = CHECKER_DARK;
         const LIGHT: u32 = 0x161616;
         let scale = self.dpi / 96.0;
         if self.checker.as_ref().is_none_or(|(_, d)| *d != self.dpi) {

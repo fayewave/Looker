@@ -271,7 +271,7 @@ impl App {
         y = self.combo_row(g, x, y, w, "Theme", Setting::Theme);
         y = hint(g, x, y, w, "The checkerboard behind a photo stays the same in both themes.");
         y = self.toggle_row(g, x, y, "Checkerboard background", Setting::Checkerboard, self.settings.checkerboard);
-        y = hint(g, x, y, w, "The squares behind the photo, which show where it is transparent. Off: the theme's plain background.");
+        y = hint(g, x, y, w, "The squares behind the photo, which show where it is transparent. Off: plain dark, the colour of its darker squares.");
         y = self.toggle_row(g, x, y, "Recent photos", Setting::Recents, self.settings.recents_enabled);
         y = hint(g, x, y, w, "Shows the photos you looked at last on the landing page. Turning it off also forgets the current list.");
         y = self.toggle_row(g, x, y, "Remember window size and position", Setting::Window, self.settings.remember_window);

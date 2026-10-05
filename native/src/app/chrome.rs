@@ -362,6 +362,8 @@ impl App {
         }
         if self.settings.checkerboard {
             g.checkerboard(v);
+        } else {
+            g.fill(v, rgb(gfx::CHECKER_DARK));
         }
         self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
