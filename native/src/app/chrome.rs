@@ -39,20 +39,25 @@ impl App {
         self.invalidate();
     }
 
-    /// Before each frame: any other change of panel state (launch, landing page, a page) jumps; a slide in
-    /// progress re-lays the image out every frame, and once more, with a sharper decode, when it lands.
+    /// Before each frame: any other change of panel state (launch, landing page, a page) jumps and re-lays the
+    /// image out; a slide in progress re-lays it out every frame, and once more, with a sharper decode, when it
+    /// lands.
     /// True while one is moving.
     fn step_slides(&mut self) -> bool {
         let (i, e, s) = (self.info_shown(), self.explorer_shown(), self.strip_shown());
         let sl = &mut self.slides;
+        let mut snapped = false;
         for (slide, shown) in [(&mut sl.info, i), (&mut sl.explorer, e), (&mut sl.strip, s)] {
             if slide.shown() != shown {
                 slide.snap(shown);
+                snapped = true;
             }
         }
         let moving = sl.info.moving() || sl.explorer.moving() || sl.strip.moving();
         let landed = sl.info.settle() | sl.explorer.settle() | sl.strip.settle();
-        if moving || landed {
+        // A snap moves the insets too: the layout done by whatever changed the state (a page closing) measured
+        // the old ones.
+        if moving || landed || snapped {
             self.layout_changed();
         }
         moving

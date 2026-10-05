@@ -46,7 +46,8 @@ use crate::gfx::{self, Align, Gfx, rect, rgb, white};
 use crate::ui::{self, TEXT_DISABLED, TEXT_SECONDARY, TEXT_TERTIARY, contains};
 use crate::view::View;
 
-const TITLE_H: f32 = 48.0;
+/// The standard Windows 11 caption height (the C# app's compact TitleBar), caption buttons 46 × 32.
+const TITLE_H: f32 = 32.0;
 const TOOLBAR_H: f32 = 40.0;
 const STATUS_H: f32 = 28.0;
 const CAPTION_W: f32 = 46.0;
