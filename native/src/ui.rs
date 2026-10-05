@@ -39,7 +39,12 @@ impl Theme {
     }
 }
 
-/// A panel sliding in or out (the cards, the strip): 0 = hidden, 1 = shown, eased out like the zoom.
+/// Quintic ease-in-out: starts gently, fastest in the middle, settles gently.
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 { 16.0 * t.powi(5) } else { 1.0 - (-2.0 * t + 2.0).powi(5) / 2.0 }
+}
+
+/// A panel sliding in or out (the cards, the strip): 0 = hidden, 1 = shown, eased in and out.
 pub struct Slide {
     from: f32,
     to: f32,
@@ -61,7 +66,7 @@ impl Slide {
     pub fn value(&self) -> f32 {
         match self.progress() {
             None => self.to,
-            Some(t) => self.from + (self.to - self.from) * (1.0 - (1.0 - t).powi(3)),
+            Some(t) => self.from + (self.to - self.from) * ease_in_out(t),
         }
     }
 
