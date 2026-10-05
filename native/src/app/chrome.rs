@@ -364,10 +364,44 @@ impl App {
                 }
             }
         } else if self.viewer.error.is_some() {
-            g.text(&wide("Can't display this file"), &g.fonts.body, v, white(TEXT_SECONDARY), Align::Center);
+            self.draw_cant_display(g);
         }
         self.draw_fade(g, v);
         self.draw_placeholder(g);
+    }
+
+    /// "Can't display this file", and when the reason is a Windows extension that isn't installed, which one and
+    /// a button to its Store page (as the Photos app does).
+    fn draw_cant_display(&mut self, g: &Gfx) {
+        let a = self.image_area();
+        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        if self.missing_extension.as_ref().is_none_or(|(p, _)| *p != path) {
+            let ext = crate::store::missing_extension(format::sniff_file(&path));
+            self.missing_extension = Some((path, ext));
+        }
+        let why = self.missing_extension.as_ref().and_then(|(_, e)| e.as_ref()).map(|e| e.why);
+        let cy = (a.top + a.bottom) / 2.0;
+        let Some(why) = why else {
+            g.text(&wide("Can't display this file"), &g.fonts.body, a, white(TEXT_SECONDARY), Align::Center);
+            return;
+        };
+        let cx = (a.left + a.right) / 2.0;
+        let w = (a.right - a.left - 32.0).clamp(1.0, 480.0);
+        g.text(&wide("Can't display this file"), &g.fonts.body_strong, rect(cx - w / 2.0, cy - 58.0, w, 20.0), white(0xFF), Align::Center);
+        g.text(&wide(why), &g.fonts.body, rect(cx - w / 2.0, cy - 30.0, w, 20.0), white(TEXT_SECONDARY), Align::Center);
+        let label = "Get it from the Microsoft Store";
+        let bw = (g.measure(&wide(label), &g.fonts.body) + 24.0).ceil();
+        let b = rect(g.snap(cx - bw / 2.0), g.snap(cy + 6.0), bw, 32.0);
+        self.hits.add(Hit::GetExtension, b);
+        let st = self.state(Hit::GetExtension, true);
+        let fg = ui::button_frame(g, b, ui::Kind::Accent, &st);
+        g.text(&wide(label), &g.fonts.body, b, fg, Align::Center);
+    }
+
+    pub(super) fn get_extension(&mut self) {
+        if let Some((_, Some(e))) = &self.missing_extension {
+            page::shell_open(&format!("ms-windows-store://pdp/?ProductId={}", e.product_id));
+        }
     }
 
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.

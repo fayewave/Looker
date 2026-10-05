@@ -285,6 +285,7 @@ impl App {
                             Some(Hit::RecentRow(i)) => self.open_recent(i),
                             Some(Hit::RecentClear) => self.clear_recents(),
                             Some(Hit::DefaultHint) => self.page_link(5),
+                            Some(Hit::GetExtension) => self.get_extension(),
                             Some(Hit::DefaultHintClose) => self.dismiss_default_hint(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),

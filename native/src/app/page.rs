@@ -330,6 +330,10 @@ impl App {
         let rh = g.measure_height(&wide_str(reset), &g.fonts.caption_wrap, w).ceil();
         g.text(&wide_str(reset), &g.fonts.caption_wrap, rect(x, y, w, rh), white(TEXT_SECONDARY), Align::Left);
         y += rh + 16.0;
+        let credits = "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause). The licences are in the codecs\\licenses folder beside Looker.exe.";
+        let ch = g.measure_height(&wide_str(credits), &g.fonts.caption_wrap, w).ceil();
+        g.text(&wide_str(credits), &g.fonts.caption_wrap, rect(x, y, w, ch), white(TEXT_SECONDARY), Align::Left);
+        y += ch + 16.0;
         let logs = format!("Logs: {}looker-native*.log", std::env::temp_dir().display().to_string().trim_end_matches('\\').to_string() + "\\");
         let lh = g.measure_height(&wide_str(&logs), &g.fonts.caption_wrap, w).ceil();
         g.text(&wide_str(&logs), &g.fonts.caption_wrap, rect(x, y, w, lh), gfx::rgba(0xFFFFFF, TEXT_SECONDARY as f32 / 255.0 * 0.6), Align::Left);
@@ -390,6 +394,6 @@ fn hint(g: &Gfx, x: f32, y: f32, w: f32, text: &str) -> f32 {
 }
 
 /// Opens a URL with the shell (the browser, the Store). False when nothing handled it.
-fn shell_open(url: &str) -> bool {
+pub(super) fn shell_open(url: &str) -> bool {
     unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL).0 as isize > 32 }
 }

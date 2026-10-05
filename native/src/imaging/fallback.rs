@@ -53,6 +53,13 @@ pub fn image(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Res
     finish(f, img.as_raw(), w, h, box_w, box_h)
 }
 
+/// HEIC/HEIF/AVIF through the bundled libheif (see `heif.rs`).
+pub fn heif(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let (w, h, rgba) = super::heif::decode(&bytes)?;
+    finish(f, &rgba, w, h, box_w, box_h)
+}
+
 /// Flattened composite (the image Photoshop saves alongside the layers, "maximize compatibility"); PSD and PSB.
 pub fn psd(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;

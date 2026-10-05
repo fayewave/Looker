@@ -31,7 +31,7 @@ if (-not $Store -and -not $Thumbprint -and -not $PfxPath) {
 }
 
 $layout = Join-Path ([IO.Path]::GetTempPath()) "looker-native-package-$Platform"
-$version = New-NativeLayout -Root $root -OutDir $layout
+$version = New-NativeLayout -Root $root -OutDir $layout -RequireCodecs
 if ($version -notmatch '\.0$') { throw "The Store needs revision 0; the manifest says $version." }
 
 $packageDir = [IO.Path]::GetFullPath((Join-Path $OutDir $Platform))

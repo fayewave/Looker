@@ -5,6 +5,7 @@
 
 mod animated;
 mod fallback;
+pub mod heif;
 pub mod pdf;
 mod raster;
 pub mod svg;
@@ -86,6 +87,8 @@ enum Step {
     Pcx,
     Xcf,
     Pdf,
+    /// libheif (bundled), when Windows lacks the HEVC or AV1 extension.
+    Heif,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -97,7 +100,8 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Gif | Format::Png => &[Animated, Wic, Image],
         Format::Webp => &[Animated, Wic, Image],
         Format::Raw => &[WicRaw, Wic],
-        Format::Heif | Format::Avif => &[Wic],
+        // WIC needs the HEVC (paid) or AV1 Video Extension; the bundled libheif catches the rest.
+        Format::Heif | Format::Avif => &[Wic, Heif],
         Format::Cur => &[WicCursor],
         Format::Svg => &[Svg],
         Format::Psd => &[Wic, Psd],
@@ -137,6 +141,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32) 
         Step::Pcx => fallback::pcx(f, path, box_w, box_h).map(Some),
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
+        Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
     }
 }
 
@@ -144,7 +149,14 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32) 
 /// frame only (the placeholder tier), skipping the animation decoders.
 pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still: bool) -> Result<Decoded, String> {
     let fmt = format::sniff_file(path);
-    let steps: Vec<Step> = plan(fmt).iter().copied().filter(|s| !(still && *s == Step::Animated)).collect();
+    // LOOKER_SKIP_WIC=1 takes the bundled decoders even where Windows has the codec (testing the fallbacks).
+    static SKIP_WIC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let skip_wic = *SKIP_WIC.get_or_init(|| std::env::var_os("LOOKER_SKIP_WIC").is_some());
+    let steps: Vec<Step> = plan(fmt)
+        .iter()
+        .copied()
+        .filter(|s| !(still && *s == Step::Animated) && !(skip_wic && *s == Step::Wic && plan(fmt).len() > 1))
+        .collect();
     if steps.is_empty() {
         return Err(format!("no decoder for {fmt:?}"));
     }

@@ -86,6 +86,36 @@ pub fn check_updates(hwnd: HWND) {
     });
 }
 
+/// A Windows extension from the Microsoft Store that a format needs: what to call it, why, and its Store id.
+pub struct Extension {
+    pub why: &'static str,
+    pub product_id: &'static str,
+}
+
+/// The extension a file of this format failed for want of, if that is the reason: camera RAW without the
+/// (free) Raw Image Extension, HEIC/AVIF only when the bundled libheif is missing too.
+pub fn missing_extension(format: crate::format::Format) -> Option<Extension> {
+    use crate::format::Format;
+    match format {
+        Format::Raw if !raw_extension_installed() => {
+            Some(Extension { why: "Windows needs the free Raw Image Extension to open camera RAW files.", product_id: "9NCTDW2W1BH8" })
+        }
+        Format::Heif if !crate::imaging::heif::available() => {
+            Some(Extension { why: "Windows needs the HEVC Video Extensions to open HEIC photos.", product_id: "9NMZLZ57R3T7" })
+        }
+        Format::Avif if !crate::imaging::heif::available() => {
+            Some(Extension { why: "Windows needs the free AV1 Video Extension to open AVIF images.", product_id: "9MVZQVXJBQ9V" })
+        }
+        _ => None,
+    }
+}
+
+fn raw_extension_installed() -> bool {
+    use windows::Win32::Graphics::Imaging::IWICBitmapDecoder;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    unsafe { CoCreateInstance::<_, IWICBitmapDecoder>(&crate::imaging::wic::RAW_IMAGE_DECODER, None, CLSCTX_INPROC_SERVER).is_ok() }
+}
+
 /// The `ms-settings:` link to Looker's own Default apps page (Windows 11), or the general page when there is
 /// no identity to name.
 pub fn default_apps_uri() -> String {

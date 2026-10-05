@@ -160,6 +160,8 @@ enum Hit {
     InfoCard,
     InfoGrip,
     InfoPath,
+    /// "Get it from the Microsoft Store" under "Can't display this file", when a Windows extension is missing.
+    GetExtension,
     /// The landing page's "Set Looker as your default photo viewer" and its X.
     DefaultHint,
     DefaultHintClose,
@@ -364,6 +366,8 @@ pub struct App {
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
     slideshow: slideshow::Slideshow,
+    /// For the file that failed to display: the Windows extension it needs, if that is why (worked out once).
+    missing_extension: Option<(PathBuf, Option<crate::store::Extension>)>,
     /// What the Store last said about updates (the Settings page's Updates block, the toolbar dot).
     update: crate::store::UpdateStatus,
     /// Covering the photo while the explorer's cursor is on a file Looker can't show.
@@ -958,6 +962,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             wheel_acc: 0.0,
             slideshow: Default::default(),
             update: Default::default(),
+            missing_extension: None,
             placeholder: None,
             fade: None,
             last_drawn: None,

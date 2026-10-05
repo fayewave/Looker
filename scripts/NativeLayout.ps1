@@ -11,7 +11,9 @@ function Find-SdkTool([string]$name) {
 
 # -Revision: the Identity Version's fourth field. Dev registration stamps a unique one (registering the same
 # version from another folder is a silent no-op); a Store package keeps 0 (the Store requires it).
-function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1) {
+# -RequireCodecs: fail when the codec DLLs (scripts/Build-Codecs.ps1) are missing, rather than warn; a Store package
+# without them can't open HEIC on machines without the paid HEVC Video Extension.
+function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1, [switch]$RequireCodecs) {
     $native = Join-Path $Root 'native'
     $exe = Join-Path $env:LOCALAPPDATA 'Looker\native-target\release\looker.exe'
 
@@ -28,6 +30,15 @@ function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1) {
     New-Item -ItemType Directory (Join-Path $OutDir 'Assets') | Out-Null
     Copy-Item $exe (Join-Path $OutDir 'Looker.exe')
     Copy-Item (Join-Path $Root 'native\assets\*.png') (Join-Path $OutDir 'Assets')
+
+    # HEIC/AVIF fallback decoders and their licences (loaded only when WIC can't decode a file).
+    $codecs = Join-Path $env:LOCALAPPDATA 'Looker\codecs'
+    if (Test-Path (Join-Path $codecs 'heif.dll')) {
+        Copy-Item $codecs (Join-Path $OutDir 'codecs') -Recurse
+        Copy-Item (Join-Path $Root 'native\assets\Fonts\Inter-LICENSE.txt') (Join-Path $OutDir 'codecs\licenses\Inter.txt')
+    }
+    elseif ($RequireCodecs) { throw "Codec DLLs missing ($codecs): run scripts/Build-Codecs.ps1 first." }
+    else { Write-Warning "Codec DLLs missing ($codecs): HEIC/AVIF need the Windows extensions in this build. Run scripts/Build-Codecs.ps1." }
 
     $manifest = Get-Content (Join-Path $native 'Package.appxmanifest') -Raw
     if ($Revision -ge 0) {

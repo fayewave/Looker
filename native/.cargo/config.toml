@@ -1,3 +1,8 @@
 # Build output lives outside Dropbox: syncing locks fresh build files mid-link (os error 32).
 [build]
 target-dir = "C:/Users/fayem/AppData/Local/Looker/native-target"
+
+# The C runtime linked in: VCRUNTIME140.dll is not part of Windows, and a Store install can't count on the
+# Visual C++ redistributable being there (the codec DLLs are built the same way, see codecs/).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
