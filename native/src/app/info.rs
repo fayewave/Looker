@@ -86,13 +86,15 @@ impl App {
 
     /// What the card takes from the right of the viewport (its width, margins included).
     pub(super) fn right_inset(&self) -> f32 {
-        if self.info_shown() { self.settings.info_width } else { 0.0 }
+        self.settings.info_width * self.slides.info.value()
     }
 
+    /// Slid out to the right by however much of it is hidden.
     fn info_card_rect(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let w = self.settings.info_width;
-        D2D_RECT_F { left: v.right - w + MARGIN, top: v.top + MARGIN, right: v.right - MARGIN, bottom: v.bottom - MARGIN }
+        let dx = w * (1.0 - self.slides.info.value());
+        D2D_RECT_F { left: v.right - w + MARGIN + dx, top: v.top + MARGIN, right: v.right - MARGIN + dx, bottom: v.bottom - MARGIN }
     }
 
     pub(super) fn toggle_info(&mut self) {
@@ -101,7 +103,7 @@ impl App {
         }
         self.settings.info_visible = !self.settings.info_visible;
         settings::save(&self.settings);
-        self.layout_changed();
+        self.slide_panels();
     }
 
     /// The space for the image changed (window size, a card shown, hidden or resized): refit and decode for it.
@@ -232,7 +234,7 @@ impl App {
 
     /// Draws the card and records its hits. Returns whether it is still animating (a scroll).
     pub(super) fn draw_info(&mut self, g: &Gfx) -> bool {
-        if !self.info_shown() {
+        if self.slides.info.value() <= 0.0 {
             return false;
         }
         self.request_exif();

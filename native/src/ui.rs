@@ -39,6 +39,67 @@ impl Theme {
     }
 }
 
+/// A panel sliding in or out (the cards, the strip): 0 = hidden, 1 = shown, eased out like the zoom.
+pub struct Slide {
+    from: f32,
+    to: f32,
+    start: Option<std::time::Instant>,
+}
+
+pub const SLIDE_MS: f32 = 250.0;
+
+impl Slide {
+    pub fn new(shown: bool) -> Slide {
+        Slide { from: shown as u8 as f32, to: shown as u8 as f32, start: None }
+    }
+
+    fn progress(&self) -> Option<f32> {
+        self.start.map(|t0| (t0.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0))
+    }
+
+    /// How far in the panel is now.
+    pub fn value(&self) -> f32 {
+        match self.progress() {
+            None => self.to,
+            Some(t) => self.from + (self.to - self.from) * (1.0 - (1.0 - t).powi(3)),
+        }
+    }
+
+    /// Where it is going.
+    pub fn shown(&self) -> bool {
+        self.to > 0.5
+    }
+
+    pub fn moving(&self) -> bool {
+        self.progress().is_some_and(|t| t < 1.0)
+    }
+
+    /// Slides from wherever it is now (a toggle mid-slide turns it round).
+    pub fn animate(&mut self, shown: bool) {
+        if self.shown() != shown {
+            self.from = self.value();
+            self.to = shown as u8 as f32;
+            self.start = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Jumps there (the launch, the landing page, a page opening).
+    pub fn snap(&mut self, shown: bool) {
+        self.from = shown as u8 as f32;
+        self.to = self.from;
+        self.start = None;
+    }
+
+    /// True once, on the first call after the slide has run its course.
+    pub fn settle(&mut self) -> bool {
+        if self.progress().is_some_and(|t| t >= 1.0) {
+            self.start = None;
+            return true;
+        }
+        false
+    }
+}
+
 /// WinUI's brush transition for pointer-over states.
 const FADE_MS: f32 = 83.0;
 

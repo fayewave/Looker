@@ -30,6 +30,34 @@ impl App {
         self.viewer.current.is_some() && self.page.is_none() && !self.slideshow.running
     }
 
+    /// The panels slide to where their toggles say (a toggle, a slideshow starting or ending).
+    pub(super) fn slide_panels(&mut self) {
+        let (i, e, s) = (self.info_shown(), self.explorer_shown(), self.strip_shown());
+        self.slides.info.animate(i);
+        self.slides.explorer.animate(e);
+        self.slides.strip.animate(s);
+        self.invalidate();
+    }
+
+    /// Before each frame: any other change of panel state (launch, landing page, a page) jumps; a slide in
+    /// progress re-lays the image out every frame, and once more, with a sharper decode, when it lands.
+    /// True while one is moving.
+    fn step_slides(&mut self) -> bool {
+        let (i, e, s) = (self.info_shown(), self.explorer_shown(), self.strip_shown());
+        let sl = &mut self.slides;
+        for (slide, shown) in [(&mut sl.info, i), (&mut sl.explorer, e), (&mut sl.strip, s)] {
+            if slide.shown() != shown {
+                slide.snap(shown);
+            }
+        }
+        let moving = sl.info.moving() || sl.explorer.moving() || sl.strip.moving();
+        let landed = sl.info.settle() | sl.explorer.settle() | sl.strip.settle();
+        if moving || landed {
+            self.layout_changed();
+        }
+        moving
+    }
+
     /// Where the image fits and zooms: the viewport minus the floating cards.
     pub(super) fn image_area(&self) -> D2D_RECT_F {
         let v = self.viewport();
@@ -182,6 +210,7 @@ impl App {
         let Some(mut g) = self.gfx.take() else { return };
         self.hits.clear();
         self.fades.begin();
+        let sliding = self.step_slides();
         g.begin(self.theme().window);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
@@ -205,7 +234,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving || self.fade.is_some() {
+        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving || sliding || self.fade.is_some() {
             self.invalidate();
         }
     }

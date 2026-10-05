@@ -151,12 +151,13 @@ impl App {
 
     /// What the strip takes from the bottom of the viewport.
     pub(super) fn bottom_inset(&self) -> f32 {
-        if self.strip_shown() { self.settings.strip_height } else { 0.0 }
+        self.settings.strip_height * self.slides.strip.value()
     }
 
+    /// Slid down (under the status row, which clips it) by however much of it is hidden.
     fn strip_rect(&self) -> D2D_RECT_F {
         let (w, _) = self.size_dip();
-        let bottom = self.content_bottom();
+        let bottom = self.content_bottom() + self.settings.strip_height * (1.0 - self.slides.strip.value());
         D2D_RECT_F { left: 0.0, top: bottom - self.settings.strip_height, right: w, bottom }
     }
 
@@ -179,7 +180,7 @@ impl App {
         self.settings.strip_visible = !self.settings.strip_visible;
         self.strip.centered = None;
         settings::save(&self.settings);
-        self.layout_changed();
+        self.slide_panels();
     }
 
     /// The wheel over the strip moves it a cell per notch.
@@ -285,17 +286,20 @@ impl App {
 
     /// Draws the strip, loads what it shows, and records its hits. Returns whether it is still animating.
     pub(super) fn draw_strip(&mut self, g: &Gfx) -> bool {
-        if !self.strip_shown() {
+        if self.slides.strip.value() <= 0.0 {
             return false;
         }
         let r = self.strip_rect();
+        // Only what is above the status row shows while it slides.
+        let visible = D2D_RECT_F { bottom: r.bottom.min(self.content_bottom()), ..r };
+        g.push_clip(visible);
         let (cw, ch) = self.cell_size();
         let pitch = cw + SPACING;
         let n = self.viewer.image_count();
         let view_w = r.right - r.left;
         let content_w = SIDE * 2.0 + n as f32 * pitch - if n > 0 { SPACING } else { 0.0 };
         self.strip.max_scroll = (content_w - view_w).max(0.0);
-        self.hits.add(Hit::Strip, r);
+        self.hits.add(Hit::Strip, visible);
 
         // Follow the current image: glide to centre it, or jump when it is more than a screen away.
         let sel = self.viewer.index;
@@ -368,6 +372,7 @@ impl App {
             let c = if dragging { gfx::rgba(ui::ACCENT, 1.0) } else { gfx::rgba(0xFFFFFF, 0.4 * t) };
             g.fill(rect(r.left, r.top, r.right - r.left, 2.0), c);
         }
+        g.pop_clip();
         moving
     }
 }

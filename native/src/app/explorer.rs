@@ -105,13 +105,15 @@ impl App {
     }
 
     pub(super) fn left_inset(&self) -> f32 {
-        if self.explorer_shown() { self.settings.explorer_width } else { 0.0 }
+        self.settings.explorer_width * self.slides.explorer.value()
     }
 
+    /// Slid out to the left by however much of it is hidden.
     fn explorer_rect(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let w = self.settings.explorer_width;
-        D2D_RECT_F { left: v.left + MARGIN, top: v.top + MARGIN, right: v.left + w - MARGIN, bottom: v.bottom - MARGIN }
+        let dx = w * (1.0 - self.slides.explorer.value());
+        D2D_RECT_F { left: v.left + MARGIN - dx, top: v.top + MARGIN, right: v.left + w - MARGIN - dx, bottom: v.bottom - MARGIN }
     }
 
     pub(super) fn toggle_explorer(&mut self) {
@@ -126,7 +128,7 @@ impl App {
             self.explorer.photo_folder = None;
             self.explorer_follow();
         }
-        self.layout_changed();
+        self.slide_panels();
     }
 
     /// After every navigation: moving into another folder lists it; within one folder the listing stays where
@@ -445,7 +447,7 @@ impl App {
     // --- Drawing ------------------------------------------------------------------------------------
 
     pub(super) fn draw_explorer(&mut self, g: &Gfx) -> bool {
-        if !self.explorer_shown() {
+        if self.slides.explorer.value() <= 0.0 {
             return false;
         }
         let card = self.explorer_rect();

@@ -183,6 +183,12 @@ enum Caption {
     Close,
 }
 
+pub(super) struct Slides {
+    info: ui::Slide,
+    explorer: ui::Slide,
+    strip: ui::Slide,
+}
+
 /// A file the explorer landed on that Looker can't show (see `show_placeholder`).
 pub(super) struct Placeholder {
     path: PathBuf,
@@ -366,6 +372,8 @@ pub struct App {
     /// Wheel travel not yet turned into a step (wheel navigation on a fine-grained wheel).
     wheel_acc: f64,
     slideshow: slideshow::Slideshow,
+    /// The info card, the explorer card and the strip sliding in and out.
+    slides: Slides,
     /// For the file that failed to display: the Windows extension it needs, if that is why (worked out once).
     missing_extension: Option<(PathBuf, Option<crate::store::Extension>)>,
     /// What the Store last said about updates (the Settings page's Updates block, the toolbar dot).
@@ -961,6 +969,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             skip_placement_save: false,
             wheel_acc: 0.0,
             slideshow: Default::default(),
+            slides: Slides { info: ui::Slide::new(false), explorer: ui::Slide::new(false), strip: ui::Slide::new(false) },
             update: Default::default(),
             missing_extension: None,
             placeholder: None,
