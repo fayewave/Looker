@@ -222,7 +222,7 @@ impl App {
                 }
                 let id = Hit::RecentRow(i);
                 self.hits.add(id, row);
-                let st = self.state(id, true);
+                let st = self.state_out(id, true);
                 ui::button_frame(g, row, ui::Kind::Subtle, &st);
                 let tb = rect(row.left + 6.0, row.top + 3.0, THUMB_W, THUMB_H);
                 g.fill_round(tb, 4.0, white(0x15)); // ControlFillColorSecondary

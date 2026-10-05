@@ -283,6 +283,13 @@ impl App {
         ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
     }
 
+    /// `state`, with the hover on at once and only its fade out animated (the landing page's recent rows).
+    pub(super) fn state_out(&mut self, id: Hit, enabled: bool) -> ui::State {
+        let over = self.hover == Some(id) && (self.pressed.is_none() || self.pressed == Some(id));
+        let hover = self.fades.get_out(id, over && enabled);
+        ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
+    }
+
     pub(super) fn draw_toolbar(&mut self, g: &Gfx) {
         for (t, glyph, r) in self.tool_rects() {
             let enabled = self.tool_enabled(t);

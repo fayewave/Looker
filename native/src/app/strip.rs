@@ -325,7 +325,7 @@ impl App {
             let cell = rect(g.snap(SIDE + i as f32 * pitch - scroll), top, cw, ch);
             self.hits.add(Hit::StripCell(i), cell);
             let selected = sel == Some(i);
-            let hover = self.fades.get(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
+            let hover = self.fades.get_out(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
             let pressed = self.pressed == Some(Hit::StripCell(i)) && self.hover == Some(Hit::StripCell(i));
             g.fill_round(cell, 4.0, white(0x1F));
 

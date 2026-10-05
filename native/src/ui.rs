@@ -175,6 +175,15 @@ impl<T: Copy + Eq + Hash> Fades<T> {
         }
         e.0
     }
+
+    /// Like `get`, but on is instant: only the fade out animates (lists you sweep the pointer across).
+    pub fn get_out(&mut self, id: T, on: bool) -> f32 {
+        if on {
+            self.map.insert(id, (1.0, Instant::now()));
+            return 1.0;
+        }
+        self.get(id, false)
+    }
 }
 
 // --- Buttons -----------------------------------------------------------------------------------------
