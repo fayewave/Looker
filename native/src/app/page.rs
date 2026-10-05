@@ -334,7 +334,7 @@ impl App {
         let rh = g.measure_height(&wide_str(reset), &g.fonts.caption_wrap, w).ceil();
         g.text(&wide_str(reset), &g.fonts.caption_wrap, rect(x, y, w, rh), white(TEXT_SECONDARY), Align::Left);
         y += rh + 16.0;
-        let credits = "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause). The licences are in the codecs\\licenses folder beside Looker.exe.";
+        let credits = "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause), and for animated AVIF libavif (BSD-2-Clause). The licences are in the codecs\\licenses folder beside Looker.exe.";
         let ch = g.measure_height(&wide_str(credits), &g.fonts.caption_wrap, w).ceil();
         g.text(&wide_str(credits), &g.fonts.caption_wrap, rect(x, y, w, ch), white(TEXT_SECONDARY), Align::Left);
         y += ch + 16.0;

@@ -4,6 +4,7 @@
 //! written to the trace so a fallback is never silent (the C# router's swallowed exceptions cost days).
 
 mod animated;
+mod avif;
 mod fallback;
 pub mod heif;
 pub mod pdf;
@@ -89,6 +90,8 @@ enum Step {
     Pdf,
     /// libheif (bundled), when Windows lacks the HEVC or AV1 extension.
     Heif,
+    /// libavif (bundled): animated AVIF, which nothing else plays; declines a still one.
+    Avif,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -100,8 +103,10 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Gif | Format::Png => &[Animated, Wic, Image],
         Format::Webp => &[Animated, Wic, Image],
         Format::Raw => &[WicRaw, Wic],
-        // WIC needs the HEVC (paid) or AV1 Video Extension; the bundled libheif catches the rest.
-        Format::Heif | Format::Avif => &[Wic, Heif],
+        // WIC needs the HEVC (paid) or AV1 Video Extension; the bundled libheif catches the rest. An animated AVIF
+        // goes to libavif, which reads only the first bytes of a still one before declining it.
+        Format::Heif => &[Wic, Heif],
+        Format::Avif => &[Avif, Wic, Heif],
         Format::Cur => &[WicCursor],
         Format::Svg => &[Svg],
         Format::Psd => &[Wic, Psd],
@@ -117,7 +122,7 @@ fn plan(f: Format) -> &'static [Step] {
     }
 }
 
-fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32) -> Result<Option<Decoded>, String> {
+fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, still: bool) -> Result<Option<Decoded>, String> {
     let e = |e: windows::core::Error| e.message().to_string();
     match step {
         Step::Wic => wic::decode(f, wic::Source::File(path), box_w, box_h).map(Some).map_err(e),
@@ -142,6 +147,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32) 
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
+        Step::Avif => avif::decode(f, path, box_w, box_h, still),
     }
 }
 
@@ -162,7 +168,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still
     }
     let mut errors = Vec::new();
     for &step in &steps {
-        match run(f, step, path, box_w, box_h) {
+        match run(f, step, path, box_w, box_h, still) {
             Ok(Some(mut d)) => {
                 d.format = fmt;
                 if !errors.is_empty() {
@@ -170,7 +176,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still
                 }
                 return Ok(d);
             }
-            Ok(None) => {} // declined (a still image offered to the animated decoder)
+            Ok(None) => {} // declined (a still image offered to an animation decoder)
             Err(e) => errors.push(format!("{step:?}: {e}")),
         }
     }

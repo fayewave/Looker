@@ -1,13 +1,16 @@
 <#
 .SYNOPSIS
-    Builds the codec DLLs Looker loads on demand (libheif + libde265 for HEIC, dav1d for AVIF) with vcpkg, and
-    collects them with their licences in %LOCALAPPDATA%\Looker\codecs.
+    Builds the codec DLLs Looker loads on demand (libheif + libde265 for HEIC, dav1d for AVIF, libavif for animated
+    AVIF) with vcpkg, and collects them with their licences in %LOCALAPPDATA%\Looker\codecs.
 
 .DESCRIPTION
     They are only used when Windows itself can't decode a file (no HEVC Video Extension, which is a paid Store
-    add-on, or no AV1 Video Extension). Built as DLLs so the LGPL libraries stay replaceable, with the C runtime
+    add-on, or no AV1 Video Extension), except libavif, which plays animated AVIF (image sequences) everywhere:
+    neither WIC nor libheif decodes those. Built as DLLs so the LGPL libraries stay replaceable, with the C runtime
     linked in (native/codecs/triplets/x64-windows-looker.cmake), release only. libheif comes from an overlay port
-    (native/codecs/ports/libheif) that adds a dav1d feature and is built without its default x265 *encoder* (GPL).
+    (native/codecs/ports/libheif) that adds a dav1d feature and is built without its default x265 *encoder* (GPL);
+    libavif from one (native/codecs/ports/libavif) built without libyuv, which would bring libjpeg-turbo along.
+    Only the four DLLs Looker loads are collected, whatever else the dependency graph left in bin\.
 
     vcpkg itself lives in %LOCALAPPDATA%\Looker\vcpkg (cloned and bootstrapped on first run). NativeLayout.ps1
     copies the result into the package's codecs\ folder; this script also copies it next to the dev build
@@ -35,17 +38,24 @@ if (-not (Test-Path (Join-Path $Vcpkg 'vcpkg.exe'))) {
 
 # `install` never rebuilds an installed package, even when its overlay port changed; removing it first lets the
 # binary cache (keyed on the port's contents) decide whether a rebuild is needed.
-& (Join-Path $Vcpkg 'vcpkg.exe') remove "libheif:$triplet" --x-install-root $installRoot --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') | Out-Null
+& (Join-Path $Vcpkg 'vcpkg.exe') remove "libheif:$triplet" "libavif:$triplet" --x-install-root $installRoot --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') | Out-Null
 & (Join-Path $Vcpkg 'vcpkg.exe') install 'libheif[core,dav1d]' --triplet $triplet `
     --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
     --x-install-root $installRoot --clean-after-build
 if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
+# libavif shares the dav1d DLL above (its own default build has no decoder at all).
+& (Join-Path $Vcpkg 'vcpkg.exe') install 'libavif[dav1d]' --triplet $triplet `
+    --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
+    --x-install-root $installRoot --clean-after-build
+if ($LASTEXITCODE -ne 0) { throw "vcpkg install libavif failed ($LASTEXITCODE)" }
 
 $installed = Join-Path $installRoot $triplet
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $OutDir 'licenses') | Out-Null
-Copy-Item (Join-Path $installed 'bin\*.dll') $OutDir
-foreach ($port in 'libheif', 'libde265', 'dav1d') {
+foreach ($dll in 'heif.dll', 'libde265.dll', 'dav1d.dll', 'avif.dll') {
+    Copy-Item (Join-Path $installed "bin\$dll") $OutDir
+}
+foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif') {
     Copy-Item (Join-Path $installed "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
 }
 

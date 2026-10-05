@@ -55,7 +55,7 @@ struct Lib {
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
 
 /// The codecs folder beside the running exe (`LOOKER_CODECS` overrides it, for tests).
-fn codecs_dir() -> Option<std::path::PathBuf> {
+pub(super) fn codecs_dir() -> Option<std::path::PathBuf> {
     if let Some(d) = std::env::var_os("LOOKER_CODECS") {
         return Some(d.into());
     }
