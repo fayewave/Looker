@@ -326,6 +326,7 @@ impl App {
             self.hits.add(Hit::StripCell(i), cell);
             let selected = sel == Some(i);
             let hover = self.fades.get(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
+            let pressed = self.pressed == Some(Hit::StripCell(i)) && self.hover == Some(Hit::StripCell(i));
             g.fill_round(cell, 4.0, white(0x1F));
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
@@ -333,11 +334,15 @@ impl App {
             if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);
             }
-            if hover > 0.0 {
+            if pressed {
+                g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.35));
+            } else if hover > 0.0 {
                 g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.2 * hover));
             }
             let border = if selected {
                 Some(gfx::rgba(ui::ACCENT, 1.0))
+            } else if pressed {
+                Some(gfx::rgba(0xFFFFFF, 0.9))
             } else if hover > 0.0 {
                 Some(gfx::rgba(0xFFFFFF, 0.6 * hover))
             } else {

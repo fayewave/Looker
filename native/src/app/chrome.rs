@@ -265,10 +265,10 @@ impl App {
             let pressed = self.cap_pressed == Some(c);
             let mut fg = if self.active { white(0xFF) } else { white(TEXT_DISABLED) };
             if c == Caption::Close && (hover || pressed) {
-                g.fill(r, if pressed { gfx::rgba(CLOSE_RED, 0.9) } else { rgb(CLOSE_RED) });
+                g.fill(r, if pressed { ui::pressed_red(CLOSE_RED) } else { rgb(CLOSE_RED) });
                 fg = white(0xFF);
             } else if pressed {
-                g.fill(r, white(0x0A));
+                g.fill(r, white(0x1C));
             } else if hover {
                 g.fill(r, white(0x0F));
             }
@@ -330,11 +330,9 @@ impl App {
         if let Some(r) = self.reveal_rect() {
             self.hits.add(Hit::Reveal, r);
             let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
-            let c = if self.pressed == Some(Hit::Reveal) {
-                white(TEXT_TERTIARY)
-            } else {
-                white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8)
-            };
+            let pressed = self.pressed == Some(Hit::Reveal) && self.hover == Some(Hit::Reveal);
+            ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 4.0, right: r.right + 6.0, bottom: r.bottom - 4.0 }, t, pressed);
+            let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
             g.text(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
         let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {

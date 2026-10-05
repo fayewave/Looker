@@ -507,9 +507,13 @@ impl App {
             }
             let selected = current.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
             let hot = self.hover == Some(Hit::ExplorerRow(i)) || self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
+            let pressed = self.pressed == Some(Hit::ExplorerRow(i)) && self.hover == Some(Hit::ExplorerRow(i));
             if selected {
-                g.fill_round(row, 4.0, white(0x1F));
+                g.fill_round(row, 4.0, white(if pressed { 0x2E } else { 0x1F }));
                 g.outline_round(row, 4.0, gfx::rgba(ui::ACCENT, 1.0), 1.0);
+            } else if pressed {
+                g.fill_round(row, 4.0, white(0x26));
+                g.outline_round(row, 4.0, white(0x80), 1.0);
             } else if hot {
                 g.fill_round(row, 4.0, white(0x14));
                 g.outline_round(row, 4.0, white(0x55), 1.0);
@@ -567,9 +571,12 @@ impl App {
         };
         let all = explorer::crumbs(&place);
         let names: Vec<String> = all.iter().map(Place::name).collect();
-        let widths: Vec<f32> = names.iter().map(|n| g.measure(&wide(n), &g.fonts.caption) + 2.0).collect();
+        // Each link is padded for its rounded hover fill; the last crumb (where you are) is plain text, padded on
+        // its left only, so the chevron before it sits evenly between the two names.
+        const PAD: f32 = 6.0;
+        let widths: Vec<f32> = names.iter().enumerate().map(|(i, n)| g.measure(&wide(n), &g.fonts.caption) + 2.0 + if i + 1 < names.len() { 2.0 * PAD } else { PAD }).collect();
         const CHEVRON: f32 = 13.0;
-        let more_w = g.measure(&wide("\u{2026}"), &g.fonts.caption) + 2.0;
+        let more_w = g.measure(&wide("\u{2026}"), &g.fonts.caption) + 2.0 + 2.0 * PAD;
         let avail = (x1 - x0).max(0.0);
         let total = |from: usize, ellipsis: bool| -> f32 {
             let mut t: f32 = widths[from..].iter().sum::<f32>() + CHEVRON * (all.len() - from - 1) as f32;
@@ -588,7 +595,10 @@ impl App {
             let r = rect(x, y, more_w, h);
             self.hits.add(Hit::CrumbMore, r);
             let t = self.fades.get(Hit::CrumbMore, self.hover == Some(Hit::CrumbMore));
-            g.text(&wide("\u{2026}"), &g.fonts.caption, r, white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8), Align::Center);
+            let pressed = self.pressed == Some(Hit::CrumbMore) && self.hover == Some(Hit::CrumbMore);
+            ui::link_fill(g, crumb_fill(r), t, pressed);
+            let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
+            g.text(&wide("\u{2026}"), &g.fonts.caption, r, c, Align::Center);
             x += more_w;
             g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), white(TEXT_SECONDARY), Align::Center);
             x += CHEVRON;
@@ -598,13 +608,15 @@ impl App {
             let w = if last { widths[i].min((x1 - x).max(0.0)) } else { widths[i] };
             let r = rect(x, y, w, h);
             if last {
-                g.text(&wide(&names[i]), &g.fonts.caption, r, white(0xFF), Align::Left);
+                g.text(&wide(&names[i]), &g.fonts.caption, D2D_RECT_F { left: r.left + PAD, ..r }, white(0xFF), Align::Left);
                 self.hits.add(Hit::Crumb(i), r);
             } else {
                 self.hits.add(Hit::Crumb(i), r);
                 let id = Hit::Crumb(i);
                 let t = self.fades.get(id, self.hover == Some(id));
-                let c = if self.pressed == Some(id) { white(TEXT_TERTIARY) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
+                let pressed = self.pressed == Some(id) && self.hover == Some(id);
+                ui::link_fill(g, crumb_fill(r), t, pressed);
+                let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
                 g.text(&wide(&names[i]), &g.fonts.caption, r, c, Align::Center);
                 x += w;
                 g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), white(TEXT_SECONDARY), Align::Center);
@@ -621,4 +633,9 @@ impl App {
             self.explorer_crumb(all[i].clone());
         }
     }
+}
+
+/// A crumb's hover fill: its padded width, a little inside the header row's height.
+fn crumb_fill(r: D2D_RECT_F) -> D2D_RECT_F {
+    D2D_RECT_F { top: r.top + 3.0, bottom: r.bottom - 3.0, ..r }
 }

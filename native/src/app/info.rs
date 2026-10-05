@@ -297,6 +297,12 @@ impl App {
                     Block::Row { label, value, path } => {
                         g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, LABEL_W - 4.0, h - 2.0), white(TEXT_SECONDARY), Align::Left);
                         let vr = rect(x + LABEL_W, y + 1.0, value_w, h - 2.0);
+                        if *path {
+                            // A link (shows the file in Explorer): the rounded hover fill, brighter while pressed.
+                            let t = self.fades.get(Hit::InfoPath, self.hover == Some(Hit::InfoPath));
+                            let pressed = self.pressed == Some(Hit::InfoPath) && self.hover == Some(Hit::InfoPath);
+                            ui::link_fill(g, D2D_RECT_F { left: vr.left - 4.0, top: vr.top - 2.0, right: vr.right + 2.0, bottom: vr.bottom + 2.0 }, t, pressed);
+                        }
                         g.text(&wide(value), &g.fonts.caption_wrap, vr, white(0xFF), Align::Left);
                         if *path {
                             let visible = D2D_RECT_F { top: vr.top.max(inner.top), bottom: vr.bottom.min(inner.bottom), ..vr };

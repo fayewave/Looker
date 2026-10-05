@@ -198,7 +198,8 @@ pub struct State {
     pub enabled: bool,
 }
 
-/// Fill, border and content colour for a button in a state (WinUI dark-theme resources).
+/// Fill, border and content colour for a button in a state (WinUI dark-theme resources, except that a press
+/// brightens past the hover instead of dimming).
 pub fn colors(kind: Kind, s: &State) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>, D2D1_COLOR_F) {
     let accent = |a: f32| rgba(ACCENT, a);
     match kind {
@@ -206,7 +207,7 @@ pub fn colors(kind: Kind, s: &State) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>, D2D
             if !s.enabled {
                 (white(0x28), None, white(0x87))
             } else if s.pressed {
-                (accent(0.8), None, white(0xCC))
+                (pressed_red(ACCENT), None, white(0xFF))
             } else {
                 (lerp(accent(1.0), accent(0.9), s.hover), None, white(0xFF))
             }
@@ -215,7 +216,7 @@ pub fn colors(kind: Kind, s: &State) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>, D2D
             if !s.enabled {
                 (white(0x0B), Some(white(0x12)), white(TEXT_DISABLED))
             } else if s.pressed {
-                (white(0x1C), Some(white(0x12)), white(0xCC))
+                (white(0x45), Some(white(0x1C)), white(0xFF))
             } else {
                 (lerp(white(0x24), white(0x33), s.hover), Some(white(0x12)), white(0xFF))
             }
@@ -224,11 +225,24 @@ pub fn colors(kind: Kind, s: &State) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>, D2D
             if !s.enabled {
                 (white(0), None, white(TEXT_DISABLED))
             } else if s.pressed {
-                (white(0x0A), None, white(0xCC))
+                (white(0x1C), None, white(0xFF))
             } else {
                 (lerp(white(0), white(0x0F), s.hover), None, white(0xFF))
             }
         }
+    }
+}
+
+/// A red (the accent, the Close button) lifted towards white: how it looks while pressed.
+pub fn pressed_red(c: u32) -> D2D1_COLOR_F {
+    lerp(rgba(c, 1.0), white(0xFF), 0.18)
+}
+
+/// The rounded fill behind a text link (a breadcrumb, a path): fades in with the hover, brighter while pressed.
+pub fn link_fill(g: &Gfx, r: D2D_RECT_F, hover: f32, pressed: bool) {
+    let c = if pressed { white(0x1F) } else { rgba(0xFFFFFF, 0x0F as f32 / 255.0 * hover) };
+    if c.a > 0.0 {
+        g.fill_round(r, 4.0, c);
     }
 }
 
@@ -532,7 +546,7 @@ impl TextField {
             if fill.a > 0.0 {
                 g.fill_round(cr, 4.0, fill);
             }
-            let fg = if st.pressed { white(TEXT_TERTIARY) } else { white(TEXT_SECONDARY) };
+            let fg = if st.pressed { white(0xFF) } else { white(TEXT_SECONDARY) };
             g.text(&[0xE894], &g.fonts.small_icons, cr, fg, Align::Center);
         }
         focused.then_some(caret)
@@ -785,7 +799,7 @@ impl<A: Copy> Menu<A> {
 
 /// A closed ComboBox (the header is drawn by the caller): the value and a chevron in a control-fill box.
 pub fn combo_box(g: &Gfx, r: D2D_RECT_F, value: &str, s: &State, open: bool) {
-    let fill = if s.pressed || open { white(0x08) } else { lerp(white(0x0F), white(0x15), s.hover) };
+    let fill = if s.pressed { white(0x1F) } else if open { white(0x15) } else { lerp(white(0x0F), white(0x15), s.hover) };
     g.fill_round(r, 4.0, fill);
     g.outline_round(r, 4.0, white(0x12), g.px());
     label(g, value, &g.fonts.body, rect(r.left + 12.0, r.top, (r.right - r.left - 44.0).max(0.0), r.bottom - r.top), white(0xFF), Align::Left);
