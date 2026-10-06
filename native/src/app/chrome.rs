@@ -360,7 +360,7 @@ impl App {
             self.draw_landing(g);
             return;
         }
-        // The background runs on under the strip, so its thumbnails float on it.
+        // The background and the photo run on under the strip, so its thumbnails float on them.
         let bg = D2D_RECT_F { bottom: self.content_bottom(), ..v };
         if self.settings.checkerboard {
             g.checkerboard(bg);
@@ -383,12 +383,12 @@ impl App {
                     bottom: a.top + (r.y + r.h) as f32,
                 };
                 unsafe {
-                    g.dev.dc.PushAxisAlignedClip(&v, windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED);
+                    g.dev.dc.PushAxisAlignedClip(&bg, windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED);
                 }
                 let frames = c.frames.borrow();
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
                 if let Some(d) = &doc {
-                    self.draw_pages(g, d, dest, v);
+                    self.draw_pages(g, d, dest, bg);
                 } else if self.turns == 0 {
                     g.draw_bitmap(frame, dest, 1.0);
                     self.last_drawn = Some((frame.clone(), dest));
@@ -412,7 +412,7 @@ impl App {
         } else if self.viewer.error.is_some() {
             self.draw_cant_display(g);
         }
-        self.draw_fade(g, v);
+        self.draw_fade(g, bg);
         self.draw_placeholder(g);
     }
 
