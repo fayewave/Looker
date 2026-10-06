@@ -430,19 +430,19 @@ impl App {
     /// growing and shrinking as the strip slides.
     fn draw_scrims(&self, g: &Gfx, bg: D2D_RECT_F) {
         const ALPHA: f32 = 0.7;
-        const TAIL: f32 = 32.0; // how far past the bars the fade runs out
+        const TAIL: f32 = 12.0; // how far past the bars the fade runs out
         let c = |a: f32| gfx::rgba(self.theme().window, a);
-        // Darkest at the window's edge, still well over half across the bars, then out over the tail.
+        // Darkest at the window's edge, easing off across the bars so the short tail past them is soft.
         if self.chrome() && self.page.is_none() {
             let h = TITLE_H + TOOLBAR_H + TAIL;
-            let bars_end = (TITLE_H + TOOLBAR_H) / h;
-            g.fill_vgradient(D2D_RECT_F { bottom: bg.top + h, ..bg }, &[(0.0, c(ALPHA)), (bars_end, c(ALPHA * 0.55)), (1.0, c(0.0))]);
+            let end = (TITLE_H + TOOLBAR_H) / h;
+            g.fill_vgradient(D2D_RECT_F { bottom: bg.top + h, ..bg }, &[(0.0, c(ALPHA)), (end * 0.5, c(ALPHA * 0.7)), (end, c(ALPHA * 0.3)), (1.0, c(0.0))]);
         }
         let bars = if self.chrome() { STATUS_H } else { 0.0 } + self.bottom_inset();
         if bars > 0.0 && self.page.is_none() {
             let h = bars + TAIL;
-            let bars_start = TAIL / h;
-            g.fill_vgradient(D2D_RECT_F { top: bg.bottom - h, ..bg }, &[(0.0, c(0.0)), (bars_start, c(ALPHA * 0.55)), (1.0, c(ALPHA))]);
+            let start = TAIL / h;
+            g.fill_vgradient(D2D_RECT_F { top: bg.bottom - h, ..bg }, &[(0.0, c(0.0)), (start, c(ALPHA * 0.3)), (start + (1.0 - start) * 0.5, c(ALPHA * 0.7)), (1.0, c(ALPHA))]);
         }
     }
 
