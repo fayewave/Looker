@@ -318,7 +318,11 @@ impl App {
         let top = r.bottom - ch;
         let first = (((scroll - SIDE) / pitch).floor().max(0.0)) as usize;
         let last = (((scroll + view_w - SIDE) / pitch).ceil().max(0.0) as usize).min(n);
+        // Edge fades where there is more to scroll to: the cells fade out into the photo's background.
+        let lf = self.fades.get(Hit::StripFadeLeft, scroll > 0.5);
+        let rf = self.fades.get(Hit::StripFadeRight, self.strip.max_scroll - scroll > 0.5);
         g.push_clip(r);
+        g.push_hfade_layer(r, FADE_W, lf, rf);
         for i in first..last {
             let Some(e) = self.viewer.listing.as_ref().and_then(|l| l.images.get(i)) else { break };
             let (path, stamp, cloud) = (e.path.clone(), e.stamp, e.cloud);
@@ -355,18 +359,8 @@ impl App {
             // Load it (again, sharper) unless one of the right size is here or on its way.
             self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
         }
+        g.pop_layer();
         g.pop_clip();
-
-        // Edge fades where there is more to scroll to.
-        let lf = self.fades.get(Hit::StripFadeLeft, scroll > 0.5);
-        let rf = self.fades.get(Hit::StripFadeRight, self.strip.max_scroll - scroll > 0.5);
-        let win = self.theme().window;
-        if lf > 0.0 {
-            g.fill_hgradient(rect(r.left, r.top, FADE_W, r.bottom - r.top), gfx::rgba(win, lf), gfx::rgba(win, 0.0));
-        }
-        if rf > 0.0 {
-            g.fill_hgradient(rect(r.right - FADE_W, r.top, FADE_W, r.bottom - r.top), gfx::rgba(win, 0.0), gfx::rgba(win, rf));
-        }
 
         // The grip: the top band, a line that shows on hover and turns accent while dragging.
         let grip = rect(r.left, r.top, r.right - r.left, TOP_PAD);

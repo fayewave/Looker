@@ -495,20 +495,38 @@ impl Gfx {
         }
     }
 
-    /// A left-to-right linear gradient across `r` (the strip's edge fades).
-    pub fn fill_hgradient(&self, r: D2D_RECT_F, left: D2D1_COLOR_F, right: D2D1_COLOR_F) {
+    /// Starts a layer over `r` whose content fades out over `w` at each end, by `left` and `right` (0..1),
+    /// so it fades into whatever is beneath (the strip's edge fades). Ends with `pop_layer`.
+    pub fn push_hfade_layer(&self, r: D2D_RECT_F, w: f32, left: f32, right: f32) {
         unsafe {
-            let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: left }, D2D1_GRADIENT_STOP { position: 1.0, color: right }];
+            let span = (r.right - r.left).max(1.0);
+            let edge = (w / span).min(0.5);
+            let stop = |position: f32, a: f32| D2D1_GRADIENT_STOP { position, color: D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a } };
+            let stops = [stop(0.0, 1.0 - left), stop(edge, 1.0), stop(1.0 - edge, 1.0), stop(1.0, 1.0 - right)];
             let rt: &ID2D1RenderTarget = &self.dev.dc;
-            let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
-            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                startPoint: windows_numerics::Vector2 { X: r.left, Y: r.top },
-                endPoint: windows_numerics::Vector2 { X: r.right, Y: r.top },
+            let brush = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP).ok().and_then(|coll| {
+                let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: windows_numerics::Vector2 { X: r.left, Y: r.top },
+                    endPoint: windows_numerics::Vector2 { X: r.right, Y: r.top },
+                };
+                self.dev.dc.CreateLinearGradientBrush(&props, None, &coll).ok()
+            });
+            let mut params = D2D1_LAYER_PARAMETERS1 {
+                contentBounds: r,
+                geometricMask: std::mem::ManuallyDrop::new(None),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: windows_numerics::Matrix3x2::identity(),
+                opacity: 1.0,
+                opacityBrush: std::mem::ManuallyDrop::new(brush.map(|b| b.cast().unwrap())),
+                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
             };
-            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
-                self.dev.dc.FillRectangle(&r, &b);
-            }
+            self.dev.dc.PushLayer(&params, None);
+            std::mem::ManuallyDrop::drop(&mut params.opacityBrush);
         }
+    }
+
+    pub fn pop_layer(&self) {
+        unsafe { self.dev.dc.PopLayer() }
     }
 
     pub fn push_clip(&self, r: D2D_RECT_F) {

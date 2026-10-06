@@ -360,10 +360,12 @@ impl App {
             self.draw_landing(g);
             return;
         }
+        // The background runs on under the strip, so its thumbnails float on it.
+        let bg = D2D_RECT_F { bottom: self.content_bottom(), ..v };
         if self.settings.checkerboard {
-            g.checkerboard(v);
+            g.checkerboard(bg);
         } else {
-            g.fill(v, rgb(gfx::CHECKER_DARK));
+            g.fill(bg, rgb(gfx::CHECKER_DARK));
         }
         self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
