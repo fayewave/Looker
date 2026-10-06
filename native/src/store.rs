@@ -1,6 +1,7 @@
 //! The Microsoft Store side (ports of `UpdateService.cs` and `DefaultAppsService.cs`). Updates are installed by
-//! Windows in the background; this only asks whether a newer version is published, so the UI can say "an
-//! update is waiting" and deep-link to the Store. A packaged app can't change file associations itself, so
+//! Windows in the background, from the Store or, for the GitHub release, from its `.appinstaller` file; this
+//! asks whether a newer version is published, so the UI can say "an update is waiting" and deep-link to the
+//! Store (or install it at once, for the GitHub release). A packaged app can't change file associations itself, so
 //! "set as default" opens Settings on Looker's own Default apps page.
 //!
 //! All of it needs package identity; unpackaged (dev builds) the update check answers Unknown ("Couldn't
@@ -23,6 +24,10 @@ pub enum UpdateStatus {
     Checking,
     UpToDate,
     Available,
+    /// A GitHub install is installing the update (Looker closes and restarts when it's in).
+    Installing,
+    /// Installing it failed; Windows tries again the next time Looker starts.
+    Failed,
 }
 
 impl UpdateStatus {
@@ -31,6 +36,8 @@ impl UpdateStatus {
             1 => UpdateStatus::Checking,
             2 => UpdateStatus::UpToDate,
             3 => UpdateStatus::Available,
+            4 => UpdateStatus::Installing,
+            5 => UpdateStatus::Failed,
             _ => UpdateStatus::Unknown,
         }
     }
@@ -82,6 +89,49 @@ pub fn check_updates(hwnd: HWND) {
         crate::trace::mark(format!("store update check: {status:?}"));
         unsafe {
             let _ = PostMessageW(Some(HWND(h as _)), WM_UPDATE_STATUS, WPARAM(status as usize), LPARAM(0));
+        }
+    });
+}
+
+/// Installed from the GitHub release's `.appinstaller` rather than the Store: Windows checks that file on every
+/// launch and installs a newer version in the background, and "Update now" asks it to right away. Its address,
+/// when so (asked once: a WinRT call).
+pub fn appinstaller_uri() -> Option<String> {
+    static URI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    URI.get_or_init(|| {
+        let uri = Package::Current().and_then(|p| p.GetAppInstallerInfo()).and_then(|i| i.Uri()).and_then(|u| u.AbsoluteUri());
+        uri.ok().map(|u| u.to_string_lossy()).filter(|u| !u.is_empty())
+    })
+    .clone()
+}
+
+/// Installs the update from the `.appinstaller` now, on a worker thread. Windows closes Looker to do it and
+/// starts it again (on `reopen`, the photo that was up) through the restart registration; a failure is posted
+/// as [`UpdateStatus::Failed`].
+pub fn install_update(hwnd: HWND, reopen: Option<&std::path::Path>) {
+    use windows::Management::Deployment::{AddPackageByAppInstallerOptions, PackageManager, PackageVolume};
+    use windows::Win32::System::Recovery::{RESTART_NO_CRASH, RESTART_NO_HANG, RESTART_NO_REBOOT, RegisterApplicationRestart, UnregisterApplicationRestart};
+    let Some(uri) = appinstaller_uri() else { return };
+    let args = reopen.map(|p| format!("\"{}\"", p.display())).unwrap_or_default();
+    let h = hwnd.0 as isize;
+    let _ = std::thread::Builder::new().name("appinstaller".into()).spawn(move || {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+            // Only an update restarts it (a crash, hang or reboot doesn't).
+            let wide: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+            let _ = RegisterApplicationRestart(windows::core::PCWSTR(wide.as_ptr()), RESTART_NO_CRASH | RESTART_NO_HANG | RESTART_NO_REBOOT);
+        }
+        let done = (|| -> windows::core::Result<()> {
+            let uri = windows::Foundation::Uri::CreateUri(&windows::core::HSTRING::from(uri.as_str()))?;
+            let op = PackageManager::new()?.AddPackageByAppInstallerFileAsync(&uri, AddPackageByAppInstallerOptions::ForceTargetAppShutdown, None::<&PackageVolume>)?;
+            let r = op.join()?;
+            r.ExtendedErrorCode()?.ok()
+        })();
+        // Still here: nothing was installed (installing closes Looker).
+        crate::trace::mark(format!("appinstaller update: {done:?}"));
+        unsafe {
+            let _ = UnregisterApplicationRestart();
+            let _ = PostMessageW(Some(HWND(h as _)), WM_UPDATE_STATUS, WPARAM(UpdateStatus::Failed as usize), LPARAM(0));
         }
     });
 }

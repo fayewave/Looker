@@ -158,7 +158,13 @@ impl App {
                 }
             }
             3 => {
-                shell_open(crate::store::STORE_UPDATES);
+                if crate::store::appinstaller_uri().is_some() {
+                    self.update = UpdateStatus::Installing;
+                    crate::store::install_update(self.hwnd, self.current_path());
+                    self.invalidate();
+                } else {
+                    shell_open(crate::store::STORE_UPDATES);
+                }
             }
             4 => self.check_updates(),
             5 => {
@@ -172,7 +178,7 @@ impl App {
     }
 
     pub(super) fn check_updates(&mut self) {
-        if self.update == UpdateStatus::Checking {
+        if matches!(self.update, UpdateStatus::Checking | UpdateStatus::Installing) {
             return;
         }
         self.update = UpdateStatus::Checking;
@@ -291,20 +297,27 @@ impl App {
     fn draw_updates(&mut self, g: &Gfx, x: f32, mut y: f32, w: f32) -> f32 {
         g.text(&wide_str("Updates"), &g.fonts.body_strong, rect(x, y, w, 20.0), white(0xFF), Align::Left);
         y += 20.0 + 2.0;
-        let status = match self.update {
-            UpdateStatus::Checking => "Checking for updates\u{2026}",
-            UpdateStatus::UpToDate => "Looker is up to date.",
-            UpdateStatus::Available => "A newer version of Looker is available. Windows installs Store updates automatically; open the Store to get it now.",
-            UpdateStatus::Unknown => "Couldn't check for updates. Updates are delivered automatically through the Microsoft Store.",
+        let github = crate::store::appinstaller_uri().is_some();
+        let status = match (self.update, github) {
+            (UpdateStatus::Checking, _) => "Checking for updates\u{2026}",
+            (UpdateStatus::UpToDate, _) => "Looker is up to date.",
+            (UpdateStatus::Available, false) => "A newer version of Looker is available. Windows installs Store updates automatically; open the Store to get it now.",
+            (UpdateStatus::Available, true) => "A newer version of Looker is available. It installs the next time Looker starts, or now: Looker closes and opens again.",
+            (UpdateStatus::Installing, _) => "Installing the update\u{2026} Looker closes and opens again when it's in.",
+            (UpdateStatus::Failed, _) => "Couldn't install the update. Windows tries again the next time Looker starts.",
+            (UpdateStatus::Unknown, false) => "Couldn't check for updates. Updates are delivered automatically through the Microsoft Store.",
+            (UpdateStatus::Unknown, true) => "Couldn't check for updates. Looker updates itself from GitHub when it starts.",
         };
         let sh = g.measure_height(&wide_str(status), &g.fonts.body_wrap, w).ceil();
         g.text(&wide_str(status), &g.fonts.body_wrap, rect(x, y, w, sh), white(TEXT_SECONDARY), Align::Left);
         y += sh + 2.0 + 6.0;
         let mut bx = x;
-        if self.update == UpdateStatus::Available {
-            bx += self.icon_button(g, bx, y, 0xE896, "Update now in Microsoft Store", Hit::PageLink(3), true) + 8.0;
+        if matches!(self.update, UpdateStatus::Available | UpdateStatus::Failed) {
+            let label = if github { "Update now" } else { "Update now in Microsoft Store" };
+            bx += self.icon_button(g, bx, y, 0xE896, label, Hit::PageLink(3), true) + 8.0;
         }
-        self.icon_button(g, bx, y, 0xE72C, "Check for updates", Hit::PageLink(4), self.update != UpdateStatus::Checking);
+        let idle = !matches!(self.update, UpdateStatus::Checking | UpdateStatus::Installing);
+        self.icon_button(g, bx, y, 0xE72C, "Check for updates", Hit::PageLink(4), idle);
         y + 32.0 + SPACING
     }
 

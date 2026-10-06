@@ -13,7 +13,9 @@ function Find-SdkTool([string]$name) {
 # version from another folder is a silent no-op); a Store package keeps 0 (the Store requires it).
 # -RequireCodecs: fail when the codec DLLs (scripts/Build-Codecs.ps1) are missing, rather than warn; a Store package
 # without them can't open HEIC on machines without the paid HEVC Video Extension.
-function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1, [switch]$RequireCodecs) {
+# -Publisher: replaces the manifest's Publisher, which must equal the signing certificate's subject (the GitHub
+# release, signed with Trusted Signing, is its own package family beside the Store's).
+function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1, [switch]$RequireCodecs, [string]$Publisher) {
     $native = Join-Path $Root 'native'
     $exe = Join-Path $env:LOCALAPPDATA 'Looker\native-target\release\looker.exe'
 
@@ -43,6 +45,10 @@ function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1, [
     $manifest = Get-Content (Join-Path $native 'Package.appxmanifest') -Raw
     if ($Revision -ge 0) {
         $manifest = [regex]::Replace($manifest, '(<Identity[^>]*\sVersion=")(\d+)\.(\d+)\.(\d+)\.\d+(")', { param($m) "$($m.Groups[1].Value)$($m.Groups[2].Value).$($m.Groups[3].Value).$($m.Groups[4].Value).$Revision$($m.Groups[5].Value)" })
+    }
+    if ($Publisher) {
+        $escaped = [Security.SecurityElement]::Escape($Publisher)
+        $manifest = [regex]::Replace($manifest, '(<Identity[^>]*\sPublisher=")[^"]*(")', { param($m) "$($m.Groups[1].Value)$escaped$($m.Groups[2].Value)" })
     }
     $manifestPath = Join-Path $OutDir 'AppxManifest.xml'
     Set-Content $manifestPath $manifest -NoNewline
