@@ -20,7 +20,7 @@
 
 
   <Properties>
-    <DisplayName>Looker</DisplayName>
+    <DisplayName>Looker - Photo Viewer</DisplayName>
     <PublisherDisplayName>fayewave</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
