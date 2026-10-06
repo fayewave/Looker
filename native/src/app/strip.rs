@@ -18,6 +18,8 @@ use crate::settings::{STRIP_HEIGHT, STRIP_MAX, STRIP_MIN};
 use crate::thumbs;
 
 const TOP_PAD: f32 = 8.0;
+/// The gap between the cells and the status row.
+const BOTTOM_PAD: f32 = 8.0;
 const SPACING: f32 = 4.0;
 const SIDE: f32 = 8.0;
 const DEBOUNCE_MS: u128 = 120;
@@ -162,7 +164,7 @@ impl App {
     }
 
     fn cell_size(&self) -> (f32, f32) {
-        let ch = (self.settings.strip_height - TOP_PAD).max(32.0);
+        let ch = (self.settings.strip_height - TOP_PAD - BOTTOM_PAD).max(32.0);
         ((ch * 4.0 / 3.0).round(), ch)
     }
 
@@ -315,7 +317,7 @@ impl App {
         scroll = scroll.clamp(0.0, self.strip.max_scroll);
 
         let want = self.thumb_px();
-        let top = r.bottom - ch;
+        let top = r.bottom - BOTTOM_PAD - ch;
         let first = (((scroll - SIDE) / pitch).floor().max(0.0)) as usize;
         let last = (((scroll + view_w - SIDE) / pitch).ceil().max(0.0) as usize).min(n);
         // Edge fades where there is more to scroll to: the cells fade out into the photo's background.
