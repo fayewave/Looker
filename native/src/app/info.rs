@@ -17,9 +17,9 @@ const MARGIN: f32 = 12.0;
 const PAD_X: f32 = 12.0;
 const PAD_TOP: f32 = 12.0;
 const PAD_BOTTOM: f32 = 16.0;
-const LABEL_W: f32 = 96.0;
 const GROUP_GAP: f32 = 14.0;
-const ROW_GAP: f32 = 2.0;
+/// Between one property (its name over its value) and the next.
+const ROW_GAP: f32 = 8.0;
 const TITLE_H: f32 = 16.0;
 const SCROLL_MS: f32 = 150.0;
 /// Pixels scrolled per wheel notch.
@@ -249,23 +249,27 @@ impl App {
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
         let x = inner.left + PAD_X;
         let w = (inner.right - PAD_X - x).max(1.0);
-        let value_w = (w - LABEL_W).max(1.0);
         let view_h = (inner.bottom - inner.top - PAD_TOP - PAD_BOTTOM).max(1.0);
 
         // Measure first: the content height decides how far the card scrolls.
         let blocks = self.info_blocks();
         let hist_h = (w - 14.0) * 120.0 / 256.0 + 14.0;
+        // A property is its name on one line and its value (tabular figures) under it, both full width; the
+        // name's height is kept to place the value.
         let mut heights = Vec::with_capacity(blocks.len());
+        let mut label_hs = Vec::with_capacity(blocks.len());
         for b in &blocks {
-            heights.push(match b {
-                Block::Histogram => hist_h,
-                Block::Title(_) => TITLE_H + 2.0,
+            let (h, lh) = match b {
+                Block::Histogram => (hist_h, 0.0),
+                Block::Title(_) => (TITLE_H + 2.0, 0.0),
                 Block::Row { label, value, .. } => {
-                    let lh = g.measure_height(&wide(label), &g.fonts.caption_wrap, LABEL_W - 4.0);
-                    let vh = g.measure_height(&wide(value), &g.fonts.caption_wrap, value_w);
-                    lh.max(vh).max(16.0).ceil() + 2.0
+                    let lh = g.measure_height(&wide(label), &g.fonts.caption_wrap, w).max(16.0).ceil();
+                    let vh = g.measure_height_tabular(&wide(value), &g.fonts.caption_wrap, w).max(16.0).ceil();
+                    (lh + vh + 2.0, lh)
                 }
-            });
+            };
+            heights.push(h);
+            label_hs.push(lh);
         }
         let mut content_h = 0.0;
         for (i, (b, h)) in blocks.iter().zip(&heights).enumerate() {
@@ -288,6 +292,7 @@ impl App {
             if i > 0 {
                 y += if matches!(b, Block::Title(_)) { GROUP_GAP } else { ROW_GAP };
             }
+            let lh = label_hs[i];
             if y + h >= inner.top && y <= inner.bottom {
                 match b {
                     Block::Histogram => self.draw_histogram(g, rect(x, y, w, *h)),
@@ -295,15 +300,15 @@ impl App {
                         g.text(&wide(&t.to_uppercase()), &g.fonts.overline, rect(x, y, w, TITLE_H), white(TEXT_TERTIARY), Align::Left);
                     }
                     Block::Row { label, value, path } => {
-                        g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, LABEL_W - 4.0, h - 2.0), white(TEXT_SECONDARY), Align::Left);
-                        let vr = rect(x + LABEL_W, y + 1.0, value_w, h - 2.0);
+                        g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), white(TEXT_SECONDARY), Align::Left);
+                        let vr = rect(x, y + 1.0 + lh, w, h - 2.0 - lh);
                         if *path {
                             // A link (shows the file in Explorer): the rounded hover fill, brighter while pressed.
                             let t = self.fades.get(Hit::InfoPath, self.hover == Some(Hit::InfoPath));
                             let pressed = self.pressed == Some(Hit::InfoPath) && self.hover == Some(Hit::InfoPath);
                             ui::link_fill(g, D2D_RECT_F { left: vr.left - 4.0, top: vr.top - 2.0, right: vr.right + 2.0, bottom: vr.bottom + 2.0 }, t, pressed);
                         }
-                        g.text(&wide(value), &g.fonts.caption_wrap, vr, white(0xFF), Align::Left);
+                        g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, white(0xFF), Align::Left);
                         if *path {
                             let visible = D2D_RECT_F { top: vr.top.max(inner.top), bottom: vr.bottom.min(inner.bottom), ..vr };
                             self.hits.add(Hit::InfoPath, visible);

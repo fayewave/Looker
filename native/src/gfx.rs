@@ -435,6 +435,13 @@ impl Gfx {
         unsafe { if l.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 } }
     }
 
+    /// `measure_height` with tabular figures.
+    pub fn measure_height_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat, width: f32) -> f32 {
+        let Some(l) = self.tabular_layout(s, fmt, width, 10_000.0) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { if l.GetMetrics(&mut m).is_ok() { m.height } else { 0.0 } }
+    }
+
     /// Width of a single line of text, in DIPs.
     pub fn measure(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
         unsafe {
