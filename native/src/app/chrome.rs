@@ -186,15 +186,16 @@ impl App {
         if cached.is_some() {
             parts.push(format!("{:.0}%", self.view.zoom_percent()));
         }
-        parts.join("   ·   ")
+        // One space a side: the status row is monospaced, where a space is a full cell wide.
+        parts.join(" · ")
     }
 
     pub(super) fn reveal_rect(&self) -> Option<D2D_RECT_F> {
         let g = self.gfx.as_ref()?;
         self.viewer.current.as_ref()?;
         let (_, h) = self.size_dip();
-        let tw = g.measure(&wide(&self.status_parts()), &g.fonts.caption);
-        let lw = g.measure(&wide("Open in Explorer"), &g.fonts.caption);
+        let tw = g.measure(&wide(&self.status_parts()), &g.fonts.mono);
+        let lw = g.measure(&wide("Open in Explorer"), &g.fonts.mono);
         Some(rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H))
     }
 
@@ -291,7 +292,11 @@ impl App {
     }
 
     pub(super) fn draw_toolbar(&mut self, g: &Gfx) {
+        let base = rgb(self.theme().window);
         for (t, glyph, r) in self.tool_rects() {
+            // The buttons float on the photo: an opaque base under their (translucent) frames keeps them
+            // looking the same whatever is behind.
+            g.fill_round(r, 4.0, base);
             let enabled = self.tool_enabled(t);
             let id = Hit::Tool(t);
             self.hits.add(id, r);
@@ -333,14 +338,14 @@ impl App {
         if text.is_empty() {
             return;
         }
-        g.text(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
+        g.text(&wide(&text), &g.fonts.mono, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
         if let Some(r) = self.reveal_rect() {
             self.hits.add(Hit::Reveal, r);
             let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
             let pressed = self.pressed == Some(Hit::Reveal) && self.hover == Some(Hit::Reveal);
             ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 4.0, right: r.right + 6.0, bottom: r.bottom - 4.0 }, t, pressed);
             let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
-            g.text(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
+            g.text(&wide("Open in Explorer"), &g.fonts.mono, r, c, Align::Left);
         }
         let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {
             (Some(l), Some(p), _) => l.rank_of(&p.path).map(|r| (r, l.total_files)),
@@ -349,7 +354,7 @@ impl App {
         };
         if let Some((r, n)) = rank {
             let label = format!("{} / {}", r + 1, n);
-            g.text(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
+            g.text(&wide(&label), &g.fonts.mono, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
         }
     }
 
@@ -360,8 +365,10 @@ impl App {
             self.draw_landing(g);
             return;
         }
-        // The background and the photo run on under the strip, so its thumbnails float on them.
-        let bg = D2D_RECT_F { bottom: self.content_bottom(), ..v };
+        // The background and the photo run on under the toolbar and the strip, so their buttons and
+        // thumbnails float on them (not behind a page, which covers the toolbar's row itself).
+        let top = if self.chrome() && self.page.is_none() { TITLE_H } else { v.top };
+        let bg = D2D_RECT_F { top, bottom: self.content_bottom(), ..v };
         if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {

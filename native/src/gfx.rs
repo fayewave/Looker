@@ -111,6 +111,8 @@ pub struct Fonts {
     pub hero_icons: IDWriteTextFormat,
     /// 16 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
+    /// 12 px monospaced (Cascadia Mono, else Consolas): the status row.
+    pub mono: IDWriteTextFormat,
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
@@ -591,7 +593,24 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, _ellipsis: ellipsis })
+        // Cascadia Mono comes with Windows 11; Consolas is everywhere.
+        let mono_family = {
+            let mut sys = None;
+            let mut has = windows::core::BOOL(0);
+            let mut index = 0u32;
+            if dw.GetSystemFontCollection(false, &mut sys, false).is_ok() {
+                if let Some(c) = &sys {
+                    let _ = c.FindFamilyName(w!("Cascadia Mono"), &mut index, &mut has);
+                }
+            }
+            if has.as_bool() { w!("Cascadia Mono") } else { w!("Consolas") }
+        };
+        let mono = dw.CreateTextFormat(mono_family, None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0, w!("en-us"))?;
+        prep(&mono)?;
+        let sign = dw.CreateEllipsisTrimmingSign(&mono)?;
+        mono.SetTrimming(&DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 }, &sign)?;
+        ellipsis.push(sign);
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, mono, _ellipsis: ellipsis })
     }
 }
 
