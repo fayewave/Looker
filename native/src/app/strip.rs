@@ -96,6 +96,9 @@ pub(super) struct Strip {
     max_scroll: f32,
     /// The (index, image count) the strip last centred on.
     centered: Option<(usize, usize)>,
+    /// Following the current photo: the selection frame stays fixed in the middle and the cells slide under
+    /// it. Off once the wheel scrolls the strip by hand (the frame then rides on the current photo's cell).
+    following: bool,
     /// A grip drag: the pointer y and the height when it started.
     pub drag: Option<(f32, f32)>,
 }
@@ -108,6 +111,7 @@ impl Strip {
             min_scroll: 0.0,
             max_scroll: 0.0,
             centered: None,
+            following: true,
             drag: None,
         }
     }
@@ -195,6 +199,7 @@ impl App {
         let s = &mut self.strip;
         let to = (s.target() - delta / 120.0 * pitch).clamp(s.min_scroll, s.max_scroll.max(s.min_scroll));
         s.scroll_to(to, true);
+        s.following = false;
         self.invalidate();
     }
 
@@ -318,8 +323,10 @@ impl App {
                 let animate = self.strip.centered.is_some() && (target - self.strip.target()).abs() <= view_w;
                 self.strip.scroll_to(target, animate);
                 self.strip.centered = Some((i, n));
+                self.strip.following = true;
             }
         }
+        let fixed_frame = sel.is_some() && self.strip.following;
         let (mut scroll, moving) = self.strip.scroll_now();
         scroll = scroll.clamp(self.strip.min_scroll, self.strip.max_scroll);
 
@@ -352,7 +359,7 @@ impl App {
             } else if hover > 0.0 {
                 g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.2 * hover));
             }
-            let border = if selected {
+            let border = if selected && !fixed_frame {
                 Some(gfx::rgba(ui::ACCENT, 1.0))
             } else if pressed {
                 Some(gfx::rgba(0xFFFFFF, 0.9))
@@ -369,6 +376,11 @@ impl App {
             self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
         }
         g.pop_layer();
+        // The selection frame, fixed in the middle: the cells glide under it to the current photo.
+        if fixed_frame {
+            let frame = rect(g.snap(r.left + view_w / 2.0 - cw / 2.0), top, cw, ch);
+            g.outline_round(frame, 4.0, gfx::rgba(ui::ACCENT, 1.0), 2.0);
+        }
         g.pop_clip();
 
         // The grip: the top band, a line that shows on hover and turns accent while dragging.
