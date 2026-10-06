@@ -171,6 +171,11 @@ impl App {
         D2D_RECT_F { left: 0.0, top: bottom - self.settings.strip_height, right: w, bottom }
     }
 
+    /// The top of the strip's cells as it stands (sliding included), while any of it shows.
+    pub(super) fn strip_cells_top(&self) -> Option<f32> {
+        (self.slides.strip.value() > 0.0).then(|| self.strip_rect().bottom - BOTTOM_PAD - self.cell_size().1)
+    }
+
     fn cell_size(&self) -> (f32, f32) {
         let ch = (self.settings.strip_height - TOP_PAD - BOTTOM_PAD).max(32.0);
         ((ch * 4.0 / 3.0).round(), ch)

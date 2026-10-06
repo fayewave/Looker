@@ -425,24 +425,33 @@ impl App {
         self.draw_scrims(g, bg);
     }
 
-    /// Soft gradients of the window colour behind the bars, so they read on a bright photo: down from the
-    /// top behind the title bar and toolbar, and up from the bottom behind the status row and the strip,
-    /// growing and shrinking as the strip slides.
+    /// Black gradients behind the bars, so they read on a bright photo (black in either theme): down from
+    /// the top to the bottom of the toolbar's buttons, and up from the bottom to the top of the status text
+    /// or, while the strip shows, of its cells (following them as it slides).
     fn draw_scrims(&self, g: &Gfx, bg: D2D_RECT_F) {
         const ALPHA: f32 = 0.7;
-        const TAIL: f32 = 12.0; // how far past the bars the fade runs out
-        let c = |a: f32| gfx::rgba(self.theme().window, a);
-        // Darkest at the window's edge, easing off across the bars so the short tail past them is soft.
-        if self.chrome() && self.page.is_none() {
-            let h = TITLE_H + TOOLBAR_H + TAIL;
-            let end = (TITLE_H + TOOLBAR_H) / h;
-            g.fill_vgradient(D2D_RECT_F { bottom: bg.top + h, ..bg }, &[(0.0, c(ALPHA)), (end * 0.5, c(ALPHA * 0.7)), (end, c(ALPHA * 0.3)), (1.0, c(0.0))]);
+        // Fading from the window's edge all the way: alpha falls as (1 - t)^1.5 over the gradient.
+        let edge_out: Vec<_> =
+            [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&t| (t, gfx::rgba(0x000000, ALPHA * (1.0 - t).powf(1.5)))).collect();
+        if self.page.is_some() {
+            return;
         }
-        let bars = if self.chrome() { STATUS_H } else { 0.0 } + self.bottom_inset();
-        if bars > 0.0 && self.page.is_none() {
-            let h = bars + TAIL;
-            let start = TAIL / h;
-            g.fill_vgradient(D2D_RECT_F { top: bg.bottom - h, ..bg }, &[(0.0, c(0.0)), (start, c(ALPHA * 0.3)), (start + (1.0 - start) * 0.5, c(ALPHA * 0.7)), (1.0, c(ALPHA))]);
+        if self.chrome() {
+            let buttons_bottom = TITLE_H + (TOOLBAR_H - 8.0 - BUTTON_H) / 2.0 + BUTTON_H;
+            g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
+        }
+        // The status text: 12 px, centred in its row (~16 px line).
+        let text_top = self.chrome().then(|| bg.bottom - STATUS_H / 2.0 - 8.0);
+        let top = match (text_top, self.strip_cells_top()) {
+            (Some(a), Some(b)) => a.min(b),
+            (a, b) => match a.or(b) {
+                Some(t) => t,
+                None => return,
+            },
+        };
+        if top < bg.bottom {
+            let edge_in: Vec<_> = edge_out.iter().rev().map(|&(t, c)| (1.0 - t, c)).collect();
+            g.fill_vgradient(D2D_RECT_F { top, ..bg }, &edge_in);
         }
     }
 
