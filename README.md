@@ -4,7 +4,12 @@
 
 A fast, minimal photo viewer for Windows 11.
 
-**[Get it on the Microsoft Store](https://apps.microsoft.com/detail/9NV130N4C2GZ)**
+<a href="https://apps.microsoft.com/detail/9NV130N4C2GZ?mode=direct">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://get.microsoft.com/images/en-us%20light.svg">
+    <img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" width="200">
+  </picture>
+</a>
 
 ## Features
 
