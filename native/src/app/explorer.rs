@@ -359,6 +359,14 @@ impl App {
         self.explorer_pick(i);
     }
 
+    /// Page Up / Page Down: the cursor to the top or bottom of the list.
+    pub(super) fn explorer_jump(&mut self, last: bool) {
+        let n = self.explorer.rows.len();
+        if n > 0 {
+            self.explorer_pick(if last { n - 1 } else { 0 });
+        }
+    }
+
     /// Enter: list the folder under the cursor. False when there's nothing to do.
     pub(super) fn explorer_enter(&mut self) -> bool {
         let Some(i) = self.explorer.cursor.as_deref().and_then(|c| self.explorer.index_of(c)) else { return false };

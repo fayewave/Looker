@@ -42,7 +42,7 @@ JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF
 |---|---|
 | `←` `→` | Previous / next |
 | `Home` `End` | First / last |
-| `Page Up` `Page Down` | Previous / next PDF page |
+| `Page Up` `Page Down` | Previous / next PDF page; past a PDF's ends, top / bottom of the file explorer (or first / last photo) |
 | Wheel, `Ctrl` `+` `-` | Zoom at the pointer |
 | `Ctrl+0` or `F`, `1` | Fit, 100 % |
 | Double-click | Toggle fit / 100 % |

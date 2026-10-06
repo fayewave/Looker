@@ -443,8 +443,14 @@ impl App {
                     match vk {
                         VK_LEFT => self.step(-1),
                         VK_RIGHT => self.step(1),
-                        VK_PRIOR if self.page_count() > 1 => self.turn_page(-1),
-                        VK_NEXT if self.page_count() > 1 => self.turn_page(1),
+                        // Page Up / Down: a PDF's pages while there is one that way, else the top / bottom
+                        // of the explorer's list, else the folder's first / last photo.
+                        VK_PRIOR if self.page_count() > 1 && self.pdf_page > 0 => self.turn_page(-1),
+                        VK_NEXT if self.pdf_page + 1 < self.page_count() => self.turn_page(1),
+                        VK_PRIOR if self.explorer_shown() => self.explorer_jump(false),
+                        VK_NEXT if self.explorer_shown() => self.explorer_jump(true),
+                        VK_PRIOR => self.jump(false),
+                        VK_NEXT => self.jump(true),
                         VK_HOME => self.jump(false),
                         VK_END => self.jump(true),
                         VK_F11 => self.toggle_fullscreen(),
