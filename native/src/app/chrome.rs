@@ -365,10 +365,11 @@ impl App {
             self.draw_landing(g);
             return;
         }
-        // The background and the photo run on under the toolbar and the strip, so their buttons and
-        // thumbnails float on them (not behind a page, which covers the toolbar's row itself).
-        let top = if self.chrome() && self.page.is_none() { TITLE_H } else { v.top };
-        let bg = D2D_RECT_F { top, bottom: self.content_bottom(), ..v };
+        // The background and the photo fill the whole window: the title bar, toolbar, strip and status row
+        // float on them (not behind a page, which keeps its own surface below the toolbar).
+        let (_, wh) = self.size_dip();
+        let (top, bottom) = if self.chrome() && self.page.is_none() { (0.0, wh) } else { (v.top, self.content_bottom()) };
+        let bg = D2D_RECT_F { top, bottom, ..v };
         if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {
