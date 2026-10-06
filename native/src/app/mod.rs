@@ -1062,6 +1062,11 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // Settings were saved on WM_CLOSE and the trace flushed on WM_DESTROY; nothing is left to tear down.
+        // ExitProcess would run every DLL's detach first (the GPU driver's among them), keeping the process,
+        // and with it the single-instance mutex, alive ~4.5 s after the window is gone: a photo opened in
+        // that time waited 3 s for a window that never came (instance.rs).
+        let _ = windows::Win32::System::Threading::TerminateProcess(windows::Win32::System::Threading::GetCurrentProcess(), 0);
         std::process::exit(0);
     }
 }
