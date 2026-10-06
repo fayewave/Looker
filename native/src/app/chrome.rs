@@ -186,16 +186,15 @@ impl App {
         if cached.is_some() {
             parts.push(format!("{:.0}%", self.view.zoom_percent()));
         }
-        // One space a side: the status row is monospaced, where a space is a full cell wide.
-        parts.join(" · ")
+        parts.join("   ·   ")
     }
 
     pub(super) fn reveal_rect(&self) -> Option<D2D_RECT_F> {
         let g = self.gfx.as_ref()?;
         self.viewer.current.as_ref()?;
         let (_, h) = self.size_dip();
-        let tw = g.measure(&wide(&self.status_parts()), &g.fonts.mono);
-        let lw = g.measure(&wide("Open in Explorer"), &g.fonts.mono);
+        let tw = g.measure_tabular(&wide(&self.status_parts()), &g.fonts.caption);
+        let lw = g.measure_tabular(&wide("Open in Explorer"), &g.fonts.caption);
         Some(rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H))
     }
 
@@ -338,14 +337,14 @@ impl App {
         if text.is_empty() {
             return;
         }
-        g.text(&wide(&text), &g.fonts.mono, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
+        g.text_tabular(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
         if let Some(r) = self.reveal_rect() {
             self.hits.add(Hit::Reveal, r);
             let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
             let pressed = self.pressed == Some(Hit::Reveal) && self.hover == Some(Hit::Reveal);
             ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 4.0, right: r.right + 6.0, bottom: r.bottom - 4.0 }, t, pressed);
             let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
-            g.text(&wide("Open in Explorer"), &g.fonts.mono, r, c, Align::Left);
+            g.text_tabular(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
         let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {
             (Some(l), Some(p), _) => l.rank_of(&p.path).map(|r| (r, l.total_files)),
@@ -354,7 +353,7 @@ impl App {
         };
         if let Some((r, n)) = rank {
             let label = format!("{} / {}", r + 1, n);
-            g.text(&wide(&label), &g.fonts.mono, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
+            g.text_tabular(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
         }
     }
 

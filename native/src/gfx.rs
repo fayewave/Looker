@@ -111,8 +111,9 @@ pub struct Fonts {
     pub hero_icons: IDWriteTextFormat,
     /// 16 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
-    /// 12 px monospaced (Cascadia Mono, else Consolas): the status row.
-    pub mono: IDWriteTextFormat,
+    /// Inter's tabular figures (`tnum`): every digit the same width, so the status row's numbers don't
+    /// shuffle as they change (`Gfx::text_tabular`).
+    pub tabular: IDWriteTypography,
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
@@ -399,6 +400,41 @@ impl Gfx {
         }
     }
 
+    /// A layout of `s` in `fmt` with tabular figures, `w` x `h`.
+    fn tabular_layout(&self, s: &[u16], fmt: &IDWriteTextFormat, w: f32, h: f32) -> Option<IDWriteTextLayout> {
+        unsafe {
+            let l = self.text.dwrite.CreateTextLayout(s, fmt, w.max(1.0), h.max(1.0)).ok()?;
+            l.SetTypography(&self.fonts.tabular, DWRITE_TEXT_RANGE { startPosition: 0, length: s.len() as u32 }).ok()?;
+            Some(l)
+        }
+    }
+
+    /// `text` with tabular figures (the status row).
+    pub fn text_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+        let Some(l) = self.tabular_layout(s, fmt, r.right - r.left, r.bottom - r.top) else { return };
+        unsafe {
+            let _ = l.SetTextAlignment(match align {
+                Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
+                Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
+                Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
+            });
+            self.brush.SetColor(&color);
+            self.dev.dc.DrawTextLayout(
+                windows_numerics::Vector2 { X: r.left, Y: r.top },
+                &l,
+                &self.brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            );
+        }
+    }
+
+    /// `measure` with tabular figures.
+    pub fn measure_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
+        let Some(l) = self.tabular_layout(s, fmt, 10_000.0, 100.0) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { if l.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 } }
+    }
+
     /// Width of a single line of text, in DIPs.
     pub fn measure(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
         unsafe {
@@ -610,24 +646,9 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             Ok(f)
         };
-        // Cascadia Mono comes with Windows 11; Consolas is everywhere.
-        let mono_family = {
-            let mut sys = None;
-            let mut has = windows::core::BOOL(0);
-            let mut index = 0u32;
-            if dw.GetSystemFontCollection(false, &mut sys, false).is_ok() {
-                if let Some(c) = &sys {
-                    let _ = c.FindFamilyName(w!("Cascadia Mono"), &mut index, &mut has);
-                }
-            }
-            if has.as_bool() { w!("Cascadia Mono") } else { w!("Consolas") }
-        };
-        let mono = dw.CreateTextFormat(mono_family, None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0, w!("en-us"))?;
-        prep(&mono)?;
-        let sign = dw.CreateEllipsisTrimmingSign(&mono)?;
-        mono.SetTrimming(&DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 }, &sign)?;
-        ellipsis.push(sign);
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, mono, _ellipsis: ellipsis })
+        let tabular = dw.CreateTypography()?;
+        tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
+        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 
