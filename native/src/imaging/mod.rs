@@ -9,6 +9,7 @@ mod fallback;
 pub mod heif;
 pub mod pdf;
 mod raster;
+pub mod raw;
 pub mod svg;
 pub mod wic;
 
@@ -92,6 +93,8 @@ enum Step {
     Heif,
     /// libavif (bundled): animated AVIF, which nothing else plays; declines a still one.
     Avif,
+    /// LibRaw (bundled), when Windows lacks the Raw Image Extension.
+    LibRaw,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -102,7 +105,9 @@ fn plan(f: Format) -> &'static [Step] {
         // Animated first: it declines a still file, which WIC then takes on the fast path.
         Format::Gif | Format::Png => &[Animated, Wic, Image],
         Format::Webp => &[Animated, Wic, Image],
-        Format::Raw => &[WicRaw, Wic],
+        // The Raw Image Extension, else the bundled LibRaw; WIC's own pick last (the inbox DNG decoder: only the
+        // embedded preview).
+        Format::Raw => &[WicRaw, LibRaw, Wic],
         // WIC needs the HEVC (paid) or AV1 Video Extension; the bundled libheif catches the rest. An animated AVIF
         // goes to libavif, which reads only the first bytes of a still one before declining it.
         Format::Heif => &[Wic, Heif],
@@ -148,6 +153,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
         Step::Avif => avif::decode(f, path, box_w, box_h, still),
+        Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
     }
 }
 
@@ -161,7 +167,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still
     let steps: Vec<Step> = plan(fmt)
         .iter()
         .copied()
-        .filter(|s| !(still && *s == Step::Animated) && !(skip_wic && *s == Step::Wic && plan(fmt).len() > 1))
+        .filter(|s| !(still && *s == Step::Animated) && !(skip_wic && matches!(s, Step::Wic | Step::WicRaw) && plan(fmt).len() > 1))
         .collect();
     if steps.is_empty() {
         return Err(format!("no decoder for {fmt:?}"));
@@ -277,6 +283,11 @@ mod tests {
     #[test]
     fn raw_asks_for_the_raw_extension_first() {
         assert_eq!(plan(Format::Raw)[0], Step::WicRaw);
+    }
+
+    #[test]
+    fn raw_tries_libraw_before_the_inbox_preview() {
+        assert_eq!(plan(Format::Raw), &[Step::WicRaw, Step::LibRaw, Step::Wic]);
     }
 
     #[test]

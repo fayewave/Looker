@@ -178,11 +178,11 @@ pub struct Extension {
 }
 
 /// The extension a file of this format failed for want of, if that is the reason: camera RAW without the
-/// (free) Raw Image Extension, HEIC/AVIF only when the bundled libheif is missing too.
+/// (free) Raw Image Extension and the bundled LibRaw, HEIC/AVIF only when the bundled libheif is missing too.
 pub fn missing_extension(format: crate::format::Format) -> Option<Extension> {
     use crate::format::Format;
     match format {
-        Format::Raw if !raw_extension_installed() => {
+        Format::Raw if !raw_extension_installed() && !crate::imaging::raw::available() => {
             Some(Extension { why: "Windows needs the free Raw Image Extension to open camera RAW files.", product_id: "9NCTDW2W1BH8" })
         }
         Format::Heif if !crate::imaging::heif::available() => {

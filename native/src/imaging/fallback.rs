@@ -60,6 +60,22 @@ pub fn heif(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Resu
     finish(f, &rgba, w, h, box_w, box_h)
 }
 
+/// Camera RAW through the bundled LibRaw; the native size is the RAW's full size even when it decoded at half.
+pub fn raw(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let r = super::raw::decode(&bytes, box_w, box_h)?;
+    if r.width == 0 || r.height == 0 {
+        return Err("empty image".into());
+    }
+    let (dw, dh, px) = wic::from_rgba(f, &r.rgba, r.width, r.height, box_w, box_h).map_err(|e| e.message().to_string())?;
+    // Unix seconds to a FILETIME (100 ns ticks since 1601), as WIC's DateTaken comes.
+    let taken = r.taken.map(|t| {
+        let ticks = (t as u64 + 11_644_473_600) * 10_000_000;
+        windows::Win32::Foundation::FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 }
+    });
+    Ok(Decoded::still(dw, dh, px, r.full_width.max(r.width), r.full_height.max(r.height), taken))
+}
+
 /// Flattened composite (the image Photoshop saves alongside the layers, "maximize compatibility"); PSD and PSB.
 pub fn psd(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;

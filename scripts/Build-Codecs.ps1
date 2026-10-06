@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Builds the codec DLLs Looker loads on demand (libheif + libde265 for HEIC, dav1d for AVIF, libavif for animated
-    AVIF) with vcpkg, and collects them with their licences in %LOCALAPPDATA%\Looker\codecs.
+    AVIF, LibRaw for camera RAW) with vcpkg, and collects them with their licences in %LOCALAPPDATA%\Looker\codecs.
 
 .DESCRIPTION
     They are only used when Windows itself can't decode a file (no HEVC Video Extension, which is a paid Store
@@ -10,7 +10,7 @@
     linked in (native/codecs/triplets/x64-windows-looker.cmake), release only. libheif comes from an overlay port
     (native/codecs/ports/libheif) that adds a dav1d feature and is built without its default x265 *encoder* (GPL);
     libavif from one (native/codecs/ports/libavif) built without libyuv, which would bring libjpeg-turbo along.
-    Only the four DLLs Looker loads are collected, whatever else the dependency graph left in bin\.
+    Only the five DLLs Looker loads are collected, whatever else the dependency graph left in bin\.
 
     vcpkg itself lives in %LOCALAPPDATA%\Looker\vcpkg (cloned and bootstrapped on first run). NativeLayout.ps1
     copies the result into the package's codecs\ folder; this script also copies it next to the dev build
@@ -48,15 +48,28 @@ if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
     --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
     --x-install-root $installRoot --clean-after-build
 if ($LASTEXITCODE -ne 0) { throw "vcpkg install libavif failed ($LASTEXITCODE)" }
+# LibRaw (camera RAW without the Raw Image Extension) on a triplet of its own: raw_r.dll with jasper, lcms and zlib
+# linked in, and Looker's entry point compiled into it (native/codecs/ports/libraw/looker_raw.cpp).
+$rawTriplet = 'x64-windows-looker-raw'
+& (Join-Path $Vcpkg 'vcpkg.exe') remove "libraw:$rawTriplet" --x-install-root $installRoot --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') | Out-Null
+& (Join-Path $Vcpkg 'vcpkg.exe') install 'libraw' --triplet $rawTriplet `
+    --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
+    --x-install-root $installRoot --clean-after-build
+if ($LASTEXITCODE -ne 0) { throw "vcpkg install libraw failed ($LASTEXITCODE)" }
 
 $installed = Join-Path $installRoot $triplet
+$rawInstalled = Join-Path $installRoot $rawTriplet
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $OutDir 'licenses') | Out-Null
 foreach ($dll in 'heif.dll', 'libde265.dll', 'dav1d.dll', 'avif.dll') {
     Copy-Item (Join-Path $installed "bin\$dll") $OutDir
 }
+Copy-Item (Join-Path $rawInstalled 'bin\raw_r.dll') $OutDir
 foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif') {
     Copy-Item (Join-Path $installed "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
+}
+foreach ($port in 'libraw', 'lcms', 'jasper', 'zlib') {
+    Copy-Item (Join-Path $rawInstalled "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
 }
 
 $dev = Join-Path $env:LOCALAPPDATA 'Looker\native-target\release\codecs'
