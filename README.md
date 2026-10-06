@@ -29,11 +29,11 @@ JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF
 ## Screenshots
 
 <p align="left">
-  <img src="brand/screenshots/home.png" alt="Looker on Windows 11" width="650">
+  <img src="brand/screenshots/readme-browse.png" alt="Looker with the file explorer and thumbnail strip open" width="800">
 </p>
 
 <p align="left">
-  <img src="brand/screenshots/screen3.png" alt="Photos open in Looker" width="650">
+  <img src="brand/screenshots/readme-info.png" alt="A camera RAW photo in Looker with the info panel open" width="800">
 </p>
 
 ## Keyboard
