@@ -75,6 +75,9 @@ pub fn check_updates(hwnd: HWND) {
             let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
         }
         let status = (|| -> windows::core::Result<UpdateStatus> {
+            if let Some(uri) = appinstaller_uri() {
+                return check_appinstaller(&uri);
+            }
             let r = Package::Current()?.CheckUpdateAvailabilityAsync()?.join()?;
             let a = r.Availability()?;
             Ok(if a == PackageUpdateAvailability::Available || a == PackageUpdateAvailability::Required {
@@ -93,16 +96,53 @@ pub fn check_updates(hwnd: HWND) {
     });
 }
 
-/// Installed from the GitHub release's `.appinstaller` rather than the Store: Windows checks that file on every
-/// launch and installs a newer version in the background, and "Update now" asks it to right away. Its address,
-/// when so (asked once: a WinRT call).
+/// The Store's publisher: every other one is the GitHub release (signed with Trusted Signing).
+const STORE_PUBLISHER: &str = "CN=75645224-1CB5-47AA-A845-256EA45E9908";
+/// Where the GitHub release's `.appinstaller` always is (Publish-GitHubRelease.ps1).
+const GITHUB_APPINSTALLER: &str = "https://github.com/fayewave/Looker/releases/latest/download/Looker.appinstaller";
+
+/// The GitHub release: the `.appinstaller` it updates from, when this copy is one (asked once: WinRT calls).
+/// Installed through that file, Windows checks it on every launch and updates in the background. Installed
+/// from the `.msix` directly, Windows knows of no such file: Looker checks it itself, and "Update now"
+/// installs through it, after which Windows keeps that copy up to date too. The Store's copies (and dev
+/// registrations, which carry its publisher) are None.
 pub fn appinstaller_uri() -> Option<String> {
     static URI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     URI.get_or_init(|| {
-        let uri = Package::Current().and_then(|p| p.GetAppInstallerInfo()).and_then(|i| i.Uri()).and_then(|u| u.AbsoluteUri());
-        uri.ok().map(|u| u.to_string_lossy()).filter(|u| !u.is_empty())
+        let p = Package::Current().ok()?;
+        let known = p.GetAppInstallerInfo().and_then(|i| i.Uri()).and_then(|u| u.AbsoluteUri());
+        if let Some(u) = known.ok().map(|u| u.to_string_lossy()).filter(|u| !u.is_empty()) {
+            return Some(u);
+        }
+        let publisher = p.Id().and_then(|id| id.Publisher()).ok()?.to_string_lossy();
+        (publisher != STORE_PUBLISHER).then(|| GITHUB_APPINSTALLER.to_string())
     })
     .clone()
+}
+
+/// Reads the `.appinstaller` and compares its package version with this one's.
+fn check_appinstaller(uri: &str) -> windows::core::Result<UpdateStatus> {
+    let client = windows::Web::Http::HttpClient::new()?;
+    let uri = windows::Foundation::Uri::CreateUri(&windows::core::HSTRING::from(uri))?;
+    let xml = client.GetStringAsync(&uri)?.join()?.to_string_lossy();
+    let Some(latest) = appinstaller_version(&xml) else { return Ok(UpdateStatus::Unknown) };
+    let v = Package::Current()?.Id()?.Version()?;
+    let current = [v.Major, v.Minor, v.Build, v.Revision];
+    Ok(if latest > current { UpdateStatus::Available } else { UpdateStatus::UpToDate })
+}
+
+/// The `Version` of an `.appinstaller`'s `MainPackage`.
+fn appinstaller_version(xml: &str) -> Option<[u16; 4]> {
+    let main = &xml[xml.find("<MainPackage")?..];
+    let main = &main[..main.find('>')?];
+    let start = main.find(" Version=\"")? + " Version=\"".len();
+    let text = &main[start..start + main[start..].find('"')?];
+    let mut v = [0u16; 4];
+    let mut parts = text.split('.');
+    for f in &mut v {
+        *f = parts.next()?.trim().parse().ok()?;
+    }
+    Some(v)
 }
 
 /// Installs the update from the `.appinstaller` now, on a worker thread. Windows closes Looker to do it and
@@ -176,5 +216,21 @@ pub fn default_apps_uri() -> String {
             format!("{BASE}?registeredAUMID={}", aumid.to_string_lossy().replace('!', "%21"))
         }
         _ => BASE.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appinstaller_version_reads_the_main_package() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller xmlns="http://schemas.microsoft.com/appx/appinstaller/2021" Version="1.0.0.0" Uri="https://x/Looker.appinstaller">
+  <MainPackage Name="fayewave.Looker-PhotoViewer" Publisher="CN=A, O=B" Version="1.2.3.0" ProcessorArchitecture="x64" Uri="https://x/a.msix" />
+</AppInstaller>"#;
+        assert_eq!(appinstaller_version(xml), Some([1, 2, 3, 0]));
+        assert!(appinstaller_version(xml).unwrap() > [1, 1, 9, 0]);
+        assert_eq!(appinstaller_version("<AppInstaller Version=\"1.0.0.0\"/>"), None);
     }
 }

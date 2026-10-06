@@ -24,6 +24,7 @@ features = [
     "Management_Deployment",
     "Storage",
     "Storage_Streams",
+    "Web_Http",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Direct2D",
