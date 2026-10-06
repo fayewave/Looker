@@ -15,7 +15,7 @@
   <Identity
     Name="fayewave.Looker-PhotoViewer"
     Publisher="CN=75645224-1CB5-47AA-A845-256EA45E9908"
-    Version="1.1.0.0"
+    Version="1.1.1.0"
     ProcessorArchitecture="x64" />
 
 
