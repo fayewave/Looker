@@ -81,12 +81,27 @@ impl App {
     }
 
     pub(super) fn tool_rects(&self) -> Vec<(Tool, u16, D2D_RECT_F)> {
+        // A narrow window drops left-hand buttons in this order (each has a key, the wheel or a double-click);
+        // Previous, Next and Sort (no key) always stay, as does the right-hand group.
+        const DROP: [Tool; 6] = [Tool::ZoomOut, Tool::ZoomIn, Tool::Fullscreen, Tool::Fit, Tool::Rotate, Tool::Delete];
         let (w, _) = self.size_dip();
         let y = TITLE_H + (TOOLBAR_H - 8.0 - BUTTON_H) / 2.0;
+        let width = |t: Tool| if t == Tool::Sort { SORT_W } else { BUTTON_W };
+        let right_w = RIGHT_TOOLS.len() as f32 * (BUTTON_W + 4.0) - 4.0;
+        let room = w - 12.0 - 12.0 - right_w - 16.0;
+        let save_w = if self.turns != 0 { SAVE_W + 4.0 } else { 0.0 };
+        let mut dropped = 0;
+        while dropped < DROP.len() {
+            let left_w: f32 = LEFT_TOOLS.iter().filter(|(t, _)| !DROP[..dropped].contains(t)).map(|&(t, _)| width(t) + 4.0).sum::<f32>() - 4.0 + save_w;
+            if left_w <= room {
+                break;
+            }
+            dropped += 1;
+        }
         let mut out = Vec::new();
         let mut x = 12.0;
-        for &(t, g) in LEFT_TOOLS {
-            let bw = if t == Tool::Sort { SORT_W } else { BUTTON_W };
+        for &(t, g) in LEFT_TOOLS.iter().filter(|(t, _)| !DROP[..dropped].contains(t)) {
+            let bw = width(t);
             out.push((t, g, rect(x, y, bw, BUTTON_H)));
             x += bw + 4.0;
         }
@@ -152,50 +167,81 @@ impl App {
         })
     }
 
-    pub(super) fn status_parts(&self) -> String {
+    /// The status row's parts in order, each with how soon it goes when the row is narrow (higher goes first;
+    /// 0 stays).
+    fn status_parts(&self) -> Vec<(u8, String)> {
         if let Some(s) = self.placeholder_status() {
-            return s;
+            return vec![(0, s)];
         }
-        let Some(path) = self.current_path() else { return String::new() };
-        let mut parts: Vec<String> = Vec::new();
+        let Some(path) = self.current_path() else { return Vec::new() };
+        let mut parts = Vec::new();
         let cached = self.viewer.current_entry();
         if let Some(c) = cached {
             if let Some(name) = format::display_name(c.format, Some(path)) {
-                parts.push(name);
+                parts.push((0, name));
             }
             if c.pages > 0 {
-                parts.push(if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) });
+                parts.push((4, if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) }));
             }
             let (w, h) = self.current_dims().unwrap_or((c.native_w, c.native_h));
-            parts.push(format!("{w} × {h}"));
+            parts.push((1, format!("{w} × {h}")));
             if c.pages == 0 {
                 // a page's 96-dpi size is not a pixel count
-                parts.push(format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0));
+                parts.push((5, format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0)));
             }
         }
         if let Some(i) = &self.info {
             if i.size > 0 {
-                parts.push(format_bytes(i.size));
+                parts.push((3, format_bytes(i.size)));
             }
         }
         if let Some(t) = cached.and_then(|c| c.taken) {
-            parts.push(format!("Taken {}", format_time(t)));
+            parts.push((6, format!("Taken {}", format_time(t))));
         } else if let Some(i) = &self.info {
-            parts.push(format!("Modified {}", format_time(i.modified)));
+            parts.push((6, format!("Modified {}", format_time(i.modified))));
         }
         if cached.is_some() {
-            parts.push(format!("{:.0}%", self.view.zoom_percent()));
+            parts.push((2, format!("{:.0}%", self.view.zoom_percent())));
         }
-        parts.join("   ·   ")
+        parts
     }
 
-    pub(super) fn reveal_rect(&self) -> Option<D2D_RECT_F> {
-        let g = self.gfx.as_ref()?;
-        self.viewer.current.as_ref()?;
-        let (_, h) = self.size_dip();
-        let tw = g.measure_tabular(&wide(&self.status_parts()), &g.fonts.caption);
-        let lw = g.measure_tabular(&wide("Open in Explorer"), &g.fonts.caption);
-        Some(rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H))
+    /// The "3 / 61" at the right of the status row.
+    fn status_rank(&self) -> Option<String> {
+        let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {
+            (Some(l), Some(p), _) => l.rank_of(&p.path).map(|r| (r, l.total_files)),
+            (Some(l), None, Some(i)) => Some((l.rank[i], l.total_files)),
+            _ => None,
+        };
+        rank.map(|(r, n)| format!("{} / {}", r + 1, n))
+    }
+
+    /// The status row as it fits beside the counter: its text and, when there's room for it too, the "Open in
+    /// Explorer" link's rect. A narrow window drops parts (the date first, the format last), then the link.
+    pub(super) fn status_line(&self, g: &Gfx) -> (String, Option<D2D_RECT_F>) {
+        const LINK: &str = "Open in Explorer";
+        let (w, h) = self.size_dip();
+        let parts = self.status_parts();
+        let counter = self.status_rank().map_or(0.0, |s| g.measure_tabular(&wide(&s), &g.fonts.caption) + 24.0);
+        let room = (w - 24.0 - counter).max(0.0);
+        let lw = g.measure_tabular(&wide(LINK), &g.fonts.caption);
+        let can_link = self.viewer.current.is_some();
+        let join = |keep_below: u8| parts.iter().filter(|(p, _)| *p < keep_below).map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("   ·   ");
+        for with_link in [true, false] {
+            if with_link && !can_link {
+                continue;
+            }
+            for keep_below in (1..=7).rev() {
+                let text = join(keep_below);
+                let tw = g.measure_tabular(&wide(&text), &g.fonts.caption);
+                let need = tw + if with_link { 16.0 + lw } else { 0.0 };
+                if need <= room {
+                    let link = with_link.then(|| rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H));
+                    return (text, link);
+                }
+            }
+        }
+        (join(1), None) // trimmed with an ellipsis
     }
 
     /// What is under a point, from the regions the last frame drew.
@@ -333,12 +379,14 @@ impl App {
         // Centred in the whole row (an inset box sat the text 1.5 px high).
         let y = h - STATUS_H;
         let row_h = STATUS_H;
-        let text = self.status_parts();
+        let (text, link) = self.status_line(g);
         if text.is_empty() {
             return;
         }
-        g.text_tabular(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
-        if let Some(r) = self.reveal_rect() {
+        let rank = self.status_rank();
+        let counter_w = rank.as_ref().map_or(0.0, |s| g.measure_tabular(&wide(s), &g.fonts.caption) + 24.0);
+        g.text_tabular(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0 - counter_w).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
+        if let Some(r) = link {
             self.hits.add(Hit::Reveal, r);
             let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
             let pressed = self.pressed == Some(Hit::Reveal) && self.hover == Some(Hit::Reveal);
@@ -346,13 +394,7 @@ impl App {
             let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
             g.text_tabular(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
         }
-        let rank = match (&self.viewer.listing, &self.placeholder, self.viewer.index) {
-            (Some(l), Some(p), _) => l.rank_of(&p.path).map(|r| (r, l.total_files)),
-            (Some(l), None, Some(i)) => Some((l.rank[i], l.total_files)),
-            _ => None,
-        };
-        if let Some((r, n)) = rank {
-            let label = format!("{} / {}", r + 1, n);
+        if let Some(label) = rank {
             g.text_tabular(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
         }
     }
