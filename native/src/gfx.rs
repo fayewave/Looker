@@ -497,6 +497,23 @@ impl Gfx {
         }
     }
 
+    /// A top-to-bottom gradient across `r` through `stops` (position 0..1, colour): the scrims behind the
+    /// window's top and bottom bars.
+    pub fn fill_vgradient(&self, r: D2D_RECT_F, stops: &[(f32, D2D1_COLOR_F)]) {
+        unsafe {
+            let stops: Vec<D2D1_GRADIENT_STOP> = stops.iter().map(|&(position, color)| D2D1_GRADIENT_STOP { position, color }).collect();
+            let rt: &ID2D1RenderTarget = &self.dev.dc;
+            let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: windows_numerics::Vector2 { X: r.left, Y: r.top },
+                endPoint: windows_numerics::Vector2 { X: r.left, Y: r.bottom },
+            };
+            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                self.dev.dc.FillRectangle(&r, &b);
+            }
+        }
+    }
+
     /// Starts a layer over `r` whose content fades out over `w` at each end, by `left` and `right` (0..1),
     /// so it fades into whatever is beneath (the strip's edge fades). Ends with `pop_layer`.
     pub fn push_hfade_layer(&self, r: D2D_RECT_F, w: f32, left: f32, right: f32) {

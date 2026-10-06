@@ -422,6 +422,28 @@ impl App {
         }
         self.draw_fade(g, bg);
         self.draw_placeholder(g);
+        self.draw_scrims(g, bg);
+    }
+
+    /// Soft gradients of the window colour behind the bars, so they read on a bright photo: down from the
+    /// top behind the title bar and toolbar, and up from the bottom behind the status row and the strip,
+    /// growing and shrinking as the strip slides.
+    fn draw_scrims(&self, g: &Gfx, bg: D2D_RECT_F) {
+        const ALPHA: f32 = 0.7;
+        const TAIL: f32 = 32.0; // how far past the bars the fade runs out
+        let c = |a: f32| gfx::rgba(self.theme().window, a);
+        // Darkest at the window's edge, still well over half across the bars, then out over the tail.
+        if self.chrome() && self.page.is_none() {
+            let h = TITLE_H + TOOLBAR_H + TAIL;
+            let bars_end = (TITLE_H + TOOLBAR_H) / h;
+            g.fill_vgradient(D2D_RECT_F { bottom: bg.top + h, ..bg }, &[(0.0, c(ALPHA)), (bars_end, c(ALPHA * 0.55)), (1.0, c(0.0))]);
+        }
+        let bars = if self.chrome() { STATUS_H } else { 0.0 } + self.bottom_inset();
+        if bars > 0.0 && self.page.is_none() {
+            let h = bars + TAIL;
+            let bars_start = TAIL / h;
+            g.fill_vgradient(D2D_RECT_F { top: bg.bottom - h, ..bg }, &[(0.0, c(0.0)), (bars_start, c(ALPHA * 0.55)), (1.0, c(ALPHA))]);
+        }
     }
 
     /// "Can't display this file", and when the reason is a Windows extension that isn't installed, which one and
