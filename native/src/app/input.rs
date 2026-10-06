@@ -650,6 +650,7 @@ impl App {
                     }
                     Some(LRESULT(0))
                 }
+                WM_DPICHANGED if super::dpi_override().is_some() => Some(LRESULT(0)),
                 WM_DPICHANGED => {
                     self.dpi = (wp.0 & 0xFFFF) as u32;
                     let r = &*(lp.0 as *const RECT);

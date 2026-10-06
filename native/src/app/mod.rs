@@ -240,6 +240,12 @@ fn client_size_for(p: &Placement) -> (u32, u32) {
     (((p.rect.right - p.rect.left) - 2 * fx).max(1) as u32, ((p.rect.bottom - p.rect.top) - fy).max(1) as u32)
 }
 
+/// `LOOKER_DPI` (dev): draws at this DPI whatever the monitor's, e.g. 192 for a small window at 2x (Store
+/// screenshots).
+pub fn dpi_override() -> Option<u32> {
+    std::env::var("LOOKER_DPI").ok()?.parse().ok()
+}
+
 /// The saved window placement when it is still on a connected monitor, else the default window.
 pub fn initial_placement(settings: &Settings) -> Placement {
     if let Some(w) = settings.window.filter(|_| settings.remember_window) {
@@ -251,7 +257,7 @@ pub fn initial_placement(settings: &Settings) -> Placement {
                 let _ = GetMonitorInfoW(mon, &mut mi);
                 let (mut dx, mut dy) = (96u32, 96u32);
                 let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-                return Placement { rect, dpi: dx, maximized: w.maximized, work: mi.rcWork };
+                return Placement { rect, dpi: dpi_override().unwrap_or(dx), maximized: w.maximized, work: mi.rcWork };
             }
         }
     }
@@ -266,6 +272,7 @@ fn default_placement() -> Placement {
         let _ = GetMonitorInfoW(mon, &mut mi);
         let (mut dx, mut dy) = (96u32, 96u32);
         let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        let dx = dpi_override().unwrap_or(dx);
         let s = dx as f32 / 96.0;
         let (fx, fy) = frame_px(dx);
         let work = mi.rcWork;
@@ -932,7 +939,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
 
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);
-        let dpi = GetDpiForWindow(hwnd);
+        let dpi = dpi_override().unwrap_or_else(|| GetDpiForWindow(hwnd));
         let mut app = Box::new(App {
             hwnd,
             gfx: None,
