@@ -7,7 +7,7 @@
 //! All of it needs package identity; unpackaged (dev builds) the update check answers Unknown ("Couldn't
 //! check"), as a dev-registered layout of the C# app does.
 
-use windows::ApplicationModel::{AppInfo, Package, PackageUpdateAvailability};
+use windows::ApplicationModel::{AppInfo, Package};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
@@ -78,15 +78,10 @@ pub fn check_updates(hwnd: HWND) {
             if let Some(uri) = appinstaller_uri() {
                 return check_appinstaller(&uri);
             }
-            let r = Package::Current()?.CheckUpdateAvailabilityAsync()?.join()?;
-            let a = r.Availability()?;
-            Ok(if a == PackageUpdateAvailability::Available || a == PackageUpdateAvailability::Required {
-                UpdateStatus::Available
-            } else if a == PackageUpdateAvailability::NoUpdates {
-                UpdateStatus::UpToDate
-            } else {
-                UpdateStatus::Unknown
-            })
+            // The Store's own answer (Package.CheckUpdateAvailabilityAsync is for .appinstaller installs).
+            // Asking shows no UI, so no owner window is needed.
+            let updates = windows::Services::Store::StoreContext::GetDefault()?.GetAppAndOptionalStorePackageUpdatesAsync()?.join()?;
+            Ok(if updates.Size()? > 0 { UpdateStatus::Available } else { UpdateStatus::UpToDate })
         })()
         .unwrap_or(UpdateStatus::Unknown);
         crate::trace::mark(format!("store update check: {status:?}"));

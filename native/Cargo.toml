@@ -22,6 +22,7 @@ features = [
     "Foundation_Collections",
     "Graphics_Imaging",
     "Management_Deployment",
+    "Services_Store",
     "Storage",
     "Storage_Streams",
     "Web_Http",
