@@ -327,7 +327,6 @@ impl App {
             let selected = sel == Some(i);
             let hover = self.fades.get_out(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
             let pressed = self.pressed == Some(Hit::StripCell(i)) && self.hover == Some(Hit::StripCell(i));
-            g.fill_round(cell, 4.0, white(0x1F));
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
