@@ -90,6 +90,9 @@ impl Thumbs {
 pub(super) struct Strip {
     scroll: f32,
     anim: Option<(f32, f32, Instant)>,
+    /// The scroll range: from the first cell centred to the last cell centred, so the current photo is always
+    /// in the middle (the ends leave empty strip beside them).
+    min_scroll: f32,
     max_scroll: f32,
     /// The (index, image count) the strip last centred on.
     centered: Option<(usize, usize)>,
@@ -102,6 +105,7 @@ impl Strip {
         Strip {
             scroll: 0.0,
             anim: None,
+            min_scroll: 0.0,
             max_scroll: 0.0,
             centered: None,
             drag: None,
@@ -189,7 +193,7 @@ impl App {
     pub(super) fn scroll_strip(&mut self, delta: f32) {
         let pitch = self.cell_size().0 + SPACING;
         let s = &mut self.strip;
-        let to = (s.target() - delta / 120.0 * pitch).clamp(0.0, s.max_scroll.max(0.0));
+        let to = (s.target() - delta / 120.0 * pitch).clamp(s.min_scroll, s.max_scroll.max(s.min_scroll));
         s.scroll_to(to, true);
         self.invalidate();
     }
@@ -300,29 +304,32 @@ impl App {
         let n = self.viewer.image_count();
         let view_w = r.right - r.left;
         let content_w = SIDE * 2.0 + n as f32 * pitch - if n > 0 { SPACING } else { 0.0 };
-        self.strip.max_scroll = (content_w - view_w).max(0.0);
+        // The scroll that puts cell i's centre in the middle of the strip.
+        let centre_on = |i: usize| SIDE + i as f32 * pitch + cw / 2.0 - view_w / 2.0;
+        self.strip.min_scroll = centre_on(0);
+        self.strip.max_scroll = centre_on(n.saturating_sub(1));
         self.hits.add(Hit::Strip, visible);
 
         // Follow the current image: glide to centre it, or jump when it is more than a screen away.
         let sel = self.viewer.index;
         if let Some(i) = sel {
             if self.strip.centered != Some((i, n)) {
-                let target = (SIDE + i as f32 * pitch + cw / 2.0 - view_w / 2.0).clamp(0.0, self.strip.max_scroll);
+                let target = centre_on(i);
                 let animate = self.strip.centered.is_some() && (target - self.strip.target()).abs() <= view_w;
                 self.strip.scroll_to(target, animate);
                 self.strip.centered = Some((i, n));
             }
         }
         let (mut scroll, moving) = self.strip.scroll_now();
-        scroll = scroll.clamp(0.0, self.strip.max_scroll);
+        scroll = scroll.clamp(self.strip.min_scroll, self.strip.max_scroll);
 
         let want = self.thumb_px();
         let top = r.bottom - BOTTOM_PAD - ch;
         let first = (((scroll - SIDE) / pitch).floor().max(0.0)) as usize;
         let last = (((scroll + view_w - SIDE) / pitch).ceil().max(0.0) as usize).min(n);
-        // Edge fades where there is more to scroll to: the cells fade out into the photo's background.
+        // Edge fades where cells run past the edge: they fade out into the photo's background.
         let lf = self.fades.get(Hit::StripFadeLeft, scroll > 0.5);
-        let rf = self.fades.get(Hit::StripFadeRight, self.strip.max_scroll - scroll > 0.5);
+        let rf = self.fades.get(Hit::StripFadeRight, content_w - view_w - scroll > 0.5);
         g.push_clip(r);
         g.push_hfade_layer(r, FADE_W, lf, rf);
         for i in first..last {
