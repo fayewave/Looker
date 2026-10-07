@@ -17,6 +17,7 @@ A fast, minimal photo viewer for Windows 11.
 - Browses the folder in Explorer order, with the next photos preloaded.
 - File explorer, thumbnail strip, info panel with EXIF and histogram, fullscreen and slideshow.
 - Rename, rotate and save, delete to Recycle Bin, copy, reveal in Explorer, set as wallpaper.
+- The thumbnail strip and file explorer can also list files Looker can't open (right-click either): preview them with Windows' own thumbnail, step through them with `←` `→`, rename or delete them.
 - Animated GIF, WebP and APNG playback.
 - PDFs open as a row of pages: zoom and pan like a photo, turn pages with the page bar.
 - Colour managed to the display, wide gamut included. With HDR on, HDR photos (gain-map JPEGs such as Ultra HDR, HDR AVIF, JPEG XR) show their full brightness.

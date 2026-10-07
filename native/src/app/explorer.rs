@@ -204,8 +204,12 @@ impl App {
             self.placeholder = None;
             self.current_changed();
         }
+        let mut rows = l.rows;
+        if !self.settings.explorer_other_files {
+            rows.retain(|r| r.kind != Kind::Other);
+        }
         let e = &mut self.explorer;
-        e.rows = l.rows;
+        e.rows = rows;
         if e.watcher.is_none() {
             if let Place::Folder(f) = &l.place {
                 e.watcher = Watcher::start(f, self.hwnd, explorer::WM_EXPLORER_CHANGED);
@@ -281,6 +285,9 @@ impl App {
     /// navigation takes the cover down.
     pub(super) fn show_placeholder(&mut self, path: PathBuf) {
         let md = std::fs::metadata(&path).ok();
+        let stamp = md.as_ref().map_or(0, |m| m.last_write_time());
+        // Online-only (Dropbox/OneDrive placeholder): only the shell's cached thumbnail, never a download.
+        let cloud = md.as_ref().is_some_and(|m| m.file_attributes() & (0x1000 | 0x40000 | 0x400000) != 0);
         let modified = md.as_ref().map(|m| {
             let t = m.last_write_time();
             FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 }
@@ -288,7 +295,7 @@ impl App {
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
         }
-        self.placeholder = Some(Placeholder { size: md.map(|m| m.len()), modified, path });
+        self.placeholder = Some(Placeholder { size: md.map(|m| m.len()), modified, path, stamp, cloud });
         self.invalidate();
     }
 
@@ -307,18 +314,36 @@ impl App {
     }
 
     /// Covers the viewport in the window colour, with the glyph and name centred between the cards.
-    pub(super) fn draw_placeholder(&self, g: &Gfx) {
-        let Some(p) = &self.placeholder else { return };
+    /// The cover for a file Looker can't open: Windows' own thumbnail of it when there is one (a video's frame,
+    /// a document's first page), else the file glyph, with its name under it.
+    pub(super) fn draw_placeholder(&mut self, g: &Gfx) {
+        let Some((path, stamp, cloud)) = self.placeholder.as_ref().map(|p| (p.path.clone(), p.stamp, p.cloud)) else { return };
         g.fill(self.viewport(), rgb(self.theme().window));
         let a = self.image_area();
-        let name = wide(&file_name(&p.path));
+        let name = wide(&file_name(&path));
         let w = (a.right - a.left - 32.0).clamp(1.0, 520.0);
         let name_h = g.measure_height(&name, &g.fonts.subtitle_wrap, w);
-        let icon_h = 120.0;
-        let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
         let cx = (a.left + a.right) / 2.0;
-        g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), white(TEXT_SECONDARY), Align::Center);
+        // The preview box: up to 640 x 400, leaving room for the name.
+        let (bw, bh) = ((a.right - a.left - 64.0).clamp(1.0, 640.0), (a.bottom - a.top - name_h - 84.0).clamp(1.0, 400.0));
+        let px = ((bw.max(bh) * self.scale() / 64.0).ceil() as u32 * 64).clamp(128, 1024);
+        self.thumbs.want(&path, stamp, px, cloud, true);
+        let thumb = self.thumbs.get(&path, stamp);
+        let icon_h = if thumb.is_some() { bh } else { 120.0 };
+        let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
+        match thumb {
+            Some(t) => t.draw_fit(g, rect(cx - bw / 2.0, top, bw, bh)),
+            None => g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), white(TEXT_SECONDARY), Align::Center),
+        }
         g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), white(0xFF), Align::Center);
+    }
+
+    pub(super) fn toggle_explorer_other(&mut self) {
+        self.settings.explorer_other_files = !self.settings.explorer_other_files;
+        settings::save(&self.settings);
+        if let Some(p) = self.explorer.place.clone() {
+            self.explorer_list(p, true);
+        }
     }
 
     /// A row was clicked (or reached with the arrow keys): images open, folders and other files take the cursor.

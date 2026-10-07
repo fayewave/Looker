@@ -16,7 +16,7 @@ pub(super) struct Slideshow {
     /// It went fullscreen itself, so it leaves fullscreen when it ends.
     entered_fullscreen: bool,
     /// The step in progress is the slideshow's own (it dissolves, and doesn't restart the dwell).
-    stepping: bool,
+    pub(super) stepping: bool,
     /// The next image swap dissolves (set by the slideshow's step, consumed by the swap).
     fade_armed: bool,
 }

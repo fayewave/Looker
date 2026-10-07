@@ -191,12 +191,12 @@ impl App {
     }
 
     /// Whether the strip lists every file of the folder rather than only the images.
-    fn strip_lists_all(&self) -> bool {
+    pub(super) fn strip_lists_all(&self) -> bool {
         self.settings.strip_other_files && self.viewer.listing.is_some()
     }
 
     /// How many cells the strip has.
-    fn strip_len(&self) -> usize {
+    pub(super) fn strip_len(&self) -> usize {
         match &self.viewer.listing {
             Some(l) if self.settings.strip_other_files => l.files().len(),
             _ => self.viewer.image_count(),
@@ -216,7 +216,7 @@ impl App {
     }
 
     /// The cell that is current: the photo's, or the other file covering it.
-    fn strip_selected(&self) -> Option<usize> {
+    pub(super) fn strip_selected(&self) -> Option<usize> {
         if !self.strip_lists_all() {
             return self.viewer.index;
         }
@@ -227,15 +227,10 @@ impl App {
         }
     }
 
-    pub(super) fn strip_click(&mut self, i: usize) {
+    /// Cell `i`: its photo, or the file Looker can't open as a cover over the photo (a click, ←/→, Home/End).
+    pub(super) fn open_strip_item(&mut self, i: usize) {
         match self.strip_item(i) {
-            Some((_, _, _, Some(img))) => {
-                // Back on the photo it covered: take the cover down.
-                if self.placeholder.take().is_some() && Some(img) == self.viewer.index {
-                    self.current_changed();
-                }
-                self.go_to(img);
-            }
+            Some((path, _, _, Some(_))) => self.open_file(path),
             Some((path, ..)) => self.show_placeholder(path),
             None => {}
         }

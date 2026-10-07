@@ -31,10 +31,17 @@ pub(super) enum Action {
     Choose(usize),
     /// The strip's menu: list the folder's other files in it too.
     ToggleStripOther,
+    /// The explorer card's: the same for its rows.
+    ToggleExplorerOther,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
     Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, checked: false, enabled })
+}
+
+/// A check box item: a tick when on.
+fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
+    Entry::Item(MenuItem { action, glyph: on.then_some(0xE73E), label: label.into(), accel: None, checked: false, enabled: true })
 }
 
 fn radio(action: Action, label: &str, checked: bool) -> Entry<Action> {
@@ -44,18 +51,21 @@ fn radio(action: Action, label: &str, checked: bool) -> Entry<Action> {
 impl App {
     fn context_entries(&self) -> Vec<Entry<Action>> {
         let has = self.viewer.current.is_some();
-        let rotate = self.can_rotate();
+        // A file Looker can't open covers the photo: the file actions are for it, the image ones are off.
+        let image = has && self.placeholder.is_none();
+        let file = has || self.placeholder.is_some();
+        let rotate = image && self.can_rotate();
         vec![
             item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
             item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),
             Entry::Separator,
-            item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), has),
-            item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), has),
-            item(Action::Rename, 0xE8AC, "Rename", Some("F2"), has),
-            item(Action::Delete, 0xE74D, "Delete", Some("Del"), has),
+            item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), image),
+            item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), file),
+            item(Action::Rename, 0xE8AC, "Rename", Some("F2"), file),
+            item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
             Entry::Separator,
-            item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, has),
-            item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), has),
+            item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, image),
+            item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), file),
             Entry::Separator,
             item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), has),
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), has),
@@ -118,10 +128,17 @@ impl App {
                 entries.push(item(Action::Delete, 0xE74D, "Delete", None, true));
                 entries.push(Entry::Separator);
             }
-            Kind::Other => {}
+            Kind::Other => {
+                entries.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true));
+                entries.push(item(Action::Rename, 0xE8AC, "Rename", None, true));
+                entries.push(item(Action::Delete, 0xE74D, "Delete", None, true));
+                entries.push(Entry::Separator);
+            }
         }
         entries.push(item(Action::CopyPath, 0xE71B, "Copy path", None, true));
         entries.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+        entries.push(Entry::Separator);
+        entries.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((MenuKind::Item(path), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
@@ -133,18 +150,20 @@ impl App {
     pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
         let other = self.settings.strip_other_files;
         let entries = vec![
-            // A tick when on (a check box, not the sort menu's radio bullet).
-            Entry::Item(MenuItem {
-                action: Action::ToggleStripOther,
-                glyph: other.then_some(0xE73E),
-                label: "Show files Looker can't open".into(),
-                accel: None,
-                checked: false,
-                enabled: true,
-            }),
+            check(Action::ToggleStripOther, "Show files Looker can't open", other),
             Entry::Separator,
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), true),
         ];
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Context, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    /// The explorer card's menu, away from any row.
+    pub(super) fn open_explorer_menu(&mut self, x: f32, y: f32) {
+        let entries = vec![check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files)];
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((MenuKind::Context, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
@@ -210,7 +229,9 @@ impl App {
     fn run_item_action(&mut self, a: Action, path: PathBuf) {
         match a {
             Action::OpenItem if path.is_dir() => self.open_folder(path),
+            Action::OpenItem if !crate::format::is_supported(&path) => self.show_placeholder(path),
             Action::OpenItem => self.open_file(path),
+            Action::ToggleExplorerOther => self.toggle_explorer_other(),
             Action::Rename => self.begin_rename_path(path, false),
             Action::Delete => self.confirm_delete_path(path, false),
             Action::CopyPath => self.copy_path_of(&path),
@@ -235,6 +256,7 @@ impl App {
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::ToggleStripOther => self.toggle_strip_other(),
+            Action::ToggleExplorerOther => self.toggle_explorer_other(),
             Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent | Action::Choose(_) => {}
         }
     }

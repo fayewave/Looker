@@ -190,11 +190,14 @@ pub(super) struct Slides {
     strip: ui::Slide,
 }
 
-/// A file the explorer landed on that Looker can't show (see `show_placeholder`).
+/// A file the explorer or the strip landed on that Looker can't show (see `show_placeholder`).
 pub(super) struct Placeholder {
     path: PathBuf,
     size: Option<u64>,
     modified: Option<FILETIME>,
+    /// Write time (the thumbnail cache's key) and whether it is an online-only cloud file.
+    stamp: u64,
+    cloud: bool,
 }
 
 struct FileInfo {
@@ -420,6 +423,12 @@ impl App {
         self.viewer.current.as_ref().map(|(p, _)| p.as_path())
     }
 
+    /// What the file actions (rename, delete, copy path, reveal) act on: the file covering the photo, else the
+    /// photo.
+    fn target_path(&self) -> Option<PathBuf> {
+        self.placeholder.as_ref().map(|p| p.path.clone()).or_else(|| self.current_path().map(Path::to_path_buf))
+    }
+
     // --- Images -------------------------------------------------------------------------------------
 
     /// The device-pixel box a fit decode targets.
@@ -533,6 +542,16 @@ impl App {
     }
 
     fn step(&mut self, delta: isize) {
+        // The strip listing every file: ←/→ go through the others too (the slideshow stays on photos).
+        if !self.slideshow.stepping {
+            if let Some(cur) = self.strip_selected().filter(|_| self.strip_lists_all()) {
+                let n = self.strip_len() as isize;
+                if n >= 2 {
+                    self.open_strip_item((((cur as isize + delta) % n) + n) as usize % n as usize);
+                }
+                return;
+            }
+        }
         if self.viewer.image_count() < 2 {
             return;
         }
@@ -543,6 +562,13 @@ impl App {
     }
 
     fn jump(&mut self, last: bool) {
+        if self.strip_lists_all() {
+            let n = self.strip_len();
+            if n > 0 {
+                self.open_strip_item(if last { n - 1 } else { 0 });
+            }
+            return;
+        }
         let n = self.viewer.image_count();
         if n == 0 {
             return;
@@ -717,8 +743,8 @@ impl App {
     }
 
     fn reveal(&self) {
-        if let Some(path) = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()) {
-            self.reveal_path(path);
+        if let Some(path) = self.target_path() {
+            self.reveal_path(&path);
         }
     }
 

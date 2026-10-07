@@ -101,7 +101,7 @@ impl App {
     }
 
     pub(super) fn copy_path(&mut self) {
-        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+        if let Some(path) = self.target_path() {
             self.copy_path_of(&path);
         }
     }
@@ -122,7 +122,7 @@ impl App {
 
     /// Asks before recycling. Cancel is the default button, so a stray Enter never deletes.
     pub(super) fn confirm_delete(&mut self, from_keyboard: bool) {
-        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+        if let Some(path) = self.target_path() {
             self.confirm_delete_path(path, from_keyboard);
         }
     }
@@ -133,14 +133,15 @@ impl App {
         self.hide_tooltip();
         let body = format!("Move \u{201C}{}\u{201D} to the Recycle Bin?", file_name(&path));
         let buttons = vec![DialogButton::new("Delete", Choice::Confirm), DialogButton::new("Cancel", Choice::Cancel)];
-        self.open_dialog_ui(DialogKind::Delete(path), Dialog::new("Delete photo".into(), body, buttons, 1, from_keyboard));
+        let title = if crate::format::is_supported(&path) { "Delete photo" } else { "Delete file" };
+        self.open_dialog_ui(DialogKind::Delete(path), Dialog::new(title.into(), body, buttons, 1, from_keyboard));
     }
 
     // --- Rename -------------------------------------------------------------------------------------
 
     /// The rename box opens with just the base name selected, so typing replaces it and keeps the extension.
     pub(super) fn begin_rename(&mut self, from_keyboard: bool) {
-        if let Some(path) = self.current_path().map(Path::to_path_buf) {
+        if let Some(path) = self.target_path() {
             self.begin_rename_path(path, from_keyboard);
         }
     }
@@ -162,6 +163,13 @@ impl App {
         match to {
             Ok(to) if to != from => {
                 self.viewer.renamed(&from, &to);
+                // The covering file keeps covering under its new name.
+                if let Some(p) = self.placeholder.as_mut().filter(|p| p.path == from) {
+                    p.path = to.clone();
+                    unsafe {
+                        let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&to)));
+                    }
+                }
                 if self.current_path() == Some(to.as_path()) {
                     self.current_changed();
                 }
@@ -428,6 +436,20 @@ impl App {
     fn on_recycled(&mut self, path: PathBuf, ok: bool) {
         if !ok {
             self.show_toast("Couldn't delete", false);
+            return;
+        }
+        // The covering file: the strip's next file takes its place when the strip lists them all, else the
+        // photo underneath comes back.
+        if self.placeholder.as_ref().is_some_and(|p| p.path == path) {
+            let rank = self.viewer.listing.as_ref().and_then(|l| l.rank_of(&path)).filter(|_| self.strip_lists_all());
+            self.viewer.remove(&path, self.gfx.as_ref());
+            self.placeholder = None;
+            let n = self.strip_len();
+            match rank {
+                Some(r) if n > 0 => self.open_strip_item(r.min(n - 1)),
+                _ => self.current_changed(),
+            }
+            self.invalidate();
             return;
         }
         if self.current_path() == Some(path.as_path()) {
