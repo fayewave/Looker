@@ -46,6 +46,8 @@ pub struct Settings {
     pub strip_visible: bool,
     /// The thumbnail strip's height in DIPs (the cells are 8 less, 4:3).
     pub strip_height: f32,
+    /// The strip lists the folder's other files too, greyed out (as the explorer card does).
+    pub strip_other_files: bool,
     /// How long the slideshow dwells on each image (1-120).
     pub slideshow_seconds: u32,
     /// The landing page's "Set Looker as your default photo viewer" was dismissed with its X, for good.
@@ -68,7 +70,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
     }
 }
 
@@ -140,6 +142,7 @@ pub fn parse(text: &str) -> Settings {
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
+            "strip_other_files" => s.strip_other_files = v == "1",
             "default_hint_dismissed" => s.default_hint_dismissed = v == "1",
             "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
             _ => {}
@@ -170,6 +173,7 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("strip_visible={}\n", s.strip_visible as i32));
     out.push_str(&format!("strip_height={}\n", s.strip_height.round()));
+    out.push_str(&format!("strip_other_files={}\n", s.strip_other_files as i32));
     out.push_str(&format!("slideshow_seconds={}\n", s.slideshow_seconds));
     out.push_str(&format!("default_hint_dismissed={}\n", s.default_hint_dismissed as i32));
     out
@@ -311,6 +315,7 @@ mod tests {
             recents: vec![PathBuf::from(r"C:\a b\one.jpg"), PathBuf::from(r"D:\two.png")],
             strip_visible: true,
             strip_height: 160.0,
+            strip_other_files: true,
             slideshow_seconds: 9,
             default_hint_dismissed: true,
         };

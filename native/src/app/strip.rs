@@ -2,7 +2,9 @@
 //! width, above the status row. 4:3 cells letterboxed on a faint fill, sitting flush on the bottom edge with
 //! an 8 px band above them that is also the resize grip (56–480 DIPs, double-click resets to 96). The
 //! current image's cell has the accent border and is glided to the centre on every navigation (jumped to
-//! when it is more than a screen away). Clicking a cell opens it; the wheel scrolls the strip.
+//! when it is more than a screen away). Clicking a cell opens it; the wheel scrolls the strip. Its right-click
+//! menu can list the folder's other files too, greyed out like the explorer card's (clicking one covers the
+//! photo with what that file is, as there).
 //!
 //! Only cells on screen load, and only after staying on screen for 120 ms (cells within two of the current
 //! one start at once), so a fling never queues extractions for what it flew past. Thumbnails stay on the GPU
@@ -188,6 +190,64 @@ impl App {
         ((px / 64.0).ceil() as u32 * 64).clamp(96, 1024)
     }
 
+    /// Whether the strip lists every file of the folder rather than only the images.
+    fn strip_lists_all(&self) -> bool {
+        self.settings.strip_other_files && self.viewer.listing.is_some()
+    }
+
+    /// How many cells the strip has.
+    fn strip_len(&self) -> usize {
+        match &self.viewer.listing {
+            Some(l) if self.settings.strip_other_files => l.files().len(),
+            _ => self.viewer.image_count(),
+        }
+    }
+
+    /// Cell `i`: (path, stamp, cloud, the image index when Looker can open it).
+    fn strip_item(&self, i: usize) -> Option<(PathBuf, u64, bool, Option<usize>)> {
+        let l = self.viewer.listing.as_ref()?;
+        if self.settings.strip_other_files {
+            let f = l.files().get(i)?;
+            Some((f.path.clone(), f.stamp, f.cloud, l.image_at_rank(i)))
+        } else {
+            let e = l.images.get(i)?;
+            Some((e.path.clone(), e.stamp, e.cloud, Some(i)))
+        }
+    }
+
+    /// The cell that is current: the photo's, or the other file covering it.
+    fn strip_selected(&self) -> Option<usize> {
+        if !self.strip_lists_all() {
+            return self.viewer.index;
+        }
+        let l = self.viewer.listing.as_ref()?;
+        match &self.placeholder {
+            Some(p) => l.rank_of(&p.path),
+            None => self.viewer.index.and_then(|i| l.rank.get(i).copied()),
+        }
+    }
+
+    pub(super) fn strip_click(&mut self, i: usize) {
+        match self.strip_item(i) {
+            Some((_, _, _, Some(img))) => {
+                // Back on the photo it covered: take the cover down.
+                if self.placeholder.take().is_some() && Some(img) == self.viewer.index {
+                    self.current_changed();
+                }
+                self.go_to(img);
+            }
+            Some((path, ..)) => self.show_placeholder(path),
+            None => {}
+        }
+    }
+
+    pub(super) fn toggle_strip_other(&mut self) {
+        self.settings.strip_other_files = !self.settings.strip_other_files;
+        self.strip.centered = None;
+        settings::save(&self.settings);
+        self.invalidate();
+    }
+
     pub(super) fn toggle_strip(&mut self) {
         if self.viewer.current.is_none() {
             return;
@@ -297,7 +357,9 @@ impl App {
     }
 
     pub(super) fn strip_tooltip(&self, i: usize) -> Option<String> {
-        self.viewer.listing.as_ref()?.images.get(i).map(|e| file_name(&e.path))
+        let (path, _, _, img) = self.strip_item(i)?;
+        let name = file_name(&path);
+        Some(if img.is_some() { name } else { format!("{name}: not an image Looker can open") })
     }
 
     /// Draws the strip, loads what it shows, and records its hits. Returns whether it is still animating.
@@ -311,7 +373,7 @@ impl App {
         g.push_clip(visible);
         let (cw, ch) = self.cell_size();
         let pitch = cw + SPACING;
-        let n = self.viewer.image_count();
+        let n = self.strip_len();
         let view_w = r.right - r.left;
         let content_w = SIDE * 2.0 + n as f32 * pitch - if n > 0 { SPACING } else { 0.0 };
         // The scroll that puts cell i's centre in the middle of the strip.
@@ -321,7 +383,7 @@ impl App {
         self.hits.add(Hit::Strip, visible);
 
         // Follow the current image: glide to centre it, or jump when it is more than a screen away.
-        let sel = self.viewer.index;
+        let sel = self.strip_selected();
         if let Some(i) = sel {
             if self.strip.centered != Some((i, n)) {
                 let target = centre_on(i);
@@ -345,8 +407,7 @@ impl App {
         g.push_clip(r);
         g.push_hfade_layer(r, FADE_W, lf, rf);
         for i in first..last {
-            let Some(e) = self.viewer.listing.as_ref().and_then(|l| l.images.get(i)) else { break };
-            let (path, stamp, cloud) = (e.path.clone(), e.stamp, e.cloud);
+            let Some((path, stamp, cloud, img)) = self.strip_item(i) else { break };
             let cell = rect(g.snap(SIDE + i as f32 * pitch - scroll), top, cw, ch);
             self.hits.add(Hit::StripCell(i), cell);
             let selected = sel == Some(i);
@@ -356,7 +417,16 @@ impl App {
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
-            if let Some(t) = self.thumbs.get(&path, stamp) {
+            if img.is_none() {
+                // A file Looker can't open: the explorer's file glyph and its extension, at 45 %.
+                let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+                let mid = (inner.top + inner.bottom) / 2.0;
+                let glyph_y = if ext.is_empty() { mid - 10.0 } else { mid - 18.0 };
+                g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), white(0x73), Align::Center);
+                if !ext.is_empty() {
+                    g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, mid + 4.0, (inner.right - inner.left - 8.0).max(0.0), 16.0), white(0x73), Align::Center);
+                }
+            } else if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);
             }
             if pressed {
@@ -378,7 +448,9 @@ impl App {
             }
 
             // Load it (again, sharper) unless one of the right size is here or on its way.
-            self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
+            if img.is_some() {
+                self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
+            }
         }
         g.pop_layer();
         // The selection frame, fixed in the middle: the cells glide under it to the current photo.

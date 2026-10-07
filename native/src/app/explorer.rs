@@ -279,7 +279,7 @@ impl App {
     /// The explorer landed on a file Looker can't open: a file glyph and its name cover the photo, and the
     /// title, status row and counter describe that file. The photo stays current (←/→ go on from it); any
     /// navigation takes the cover down.
-    fn show_placeholder(&mut self, path: PathBuf) {
+    pub(super) fn show_placeholder(&mut self, path: PathBuf) {
         let md = std::fs::metadata(&path).ok();
         let modified = md.as_ref().map(|m| {
             let t = m.last_write_time();

@@ -145,6 +145,16 @@ impl Listing {
         Some(stamp)
     }
 
+    /// Every visible file, in order (the strip's cells when it shows other files too).
+    pub fn files(&self) -> &[File] {
+        &self.files
+    }
+
+    /// The image index of the file at `rank` among all files, when it is one.
+    pub fn image_at_rank(&self, rank: usize) -> Option<usize> {
+        self.rank.binary_search(&rank).ok()
+    }
+
     /// Where any visible file, image or not, ranks among all of them (the counter for a file the explorer
     /// landed on).
     pub fn rank_of(&self, path: &Path) -> Option<usize> {

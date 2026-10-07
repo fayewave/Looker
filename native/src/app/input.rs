@@ -270,7 +270,7 @@ impl App {
                         match h {
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
-                            Some(Hit::StripCell(i)) => self.go_to(i),
+                            Some(Hit::StripCell(i)) => self.strip_click(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
                             Some(Hit::ExplorerBack) => self.explorer_back(),
                             Some(Hit::ExplorerForward) => self.explorer_forward(),
@@ -314,6 +314,10 @@ impl App {
                         Some(Hit::RecentRow(i)) => {
                             self.close_menu();
                             self.open_recent_menu(i, x, y);
+                        }
+                        Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip) => {
+                            self.close_menu();
+                            self.open_strip_menu(x, y);
                         }
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() => {
                             self.open_context_menu(x, y);

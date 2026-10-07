@@ -29,6 +29,8 @@ pub(super) enum Action {
     RemoveRecent,
     /// A ComboBox's item, by index.
     Choose(usize),
+    /// The strip's menu: list the folder's other files in it too.
+    ToggleStripOther,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -127,6 +129,29 @@ impl App {
         self.invalidate();
     }
 
+    /// The thumbnail strip's menu.
+    pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
+        let other = self.settings.strip_other_files;
+        let entries = vec![
+            // A tick when on (a check box, not the sort menu's radio bullet).
+            Entry::Item(MenuItem {
+                action: Action::ToggleStripOther,
+                glyph: other.then_some(0xE73E),
+                label: "Show files Looker can't open".into(),
+                accel: None,
+                checked: false,
+                enabled: true,
+            }),
+            Entry::Separator,
+            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), true),
+        ];
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Context, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
     /// A recent file's menu on the landing page.
     pub(super) fn open_recent_menu(&mut self, i: usize, x: f32, y: f32) {
         let Some(path) = self.recent_path(i) else { return };
@@ -209,6 +234,7 @@ impl App {
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
+            Action::ToggleStripOther => self.toggle_strip_other(),
             Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent | Action::Choose(_) => {}
         }
     }
