@@ -18,7 +18,7 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR, Result, w};
 use super::{Colour, Decoded};
 
 /// EXIF orientation (1–8) → the WIC transform that undoes it, and whether it swaps width/height.
-fn orientation_transform(o: u16) -> (WICBitmapTransformOptions, bool) {
+pub(super) fn orientation_transform(o: u16) -> (WICBitmapTransformOptions, bool) {
     match o {
         2 => (WICBitmapTransformFlipHorizontal, false),
         3 => (WICBitmapTransformRotate180, false),
@@ -350,6 +350,14 @@ fn decode_with(f: &IWICImagingFactory, source: &Source, box_w: u32, box_h: u32, 
         let sw = ((w as f64 * scale).round() as u32).max(1);
         let sh = ((h as f64 * scale).round() as u32).max(1);
 
+        // Float pixels (JPEG XR's scRGB, the format of Windows HDR screenshots) stay HDR on an scRGB display.
+        if super::target().is_scrgb() && is_float(f, &frame) {
+            let absolute = dec.GetContainerFormat().is_ok_and(|c| c == GUID_ContainerFormatWmp);
+            return decode_float(f, &frame, w, h, box_w, box_h, absolute).map(|mut d| {
+                d.taken = taken;
+                (d, false)
+            });
+        }
         let mut src: IWICBitmapSource = frame.clone().into();
         // Camera RAW: a full sensor decode can take seconds (8.7 s for a 16 MP Hasselblad 3FR through the Raw
         // Image Extension). Cameras embed a full-size JPEG preview; when it is big enough for the box, it is
@@ -391,6 +399,44 @@ fn decode_with(f: &IWICImagingFactory, source: &Source, box_w: u32, box_h: u32, 
         let mut d = Decoded::still(dw, dh, pixels, ow, oh, taken);
         d.colour = colour;
         Ok((d, from_preview))
+    }
+}
+
+/// Whether the frame's pixels are floating or fixed point (HDR-capable) rather than integers.
+unsafe fn is_float(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode) -> bool {
+    unsafe {
+        let Ok(fmt) = frame.GetPixelFormat() else { return false };
+        let Ok(info) = f.CreateComponentInfo(&fmt).and_then(|i| i.cast::<IWICPixelFormatInfo2>()) else { return false };
+        matches!(info.GetNumericRepresentation(), Ok(r) if r == WICPixelFormatNumericRepresentationFloat || r == WICPixelFormatNumericRepresentationFixed)
+    }
+}
+
+/// A float frame as an HDR decode: linear, scRGB's primaries; `absolute` when 1.0 means 80 nits (JPEG XR's
+/// scRGB) rather than SDR white.
+unsafe fn decode_float(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode, w: u32, h: u32, box_w: u32, box_h: u32, absolute: bool) -> Result<Decoded> {
+    unsafe {
+        let conv = convert(f, &frame.clone().into(), &GUID_WICPixelFormat128bppRGBAFloat)?;
+        let mut buf = vec![0f32; (w * h * 4) as usize];
+        conv.CopyPixels(std::ptr::null(), w * 16, std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 4))?;
+        let rgb: Vec<[f32; 3]> = buf.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect();
+        let alpha: Vec<f32> = buf.chunks_exact(4).map(|p| p[3].clamp(0.0, 1.0)).collect();
+        let opaque = alpha.iter().all(|&a| a >= 1.0);
+        let (dw, dh, rgb, alpha) = super::hdr::fit(rgb, (!opaque).then_some(alpha), w, h, box_w, box_h);
+        let peak = super::hdr::peak(&rgb);
+        crate::trace::mark(format!("float pixels: peak {peak:.2}x {}", if absolute { "80 nits" } else { "SDR white" }));
+        let mut d = Decoded::still(dw, dh, super::hdr::to_half(&rgb, alpha.as_deref()), w, h, None);
+        d.histogram = Some(Box::new(crate::metadata::Histogram::of(&super::hdr::sdr_bgra(&rgb))));
+        d.colour = Colour::Linear { absolute, peak };
+        Ok(d)
+    }
+}
+
+/// The EXIF orientation of the image `src` reads (1 = upright, also when it has none).
+pub fn orientation_of(f: &IWICImagingFactory, src: &Source) -> u16 {
+    unsafe {
+        let Ok(dec) = open(f, src) else { return 1 };
+        let Ok(frame) = dec.GetFrame(0) else { return 1 };
+        frame.GetMetadataQueryReader().ok().map_or(1, |r| read_orientation(&r))
     }
 }
 

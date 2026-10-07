@@ -19,6 +19,7 @@ A fast, minimal photo viewer for Windows 11.
 - Rename, rotate and save, delete to Recycle Bin, copy, reveal in Explorer, set as wallpaper.
 - Animated GIF, WebP and APNG playback.
 - PDFs open as a row of pages: zoom and pan like a photo, turn pages with the page bar.
+- Colour managed to the display, wide gamut included. With HDR on, HDR photos (gain-map JPEGs such as Ultra HDR, HDR AVIF, JPEG XR) show their full brightness.
 - Drag a photo or folder onto the window to open it.
 - One window: opening another photo reuses it.
 

@@ -58,12 +58,20 @@ impl Space {
     }
 }
 
-/// The panel's peak brightness in nits, once [`refresh_peak`] has read it (1000 until then). Not part of the
-/// space: asking DXGI costs ~12 ms the first time in a process, too much before the first frame, and only
-/// HDR photos use it.
+/// The panel's peak brightness in nits (bits of an f32; 0 = not read yet). Not part of the space: asking DXGI
+/// costs ~12 ms the first time in a process, too much before the first frame, and only HDR photos use it.
 static PEAK: AtomicU32 = AtomicU32::new(0);
+/// The monitor [`query`] last looked at (its handle as an integer), whose peak `PEAK` is.
+static MONITOR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// The peak of the monitor last queried, read now if [`refresh_peak`] hasn't yet (1000 nits if DXGI can't say).
 pub fn peak_nits() -> f32 {
+    if PEAK.load(Ordering::Relaxed) == 0 {
+        let m = MONITOR.load(Ordering::Relaxed);
+        if m != 0 {
+            refresh_peak(HMONITOR(m as _));
+        }
+    }
     match PEAK.load(Ordering::Relaxed) {
         0 => 1000.0,
         b => f32::from_bits(b),
@@ -145,6 +153,9 @@ enum Mode {
 
 /// The space for photos on `monitor`.
 pub fn query(monitor: HMONITOR) -> Space {
+    if MONITOR.swap(monitor.0 as isize, Ordering::Relaxed) != monitor.0 as isize {
+        PEAK.store(0, Ordering::Relaxed);
+    }
     if let Some(s) = forced() {
         return s;
     }

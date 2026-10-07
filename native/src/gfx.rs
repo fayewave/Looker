@@ -382,6 +382,9 @@ impl Gfx {
     /// A bitmap for the photo layer: as `bitmap` when the pixels are already in the display's space (SDR, where
     /// the decoder converted them), else converted from `colour` into scRGB once, here, on the GPU.
     pub fn photo_bitmap(&self, width: u32, height: u32, pixels: &[u8], colour: &crate::imaging::Colour) -> Result<ID2D1Bitmap1> {
+        if let crate::imaging::Colour::Linear { absolute, peak } = *colour {
+            return self.hdr_bitmap(width, height, pixels, absolute, peak);
+        }
         let src = self.bitmap(width, height, pixels)?;
         if !self.space.is_scrgb() || matches!(colour, crate::imaging::Colour::Display) {
             return Ok(src);
@@ -392,6 +395,40 @@ impl Gfx {
             let out = bake(dc, &fx.GetOutput()?, width, height);
             dc.SetDpi(self.dpi, self.dpi);
             out
+        }
+    }
+
+    /// An HDR decode (half floats, see imaging/hdr.rs) on the photo layer: SDR white lifted to the display's
+    /// (unless the pixels are `absolute` scRGB), and tone-mapped down to the panel's peak when they go past it.
+    fn hdr_bitmap(&self, width: u32, height: u32, pixels: &[u8], absolute: bool, peak: f32) -> Result<ID2D1Bitmap1> {
+        unsafe {
+            let dc = &self.dev.dc;
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_R16G16B16A16_FLOAT, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let src = dc.CreateBitmap(D2D_SIZE_U { width, height }, Some(pixels.as_ptr() as _), width * 8, &props)?;
+            if !self.space.is_scrgb() {
+                return Ok(src);
+            }
+            let k = if absolute { 1.0 } else { self.space.white_scale() };
+            let mut out: ID2D1Image = scale_rgb(dc, &src.cast()?, k)?.GetOutput()?;
+            let content_nits = peak * k * 80.0;
+            let panel_nits = colour::peak_nits();
+            if content_nits > panel_nits * 1.02 {
+                let tm = dc.CreateEffect(&CLSID_D2D1HdrToneMap)?;
+                tm.SetInput(0, &out, true);
+                set_f32(&tm, D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE.0 as u32, content_nits)?;
+                set_f32(&tm, D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE.0 as u32, panel_nits)?;
+                set_u32(&tm, D2D1_HDRTONEMAP_PROP_DISPLAY_MODE.0 as u32, D2D1_HDRTONEMAP_DISPLAY_MODE_HDR.0 as u32)?;
+                out = tm.GetOutput()?;
+            }
+            let baked = bake(dc, &out, width, height);
+            dc.SetDpi(self.dpi, self.dpi);
+            baked
         }
     }
 
@@ -814,9 +851,15 @@ fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext
         set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_QUALITY.0 as u32, quality.0 as u32)?;
         // SDR white up to the display's level. (The White Level Adjustment effect came out dividing where it
         // should multiply: everything sat at a quarter of its brightness at 160 nits.)
+        scale_rgb(dc, &cm.GetOutput()?, white_scale)
+    }
+}
+
+/// `src` (premultiplied) with its colour times `k`.
+fn scale_rgb(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32) -> Result<ID2D1Effect> {
+    unsafe {
         let white = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
-        white.SetInput(0, &cm.GetOutput()?, true);
-        let k = white_scale;
+        white.SetInput(0, src, true);
         #[rustfmt::skip]
         let m: [f32; 20] = [
             k, 0.0, 0.0, 0.0,
@@ -859,6 +902,10 @@ fn bake(dc: &ID2D1DeviceContext, image: &ID2D1Image, width: u32, height: u32) ->
 
 fn set_u32(e: &ID2D1Effect, index: u32, v: u32) -> Result<()> {
     unsafe { e.SetValue(index, D2D1_PROPERTY_TYPE_ENUM, &v.to_le_bytes()) }
+}
+
+fn set_f32(e: &ID2D1Effect, index: u32, v: f32) -> Result<()> {
+    unsafe { e.SetValue(index, D2D1_PROPERTY_TYPE_FLOAT, &v.to_le_bytes()) }
 }
 
 fn set_interface<T: Interface>(e: &ID2D1Effect, index: u32, v: &T) -> Result<()> {

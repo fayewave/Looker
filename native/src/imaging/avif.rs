@@ -24,6 +24,34 @@ const RGB_FORMAT_RGBA: c_int = 1;
 
 type Image = c_void;
 
+/// The leading fields of libavif 1.4's `avifImage`, up to its colour description.
+#[repr(C)]
+struct ImagePrefix {
+    width: u32,
+    height: u32,
+    depth: u32,
+    yuv_format: c_int,
+    yuv_range: c_int,
+    yuv_chroma_sample_position: c_int,
+    yuv_planes: [*mut u8; 3],
+    yuv_row_bytes: [u32; 3],
+    image_owns_yuv_planes: c_int,
+    alpha_plane: *mut u8,
+    alpha_row_bytes: u32,
+    image_owns_alpha_plane: c_int,
+    alpha_premultiplied: c_int,
+    icc_data: *mut u8,
+    icc_size: usize,
+    color_primaries: u16,
+    transfer_characteristics: u16,
+    matrix_coefficients: u16,
+}
+
+const PRIMARIES_BT2020: u16 = 9;
+const PRIMARIES_P3: u16 = 12;
+const TRANSFER_PQ: u16 = 16;
+const TRANSFER_HLG: u16 = 18;
+
 #[repr(C)]
 struct DecoderPrefix {
     codec_choice: c_int,
@@ -140,14 +168,18 @@ fn delay_ms(seconds: f64) -> u32 {
     if ms <= 10 { 100 } else { ms }
 }
 
-/// `Ok(None)` for a still AVIF, told from the first bytes alone. `still` keeps the first frame only (the
+/// `Ok(None)` for a still AVIF, told from the first bytes alone, unless the display is HDR and the still is an
+/// HDR one (PQ or HLG), which only libavif hands over undiminished. `still` keeps the first frame only (the
 /// placeholder tier).
 pub fn decode(f: &IWICImagingFactory, path: &std::path::Path, box_w: u32, box_h: u32, still: bool) -> Result<Option<Decoded>, String> {
     use std::io::Read;
     let mut head = [0u8; 256];
     let n = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).map_err(|e| e.to_string())?;
     if !is_sequence(&head[..n]) {
-        return Ok(None);
+        return match super::target() {
+            crate::colour::Space::Scrgb { hdr: true, .. } => hdr_still(path, box_w, box_h),
+            _ => Ok(None),
+        };
     }
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let l = lib()?;
@@ -237,6 +269,94 @@ pub fn decode(f: &IWICImagingFactory, path: &std::path::Path, box_w: u32, box_h:
             return Err("libavif: no frames".into());
         }
         Ok(Some(Decoded { width: w, height: h, frames: out, native_width: nw, native_height: nh, format: Format::Unknown, taken: None, vector: false, pages: 0, page_sizes: Vec::new(), page_scale: 1.0, histogram: None, colour: super::Colour::Srgb, generation: 0 }))
+    }
+}
+
+/// A PQ or HLG still as an HDR decode (see hdr.rs): 16-bit RGB from libavif, to nits, to SDR-white units
+/// (BT.2408's 203 nits), to Rec. 709 primaries. `Ok(None)` for an SDR still.
+fn hdr_still(path: &std::path::Path, box_w: u32, box_h: u32) -> Result<Option<Decoded>, String> {
+    use super::hdr;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let l = lib()?;
+    let err = |what: &str, r: c_int| {
+        let s = unsafe { (l.result_to_string)(r) };
+        let s = if s.is_null() { String::new() } else { unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned() };
+        format!("libavif {what}: {s}")
+    };
+    unsafe {
+        let d = (l.decoder_create)();
+        if d.is_null() {
+            return Err("libavif: out of memory".into());
+        }
+        struct Guard<'a>(&'a Lib, *mut DecoderPrefix);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                unsafe { (self.0.decoder_destroy)(self.1) }
+            }
+        }
+        let _g = Guard(l, d);
+        (*d).max_threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(8)) as c_int;
+        let r = (l.decoder_set_io_memory)(d, bytes.as_ptr(), bytes.len());
+        if r != RESULT_OK {
+            return Err(err("io", r));
+        }
+        let r = (l.decoder_parse)(d);
+        if r != RESULT_OK {
+            return Err(err("parse", r));
+        }
+        let img = (*d).image as *const ImagePrefix;
+        let transfer = (*img).transfer_characteristics;
+        if transfer != TRANSFER_PQ && transfer != TRANSFER_HLG {
+            return Ok(None);
+        }
+        let primaries = (*img).color_primaries;
+        let r = (l.decoder_next_image)(d);
+        if r != RESULT_OK {
+            return Err(err("image", r));
+        }
+        let mut rgb: RgbImage = std::mem::zeroed();
+        (l.rgb_set_defaults)(&mut rgb, (*d).image);
+        rgb.depth = 16;
+        rgb.format = RGB_FORMAT_RGBA;
+        rgb.alpha_premultiplied = 0;
+        let r = (l.rgb_allocate)(&mut rgb);
+        if r != RESULT_OK {
+            return Err(err("alloc", r));
+        }
+        let r = (l.yuv_to_rgb)((*d).image, &mut rgb);
+        if r != RESULT_OK {
+            (l.rgb_free)(&mut rgb);
+            return Err(err("yuv to rgb", r));
+        }
+        let (w, h) = (rgb.width, rgb.height);
+        let to_709 = match primaries {
+            PRIMARIES_BT2020 => hdr::BT2020_TO_709,
+            PRIMARIES_P3 => hdr::P3_TO_709,
+            _ => hdr::IDENTITY,
+        };
+        // The transfer curve once per 16-bit value, not three times per pixel (a 1.8 MP PQ still: 180 ms to 55).
+        let pq = transfer == TRANSFER_PQ;
+        let curve: Vec<f32> = (0..=u16::MAX).map(|v| v as f32 / 65535.0).map(|e| if pq { hdr::pq_to_nits(e) } else { hdr::hlg_to_scene(e) }).collect();
+        let mut lin = Vec::with_capacity((w * h) as usize);
+        let mut alpha = Vec::with_capacity((w * h) as usize);
+        for y in 0..h as usize {
+            let row = std::slice::from_raw_parts(rgb.pixels.add(y * rgb.row_bytes as usize) as *const u16, w as usize * 4);
+            for p in row.chunks_exact(4) {
+                let e = [p[0], p[1], p[2]].map(|v| curve[v as usize]);
+                let nits = if pq { e } else { hdr::hlg_to_nits(e) };
+                lin.push(hdr::apply(&to_709, nits.map(|v| v / hdr::REFERENCE_WHITE)));
+                alpha.push(p[3] as f32 / 65535.0);
+            }
+        }
+        (l.rgb_free)(&mut rgb);
+        let opaque = alpha.iter().all(|&a| a >= 1.0);
+        let (dw, dh, lin, alpha) = hdr::fit(lin, (!opaque).then_some(alpha), w, h, box_w, box_h);
+        let peak = hdr::peak(&lin);
+        crate::trace::mark(format!("HDR AVIF ({}): peak {peak:.2}x SDR white", if transfer == TRANSFER_PQ { "PQ" } else { "HLG" }));
+        let mut out = Decoded::still(dw, dh, hdr::to_half(&lin, alpha.as_deref()), w, h, None);
+        out.histogram = Some(Box::new(crate::metadata::Histogram::of(&hdr::sdr_bgra(&lin))));
+        out.colour = super::Colour::Linear { absolute: false, peak };
+        Ok(Some(out))
     }
 }
 

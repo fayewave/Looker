@@ -160,7 +160,10 @@ impl Pool {
             }
             .map(|mut d| {
                 // ~1 ms for a screen-size decode; the info card then has it the moment the image lands.
-                d.histogram = d.frames.first().map(|f| Box::new(crate::metadata::Histogram::of(&f.pixels)));
+                // An HDR decode brings its own (of its SDR rendition).
+                if d.histogram.is_none() && !matches!(d.colour, crate::imaging::Colour::Linear { .. }) {
+                    d.histogram = d.frames.first().map(|f| Box::new(crate::metadata::Histogram::of(&f.pixels)));
+                }
                 d
             });
             match &result {

@@ -6,6 +6,8 @@
 mod animated;
 mod avif;
 mod fallback;
+mod gainmap;
+mod hdr;
 pub mod heif;
 pub mod pdf;
 mod raster;
@@ -69,6 +71,9 @@ pub enum Colour {
     AdobeRgb,
     /// Already converted to the monitor's profile.
     Display,
+    /// HDR: half-float linear scRGB-primaries pixels (see hdr.rs), 1.0 being SDR white or, when `absolute`,
+    /// 80 nits; `peak` is the brightest value in that unit.
+    Linear { absolute: bool, peak: f32 },
 }
 
 impl Decoded {
@@ -125,13 +130,17 @@ enum Step {
     Avif,
     /// LibRaw (bundled), when Windows lacks the Raw Image Extension.
     LibRaw,
+    /// A JPEG's HDR gain map, on an HDR display; declines otherwise.
+    GainMap,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
 fn plan(f: Format) -> &'static [Step] {
     use Step::*;
     match f {
-        Format::Jpeg | Format::Bmp | Format::Tiff | Format::Ico | Format::JpegXr => &[Wic],
+        // A JPEG with an HDR gain map, on an HDR display, has it applied; any other JPEG is declined at once.
+        Format::Jpeg => &[GainMap, Wic],
+        Format::Bmp | Format::Tiff | Format::Ico | Format::JpegXr => &[Wic],
         // Animated first: it declines a still file, which WIC then takes on the fast path.
         Format::Gif | Format::Png => &[Animated, Wic, Image],
         Format::Webp => &[Animated, Wic, Image],
@@ -184,6 +193,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
         Step::Avif => avif::decode(f, path, box_w, box_h, still),
         Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
+        Step::GainMap => gainmap::decode(f, path, box_w, box_h),
     }
 }
 
