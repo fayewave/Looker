@@ -86,7 +86,7 @@ impl App {
             let Some(e) = self.viewer.entry_for(&r.key) else { continue };
             match r.result {
                 Ok(px) => {
-                    if let Ok(bmp) = g.bitmap(r.w, r.h, &px) {
+                    if let Ok(bmp) = g.photo_bitmap(r.w, r.h, &px, &crate::imaging::Colour::Srgb) {
                         e.store_page(r.page, bmp, self.pdf_page);
                         redraw = true;
                     }
@@ -128,7 +128,7 @@ impl App {
                 None => {
                     match self.viewer.page_stand_in(&e.key.path, e.key.stamp, i) {
                         Some(b) => g.draw_bitmap(&b, r, 1.0),
-                        None => g.fill(r, rgb(PAPER)),
+                        None => g.fill(r, g.photo_rgb(PAPER)),
                     }
                     if !self.page_failed.contains(&(e.key.clone(), i)) {
                         let (w, h) = e.page_pixels(i);

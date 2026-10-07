@@ -661,6 +661,7 @@ impl App {
                     self.dpi = (wp.0 & 0xFFFF) as u32;
                     let r = &*(lp.0 as *const RECT);
                     let _ = SetWindowPos(self.hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                    self.check_colour();
                     Some(LRESULT(0))
                 }
                 WM_GETMINMAXINFO => {
@@ -673,6 +674,9 @@ impl App {
                     if !self.active {
                         self.close_menu();
                         self.hide_tooltip();
+                    } else {
+                        // SDR content brightness has no message of its own.
+                        self.check_colour();
                     }
                     self.invalidate();
                     None
@@ -685,8 +689,17 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_ERASEBKGND => Some(LRESULT(1)),
-                WM_MOVE | WM_EXITSIZEMOVE => {
+                WM_MOVE => {
                     self.track_normal_rect();
+                    None
+                }
+                WM_EXITSIZEMOVE => {
+                    self.track_normal_rect();
+                    self.check_colour();
+                    None
+                }
+                WM_DISPLAYCHANGE => {
+                    self.check_colour();
                     None
                 }
                 WM_CLOSE => {

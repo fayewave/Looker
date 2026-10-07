@@ -236,7 +236,7 @@ pub fn decode(f: &IWICImagingFactory, path: &std::path::Path, box_w: u32, box_h:
         if out.is_empty() {
             return Err("libavif: no frames".into());
         }
-        Ok(Some(Decoded { width: w, height: h, frames: out, native_width: nw, native_height: nh, format: Format::Unknown, taken: None, vector: false, pages: 0, page_sizes: Vec::new(), page_scale: 1.0, histogram: None }))
+        Ok(Some(Decoded { width: w, height: h, frames: out, native_width: nw, native_height: nh, format: Format::Unknown, taken: None, vector: false, pages: 0, page_sizes: Vec::new(), page_scale: 1.0, histogram: None, colour: super::Colour::Srgb, generation: 0 }))
     }
 }
 

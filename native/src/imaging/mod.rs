@@ -18,6 +18,7 @@ use std::path::Path;
 use windows::Win32::Foundation::FILETIME;
 use windows::Win32::Graphics::Imaging::IWICImagingFactory;
 
+use crate::colour::{Output, Space};
 use crate::format::{self, Format};
 
 /// Largest bitmap edge we ever make (also Direct2D's usual maximum texture size).
@@ -51,6 +52,23 @@ pub struct Decoded {
     pub page_scale: f64,
     /// Of the first frame, filled in by the decode pool (the info card's histogram).
     pub histogram: Option<Box<crate::metadata::Histogram>>,
+    /// What the pixels' values mean.
+    pub colour: Colour,
+    /// The colour generation (colour.rs) this was decoded for; 0 for anything not decoded for the screen.
+    pub generation: u32,
+}
+
+/// The colour space a decode's pixels are in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Colour {
+    /// sRGB (also every file without a profile).
+    Srgb,
+    /// The file's embedded ICC profile (kept for the GPU under scRGB, see colour.rs).
+    Icc(std::sync::Arc<Vec<u8>>),
+    /// Adobe RGB by EXIF tag, without a profile.
+    AdobeRgb,
+    /// Already converted to the monitor's profile.
+    Display,
 }
 
 impl Decoded {
@@ -68,8 +86,20 @@ impl Decoded {
             page_sizes: Vec::new(),
             page_scale: 1.0,
             histogram: None,
+            colour: Colour::Srgb,
+            generation: 0,
         }
     }
+}
+
+thread_local! {
+    /// The space the decode running on this thread is for (see `decode_for_screen`).
+    static TARGET: std::cell::RefCell<Space> = const { std::cell::RefCell::new(Space::Srgb) };
+}
+
+/// The space the decode running on this thread is for.
+pub fn target() -> Space {
+    TARGET.with(|t| t.borrow().clone())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -157,8 +187,31 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
     }
 }
 
-/// Decodes `path` to fit `box_w × box_h` device pixels (`(0, 0)` = full size). `still` asks for the first
-/// frame only (the placeholder tier), skipping the animation decoders.
+/// `decode` for the screen in `out`'s space: converted to the monitor's profile on an SDR monitor that has one,
+/// left in the file's own space under scRGB (the GPU converts it, see gfx.rs).
+pub fn decode_for_screen(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still: bool, out: &Output) -> Result<Decoded, String> {
+    TARGET.with(|t| *t.borrow_mut() = out.space.clone());
+    let r = decode(f, path, box_w, box_h, still);
+    TARGET.with(|t| *t.borrow_mut() = Space::Srgb);
+    let mut d = r?;
+    if let Space::Icc(monitor) = &out.space {
+        if d.colour != Colour::Display {
+            for fr in &mut d.frames {
+                if let Err(e) = wic::to_profile(f, &mut fr.pixels, d.width, d.height, &d.colour, monitor) {
+                    crate::trace::mark(format!("monitor profile conversion failed: {}", e.message()));
+                    break;
+                }
+            }
+            d.colour = Colour::Display;
+        }
+    }
+    d.generation = out.generation;
+    Ok(d)
+}
+
+/// Decodes `path` to fit `box_w × box_h` device pixels (`(0, 0)` = full size), in sRGB unless called through
+/// `decode_for_screen`. `still` asks for the first frame only (the placeholder tier), skipping the animation
+/// decoders.
 pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32, still: bool) -> Result<Decoded, String> {
     let fmt = format::sniff_file(path);
     // LOOKER_SKIP_WIC=1 takes the bundled decoders even where Windows has the codec (testing the fallbacks).
@@ -277,6 +330,30 @@ mod tests {
             let fit = decode(&f, &p, 1200, 800, false).unwrap();
             let full = decode(&f, &p, 0, 0, false).unwrap();
             println!("{name}: fit {}x{} mean {}  full {}x{} mean {}", fit.width, fit.height, mean(&fit), full.width, full.height, mean(&full));
+        }
+    }
+
+    /// Decodes `LOOKER_DECODE` for each screen space and prints the colour and the first pixel.
+    /// `LOOKER_DECODE=x.png cargo test --release -- --ignored --nocapture colour_paths`
+    #[test]
+    #[ignore]
+    fn colour_paths() {
+        use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2;
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let p = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let pro = std::fs::read(r"C:\Windows\System32\spool\drivers\color\ProPhoto.icm").unwrap();
+        for space in [Space::Srgb, Space::Icc(std::sync::Arc::new(pro)), Space::Scrgb { white_nits: 80.0, hdr: false }] {
+            let out = Output { space: space.clone(), generation: 7 };
+            let d = decode_for_screen(&f, &p, 400, 400, true, &out).unwrap();
+            let c = match &d.colour {
+                Colour::Icc(b) => format!("Icc({} bytes)", b.len()),
+                c => format!("{c:?}"),
+            };
+            println!("{} -> {c}, first pixel BGRA {:?}", crate::colour::describe(&space), &d.frames[0].pixels[..4]);
         }
     }
 

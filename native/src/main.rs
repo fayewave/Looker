@@ -9,6 +9,7 @@
 
 mod app;
 mod clipboard;
+mod colour;
 mod decode;
 mod engine;
 mod explorer;
@@ -46,6 +47,12 @@ fn main() {
     }
     let settings = settings::load();
     let placement = app::initial_placement(&settings);
+    // Before the launch decode: it decodes for the colour space of the monitor the window opens on.
+    unsafe {
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromRect};
+        colour::set(colour::query(MonitorFromRect(&placement.rect, MONITOR_DEFAULTTONEAREST)));
+    }
+    trace::mark("colour space");
 
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).clamp(2, 4));
     let pool = decode::Pool::start(workers);

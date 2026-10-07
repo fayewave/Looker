@@ -18,6 +18,8 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::core::{Interface, PCWSTR, Result, w};
 
+use crate::colour::{self, Space};
+
 static INTER: &[u8] = include_bytes!("../assets/Fonts/InterVariable.ttf");
 
 pub struct Device {
@@ -130,6 +132,17 @@ pub struct Gfx {
     pub fonts: Fonts,
     pub dpi: f32,
     checker: Option<(ID2D1BitmapBrush1, f32)>,
+    /// The space the swap chain is in (see colour.rs). Under scRGB the swap chain is 16-bit float and holds
+    /// only the photo layer; everything else draws into `ui` (8-bit sRGB, the same pixels as an SDR frame),
+    /// laid over it at the end of the frame.
+    space: Space,
+    ui: Option<Overlay>,
+}
+
+/// The UI layer under scRGB and the effects that bring it into scRGB.
+struct Overlay {
+    bitmap: ID2D1Bitmap1,
+    out: ID2D1Effect,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -165,9 +178,9 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
 }
 
 impl Gfx {
-    pub fn attach(dev: Device, text: Text, hwnd: HWND, width: u32, height: u32, dpi: f32) -> Result<Gfx> {
+    pub fn attach(dev: Device, text: Text, hwnd: HWND, width: u32, height: u32, dpi: f32, space: Space) -> Result<Gfx> {
         unsafe {
-            let swap = swap_chain(&dev, width, height)?;
+            let swap = swap_chain(&dev, width, height, space.is_scrgb())?;
             let dxgi: IDXGIDevice = dev.d3d.cast()?;
             let comp: IDCompositionDevice = DCompositionCreateDevice(&dxgi)?;
             let target = comp.CreateTargetForHwnd(hwnd, true)?;
@@ -191,6 +204,8 @@ impl Gfx {
                 fonts,
                 dpi,
                 checker: None,
+                space,
+                ui: None,
             };
             g.make_target()?;
             Ok(g)
@@ -202,16 +217,41 @@ impl Gfx {
     /// before the visual shows it.
     pub fn switch_device(&mut self, dev: Device) -> Result<()> {
         unsafe {
-            let swap = swap_chain(&dev, self.size.0, self.size.1)?;
+            let swap = swap_chain(&dev, self.size.0, self.size.1, self.space.is_scrgb())?;
             let brush = dev.dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
             self.dev.dc.SetTarget(None);
             self.target = None;
             self.checker = None;
+            self.ui = None;
             self.swap = swap;
             self.brush = brush;
             self.dev = dev;
             self.make_target()
         }
+    }
+
+    /// Moves to another colour space (see colour.rs). Photo bitmaps made for the old one are wrong
+    /// afterwards; the caller re-makes its own. When the swap chain's format changes, draw a frame and then
+    /// `commit_swap`, as after `switch_device`.
+    pub fn set_space(&mut self, space: Space) -> Result<bool> {
+        let new_chain = space.is_scrgb() != self.space.is_scrgb();
+        self.space = space;
+        self.checker = None;
+        self.ui = None;
+        if new_chain {
+            unsafe {
+                let swap = swap_chain(&self.dev, self.size.0, self.size.1, self.space.is_scrgb())?;
+                self.dev.dc.SetTarget(None);
+                self.target = None;
+                self.swap = swap;
+            }
+        }
+        self.make_target()?;
+        Ok(new_chain)
+    }
+
+    pub fn space(&self) -> &Space {
+        &self.space
     }
 
     /// Points the visual at the current swap chain (after `switch_device` and a first frame on it).
@@ -229,8 +269,9 @@ impl Gfx {
     fn make_target(&mut self) -> Result<()> {
         unsafe {
             let surface: IDXGISurface = self.swap.GetBuffer(0)?;
+            let format = if self.space.is_scrgb() { DXGI_FORMAT_R16G16B16A16_FLOAT } else { DXGI_FORMAT_B8G8R8A8_UNORM };
             let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                pixelFormat: D2D1_PIXEL_FORMAT { format, alphaMode: D2D1_ALPHA_MODE_IGNORE },
                 dpiX: self.dpi,
                 dpiY: self.dpi,
                 bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
@@ -239,6 +280,9 @@ impl Gfx {
             let bmp = self.dev.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
             self.dev.dc.SetTarget(&bmp);
             self.dev.dc.SetDpi(self.dpi, self.dpi);
+            // Effects and layers keep values outside 0..1 (wide-gamut colours are negative in scRGB).
+            let precision = if self.space.is_scrgb() { D2D1_BUFFER_PRECISION_16BPC_FLOAT } else { D2D1_BUFFER_PRECISION_UNKNOWN };
+            self.dev.dc.SetRenderingControls(&D2D1_RENDERING_CONTROLS { bufferPrecision: precision, tileSize: D2D_SIZE_U { width: 0, height: 0 } });
             self.target = Some(bmp);
             Ok(())
         }
@@ -249,6 +293,7 @@ impl Gfx {
         unsafe {
             self.dev.dc.SetTarget(None);
             self.target = None;
+            self.ui = None;
             if dpi != self.dpi {
                 self.checker = None;
             }
@@ -258,15 +303,54 @@ impl Gfx {
         }
     }
 
+    /// Starts a frame with the photo layer: `bg` fills the window. Under scRGB, `begin_ui` must follow once
+    /// the photo layer is drawn.
     pub fn begin(&self, bg: u32) {
         unsafe {
             self.dev.dc.BeginDraw();
-            self.dev.dc.Clear(Some(&rgb(bg)));
+            self.dev.dc.Clear(Some(&self.photo_rgb(bg)));
+        }
+    }
+
+    /// From here on the frame draws the UI. Under scRGB that's the 8-bit layer laid over the photos in `end`.
+    pub fn begin_ui(&mut self) {
+        if !self.space.is_scrgb() {
+            return;
+        }
+        if self.ui.is_none() {
+            self.ui = self.make_overlay().map_err(|e| crate::trace::mark(format!("UI layer failed: {e}"))).ok();
+        }
+        if let Some(o) = &self.ui {
+            unsafe {
+                self.dev.dc.SetTarget(&o.bitmap);
+                self.dev.dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            }
+        }
+    }
+
+    fn make_overlay(&self) -> Result<Overlay> {
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: self.dpi,
+                dpiY: self.dpi,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let bitmap = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: self.size.0.max(1), height: self.size.1.max(1) }, None, 0, &props)?;
+            let srgb = self.dev.dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?;
+            let out = to_scrgb(&self.dev.dc, &bitmap, &srgb, self.space.white_scale())?;
+            Ok(Overlay { bitmap, out })
         }
     }
 
     pub fn end(&self) -> Result<()> {
         unsafe {
+            if let (true, Some(o), Some(t)) = (self.space.is_scrgb(), &self.ui, &self.target) {
+                self.dev.dc.SetTarget(t);
+                self.dev.dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+                self.dev.dc.DrawImage(&o.out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            }
             self.dev.dc.EndDraw(None, None)?;
             self.swap.Present(1, DXGI_PRESENT(0)).ok()
         }
@@ -295,6 +379,32 @@ impl Gfx {
         }
     }
 
+    /// A bitmap for the photo layer: as `bitmap` when the pixels are already in the display's space (SDR, where
+    /// the decoder converted them), else converted from `colour` into scRGB once, here, on the GPU.
+    pub fn photo_bitmap(&self, width: u32, height: u32, pixels: &[u8], colour: &crate::imaging::Colour) -> Result<ID2D1Bitmap1> {
+        let src = self.bitmap(width, height, pixels)?;
+        if !self.space.is_scrgb() || matches!(colour, crate::imaging::Colour::Display) {
+            return Ok(src);
+        }
+        unsafe {
+            let dc = &self.dev.dc;
+            let fx = to_scrgb(dc, &src, &colour_context(dc, colour)?, self.space.white_scale())?;
+            let out = bake(dc, &fx.GetOutput()?, width, height);
+            dc.SetDpi(self.dpi, self.dpi);
+            out
+        }
+    }
+
+    /// A colour of the photo layer (the viewport's fill, a PDF's paper) from sRGB: as is under SDR, linear and
+    /// at SDR white's level under scRGB.
+    pub fn photo_rgb(&self, hex: u32) -> D2D1_COLOR_F {
+        let c = rgb(hex);
+        if !self.space.is_scrgb() {
+            return c;
+        }
+        let k = self.space.white_scale();
+        D2D1_COLOR_F { r: colour::srgb_to_linear(c.r) * k, g: colour::srgb_to_linear(c.g) * k, b: colour::srgb_to_linear(c.b) * k, a: c.a }
+    }
     pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) {
         unsafe {
             self.dev.dc.DrawBitmap(bmp, Some(&dest), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None);
@@ -310,26 +420,37 @@ impl Gfx {
         if self.checker.as_ref().is_none_or(|(_, d)| *d != self.dpi) {
             let cell = (8.0 * scale).round().max(1.0) as u32;
             let n = cell * 2;
-            let mut px = vec![0u8; (n * n * 4) as usize];
+            // Under scRGB the tile is half floats at the photo layer's level (`photo_rgb`).
+            let scrgb = self.space.is_scrgb();
+            let bpp = if scrgb { 8 } else { 4 };
+            let mut px = vec![0u8; (n * n * bpp) as usize];
             for y in 0..n {
                 for x in 0..n {
                     let c = if (x < cell) == (y < cell) { LIGHT } else { DARK };
-                    let i = ((y * n + x) * 4) as usize;
-                    px[i] = (c & 0xFF) as u8;
-                    px[i + 1] = ((c >> 8) & 0xFF) as u8;
-                    px[i + 2] = ((c >> 16) & 0xFF) as u8;
-                    px[i + 3] = 0xFF;
+                    let i = ((y * n + x) * bpp) as usize;
+                    if scrgb {
+                        let l = self.photo_rgb(c);
+                        for (k, v) in [l.r, l.g, l.b, 1.0].into_iter().enumerate() {
+                            px[i + k * 2..i + k * 2 + 2].copy_from_slice(&colour::f16(v).to_le_bytes());
+                        }
+                    } else {
+                        px[i] = (c & 0xFF) as u8;
+                        px[i + 1] = ((c >> 8) & 0xFF) as u8;
+                        px[i + 2] = ((c >> 16) & 0xFF) as u8;
+                        px[i + 3] = 0xFF;
+                    }
                 }
             }
             unsafe {
+                let format = if scrgb { DXGI_FORMAT_R16G16B16A16_FLOAT } else { DXGI_FORMAT_B8G8R8A8_UNORM };
                 let props = D2D1_BITMAP_PROPERTIES1 {
-                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    pixelFormat: D2D1_PIXEL_FORMAT { format, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
                     dpiX: self.dpi,
                     dpiY: self.dpi,
                     bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
                     colorContext: std::mem::ManuallyDrop::new(None),
                 };
-                let Ok(tile) = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: n, height: n }, Some(px.as_ptr() as _), n * 4, &props) else {
+                let Ok(tile) = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: n, height: n }, Some(px.as_ptr() as _), n * bpp, &props) else {
                     return;
                 };
                 let bp = D2D1_BITMAP_BRUSH_PROPERTIES1 {
@@ -659,7 +780,94 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
     }
 }
 
-fn swap_chain(dev: &Device, width: u32, height: u32) -> Result<IDXGISwapChain1> {
+/// The Direct2D colour context of a decode's [`crate::imaging::Colour`].
+fn colour_context(dc: &ID2D1DeviceContext, colour: &crate::imaging::Colour) -> Result<ID2D1ColorContext> {
+    use crate::imaging::Colour;
+    unsafe {
+        match colour {
+            Colour::Icc(p) => dc.CreateColorContext(D2D1_COLOR_SPACE_CUSTOM, Some(p)).or_else(|_| dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)),
+            Colour::AdobeRgb => {
+                let wic: windows::Win32::Graphics::Imaging::IWICImagingFactory = windows::Win32::System::Com::CoCreateInstance(
+                    &windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                )?;
+                let c = wic.CreateColorContext()?;
+                c.InitializeFromExifColorSpace(2)?;
+                dc.CreateColorContextFromWicColorContext(&c)
+            }
+            _ => dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None),
+        }
+    }
+}
+
+/// `src` (premultiplied, in `ctx`) into scRGB, SDR white at `white_scale` x scRGB 1.0.
+fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext, white_scale: f32) -> Result<ID2D1Effect> {
+    unsafe {
+        let cm = dc.CreateEffect(&CLSID_D2D1ColorManagement)?;
+        cm.SetInput(0, src, true);
+        set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0 as u32, ctx)?;
+        set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?)?;
+        set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_ALPHA_MODE.0 as u32, D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED.0 as u32)?;
+        let best = dc.IsBufferPrecisionSupported(D2D1_BUFFER_PRECISION_32BPC_FLOAT).as_bool();
+        let quality = if best { D2D1_COLORMANAGEMENT_QUALITY_BEST } else { D2D1_COLORMANAGEMENT_QUALITY_NORMAL };
+        set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_QUALITY.0 as u32, quality.0 as u32)?;
+        // SDR white up to the display's level. (The White Level Adjustment effect came out dividing where it
+        // should multiply: everything sat at a quarter of its brightness at 160 nits.)
+        let white = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
+        white.SetInput(0, &cm.GetOutput()?, true);
+        let k = white_scale;
+        #[rustfmt::skip]
+        let m: [f32; 20] = [
+            k, 0.0, 0.0, 0.0,
+            0.0, k, 0.0, 0.0,
+            0.0, 0.0, k, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_le_bytes()).collect();
+        white.SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_5X4, &bytes)?;
+        set_u32(&white, D2D1_COLORMATRIX_PROP_ALPHA_MODE.0 as u32, 1)?; // premultiplied
+        Ok(white)
+    }
+}
+
+/// Renders `image` (pixel units, at the origin) into a new 16-bit float bitmap of `width x height`. Leaves the
+/// context at 96 dpi: the caller puts its own back.
+fn bake(dc: &ID2D1DeviceContext, image: &ID2D1Image, width: u32, height: u32) -> Result<ID2D1Bitmap1> {
+    unsafe {
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_R16G16B16A16_FLOAT, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let out = dc.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &props)?;
+        let prev = dc.GetTarget().ok();
+        dc.SetTarget(&out);
+        dc.SetDpi(96.0, 96.0);
+        dc.BeginDraw();
+        dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+        dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+        dc.DrawImage(image, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_COPY);
+        let r = dc.EndDraw(None, None);
+        dc.SetTarget(prev.as_ref());
+        r.map(|_| out)
+    }
+}
+
+fn set_u32(e: &ID2D1Effect, index: u32, v: u32) -> Result<()> {
+    unsafe { e.SetValue(index, D2D1_PROPERTY_TYPE_ENUM, &v.to_le_bytes()) }
+}
+
+fn set_interface<T: Interface>(e: &ID2D1Effect, index: u32, v: &T) -> Result<()> {
+    let raw = v.as_raw() as usize;
+    unsafe { e.SetValue(index, D2D1_PROPERTY_TYPE_COLOR_CONTEXT, &raw.to_le_bytes()) }
+}
+
+/// An 8-bit swap chain for SDR, or a 16-bit float one in scRGB (linear, 1.0 = 80 nits).
+fn swap_chain(dev: &Device, width: u32, height: u32, scrgb: bool) -> Result<IDXGISwapChain1> {
     unsafe {
         let dxgi: IDXGIDevice = dev.d3d.cast()?;
         let adapter = dxgi.GetAdapter()?;
@@ -667,7 +875,7 @@ fn swap_chain(dev: &Device, width: u32, height: u32) -> Result<IDXGISwapChain1> 
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width.max(1),
             Height: height.max(1),
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Format: if scrgb { DXGI_FORMAT_R16G16B16A16_FLOAT } else { DXGI_FORMAT_B8G8R8A8_UNORM },
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
@@ -676,7 +884,11 @@ fn swap_chain(dev: &Device, width: u32, height: u32) -> Result<IDXGISwapChain1> 
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             ..Default::default()
         };
-        factory.CreateSwapChainForComposition(&dev.d3d, &desc, None)
+        let swap = factory.CreateSwapChainForComposition(&dev.d3d, &desc, None)?;
+        if scrgb {
+            swap.cast::<IDXGISwapChain3>()?.SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)?;
+        }
+        Ok(swap)
     }
 }
 
@@ -685,5 +897,80 @@ fn prep(f: &IDWriteTextFormat) -> Result<()> {
         f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn half(h: u16) -> f32 {
+        let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let e = ((h >> 10) & 0x1F) as i32;
+        let m = (h & 0x3FF) as f32;
+        s * if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) }
+    }
+
+    /// Reads a 16-bit float bitmap back as RGBA floats.
+    fn read_f16(dc: &ID2D1DeviceContext, bmp: &ID2D1Bitmap1, w: u32, h: u32) -> Vec<[f32; 4]> {
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_R16G16B16A16_FLOAT, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let cpu = dc.CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &props).unwrap();
+            cpu.CopyFromBitmap(None, bmp, None).unwrap();
+            let m = cpu.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut out = Vec::new();
+            for y in 0..h as usize {
+                let row = std::slice::from_raw_parts(m.bits.add(y * m.pitch as usize) as *const u16, w as usize * 4);
+                for p in row.chunks_exact(4) {
+                    out.push([half(p[0]), half(p[1]), half(p[2]), half(p[3])]);
+                }
+            }
+            cpu.Unmap().unwrap();
+            out
+        }
+    }
+
+    /// sRGB white lands at the white scale; a Display P3 red lands outside sRGB (red above white, negative
+    /// green and blue), and two P3 reds that sRGB would clip to one stay apart.
+    /// `LOOKER_P3_ICC=<a Display P3 profile> cargo test --release photos_reach_scrgb -- --nocapture`
+    #[test]
+    fn photos_reach_scrgb() {
+        let dev = create_device(true).unwrap();
+        let dc = &dev.dc;
+        unsafe {
+            dc.SetRenderingControls(&D2D1_RENDERING_CONTROLS { bufferPrecision: D2D1_BUFFER_PRECISION_16BPC_FLOAT, tileSize: D2D_SIZE_U { width: 0, height: 0 } });
+        }
+        let convert = |px: &[u8], colour: &crate::imaging::Colour| unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let src = dc.CreateBitmap(D2D_SIZE_U { width: 2, height: 1 }, Some(px.as_ptr() as _), 8, &props).unwrap();
+            let fx = to_scrgb(dc, &src, &colour_context(dc, colour).unwrap(), 2.0).unwrap();
+            let out = bake(dc, &fx.GetOutput().unwrap(), 2, 1).unwrap();
+            read_f16(dc, &out, 2, 1)
+        };
+        // BGRA: white, then mid grey.
+        let s = convert(&[255, 255, 255, 255, 128, 128, 128, 255], &crate::imaging::Colour::Srgb);
+        println!("sRGB white {:?}, grey {:?}", s[0], s[1]);
+        assert!((s[0][0] - 2.0).abs() < 0.01 && (s[0][3] - 1.0).abs() < 0.01);
+        assert!((s[1][0] - 2.0 * 0.2158).abs() < 0.01);
+        let Some(p3) = std::env::var("LOOKER_P3_ICC").ok().and_then(|p| std::fs::read(p).ok()) else {
+            println!("LOOKER_P3_ICC not set: skipped the wide-gamut half");
+            return;
+        };
+        let p = convert(&[0, 0, 255, 255, 0, 0, 240, 255], &crate::imaging::Colour::Icc(std::sync::Arc::new(p3)));
+        println!("P3 red {:?}, darker P3 red {:?}", p[0], p[1]);
+        assert!(p[0][0] > 2.0 && p[0][1] < 0.0 && p[0][2] < 0.0);
+        assert!(p[0][0] - p[1][0] > 0.1);
     }
 }

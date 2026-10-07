@@ -15,7 +15,7 @@ use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Variant::{VT_FILETIME, VT_UI2};
 use windows::core::{GUID, HSTRING, Interface, PCWSTR, Result, w};
 
-use super::Decoded;
+use super::{Colour, Decoded};
 
 /// EXIF orientation (1–8) → the WIC transform that undoes it, and whether it swaps width/height.
 fn orientation_transform(o: u16) -> (WICBitmapTransformOptions, bool) {
@@ -119,11 +119,92 @@ unsafe fn copy_all(src: &IWICBitmapSource) -> Result<(u32, u32, Vec<u8>)> {
 /// WIC's colour transformer drops alpha (it comes out 0, which a premultiplied draw adds onto whatever is
 /// behind: the checkerboard showed through every tagged JPEG). Opaque images therefore go through it as BGR,
 /// and images with transparency get their alpha copied back from the untransformed pixels.
-unsafe fn finish(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode, straight: IWICBitmapSource) -> Result<(u32, u32, Vec<u8>)> {
+///
+/// Decoding for another space than sRGB (`super::target`), the pixels stay in the file's space and the
+/// returned [`Colour`] says which: the monitor-profile tail or the GPU converts them.
+unsafe fn finish(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode, straight: IWICBitmapSource) -> Result<(u32, u32, Vec<u8>, Colour)> {
     unsafe {
         let Some(profile) = color_profile(f, frame) else {
-            return copy_all(&convert(f, &straight, &GUID_WICPixelFormat32bppPBGRA)?);
+            let (w, h, px) = copy_all(&convert(f, &straight, &GUID_WICPixelFormat32bppPBGRA)?)?;
+            return Ok((w, h, px, Colour::Srgb));
         };
+        if super::target() != crate::colour::Space::Srgb {
+            // A CMYK or grey profile (`describe` says sRGB for it) still goes through WIC's transform below.
+            let colour = describe(&profile);
+            if colour != Colour::Srgb {
+                let (w, h, px) = copy_all(&convert(f, &straight, &GUID_WICPixelFormat32bppPBGRA)?)?;
+                return Ok((w, h, px, colour));
+            }
+        }
+        finish_srgb(f, frame, straight, profile).map(|(w, h, px)| (w, h, px, Colour::Srgb))
+    }
+}
+
+/// A frame's profile as a [`Colour`].
+unsafe fn describe(ctx: &IWICColorContext) -> Colour {
+    unsafe {
+        match ctx.GetType() {
+            Ok(t) if t == WICColorContextExifColorSpace => {
+                if ctx.GetExifColorSpace().ok() == Some(2) { Colour::AdobeRgb } else { Colour::Srgb }
+            }
+            Ok(_) => {
+                // An empty slice can't ask for the size (the binding passes a dangling pointer, which WIC
+                // refuses): most profiles fit 64 KB, a bigger one says how big on the first try.
+                let mut bytes = vec![0u8; 64 << 10];
+                let mut n = 0u32;
+                if ctx.GetProfileBytes(&mut bytes, &mut n).is_err() {
+                    if n as usize <= bytes.len() {
+                        return Colour::Srgb;
+                    }
+                    bytes.resize(n as usize, 0);
+                    if ctx.GetProfileBytes(&mut bytes, &mut n).is_err() {
+                        return Colour::Srgb;
+                    }
+                }
+                bytes.truncate(n as usize);
+                // Only an RGB profile describes the BGRA pixels: a CMYK or grey one described the file's own
+                // samples, which the format converter has already turned into RGB.
+                if bytes.get(16..20) != Some(b"RGB ") {
+                    return Colour::Srgb;
+                }
+                Colour::Icc(std::sync::Arc::new(bytes))
+            }
+            Err(_) => Colour::Srgb,
+        }
+    }
+}
+
+/// Premultiplied BGRA in `from` to `monitor` (an ICC profile), in place. Transparent pixels are converted as
+/// if opaque (the colour transform only takes straight colour); a profiled monitor and a translucent photo
+/// together are rare, and the error is in their edges' tint only.
+pub fn to_profile(f: &IWICImagingFactory, px: &mut [u8], w: u32, h: u32, from: &Colour, monitor: &[u8]) -> Result<()> {
+    unsafe {
+        let src = f.CreateColorContext()?;
+        match from {
+            Colour::Icc(p) => src.InitializeFromMemory(p)?,
+            Colour::AdobeRgb => src.InitializeFromExifColorSpace(2)?,
+            _ => src.InitializeFromExifColorSpace(1)?,
+        }
+        let dst = f.CreateColorContext()?;
+        dst.InitializeFromMemory(monitor)?;
+        let bmp = f.CreateBitmapFromMemory(w, h, &GUID_WICPixelFormat32bppBGRA, w * 4, px)?;
+        let t = f.CreateColorTransformer()?;
+        t.Initialize(&bmp, &src, &dst, &GUID_WICPixelFormat32bppBGR)?;
+        let mut out = vec![0u8; px.len()];
+        t.CopyPixels(std::ptr::null(), w * 4, &mut out)?;
+        for (o, p) in out.chunks_exact(4).zip(px.chunks_exact_mut(4)) {
+            // Premultiplied colour never exceeds its alpha.
+            let a = p[3];
+            p[0] = o[0].min(a);
+            p[1] = o[1].min(a);
+            p[2] = o[2].min(a);
+        }
+        Ok(())
+    }
+}
+
+unsafe fn finish_srgb(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode, straight: IWICBitmapSource, profile: IWICColorContext) -> Result<(u32, u32, Vec<u8>)> {
+    unsafe {
         let srgb = f.CreateColorContext()?;
         srgb.InitializeFromExifColorSpace(1)?;
         let t = f.CreateColorTransformer()?;
@@ -306,8 +387,10 @@ fn decode_with(f: &IWICImagingFactory, source: &Source, box_w: u32, box_h: u32, 
             src = rot.into();
         }
         let straight = convert(f, &src, &GUID_WICPixelFormat32bppBGRA)?;
-        let (dw, dh, pixels) = finish(f, &frame, straight)?;
-        Ok((Decoded::still(dw, dh, pixels, ow, oh, taken), from_preview))
+        let (dw, dh, pixels, colour) = finish(f, &frame, straight)?;
+        let mut d = Decoded::still(dw, dh, pixels, ow, oh, taken);
+        d.colour = colour;
+        Ok((d, from_preview))
     }
 }
 

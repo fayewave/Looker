@@ -403,6 +403,7 @@ impl App {
         let v = self.viewport();
         self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
+            g.begin_ui();
             self.draw_landing(g);
             return;
         }
@@ -414,7 +415,7 @@ impl App {
         if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {
-            g.fill(bg, rgb(gfx::CHECKER_DARK));
+            g.fill(bg, g.photo_rgb(gfx::CHECKER_DARK));
         }
         self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
@@ -458,10 +459,13 @@ impl App {
                     crate::trace::mark("first frame with the image drawn");
                 }
             }
-        } else if self.viewer.error.is_some() {
-            self.draw_cant_display(g);
         }
         self.draw_fade(g, bg);
+        // The photo layer ends here (see Gfx::begin_ui).
+        g.begin_ui();
+        if self.viewer.shown.is_none() && self.viewer.error.is_some() {
+            self.draw_cant_display(g);
+        }
         self.draw_placeholder(g);
         self.draw_scrims(g, bg);
     }

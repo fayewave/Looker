@@ -57,6 +57,10 @@ pub struct Entry {
     pages_resident: RefCell<Vec<Option<ID2D1Bitmap1>>>,
     /// The decoded pixels, kept only while drawing on WARP so the bitmaps can be re-made on the GPU.
     pixels: RefCell<Option<Vec<Vec<u8>>>>,
+    /// The pixels' colour space (the GPU converts them under scRGB, see gfx.rs).
+    colour: crate::imaging::Colour,
+    /// GPU bytes per pixel: 8 for the half-float bitmaps of scRGB, else 4.
+    bpp: usize,
 }
 
 impl Entry {
@@ -67,7 +71,7 @@ impl Entry {
         match &self.layout {
             // Budgeted at what its pages can grow to, like the C# page set.
             Some(l) => self.page_bytes() * l.pages.len().min(self.resident_limit()),
-            None => self.width as usize * self.height as usize * 4 * self.frames.borrow().len(),
+            None => self.width as usize * self.height as usize * self.bpp * self.frames.borrow().len(),
         }
     }
 
@@ -140,6 +144,8 @@ impl Entry {
             page_scale: self.page_scale,
             pages_resident: RefCell::new(self.pages_resident.borrow().clone()),
             pixels: RefCell::new(self.pixels.borrow_mut().take()),
+            colour: self.colour.clone(),
+            bpp: self.bpp,
         }
     }
 }
@@ -364,6 +370,16 @@ impl Viewer {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
         self.failed.clear();
+    }
+
+    /// The colour space changed (colour.rs): every decode is for the old one. Decodes the current image again;
+    /// what is on screen stays until it lands.
+    pub fn colour_changed(&mut self) {
+        self.cache.clear();
+        if let Some((p, s)) = self.current.clone() {
+            self.request(Key::new(&p, s, self.sharp), Duration::ZERO);
+        }
+        self.schedule_preloads();
     }
 
     /// Drops every cached decode and remembered failure of a file (it was rewritten or deleted).
@@ -592,6 +608,12 @@ impl Viewer {
             self.pending.remove(&done.key);
             let is_current = self.current.as_ref().is_some_and(|(p, s)| *p == done.key.path && *s == done.key.stamp);
             match done.result {
+                // Decoded for the colour space before the last change: again, if it's still wanted.
+                Ok(img) if img.generation != crate::colour::current().generation => {
+                    if is_current {
+                        self.request(done.key, Duration::ZERO);
+                    }
+                }
                 Ok(img) => {
                     if !is_current && !self.window.contains(&done.key) {
                         continue; // left the window while decoding: not worth a GPU upload
@@ -714,7 +736,7 @@ impl Viewer {
                 *slot = None;
             }
             let Some(all) = e.pixels.borrow_mut().take() else { continue };
-            let remade: Option<Vec<ID2D1Bitmap1>> = all.iter().map(|px| gfx.bitmap(e.width, e.height, px).ok()).collect();
+            let remade: Option<Vec<ID2D1Bitmap1>> = all.iter().map(|px| gfx.photo_bitmap(e.width, e.height, px, &e.colour).ok()).collect();
             match remade {
                 Some(bmps) => {
                     for (slot, bmp) in e.frames.borrow_mut().iter_mut().zip(bmps) {
@@ -741,7 +763,7 @@ impl Viewer {
 fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
     let mut frames = Vec::with_capacity(img.frames.len());
     for f in &img.frames {
-        frames.push((g.bitmap(img.width, img.height, &f.pixels).ok()?, f.delay_ms));
+        frames.push((g.photo_bitmap(img.width, img.height, &f.pixels, &img.colour).ok()?, f.delay_ms));
     }
     let pixels = g.is_warp().then(|| img.frames.into_iter().map(|f| f.pixels).collect());
     let layout = (!img.page_sizes.is_empty()).then(|| Rc::new(Layout::compute(&img.page_sizes)));
@@ -762,5 +784,7 @@ fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
         page_scale: img.page_scale,
         pages_resident: RefCell::new(vec![None; slots]),
         pixels: RefCell::new(pixels),
+        colour: img.colour,
+        bpp: if g.space().is_scrgb() { 8 } else { 4 },
     })
 }

@@ -832,6 +832,36 @@ impl App {
         crate::trace::mark("switched to the hardware device");
     }
 
+    /// The window may be on another monitor, or this one's colour mode changed (HDR, Auto Color Management,
+    /// SDR content brightness, its profile): draw for the space it is in now (colour.rs).
+    pub(super) fn check_colour(&mut self) {
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        let space = crate::colour::query(monitor);
+        if matches!(space, crate::colour::Space::Scrgb { hdr: true, .. }) {
+            let m = monitor.0 as isize;
+            std::thread::spawn(move || crate::colour::refresh_peak(HMONITOR(m as _)));
+        }
+        crate::colour::set(space.clone());
+        let Some(g) = &mut self.gfx else { return };
+        if *g.space() == space {
+            return;
+        }
+        let new_chain = match g.set_space(space) {
+            Ok(n) => n,
+            Err(e) => {
+                crate::trace::mark(format!("colour space switch failed: {e}"));
+                return;
+            }
+        };
+        self.viewer.colour_changed();
+        self.render();
+        if new_chain {
+            if let Some(g) = &self.gfx {
+                let _ = g.commit_swap();
+            }
+        }
+    }
+
     // --- Placement ----------------------------------------------------------------------------------
 
     fn track_normal_rect(&mut self) {
@@ -1018,7 +1048,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
 
         if let Some(Some((ready, icon))) = gfx_thread.join().ok() {
             let (dev, text) = ready.0;
-            match Gfx::attach(dev, text, hwnd, app.client_w, app.client_h, dpi as f32) {
+            match Gfx::attach(dev, text, hwnd, app.client_w, app.client_h, dpi as f32, crate::colour::current().space.clone()) {
                 Ok(g) => {
                     if let Some(i) = &icon {
                         app.icon = g.bitmap(i.width, i.height, &i.frames[0].pixels).ok();

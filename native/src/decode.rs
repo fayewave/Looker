@@ -155,7 +155,7 @@ impl Pool {
             // The placeholder tier is a still first frame, even for an animation.
             let still = job.key.bucket == engine::LOW;
             let result = match &factory {
-                Some(f) => crate::imaging::decode(f, &job.key.path, bw, bh, still),
+                Some(f) => crate::imaging::decode_for_screen(f, &job.key.path, bw, bh, still, &crate::colour::current()),
                 None => Err("WIC is unavailable".into()),
             }
             .map(|mut d| {
