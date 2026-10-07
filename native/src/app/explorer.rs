@@ -318,7 +318,6 @@ impl App {
     /// a document's first page), else the file glyph, with its name under it.
     pub(super) fn draw_placeholder(&mut self, g: &Gfx) {
         let Some((path, stamp, cloud)) = self.placeholder.as_ref().map(|p| (p.path.clone(), p.stamp, p.cloud)) else { return };
-        g.fill(self.viewport(), rgb(self.theme().window));
         let a = self.image_area();
         let name = wide(&file_name(&path));
         let w = (a.right - a.left - 32.0).clamp(1.0, 520.0);

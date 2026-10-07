@@ -124,6 +124,8 @@ impl App {
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
             Tool::Sort | Tool::Delete => has,
             Tool::Rotate => has && self.can_rotate(),
+            // Nothing to zoom while a file Looker can't open covers the photo.
+            Tool::ZoomIn | Tool::ZoomOut | Tool::Fit => has && self.placeholder.is_none(),
             Tool::SaveRotation => !self.saving_rotation,
             Tool::Info | Tool::Strip | Tool::Explorer => has,
             _ => has,
@@ -422,7 +424,9 @@ impl App {
         if doc.is_none() {
             self.want_pages(Vec::new());
         }
-        if let Some(c) = self.viewer.shown.clone() {
+        // A file Looker can't open covers the photo: the photo isn't drawn at all (it would show around the
+        // cover, behind the floating bars).
+        if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none()) {
             {
                 let r = self.view.frame();
                 let a = self.image_area();
@@ -460,7 +464,9 @@ impl App {
                 }
             }
         }
-        self.draw_fade(g, bg);
+        if self.placeholder.is_none() {
+            self.draw_fade(g, bg);
+        }
         // The photo layer ends here (see Gfx::begin_ui).
         g.begin_ui(None);
         if self.viewer.shown.is_none() && self.viewer.error.is_some() {

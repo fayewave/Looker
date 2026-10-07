@@ -423,6 +423,11 @@ impl App {
         self.viewer.current.as_ref().map(|(p, _)| p.as_path())
     }
 
+    /// The photo is on screen to zoom and pan: there is one, and no file Looker can't open covers it.
+    pub(super) fn photo_up(&self) -> bool {
+        self.view.has_content() && self.placeholder.is_none()
+    }
+
     /// What the file actions (rename, delete, copy path, reveal) act on: the file covering the photo, else the
     /// photo.
     fn target_path(&self) -> Option<PathBuf> {

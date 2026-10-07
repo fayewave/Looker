@@ -250,7 +250,7 @@ impl App {
                     if h == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_press(x);
                     }
-                    if h == Some(Hit::Viewport) && self.view.has_content() {
+                    if h == Some(Hit::Viewport) && self.photo_up() {
                         self.drag = Some((x, y));
                     }
                     self.invalidate();
@@ -360,7 +360,7 @@ impl App {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
-                    if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
+                    if self.hit(x, y) == Some(Hit::Viewport) && self.photo_up() {
                         let (ax, ay) = self.zoom_anchor(x, y);
                         self.view.toggle_fit_actual(ax, ay);
                         self.after_zoom();
@@ -422,9 +422,12 @@ impl App {
                             }
                             return Some(LRESULT(0));
                         }
-                        let (ax, ay) = self.zoom_anchor(x, y);
-                        self.view.zoom_at(1.2f64.powf(delta / 120.0), ax, ay);
-                        self.after_zoom();
+                        // Navigating works over a covering file; zooming the photo hidden under it doesn't.
+                        if self.placeholder.is_none() {
+                            let (ax, ay) = self.zoom_anchor(x, y);
+                            self.view.zoom_at(1.2f64.powf(delta / 120.0), ax, ay);
+                            self.after_zoom();
+                        }
                     }
                     Some(LRESULT(0))
                 }
@@ -477,7 +480,7 @@ impl App {
                         }
                         VK_F if !ctrl => self.act(Tool::Fit),
                         VK_0 if ctrl => self.act(Tool::Fit),
-                        VK_1 => {
+                        VK_1 if self.photo_up() => {
                             let a = self.image_area();
                             self.view.actual_size_at(((a.right - a.left) / 2.0) as f64, ((a.bottom - a.top) / 2.0) as f64);
                             self.after_zoom();
