@@ -193,12 +193,27 @@ impl App {
 
     fn info_blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
+        let row = |label, value: String| Block::Row { label, value, path: false };
+        // A file Looker can't open covers the photo: what Explorer would say about it.
+        if let Some(p) = &self.placeholder {
+            let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            out.push(Block::Title("File"));
+            out.push(row("Name", file_name(&p.path)));
+            out.push(row("Type", if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }));
+            if let Some(s) = p.size {
+                out.push(row("Size", format_bytes(s)));
+            }
+            if let Some(t) = p.modified {
+                out.push(row("Modified", format_time(t)));
+            }
+            out.push(Block::Row { label: "File Path", value: p.path.to_string_lossy().into_owned(), path: true });
+            return out;
+        }
         let Some(path) = self.current_path() else { return out };
         let entry = self.viewer.current_entry();
         if entry.is_some_and(|e| e.histogram.is_some()) {
             out.push(Block::Histogram);
         }
-        let row = |label, value: String| Block::Row { label, value, path: false };
         out.push(Block::Title("File"));
         out.push(row("Name", file_name(path)));
         if let Some(e) = entry {

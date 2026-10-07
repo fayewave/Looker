@@ -295,6 +295,11 @@ impl App {
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
         }
+        // The explorer's cursor follows it, as it follows the photo (`explorer_follow`).
+        if let Some(i) = self.explorer.index_of(&path) {
+            self.explorer.cursor = Some(path.clone());
+            self.explorer.reveal = Some(i);
+        }
         self.placeholder = Some(Placeholder { size: md.map(|m| m.len()), modified, path, stamp, cloud });
         self.invalidate();
     }
@@ -526,7 +531,8 @@ impl App {
         let scroll = scroll.clamp(0.0, self.explorer.max_scroll);
         let first = (scroll / ROW_PITCH).floor() as usize;
         let last = (((scroll + view_h) / ROW_PITCH).ceil() as usize + 1).min(n);
-        let current = self.current_path().map(Path::to_path_buf);
+        // The selected row is what's on screen: the photo, or the file Looker can't open covering it.
+        let current = self.target_path();
         let want = ((ICON_W * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
 
         g.push_clip(D2D_RECT_F { top: list.top, bottom: inner.bottom, ..inner });
