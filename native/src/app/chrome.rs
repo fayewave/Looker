@@ -403,7 +403,7 @@ impl App {
         let v = self.viewport();
         self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
-            g.begin_ui();
+            g.begin_ui(Some(self.theme().window));
             self.draw_landing(g);
             return;
         }
@@ -462,7 +462,7 @@ impl App {
         }
         self.draw_fade(g, bg);
         // The photo layer ends here (see Gfx::begin_ui).
-        g.begin_ui();
+        g.begin_ui(None);
         if self.viewer.shown.is_none() && self.viewer.error.is_some() {
             self.draw_cant_display(g);
         }

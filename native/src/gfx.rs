@@ -312,8 +312,10 @@ impl Gfx {
         }
     }
 
-    /// From here on the frame draws the UI. Under scRGB that's the 8-bit layer laid over the photos in `end`.
-    pub fn begin_ui(&mut self) {
+    /// From here on the frame draws the UI. Under scRGB that's the 8-bit layer laid over the photos in `end`;
+    /// `backdrop` makes it opaque in that colour (no photo shows: the landing page), so it blends exactly as on
+    /// SDR.
+    pub fn begin_ui(&mut self, backdrop: Option<u32>) {
         if !self.space.is_scrgb() {
             return;
         }
@@ -323,7 +325,7 @@ impl Gfx {
         if let Some(o) = &self.ui {
             unsafe {
                 self.dev.dc.SetTarget(&o.bitmap);
-                self.dev.dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+                self.dev.dc.Clear(Some(&backdrop.map_or(D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }, rgb)));
             }
         }
     }
@@ -339,7 +341,11 @@ impl Gfx {
             };
             let bitmap = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: self.size.0.max(1), height: self.size.1.max(1) }, None, 0, &props)?;
             let srgb = self.dev.dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?;
-            let out = to_scrgb(&self.dev.dc, &bitmap, &srgb, self.space.white_scale())?;
+            // Straight: the layer's premultiplied values are converted as they are, so its translucent parts
+            // (anti-aliased text, hover fills, the button frames) land on the photo layer as they would blend in
+            // sRGB over a dark background. Unpremultiplied first, they blended in linear light: 6 % white over
+            // black came out as a light grey (the landing page's buttons, washed out).
+            let out = to_scrgb(&self.dev.dc, &bitmap, &srgb, self.space.white_scale(), false)?;
             Ok(Overlay { bitmap, out })
         }
     }
@@ -391,7 +397,7 @@ impl Gfx {
         }
         unsafe {
             let dc = &self.dev.dc;
-            let fx = to_scrgb(dc, &src, &colour_context(dc, colour)?, self.space.white_scale())?;
+            let fx = to_scrgb(dc, &src, &colour_context(dc, colour)?, self.space.white_scale(), true)?;
             let out = bake(dc, &fx.GetOutput()?, width, height);
             dc.SetDpi(self.dpi, self.dpi);
             out
@@ -838,14 +844,16 @@ fn colour_context(dc: &ID2D1DeviceContext, colour: &crate::imaging::Colour) -> R
     }
 }
 
-/// `src` (premultiplied, in `ctx`) into scRGB, SDR white at `white_scale` x scRGB 1.0.
-fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext, white_scale: f32) -> Result<ID2D1Effect> {
+/// `src` (premultiplied, in `ctx`) into scRGB, SDR white at `white_scale` x scRGB 1.0. `premultiplied`: convert the
+/// colour under the alpha (photos); otherwise the premultiplied values as they are (the UI layer, see `make_overlay`).
+fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext, white_scale: f32, premultiplied: bool) -> Result<ID2D1Effect> {
     unsafe {
         let cm = dc.CreateEffect(&CLSID_D2D1ColorManagement)?;
         cm.SetInput(0, src, true);
         set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0 as u32, ctx)?;
         set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?)?;
-        set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_ALPHA_MODE.0 as u32, D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED.0 as u32)?;
+        let alpha = if premultiplied { D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED } else { D2D1_COLORMANAGEMENT_ALPHA_MODE_STRAIGHT };
+        set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_ALPHA_MODE.0 as u32, alpha.0 as u32)?;
         let best = dc.IsBufferPrecisionSupported(D2D1_BUFFER_PRECISION_32BPC_FLOAT).as_bool();
         let quality = if best { D2D1_COLORMANAGEMENT_QUALITY_BEST } else { D2D1_COLORMANAGEMENT_QUALITY_NORMAL };
         set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_QUALITY.0 as u32, quality.0 as u32)?;
@@ -983,6 +991,35 @@ mod tests {
         }
     }
 
+    /// What the colour-management effect's alpha modes do with a translucent pixel (6 % white, premultiplied).
+    #[test]
+    #[ignore]
+    fn alpha_modes() {
+        let dev = create_device(true).unwrap();
+        let dc = &dev.dc;
+        unsafe {
+            dc.SetRenderingControls(&D2D1_RENDERING_CONTROLS { bufferPrecision: D2D1_BUFFER_PRECISION_16BPC_FLOAT, tileSize: D2D_SIZE_U { width: 0, height: 0 } });
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let px = [15u8, 15, 15, 15, 128, 128, 128, 255];
+            let src = dc.CreateBitmap(D2D_SIZE_U { width: 2, height: 1 }, Some(px.as_ptr() as _), 8, &props).unwrap();
+            for mode in [D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED, D2D1_COLORMANAGEMENT_ALPHA_MODE_STRAIGHT] {
+                let cm = dc.CreateEffect(&CLSID_D2D1ColorManagement).unwrap();
+                cm.SetInput(0, &src, true);
+                set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None).unwrap()).unwrap();
+                set_interface(&cm, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None).unwrap()).unwrap();
+                set_u32(&cm, D2D1_COLORMANAGEMENT_PROP_ALPHA_MODE.0 as u32, mode.0 as u32).unwrap();
+                let out = bake(dc, &cm.GetOutput().unwrap(), 2, 1).unwrap();
+                println!("mode {}: {:?}", mode.0, read_f16(dc, &out, 2, 1));
+            }
+        }
+    }
+
     /// sRGB white lands at the white scale; a Display P3 red lands outside sRGB (red above white, negative
     /// green and blue), and two P3 reds that sRGB would clip to one stay apart.
     /// `LOOKER_P3_ICC=<a Display P3 profile> cargo test --release photos_reach_scrgb -- --nocapture`
@@ -1002,7 +1039,7 @@ mod tests {
                 colorContext: std::mem::ManuallyDrop::new(None),
             };
             let src = dc.CreateBitmap(D2D_SIZE_U { width: 2, height: 1 }, Some(px.as_ptr() as _), 8, &props).unwrap();
-            let fx = to_scrgb(dc, &src, &colour_context(dc, colour).unwrap(), 2.0).unwrap();
+            let fx = to_scrgb(dc, &src, &colour_context(dc, colour).unwrap(), 2.0, true).unwrap();
             let out = bake(dc, &fx.GetOutput().unwrap(), 2, 1).unwrap();
             read_f16(dc, &out, 2, 1)
         };
