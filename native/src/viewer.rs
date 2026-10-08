@@ -61,6 +61,8 @@ pub struct Entry {
     colour: crate::imaging::Colour,
     /// GPU bytes per pixel: 8 for the half-float bitmaps of scRGB, else 4.
     bpp: usize,
+    /// The colour generation (colour.rs) the bitmaps were made for.
+    generation: u32,
 }
 
 impl Entry {
@@ -146,6 +148,7 @@ impl Entry {
             pixels: RefCell::new(self.pixels.borrow_mut().take()),
             colour: self.colour.clone(),
             bpp: self.bpp,
+            generation: self.generation,
         }
     }
 }
@@ -654,7 +657,9 @@ impl Viewer {
                 self.shown = Some(entry);
                 self.restart_animation();
             }
-            Some(s) if entry.key.bucket > s.key.bucket || (entry.animated() && !s.animated()) => {
+            // A decode for the colour space the window moved to replaces the one up at any size: the old one's
+            // bitmaps are in the previous space (scRGB values on an 8-bit target clip the light tones).
+            Some(s) if entry.key.bucket > s.key.bucket || entry.generation != s.generation || (entry.animated() && !s.animated()) => {
                 let became_animated = entry.animated() && !s.animated();
                 self.shown = Some(entry);
                 if became_animated {
@@ -786,5 +791,6 @@ fn upload(g: &Gfx, key: Key, img: Decoded) -> Option<Entry> {
         pixels: RefCell::new(pixels),
         colour: img.colour,
         bpp: if g.space().is_scrgb() { 8 } else { 4 },
+        generation: img.generation,
     })
 }
