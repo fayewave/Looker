@@ -120,14 +120,14 @@ impl App {
             }
             match e.page_bitmap(i) {
                 Some(b) => {
-                    g.draw_bitmap(&b, r, 1.0);
+                    g.draw_photo(&b, r, 1.0, true);
                     if i == self.pdf_page {
-                        self.last_drawn = Some((b, r));
+                        self.last_drawn = Some((b, r, true));
                     }
                 }
                 None => {
                     match self.viewer.page_stand_in(&e.key.path, e.key.stamp, i) {
-                        Some(b) => g.draw_bitmap(&b, r, 1.0),
+                        Some(b) => g.draw_photo(&b, r, 1.0, true),
                         None => g.fill(r, g.photo_rgb(PAPER)),
                     }
                     if !self.page_failed.contains(&(e.key.clone(), i)) {

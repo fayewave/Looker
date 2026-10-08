@@ -444,8 +444,8 @@ impl App {
                 if let Some(d) = &doc {
                     self.draw_pages(g, d, dest, bg);
                 } else if self.turns == 0 {
-                    g.draw_bitmap(frame, dest, 1.0);
-                    self.last_drawn = Some((frame.clone(), dest));
+                    g.draw_photo(frame, dest, 1.0, c.sdr());
+                    self.last_drawn = Some((frame.clone(), dest, c.sdr()));
                 } else {
                     // `dest` is the turned image's bounds: draw the unturned frame into the box that lands on
                     // it once turned about the centre (width and height swap for odd turns).
@@ -453,7 +453,7 @@ impl App {
                     let (w, h) = (dest.right - dest.left, dest.bottom - dest.top);
                     let (dw, dh) = if self.turns & 1 == 1 { (h, w) } else { (w, h) };
                     let unturned = rect(cx - dw / 2.0, cy - dh / 2.0, dw, dh);
-                    g.with_transform(&quarter_turns(self.turns, cx, cy), || g.draw_bitmap(frame, unturned, 1.0));
+                    g.with_transform(&quarter_turns(self.turns, cx, cy), || g.draw_photo(frame, unturned, 1.0, c.sdr()));
                 }
                 unsafe {
                     g.dev.dc.PopAxisAlignedClip();

@@ -393,8 +393,9 @@ pub struct App {
     placeholder: Option<Placeholder>,
     /// The slideshow's dissolve from the previous image, while it runs.
     fade: Option<slideshow::Fade>,
-    /// What the viewport drew last (the bitmap and where), for the dissolve to start from.
-    last_drawn: Option<(ID2D1Bitmap1, D2D_RECT_F)>,
+    /// What the viewport drew last (the bitmap, where, and whether it is SDR: `Gfx::draw_photo`), for the
+    /// dissolve to start from.
+    last_drawn: Option<(ID2D1Bitmap1, D2D_RECT_F, bool)>,
     /// The page of a document the bar points at (zero-based).
     pdf_page: usize,
     renderer: crate::pages::Renderer,

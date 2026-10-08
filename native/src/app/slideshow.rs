@@ -25,6 +25,7 @@ pub(super) struct Slideshow {
 pub(super) struct Fade {
     bitmap: ID2D1Bitmap1,
     rect: D2D_RECT_F,
+    sdr: bool,
     start: Instant,
 }
 
@@ -121,7 +122,7 @@ impl App {
     /// any dissolve still running (a ghost must never linger over a hard cut).
     pub(super) fn image_swapped(&mut self) {
         self.fade = if std::mem::take(&mut self.slideshow.fade_armed) {
-            self.last_drawn.take().map(|(bitmap, rect)| Fade { bitmap, rect, start: Instant::now() })
+            self.last_drawn.take().map(|(bitmap, rect, sdr)| Fade { bitmap, rect, sdr, start: Instant::now() })
         } else {
             None
         };
@@ -136,7 +137,7 @@ impl App {
             return false;
         }
         g.push_clip(clip);
-        g.draw_bitmap(&f.bitmap, f.rect, 1.0 - t);
+        g.draw_photo(&f.bitmap, f.rect, 1.0 - t, f.sdr);
         g.pop_clip();
         true
     }

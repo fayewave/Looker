@@ -69,6 +69,12 @@ impl Entry {
     pub fn animated(&self) -> bool {
         self.frames.borrow().len() > 1
     }
+
+    /// Its colours lie between black and SDR white (see `Gfx::draw_photo`): sRGB, or already in the monitor's
+    /// profile.
+    pub fn sdr(&self) -> bool {
+        matches!(self.colour, crate::imaging::Colour::Srgb | crate::imaging::Colour::Display)
+    }
     fn bytes(&self) -> usize {
         match &self.layout {
             // Budgeted at what its pages can grow to, like the C# page set.

@@ -454,6 +454,58 @@ impl Gfx {
         }
     }
 
+    /// A photo-layer bitmap at `dest`. `sdr`: its colours lie between black and SDR white (an sRGB or
+    /// monitor-profile decode, a PDF page). Under scRGB those are clamped there after scaling, as an 8-bit target
+    /// does: the cubic filter rings at hard edges, and unclamped every letter of a PDF had a halo brighter than
+    /// the paper (up to 115 % of SDR white) and a fringe below black. HDR and wide-gamut pixels go past both
+    /// legitimately and are drawn as they are.
+    pub fn draw_photo(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32, sdr: bool) {
+        if !sdr || !self.space.is_scrgb() || self.draw_clamped(bmp, dest, opacity).is_err() {
+            self.draw_bitmap(bmp, dest, opacity);
+        }
+    }
+
+    fn draw_clamped(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) -> Result<()> {
+        unsafe {
+            let dc = &self.dev.dc;
+            let size = bmp.GetSize();
+            if size.width <= 0.0 || size.height <= 0.0 {
+                return Ok(());
+            }
+            // D2D runs an effect graph at its inputs' resolution and resamples the result, so a clamp on the
+            // bitmap would come before the overshoot. The resampling is done inside the graph instead (bitmap to
+            // device pixels, high-quality cubic), then the clamp: down to SDR white = 1, clamped, back up (with
+            // the opacity), drawn 1:1 in pixels.
+            let mut world = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut world);
+            let place = windows_numerics::Matrix3x2 {
+                M11: (dest.right - dest.left) / size.width,
+                M12: 0.0,
+                M21: 0.0,
+                M22: (dest.bottom - dest.top) / size.height,
+                M31: dest.left,
+                M32: dest.top,
+            };
+            let px = self.dpi / 96.0;
+            let to_device = place * world * windows_numerics::Matrix3x2 { M11: px, M12: 0.0, M21: 0.0, M22: px, M31: 0.0, M32: 0.0 };
+            let affine = dc.CreateEffect(&CLSID_D2D12DAffineTransform)?;
+            affine.SetInput(0, bmp, true);
+            let m = [to_device.M11, to_device.M12, to_device.M21, to_device.M22, to_device.M31, to_device.M32];
+            let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_le_bytes()).collect();
+            affine.SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_3X2, &bytes)?;
+            set_u32(&affine, D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE.0 as u32, D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC.0 as u32)?;
+            let k = self.space.white_scale();
+            let down = color_matrix(dc, &affine.GetOutput()?, 1.0 / k, 1.0, true)?;
+            let up = color_matrix(dc, &down.GetOutput()?, k, opacity, false)?;
+            dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+            dc.SetUnitMode(D2D1_UNIT_MODE_PIXELS);
+            dc.DrawImage(&up.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            dc.SetUnitMode(D2D1_UNIT_MODE_DIPS);
+            dc.SetTransform(&world);
+            Ok(())
+        }
+    }
+
     /// The preview-area checkerboard: two near-blacks a hair apart in 8-DIP squares, rendered at the
     /// display's DPI so the squares stay crisp and whole-pixel, anchored at the viewport's top-left.
     pub fn checkerboard(&mut self, r: D2D_RECT_F) {
@@ -865,21 +917,29 @@ fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext
 
 /// `src` (premultiplied) with its colour times `k`.
 fn scale_rgb(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32) -> Result<ID2D1Effect> {
+    color_matrix(dc, src, k, 1.0, false)
+}
+
+/// `src` (premultiplied) with its colour times `k` and its alpha times `a`; `clamp` then limits the colour to 0..1.
+fn color_matrix(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32, a: f32, clamp: bool) -> Result<ID2D1Effect> {
     unsafe {
-        let white = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
-        white.SetInput(0, src, true);
+        let fx = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
+        fx.SetInput(0, src, true);
         #[rustfmt::skip]
         let m: [f32; 20] = [
             k, 0.0, 0.0, 0.0,
             0.0, k, 0.0, 0.0,
             0.0, 0.0, k, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0, a,
             0.0, 0.0, 0.0, 0.0,
         ];
         let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_le_bytes()).collect();
-        white.SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_5X4, &bytes)?;
-        set_u32(&white, D2D1_COLORMATRIX_PROP_ALPHA_MODE.0 as u32, 1)?; // premultiplied
-        Ok(white)
+        fx.SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_5X4, &bytes)?;
+        set_u32(&fx, D2D1_COLORMATRIX_PROP_ALPHA_MODE.0 as u32, 1)?; // premultiplied
+        if clamp {
+            fx.SetValue(D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        }
+        Ok(fx)
     }
 }
 
