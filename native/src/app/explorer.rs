@@ -410,6 +410,7 @@ impl App {
     /// "Open folder" from a folder's menu: open it in the viewer (its first image), as File > Open folder would.
     pub(super) fn open_folder(&mut self, folder: PathBuf) {
         self.pending_folder = Some(folder.clone());
+        self.pending_cover = None;
         self.list_folder_async(folder);
     }
 

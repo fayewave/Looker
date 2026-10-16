@@ -373,6 +373,8 @@ pub struct App {
     explorer: explorer::Explorer,
     /// "Open folder": show this folder's first image once its listing lands.
     pending_folder: Option<PathBuf>,
+    /// A dropped file Looker can't open: once `pending_folder` (its folder) lands, it covers the photo there.
+    pending_cover: Option<PathBuf>,
     /// Keeps the open folder's listing (navigation, strip, counter) live.
     folder_watch: Option<(PathBuf, crate::explorer::Watcher)>,
     landing: landing::Landing,
@@ -596,13 +598,26 @@ impl App {
         if self.pending_folder.as_deref().is_some_and(|f| crate::explorer::same_path(f, &listing.folder)) {
             // "Open folder": its first image becomes current, with the listing it came from.
             self.pending_folder = None;
-            let Some(first) = listing.images.first().map(|e| e.path.clone()) else {
-                self.show_toast("No images in this folder", false);
+            let cover = self.pending_cover.take();
+            // Under a dropped file Looker can't open: the last image before it, so ←/→ go on from there.
+            let under = cover
+                .as_ref()
+                .and_then(|c| listing.rank_of(c))
+                .and_then(|r| listing.rank.iter().rposition(|&k| k < r))
+                .unwrap_or(0);
+            let Some(first) = listing.images.get(under).map(|e| e.path.clone()) else {
+                match cover {
+                    Some(c) => self.show_toast(&format!("Looker can't open {}", file_name(&c)), false),
+                    None => self.show_toast("No images in this folder", false),
+                }
                 return;
             };
             self.viewer.close();
             self.show_path(first);
             self.viewer.set_listing(listing);
+            if let Some(c) = cover {
+                self.show_placeholder(c);
+            }
             self.invalidate();
             return;
         }
@@ -676,7 +691,8 @@ impl App {
     }
 
     /// Files dropped on the window: a folder wins over loose files (it opens in the viewer at its first
-    /// image), else the first file Looker can show. Ignored under a dialog, which is modal.
+    /// image), else the first file Looker can show, else the first file: its folder opens with that file's
+    /// "can't open" cover over the photo before it. Ignored under a dialog, which is modal.
     fn dropped(&mut self, paths: Vec<PathBuf>) {
         if self.dialog.is_some() {
             return;
@@ -684,9 +700,14 @@ impl App {
         if let Some(folder) = paths.iter().find(|p| p.is_dir()) {
             self.make_way();
             self.open_folder(folder.clone());
-        } else if let Some(file) = paths.into_iter().find(|p| p.is_file() && format::is_supported(p)) {
+        } else if let Some(file) = paths.iter().find(|p| p.is_file() && format::is_supported(p)) {
             self.make_way();
-            self.open(file);
+            self.open(file.clone());
+        } else if let Some(file) = paths.into_iter().find(|p| p.is_file()) {
+            let Some(folder) = file.parent().map(Path::to_path_buf) else { return };
+            self.make_way();
+            self.open_folder(folder);
+            self.pending_cover = Some(file);
         }
     }
 
@@ -1033,6 +1054,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             thumbs: strip::Thumbs::new(),
             explorer: explorer::Explorer::new(),
             pending_folder: None,
+            pending_cover: None,
             folder_watch: None,
             landing: landing::Landing::new(),
             page: None,
