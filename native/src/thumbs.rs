@@ -1,7 +1,7 @@
 //! Thumbnails for the strip (port of `ThumbnailLoader`): the Windows shell's thumbnail cache first (a cached
 //! hit is a millisecond, and it covers RAW/HEIC and anything with a shell provider), then the shell's full
-//! extraction, then Looker's own decoder for what the shell can't do (JPEG XL, PSD, TGA, DDS, …). SVG and
-//! PDF skip the shell: our renderer is deterministic, and the shell's depends on whichever app is installed.
+//! extraction, then Looker's own decoder for what the shell can't do (JPEG XL, PSD, TGA, DDS, …). SVG, PDF
+//! and MTL skip the shell: our renderer is deterministic, and the shell's depends on whichever app is installed.
 //! Online-only cloud files never fall back to our decoder, which would download them.
 //!
 //! A few STA workers (shell thumbnail providers expect an apartment) pull from a queue the strip keeps
@@ -116,7 +116,7 @@ fn load(wic: Option<&IWICImagingFactory>, job: &Job) -> Option<(u32, u32, Vec<u8
         let d = crate::imaging::decode(wic?, &job.path, job.size, job.size, true).ok()?;
         Some((d.width, d.height, d.frames.into_iter().next()?.pixels))
     };
-    if matches!(format::sniff_file(&job.path), Format::Svg | Format::Pdf) {
+    if matches!(format::sniff_file(&job.path), Format::Svg | Format::Pdf | Format::Mtl) {
         return ours();
     }
     if let Some(t) = shell(&job.path, job.size, true).or_else(|| shell(&job.path, job.size, false)) {

@@ -104,6 +104,7 @@
               <uap:FileType>.pbm</uap:FileType>
               <uap:FileType>.xcf</uap:FileType>
               <uap:FileType>.qoi</uap:FileType>
+              <uap:FileType>.mtl</uap:FileType>
               <uap:FileType>.cr2</uap:FileType>
               <uap:FileType>.cr3</uap:FileType>
               <uap:FileType>.crw</uap:FileType>

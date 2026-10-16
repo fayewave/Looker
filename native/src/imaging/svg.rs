@@ -18,7 +18,7 @@ thread_local! {
     static FACTORY: RefCell<Option<ID2D1Factory1>> = const { RefCell::new(None) };
 }
 
-fn factory() -> Result<ID2D1Factory1, String> {
+pub(super) fn factory() -> Result<ID2D1Factory1, String> {
     FACTORY.with(|cell| {
         if let Some(f) = &*cell.borrow() {
             return Ok(f.clone());

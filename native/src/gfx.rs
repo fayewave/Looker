@@ -87,6 +87,27 @@ pub fn init_text() -> Result<Text> {
     }
 }
 
+impl Text {
+    /// A one-line Inter format, ellipsis-trimmed, vertically centred (for drawing outside the UI, e.g. mtl.rs).
+    pub fn inter(&self, size: f32, weight: DWRITE_FONT_WEIGHT) -> Result<IDWriteTextFormat> {
+        unsafe {
+            let f = self.dwrite.CreateTextFormat(
+                PCWSTR(self.inter_family.as_ptr()),
+                &self.inter,
+                weight,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("en-us"),
+            )?;
+            prep(&f)?;
+            let sign = self.dwrite.CreateEllipsisTrimmingSign(&f)?;
+            f.SetTrimming(&DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 }, &sign)?;
+            Ok(f)
+        }
+    }
+}
+
 pub struct Fonts {
     /// 12 px: title bar caption and status row.
     pub caption: IDWriteTextFormat,

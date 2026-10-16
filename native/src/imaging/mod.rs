@@ -9,6 +9,7 @@ mod fallback;
 mod gainmap;
 mod hdr;
 pub mod heif;
+pub mod mtl;
 pub mod pdf;
 mod raster;
 pub mod raw;
@@ -44,7 +45,7 @@ pub struct Decoded {
     pub native_height: u32,
     pub format: Format,
     pub taken: Option<FILETIME>,
-    /// Re-rasterizes at any size (SVG, PDF): zoom caps at `VECTOR_MAX_EDGE`, not the native size.
+    /// Re-rasterizes at any size (SVG, PDF, MTL): zoom caps at `VECTOR_MAX_EDGE`, not the native size.
     pub vector: bool,
     /// Page count of a document (PDF); 0 for an image.
     pub pages: u32,
@@ -124,6 +125,8 @@ enum Step {
     Pcx,
     Xcf,
     Pdf,
+    /// A material library drawn as a sheet of swatches.
+    Mtl,
     /// libheif (bundled), when Windows lacks the HEVC or AV1 extension.
     Heif,
     /// libavif (bundled): animated AVIF, which nothing else plays; declines a still one.
@@ -162,6 +165,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Xcf => &[Xcf],
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
         Format::Pdf => &[Pdf],
+        Format::Mtl => &[Mtl],
         Format::Unknown => &[],
     }
 }
@@ -190,6 +194,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Pcx => fallback::pcx(f, path, box_w, box_h).map(Some),
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
+        Step::Mtl => mtl::decode(f, path, box_w, box_h).map(Some),
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
         Step::Avif => avif::decode(f, path, box_w, box_h, still),
         Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
