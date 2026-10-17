@@ -183,7 +183,7 @@ impl App {
                 parts.push((0, name));
             }
             // A model has triangles, not pixels (and the still's zoom means nothing).
-            if c.format == format::Format::Obj {
+            if c.format == format::Format::Model {
                 if let Some(s) = self.model_status() {
                     parts.push((1, s));
                 }

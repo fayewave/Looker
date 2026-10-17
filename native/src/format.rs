@@ -35,8 +35,8 @@ pub enum Format {
     Pdf,
     /// Wavefront material library (text; drawn as a sheet of material cards).
     Mtl,
-    /// Wavefront 3D model (text; rendered with Direct3D, see model/).
-    Obj,
+    /// A 3D model: OBJ, STL, PLY, 3MF, glTF/GLB (rendered with Direct3D, see model/).
+    Model,
 }
 
 #[cfg(test)]
@@ -65,7 +65,7 @@ pub const ALL: &[Format] = &[
     Format::Qoi,
     Format::Pdf,
     Format::Mtl,
-    Format::Obj,
+    Format::Model,
 ];
 
 /// Every extension Looker opens (lower case, no dot). Must equal the manifest FTA list.
@@ -77,7 +77,7 @@ pub const EXTENSIONS: &[&str] = &[
     "cr2", "cr3", "crw", "nef", "nrw", "arw", "sr2", "srf", "dng", "orf", "raf", "rw2", "pef", "srw", "3fr", "fff", "rwl",
     "iiq", "mrw", "dcr", "kdc", "erf", "mef",
     // 3D models and material libraries.
-    "obj", "mtl",
+    "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -114,7 +114,7 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "xcf" => Format::Xcf,
         "qoi" => Format::Qoi,
         "mtl" => Format::Mtl,
-        "obj" => Format::Obj,
+        "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" => Format::Model,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -269,7 +269,11 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
         Format::Mtl => "MTL",
-        Format::Obj => "OBJ",
+        Format::Model => match ext.as_str() {
+            "GLTF" => "glTF",
+            "" => "3D model",
+            e => return Some(e.to_string()),
+        },
     };
     Some(s.to_string())
 }
@@ -358,7 +362,9 @@ mod tests {
             (".ppm", Format::Pnm),
             (".mrw", Format::Raw),
             (".mtl", Format::Mtl),
-            (".obj", Format::Obj),
+            (".obj", Format::Model),
+            (".glb", Format::Model),
+            (".3mf", Format::Model),
         ] {
             assert_eq!(sniff(unknown, Some(e)), f, "{e}");
         }

@@ -53,7 +53,7 @@ pub(super) struct Loaded {
 impl App {
     /// After every navigation: a model on screen starts loading its mesh; anything else drops the last one.
     pub(super) fn sync_model(&mut self) {
-        let want = self.current_path().filter(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Obj).map(Path::to_path_buf);
+        let want = self.current_path().filter(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Model).map(Path::to_path_buf);
         let Some(path) = want else {
             self.model = None;
             return;
@@ -180,11 +180,12 @@ impl App {
     pub(super) fn model_facts(&self) -> Vec<(&'static str, String)> {
         let Some(mesh) = self.model.as_ref().and_then(|m| m.mesh.as_ref()) else { return Vec::new() };
         let size: Vec<String> = (0..3).map(|i| format!("{}", ((mesh.max[i] - mesh.min[i]) * 1000.0).round() / 1000.0)).collect();
-        let textured = mesh.materials.iter().filter(|m| m.map_kd.is_some()).count();
+        let textured = mesh.used_materials().filter(|m| m.map_kd.is_some()).count();
+        let materials = mesh.used_materials().count();
         vec![
             ("Triangles", thousands(mesh.triangles())),
             ("Vertices", thousands(mesh.vertices.len())),
-            ("Materials", if textured > 0 { format!("{} ({textured} textured)", mesh.materials.len()) } else { mesh.materials.len().to_string() }),
+            ("Materials", if textured > 0 { format!("{materials} ({textured} textured)") } else { materials.to_string() }),
             ("Bounds", format!("{} × {} × {} units", size[0], size[1], size[2])),
         ]
     }
@@ -194,7 +195,7 @@ impl App {
         let mesh = self.model.as_ref()?.mesh.as_ref()?;
         let n = thousands;
         let tris = mesh.triangles();
-        let mats = mesh.materials.len();
+        let mats = mesh.used_materials().count();
         Some(format!(
             "{} {}   ·   {} {}",
             n(tris),

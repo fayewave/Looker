@@ -1,9 +1,14 @@
-//! 3D models: a Wavefront .obj with its .mtl materials becomes a [`Mesh`] (triangles, one part per material,
-//! textures decoded), drawn by `render.rs` with Direct3D 11. The decode pool renders a still of it (thumbnails,
-//! the strip, the first frame), and the window swaps in a live view to orbit once the mesh has loaded
-//! (`app/model.rs`). One parse serves both: the last mesh loaded is kept (`load`).
+//! 3D models: a Wavefront .obj with its .mtl materials (here), STL, PLY, 3MF or glTF/GLB becomes a [`Mesh`]
+//! (triangles, one part per material, textures decoded), drawn by `render.rs` with Direct3D 11. The decode
+//! pool renders a still of it (thumbnails, the strip, the first frame), and the window swaps in a live view to
+//! orbit once the mesh has loaded (`app/model.rs`). One parse serves both: the last mesh loaded is kept
+//! (`load`). Everything is shown Y-up; the 3D-printing formats (STL, 3MF), which are Z-up, are turned.
 
+mod gltf;
+mod ply;
 pub mod render;
+mod stl;
+mod threemf;
 
 use std::collections::HashMap;
 use std::os::windows::fs::MetadataExt;
@@ -42,8 +47,12 @@ pub struct Material {
     pub ke: [f32; 3],
     pub map_kd: Option<Arc<Image>>,
     pub map_ke: Option<Arc<Image>>,
-    /// Cut out where the diffuse map is transparent (foliage, fences) rather than blended.
+    /// Cut out where the diffuse map is transparent (foliage, fences) rather than blended...
     pub cutout: bool,
+    /// ...below this alpha.
+    pub cutoff: f32,
+    /// Blended by its alpha (diffuse map included) even at full opacity (glTF's BLEND).
+    pub blend: bool,
 }
 
 impl Material {
@@ -57,11 +66,13 @@ impl Material {
             map_kd: None,
             map_ke: None,
             cutout: false,
+            cutoff: 0.5,
+            blend: false,
         }
     }
 
     pub fn transparent(&self) -> bool {
-        self.d < 0.999
+        self.blend || self.d < 0.999
     }
 }
 
@@ -85,6 +96,15 @@ pub struct Mesh {
 impl Mesh {
     pub fn triangles(&self) -> usize {
         self.indices.len() / 3
+    }
+
+    /// The materials some part is drawn with (a format's fallback may sit unused).
+    pub fn used_materials(&self) -> impl Iterator<Item = &Material> {
+        let mut used = vec![false; self.materials.len()];
+        for p in &self.parts {
+            used[p.material] = true;
+        }
+        self.materials.iter().zip(used).filter(|(_, u)| *u).map(|(m, _)| m)
     }
 
     pub fn centre(&self) -> [f32; 3] {
@@ -116,11 +136,21 @@ pub fn load(f: &IWICImagingFactory, path: &Path) -> Result<Arc<Mesh>, String> {
     }
     let t = std::time::Instant::now();
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let obj = parse_obj(&String::from_utf8_lossy(&bytes));
-    if obj.mesh.indices.is_empty() {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mesh = match ext.as_str() {
+        "stl" => stl::parse(&bytes)?,
+        "ply" => ply::parse(f, path, &bytes)?,
+        "3mf" => threemf::parse(&bytes)?,
+        "gltf" | "glb" => gltf::parse(f, path, &bytes)?,
+        _ => {
+            let obj = parse_obj(&String::from_utf8_lossy(&bytes));
+            finish(f, path, obj)
+        }
+    };
+    if mesh.indices.is_empty() {
         return Err("the file has no faces".into());
     }
-    let mesh = Arc::new(finish(f, path, obj));
+    let mesh = Arc::new(mesh);
     crate::trace::mark(format!(
         "model: {} triangles, {} materials in {:.0} ms",
         mesh.triangles(),
@@ -144,6 +174,62 @@ fn index(word: &str, count: usize) -> Option<usize> {
     let i: i64 = word.parse().ok()?;
     let i = if i < 0 { count as i64 + i } else { i - 1 };
     (0..count as i64).contains(&i).then_some(i as usize)
+}
+
+/// An 8-bit sRGB channel (vertex colours in OBJ, PLY, 3MF) in linear light, as the shader works.
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Z-up (3D printing) to Y-up, keeping the handedness.
+fn z_up(p: [f32; 3]) -> [f32; 3] {
+    [p[0], p[2], -p[1]]
+}
+
+fn bounds(vertices: &[Vertex]) -> ([f32; 3], [f32; 3]) {
+    if vertices.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in vertices {
+        for k in 0..3 {
+            min[k] = min[k].min(v.pos[k]);
+            max[k] = max[k].max(v.pos[k]);
+        }
+    }
+    (min, max)
+}
+
+impl Mesh {
+    /// One part, one material.
+    fn single(vertices: Vec<Vertex>, indices: Vec<u32>, material: Material) -> Mesh {
+        let (min, max) = bounds(&vertices);
+        let parts = vec![Part { start: 0, count: indices.len() as u32, material: 0 }];
+        Mesh { vertices, indices, parts, materials: vec![material], min, max }
+    }
+}
+
+/// Triangles as their corners (positions, uvs and colours; normals ignored): each corner gets its face's
+/// normal, then those meeting at shallow angles around a shared position are smoothed together.
+fn soup(mut corners: Vec<Vertex>) -> (Vec<Vertex>, Vec<u32>) {
+    corners.truncate(corners.len() / 3 * 3);
+    let mut weld: HashMap<[u32; 3], u32> = HashMap::new();
+    let mut flat = Vec::with_capacity(corners.len());
+    for (t, tri) in corners.chunks_exact_mut(3).enumerate() {
+        let (a, b, c) = (tri[0].pos, tri[1].pos, tri[2].pos);
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        for (k, corner) in tri.iter_mut().enumerate() {
+            corner.normal = normalized(n);
+            let next = weld.len() as u32;
+            let id = *weld.entry(corner.pos.map(f32::to_bits)).or_insert(next);
+            flat.push(((t * 3 + k) as u32, id, n));
+        }
+    }
+    smooth_by_angle(&mut corners, &mut flat);
+    let n = corners.len() as u32;
+    (corners, (0..n).collect())
 }
 
 fn normalized(v: [f32; 3]) -> [f32; 3] {
@@ -188,7 +274,7 @@ fn parse_obj(text: &str) -> Obj {
                     pos.push([n[0], n[1], n[2]]);
                     // x y z r g b (some exporters write x y z w; a fourth value alone is w).
                     if n.len() >= 6 {
-                        cols.push([n[3], n[4], n[5]]);
+                        cols.push([linear(n[3]), linear(n[4]), linear(n[5])]);
                         vertex_colours = true;
                     } else {
                         cols.push([1.0; 3]);
@@ -299,16 +385,7 @@ fn parse_obj(text: &str) -> Obj {
         names.push(name);
         indices.extend(idx);
     }
-    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for v in &vertices {
-        for k in 0..3 {
-            min[k] = min[k].min(v.pos[k]);
-            max[k] = max[k].max(v.pos[k]);
-        }
-    }
-    if vertices.is_empty() {
-        (min, max) = ([0.0; 3], [0.0; 3]);
-    }
+    let (min, max) = bounds(&vertices);
     Obj { mesh: Mesh { vertices, indices, parts, materials: Vec::new(), min, max }, libraries, names, vertex_colours }
 }
 
@@ -398,6 +475,8 @@ fn finish(f: &IWICImagingFactory, path: &Path, obj: Obj) -> Mesh {
                 map_ke: image(&lib_dir, m.map("map_Ke")),
                 map_kd,
                 cutout,
+                cutoff: 0.5,
+                blend: false,
             }
         })
         .collect();

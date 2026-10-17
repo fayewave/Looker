@@ -9,9 +9,12 @@ hayro-jpeg2000 = "0.4.0"
 image = { version = "0.25.10", default-features = false, features = ["gif", "png", "webp", "tga", "pnm", "qoi", "ico", "dds"] }
 jxl-oxide = { version = "0.12.6", features = ["moxcms"] }
 kamadak-exif = "0.6.1"
+serde_json = "1"
 windows-core = "0.62"
 windows-numerics = "0.3"
 xcf = "0.4.0"
+# 3MF models are zips (deflate only).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dependencies.windows]
 version = "0.62.2"

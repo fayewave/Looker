@@ -168,7 +168,7 @@ fn plan(f: Format) -> &'static [Step] {
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
         Format::Pdf => &[Pdf],
         Format::Mtl => &[Mtl],
-        Format::Obj => &[Model],
+        Format::Model => &[Model],
         Format::Unknown => &[],
     }
 }
@@ -233,6 +233,14 @@ pub fn decode_for_screen(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h:
 pub fn decode_srgb(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let saved = TARGET.with(|t| t.replace(Space::Srgb));
     let r = decode(f, path, box_w, box_h, true);
+    TARGET.with(|t| *t.borrow_mut() = saved);
+    r
+}
+
+/// `decode_srgb` for an image already in memory (a texture inside a GLB), through WIC.
+pub fn decode_memory_srgb(f: &IWICImagingFactory, bytes: &[u8], box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let saved = TARGET.with(|t| t.replace(Space::Srgb));
+    let r = wic::decode(f, wic::Source::Memory(bytes), box_w, box_h).map_err(|e| e.message().to_string());
     TARGET.with(|t| *t.borrow_mut() = saved);
     r
 }

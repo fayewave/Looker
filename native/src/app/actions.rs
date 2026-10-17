@@ -37,7 +37,7 @@ impl App {
     pub(super) fn can_rotate(&self) -> bool {
         !self.saving_rotation
             && self.placeholder.is_none()
-            && self.viewer.current_entry().is_some_and(|e| e.pages == 0 && e.format != format::Format::Obj)
+            && self.viewer.current_entry().is_some_and(|e| e.pages == 0 && e.format != format::Format::Model)
     }
 
     /// Turns the image on screen 90° as a preview only: the file is untouched until it is saved, so the

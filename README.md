@@ -26,7 +26,7 @@ A fast, minimal photo viewer for Windows 11.
 
 ## Formats
 
-JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF, AVIF, JPEG XL, SVG, PDF, PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, OBJ 3D models (drag to orbit, Shift+drag to pan, scroll to zoom), MTL material libraries (shown as material swatches), and camera RAW (CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR, KDC, ERF, MEF).
+JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF, AVIF, JPEG XL, SVG, PDF, PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, 3D models: OBJ, STL, PLY, 3MF, glTF/GLB (drag to orbit, right-drag to pan, scroll to zoom), MTL material libraries (shown as material swatches), and camera RAW (CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR, KDC, ERF, MEF).
 
 ## Screenshots
 

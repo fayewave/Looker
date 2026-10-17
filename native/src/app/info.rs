@@ -211,7 +211,7 @@ impl App {
         }
         let Some(path) = self.current_path() else { return out };
         let entry = self.viewer.current_entry();
-        let model = entry.is_some_and(|e| e.format == format::Format::Obj);
+        let model = entry.is_some_and(|e| e.format == format::Format::Model);
         // A model's histogram would be of its render, not of anything in the file.
         if entry.is_some_and(|e| e.histogram.is_some()) && !model {
             out.push(Block::Histogram);

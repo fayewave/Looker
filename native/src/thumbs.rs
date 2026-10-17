@@ -116,7 +116,7 @@ fn load(wic: Option<&IWICImagingFactory>, job: &Job) -> Option<(u32, u32, Vec<u8
         let d = crate::imaging::decode(wic?, &job.path, job.size, job.size, true).ok()?;
         Some((d.width, d.height, d.frames.into_iter().next()?.pixels))
     };
-    if matches!(format::sniff_file(&job.path), Format::Svg | Format::Pdf | Format::Mtl | Format::Obj) {
+    if matches!(format::sniff_file(&job.path), Format::Svg | Format::Pdf | Format::Mtl | Format::Model) {
         return ours();
     }
     if let Some(t) = shell(&job.path, job.size, true).or_else(|| shell(&job.path, job.size, false)) {

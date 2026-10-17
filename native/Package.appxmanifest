@@ -105,6 +105,11 @@
               <uap:FileType>.xcf</uap:FileType>
               <uap:FileType>.qoi</uap:FileType>
               <uap:FileType>.obj</uap:FileType>
+              <uap:FileType>.stl</uap:FileType>
+              <uap:FileType>.ply</uap:FileType>
+              <uap:FileType>.3mf</uap:FileType>
+              <uap:FileType>.gltf</uap:FileType>
+              <uap:FileType>.glb</uap:FileType>
               <uap:FileType>.mtl</uap:FileType>
               <uap:FileType>.cr2</uap:FileType>
               <uap:FileType>.cr3</uap:FileType>

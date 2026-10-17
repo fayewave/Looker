@@ -33,7 +33,7 @@ cbuffer Material : register(b1) {
     float4 kd_d;
     float4 ks_ns;
     float4 ke;
-    float4 flags; // x: diffuse map, y: emission map, z: cut out
+    float4 flags; // x: diffuse map, y: emission map, z: cut out below this alpha, w: blended
 };
 Texture2D kd_map : register(t0);
 Texture2D ke_map : register(t1);
@@ -68,10 +68,11 @@ float4 ps(PSIn i) : SV_Target {
     if (flags.x > 0) {
         float4 t = kd_map.Sample(samp, i.uv);
         base *= t.rgb / max(t.a, 1e-4);
-        alpha *= t.a;
+        // The map's alpha counts only where the material says so (an opaque glTF ignores it).
+        if (flags.z > 0 || flags.w > 0) alpha *= t.a;
     }
     if (flags.z > 0) {
-        if (alpha < 0.5) discard;
+        if (alpha < flags.z) discard;
         alpha = kd_d.a;
     }
     float hemi = lerp(0.05, 0.16, dot(n, up_out.xyz) * 0.5 + 0.5);
@@ -465,7 +466,7 @@ impl Renderer {
                 let flag = |b: bool| if b { 1.0 } else { 0.0 };
                 let consts = [
                     m.kd[0], m.kd[1], m.kd[2], m.d, m.ks[0], m.ks[1], m.ks[2], m.ns, m.ke[0], m.ke[1], m.ke[2], 0.0,
-                    flag(kd.is_some()), flag(ke.is_some()), flag(m.cutout && kd.is_some()), 0.0,
+                    flag(kd.is_some()), flag(ke.is_some()), if m.cutout && kd.is_some() { m.cutoff.max(1e-3) } else { 0.0 }, flag(m.blend),
                 ];
                 GpuMaterial { consts, kd, ke, transparent: m.transparent() }
             })
