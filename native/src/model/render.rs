@@ -222,8 +222,10 @@ impl Camera {
 
     /// Turns the model under a drag of `dx`, `dy` DIPs.
     pub fn orbit(&mut self, dx: f32, dy: f32) {
-        self.yaw -= dx * 0.008;
-        self.pitch = (self.pitch + dy * 0.008).clamp(-89f32.to_radians(), 89f32.to_radians());
+        // A full turn per ~1250 DIPs of drag.
+        const RADIANS_PER_DIP: f32 = 0.005;
+        self.yaw -= dx * RADIANS_PER_DIP;
+        self.pitch = (self.pitch + dy * RADIANS_PER_DIP).clamp(-89f32.to_radians(), 89f32.to_radians());
     }
 
     /// Slides the orbit centre with a drag, the model following the pointer, in a view `view_h` DIPs tall.

@@ -1,7 +1,7 @@
 //! The live view of a 3D model. The decode pool's still (model/render.rs) shows first, like any image; the
 //! mesh loads on its own thread meanwhile (usually from the still's parse, kept in `model::load`), and once it
-//! is in, the viewport draws the model on the window's own device instead: drag to orbit, Shift+drag to pan,
-//! the wheel (or the zoom buttons) to move in and out, double-click or Fit to go back to the start.
+//! is in, the viewport draws the model on the window's own device instead: drag to orbit, right- or Shift+drag
+//! to pan, the wheel (or the zoom buttons) to move in and out, double-click or Fit to go back to the start.
 
 use super::*;
 use crate::model::render::{Camera, GpuMesh, Output, Renderer, Target};
@@ -185,7 +185,7 @@ impl App {
             ("Triangles", thousands(mesh.triangles())),
             ("Vertices", thousands(mesh.vertices.len())),
             ("Materials", if textured > 0 { format!("{} ({textured} textured)", mesh.materials.len()) } else { mesh.materials.len().to_string() }),
-            ("Size", format!("{} × {} × {} units", size[0], size[1], size[2])),
+            ("Bounds", format!("{} × {} × {} units", size[0], size[1], size[2])),
         ]
     }
 

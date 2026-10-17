@@ -196,6 +196,13 @@ impl App {
                     if self.explorer.drag.is_some() {
                         self.explorer_grip_drag(x);
                     }
+                    if let Some((px, py, moved)) = self.pan_drag {
+                        // A few DIPs of slack, so a right-click that wobbles still opens the menu.
+                        if moved || (x - px).abs() + (y - py).abs() > 4.0 {
+                            self.model_drag(x - px, y - py, true);
+                            self.pan_drag = Some((x, y, true));
+                        }
+                    }
                     if let Some((px, py)) = self.drag.filter(|_| self.model_active()) {
                         self.model_drag(x - px, y - py, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         self.drag = Some((x, y));
@@ -304,9 +311,25 @@ impl App {
                     self.invalidate();
                     Some(LRESULT(0))
                 }
+                WM_RBUTTONDOWN => {
+                    let (x, y) = self.dip_from_lparam(lp);
+                    if self.dialog.is_none() && self.menu.is_none() && self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
+                        SetCapture(self.hwnd);
+                        self.pan_drag = Some((x, y, false));
+                        return Some(LRESULT(0));
+                    }
+                    None
+                }
                 WM_RBUTTONUP => {
                     if self.dialog.is_some() {
                         return Some(LRESULT(0));
+                    }
+                    // A right-drag that panned a model: no menu.
+                    if let Some((_, _, moved)) = self.pan_drag.take() {
+                        let _ = ReleaseCapture();
+                        if moved {
+                            return Some(LRESULT(0));
+                        }
                     }
                     let (x, y) = self.dip_from_lparam(lp);
                     match self.hit(x, y) {
@@ -379,6 +402,7 @@ impl App {
                 }
                 WM_CAPTURECHANGED => {
                     self.drag = None;
+                    self.pan_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
                     self.explorer_grip_release();

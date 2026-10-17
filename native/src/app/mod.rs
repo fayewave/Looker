@@ -414,6 +414,9 @@ pub struct App {
     hover: Option<Hit>,
     pressed: Option<Hit>,
     drag: Option<(f32, f32)>,
+    /// A right-button press on a 3D model: where the pointer was, and whether it has moved far enough to be a
+    /// pan (no context menu on release).
+    pan_drag: Option<(f32, f32, bool)>,
     cap_hover: Option<Caption>,
     cap_pressed: Option<Caption>,
 }
@@ -1094,6 +1097,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             hover: None,
             pressed: None,
             drag: None,
+            pan_drag: None,
             cap_hover: None,
             cap_pressed: None,
         });
