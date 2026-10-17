@@ -2,7 +2,7 @@
   <img src="brand/slices/looker_v3_full.svg" alt="Looker" width="420">
 </p>
 
-A fast, minimal photo viewer for Windows 11.
+A fast, minimal file viewer for Windows 11: photos, camera RAW, PDFs and 3D models.
 
 <a href="https://apps.microsoft.com/detail/9NV130N4C2GZ?mode=direct">
   <picture>
@@ -13,20 +13,33 @@ A fast, minimal photo viewer for Windows 11.
 
 ## Features
 
-- Opens instantly, straight into the photo.
-- Browses the folder in Explorer order, with the next photos preloaded.
-- File explorer, thumbnail strip, info panel with EXIF and histogram, fullscreen and slideshow.
-- Rename, rotate and save, delete to Recycle Bin, copy, reveal in Explorer, set as wallpaper.
-- The thumbnail strip and file explorer can also list files Looker can't open (right-click either): preview them with Windows' own thumbnail, step through them with `←` `→`, rename or delete them.
+- Opens instantly, straight into the file.
+- Browses the folder in Explorer order, with the next files preloaded.
+- File explorer, thumbnail strip, info panel (EXIF and histogram for photos, triangle and material counts for
+  models), fullscreen and slideshow.
+- Rename, delete to Recycle Bin, copy, reveal in Explorer; rotate and save photos, set one as wallpaper.
+- Files Looker can't open still show up: drop one on the window, or list them in the thumbnail strip and file
+  explorer (right-click either), and they appear with Windows' own thumbnail, in their place among the rest, to
+  step through with `←` `→`, rename or delete.
 - Animated GIF, WebP and APNG playback.
 - PDFs open as a row of pages: zoom and pan like a photo, turn pages with the page bar.
-- Colour managed to the display, wide gamut included. With HDR on, HDR photos (gain-map JPEGs such as Ultra HDR, HDR AVIF, JPEG XR) show their full brightness.
-- Drag a photo or folder onto the window to open it.
-- One window: opening another photo reuses it.
+- 3D models open in a live view: drag to turn, right-drag to move, scroll to zoom, with their materials and
+  textures.
+- Material libraries (MTL) open as a sheet of material swatches with their texture maps.
+- Colour managed to the display, wide gamut included. With HDR on, HDR photos (gain-map JPEGs such as Ultra HDR,
+  HDR AVIF, JPEG XR) show their full brightness.
+- Drag a file or folder onto the window to open it.
+- One window: opening another file reuses it.
 
 ## Formats
 
-JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF, AVIF, JPEG XL, SVG, PDF, PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, 3D models: OBJ, STL, PLY, 3MF, glTF/GLB (drag to orbit, right-drag to pan, scroll to zoom), MTL material libraries (shown as material swatches), and camera RAW (CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR, KDC, ERF, MEF).
+- **Images:** JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF, AVIF, JPEG XL, SVG,
+  PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI
+- **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
+  KDC, ERF, MEF
+- **Documents:** PDF
+- **3D models:** OBJ (with its MTL), STL, PLY, 3MF, glTF/GLB (not Draco- or meshopt-compressed)
+- **Materials:** MTL
 
 ## Screenshots
 
@@ -38,16 +51,18 @@ JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF
   <img src="brand/screenshots/readme-info.png" alt="A camera RAW photo in Looker with the info panel open" width="800">
 </p>
 
-## Keyboard
+## Keyboard and mouse
 
 | Key | Action |
 |---|---|
 | `←` `→` | Previous / next |
 | `Home` `End` | First / last |
-| `Page Up` `Page Down` | Previous / next PDF page; past a PDF's ends, top / bottom of the file explorer (or first / last photo) |
+| `Page Up` `Page Down` | Previous / next PDF page; past a PDF's ends, top / bottom of the file explorer (or first / last file) |
 | Wheel, `Ctrl` `+` `-` | Zoom at the pointer |
 | `Ctrl+0` or `F`, `1` | Fit, 100 % |
-| Double-click | Toggle fit / 100 % |
+| Double-click | Toggle fit / 100 % (a 3D model: back to the starting view) |
+| Drag | Pan (a 3D model: turn it) |
+| Right-drag, `Shift`+drag | Move a 3D model |
 | `Space` | Pause animation or slideshow |
 | `F11`, `F5` | Fullscreen, slideshow |
 | `E`, `T`, `I` | File explorer, thumbnail strip, info panel |
@@ -59,7 +74,9 @@ JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF/HIF
 | `Ctrl+,` | Settings |
 | `Esc` | Back |
 
-The mouse wheel can step between photos instead of zooming (`Ctrl` + wheel still zooms), and zoom can be anchored on the middle of the view instead of the pointer. Looker remembers its window size and position unless you turn that off. All in Settings.
+The mouse wheel can step between files instead of zooming (`Ctrl` + wheel still zooms), and zoom can be anchored on
+the middle of the view instead of the pointer. Looker remembers its window size and position unless you turn that
+off. All in Settings.
 
 ## Build from source
 
@@ -71,5 +88,5 @@ pwsh scripts/Publish-Native.ps1          # install the build as the Looker packa
 pwsh scripts/Build-NativePackage.ps1 -Store   # Microsoft Store upload
 ```
 
-Native Rust, drawn with Direct2D and DirectWrite, decoding through WIC. (Looker 1.0 was a WinUI 3 app; its source
-is at the `csharp-final` tag.)
+Native Rust, drawn with Direct2D and DirectWrite, decoding through WIC; 3D models render with Direct3D 11. (Looker
+1.0 was a WinUI 3 app; its source is at the `csharp-final` tag.)
