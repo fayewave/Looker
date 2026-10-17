@@ -64,6 +64,15 @@ impl App {
     }
 
     /// Where the image fits and zooms: the viewport minus the floating cards.
+    /// The background and the photo fill the whole window: the title bar, toolbar, strip, status row and cards
+    /// float on them (not behind a page, which keeps its own surface below the toolbar).
+    pub(super) fn photo_layer(&self) -> D2D_RECT_F {
+        let v = self.viewport();
+        let (_, wh) = self.size_dip();
+        let (top, bottom) = if self.chrome() && self.page.is_none() { (0.0, wh) } else { (v.top, self.content_bottom()) };
+        D2D_RECT_F { top, bottom, ..v }
+    }
+
     pub(super) fn image_area(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let left = v.left + self.left_inset();
@@ -421,11 +430,7 @@ impl App {
             self.draw_landing(g);
             return;
         }
-        // The background and the photo fill the whole window: the title bar, toolbar, strip and status row
-        // float on them (not behind a page, which keeps its own surface below the toolbar).
-        let (_, wh) = self.size_dip();
-        let (top, bottom) = if self.chrome() && self.page.is_none() { (0.0, wh) } else { (v.top, self.content_bottom()) };
-        let bg = D2D_RECT_F { top, bottom, ..v };
+        let bg = self.photo_layer();
         if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {

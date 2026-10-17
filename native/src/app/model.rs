@@ -4,7 +4,7 @@
 //! to pan, the wheel (or the zoom buttons) to move in and out, double-click or Fit to go back to the start.
 
 use super::*;
-use crate::model::render::{Camera, GpuMesh, Output, Renderer, Target};
+use crate::model::render::{Camera, GpuMesh, Output, Place, Renderer, Target};
 use crate::model::Mesh;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT};
 
@@ -19,7 +19,7 @@ pub(super) struct ModelView {
     target: Option<Target>,
     bitmap: Option<ID2D1Bitmap1>,
     /// What `bitmap` shows: re-rendered when any of it changes.
-    drawn: Option<(Camera, Output, u32, u32)>,
+    drawn: Option<(Camera, Output, u32, u32, Place)>,
 }
 
 impl ModelView {
@@ -102,9 +102,12 @@ impl App {
         if !self.model_active() {
             return;
         }
+        // The whole photo layer, framed to the area between the panels (as a photo is fitted there).
+        let layer = self.photo_layer();
         let a = self.image_area();
         let s = self.scale();
-        let (w, h) = (((a.right - a.left) * s).round().max(1.0) as u32, ((a.bottom - a.top) * s).round().max(1.0) as u32);
+        let (w, h) = (((layer.right - layer.left) * s).round().max(1.0) as u32, ((layer.bottom - layer.top) * s).round().max(1.0) as u32);
+        let place = Place::inside([a.left, a.top, a.right, a.bottom], [layer.left, layer.top, layer.right, layer.bottom]);
         let (format, out) = if g.space().is_scrgb() {
             (DXGI_FORMAT_R16G16B16A16_FLOAT, Output::Linear(g.space().white_scale()))
         } else {
@@ -112,7 +115,7 @@ impl App {
         };
         let Some(m) = self.model.as_mut() else { return };
         let Some(mesh) = m.mesh.clone() else { return };
-        if m.drawn == Some((m.camera, out, w, h)) && m.bitmap.is_some() {
+        if m.drawn == Some((m.camera, out, w, h, place)) && m.bitmap.is_some() {
             return;
         }
         let r = (|| -> Result<(), String> {
@@ -127,11 +130,11 @@ impl App {
                 m.target = Some(r.target(w, h, format)?);
             }
             let t = m.target.as_ref().unwrap();
-            r.draw(&mesh, gpu, t, &m.camera, out);
+            r.draw(&mesh, gpu, t, &m.camera, &place, out);
             if m.bitmap.is_none() {
                 m.bitmap = Some(g.texture_bitmap(&t.texture, format).map_err(|e| e.message().to_string())?);
             }
-            m.drawn = Some((m.camera, out, w, h));
+            m.drawn = Some((m.camera, out, w, h, place));
             Ok(())
         })();
         if let Err(e) = r {
@@ -140,10 +143,10 @@ impl App {
         }
     }
 
-    /// Draws the model into the image area; false when there is none to draw (the still shows instead).
+    /// Draws the model over the photo layer; false when there is none to draw (the still shows instead).
     pub(super) fn draw_model(&self, g: &Gfx) -> bool {
         let Some(b) = self.model.as_ref().filter(|_| self.model_active()).and_then(|m| m.bitmap.as_ref()) else { return false };
-        g.draw_bitmap(b, self.image_area(), 1.0);
+        g.draw_bitmap(b, self.photo_layer(), 1.0);
         true
     }
 

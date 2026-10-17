@@ -146,6 +146,33 @@ impl Default for Camera {
     }
 }
 
+/// Where the framing goes inside the target: the model is fitted to a frame of aspect `aspect` that covers
+/// `scale` of the target's width and height, its centre `offset` from the target's (both in clip space,
+/// -1..1). The window's view fits it to the area between the panels while drawing the whole photo layer, so
+/// the model carries on under the panels as a photo does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub aspect: f32,
+    pub scale: [f32; 2],
+    pub offset: [f32; 2],
+}
+
+impl Place {
+    /// The framing fills the target.
+    pub fn whole(width: u32, height: u32) -> Place {
+        Place { aspect: width as f32 / height.max(1) as f32, scale: [1.0; 2], offset: [0.0; 2] }
+    }
+
+    /// The frame `inner` inside `outer` (left, top, right, bottom, y down).
+    pub fn inside(inner: [f32; 4], outer: [f32; 4]) -> Place {
+        let (iw, ih) = ((inner[2] - inner[0]).max(1e-3), (inner[3] - inner[1]).max(1e-3));
+        let (ow, oh) = ((outer[2] - outer[0]).max(1e-3), (outer[3] - outer[1]).max(1e-3));
+        let cx = (inner[0] + inner[2]) / 2.0 - outer[0];
+        let cy = (inner[1] + inner[3]) / 2.0 - outer[1];
+        Place { aspect: iw / ih, scale: [iw / ow, ih / oh], offset: [cx / ow * 2.0 - 1.0, 1.0 - cy / oh * 2.0] }
+    }
+}
+
 struct Eye {
     view_proj: [[f32; 4]; 4],
     eye: [f32; 3],
@@ -200,7 +227,8 @@ impl Camera {
         need * 1.08 * self.zoom
     }
 
-    fn eye(&self, mesh: &Mesh, aspect: f32) -> Eye {
+    fn eye(&self, mesh: &Mesh, place: &Place) -> Eye {
+        let aspect = place.aspect;
         let r = mesh.radius();
         let c = mesh.centre();
         let target: [f32; 3] = std::array::from_fn(|i| c[i] + self.pan[i]);
@@ -218,6 +246,11 @@ impl Camera {
             m[i] = [f / aspect * right[i], f * up[i], a * back[i], -back[i]];
         }
         m[3] = [-f / aspect * dot(eye, right), -f * dot(eye, up), -a * dot(eye, back) + b, dot(eye, back)];
+        // Into the target: x' = x * scale + w * offset (w is the clip-space divisor), likewise y.
+        for row in &mut m {
+            row[0] = row[0] * place.scale[0] + row[3] * place.offset[0];
+            row[1] = row[1] * place.scale[1] + row[3] * place.offset[1];
+        }
         Eye { view_proj: m, eye, right, up, back }
     }
 
@@ -517,8 +550,8 @@ impl Renderer {
     }
 
     /// Draws `mesh` seen by `camera` into `target`, on a transparent background.
-    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, out: Output) {
-        let e = camera.eye(mesh, target.width as f32 / target.height.max(1) as f32);
+    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, place: &Place, out: Output) {
+        let e = camera.eye(mesh, place);
         // Lights hang off the camera: the key above left and in front, a dim fill from the right.
         let key = normalized(mix(e.right, -0.5, e.up, 0.7, e.back, 0.6));
         let fill = normalized(mix(e.right, 0.7, e.up, -0.2, e.back, 0.5));
@@ -628,7 +661,7 @@ pub fn still(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Res
     let pixels = warp_renderer(|r| {
         let gpu = r.upload(&mesh)?;
         let target = r.target(w, h, DXGI_FORMAT_B8G8R8A8_UNORM)?;
-        r.draw(&mesh, &gpu, &target, &Camera::default(), Output::Srgb);
+        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb);
         read_back(r, &target)
     })?;
     let mut d = Decoded::still(w, h, pixels, 1600, 1200, None);
@@ -684,7 +717,7 @@ mod tests {
     fn the_centre_projects_to_the_middle_and_the_sphere_fits() {
         let m = mesh([-1.0, -2.0, -3.0], [3.0, 2.0, 1.0]);
         for aspect in [0.5f32, 1.0, 2.0] {
-            let e = Camera::default().eye(&m, aspect);
+            let e = Camera::default().eye(&m, &Place { aspect, scale: [1.0; 2], offset: [0.0; 2] });
             let c = project(&e.view_proj, m.centre());
             assert!(c[0].abs() < 1e-4 && c[1].abs() < 1e-4 && (0.0..1.0).contains(&c[2]), "{c:?}");
             // A point on the sphere straight up (screen-wise) from the centre lands inside the view.
@@ -715,6 +748,17 @@ mod tests {
         println!("again (mesh cached) in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         let rgba: Vec<u8> = d.frames[0].pixels.chunks_exact(4).flat_map(|c| [c[2], c[1], c[0], c[3]]).collect();
         image::save_buffer(p.with_extension("png"), &rgba, d.width, d.height, image::ExtendedColorType::Rgba8).unwrap();
+    }
+
+    #[test]
+    fn a_place_inside_maps_the_frame_into_the_target() {
+        let m = mesh([-1.0; 3], [1.0; 3]);
+        // A frame on the right half of a 200 x 100 target: the centre lands at x = +0.5.
+        let p = Place::inside([100.0, 0.0, 200.0, 100.0], [0.0, 0.0, 200.0, 100.0]);
+        assert_eq!((p.aspect, p.scale, p.offset), (1.0, [0.5, 1.0], [0.5, 0.0]));
+        let e = Camera::default().eye(&m, &p);
+        let c = project(&e.view_proj, m.centre());
+        assert!((c[0] - 0.5).abs() < 1e-4 && c[1].abs() < 1e-4, "{c:?}");
     }
 
     #[test]
