@@ -423,13 +423,12 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
     let sphere_px = ((SPHERE * scale).round() as u32).max(1);
     let tex_box = ((TILE * scale).max(sphere_px as f32 * 2.0).round() as u32).clamp(64, 1024);
 
-    // Every map once (libraries share textures between materials), decoded as plain sRGB whatever the screen.
+    // Every map once (libraries share textures between materials).
     let mut textures: HashMap<PathBuf, Option<Texture>> = HashMap::new();
-    let saved = super::TARGET.with(|t| t.replace(crate::colour::Space::Srgb));
     for m in &mats {
         for (_, name) in &m.maps {
             let Some(p) = resolve(dir, name) else { continue };
-            textures.entry(p.clone()).or_insert_with(|| match super::decode(f, &p, tex_box, tex_box, true) {
+            textures.entry(p.clone()).or_insert_with(|| match super::decode_srgb(f, &p, tex_box, tex_box) {
                 Ok(d) => Some(Texture::new(d.width, d.height, d.frames.into_iter().next()?.pixels)),
                 Err(e) => {
                     crate::trace::mark(format!("mtl: map {} failed: {e}", p.display()));
@@ -438,8 +437,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
             });
         }
     }
-    super::TARGET.with(|t| *t.borrow_mut() = saved);
-    let texture = |m: &Material, key: &str| m.map(key).and_then(|n| resolve(dir, n)).and_then(|p| textures.get(&p)?.as_ref());
+    let texture =|m: &Material, key: &str| m.map(key).and_then(|n| resolve(dir, n)).and_then(|p| textures.get(&p)?.as_ref());
 
     let text = text()?;
     let e = |e: windows::core::Error| e.message().to_string();

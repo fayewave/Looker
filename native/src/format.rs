@@ -35,6 +35,8 @@ pub enum Format {
     Pdf,
     /// Wavefront material library (text; drawn as a sheet of material cards).
     Mtl,
+    /// Wavefront 3D model (text; rendered with Direct3D, see model/).
+    Obj,
 }
 
 #[cfg(test)]
@@ -63,6 +65,7 @@ pub const ALL: &[Format] = &[
     Format::Qoi,
     Format::Pdf,
     Format::Mtl,
+    Format::Obj,
 ];
 
 /// Every extension Looker opens (lower case, no dot). Must equal the manifest FTA list.
@@ -73,8 +76,8 @@ pub const EXTENSIONS: &[&str] = &[
     // Camera RAW. No Sigma .x3f: libraw dropped Foveon and no WIC codec reads it.
     "cr2", "cr3", "crw", "nef", "nrw", "arw", "sr2", "srf", "dng", "orf", "raf", "rw2", "pef", "srw", "3fr", "fff", "rwl",
     "iiq", "mrw", "dcr", "kdc", "erf", "mef",
-    // 3D material libraries.
-    "mtl",
+    // 3D models and material libraries.
+    "obj", "mtl",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -111,6 +114,7 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "xcf" => Format::Xcf,
         "qoi" => Format::Qoi,
         "mtl" => Format::Mtl,
+        "obj" => Format::Obj,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -265,6 +269,7 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
         Format::Mtl => "MTL",
+        Format::Obj => "OBJ",
     };
     Some(s.to_string())
 }
@@ -353,6 +358,7 @@ mod tests {
             (".ppm", Format::Pnm),
             (".mrw", Format::Raw),
             (".mtl", Format::Mtl),
+            (".obj", Format::Obj),
         ] {
             assert_eq!(sniff(unknown, Some(e)), f, "{e}");
         }

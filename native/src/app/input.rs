@@ -196,7 +196,10 @@ impl App {
                     if self.explorer.drag.is_some() {
                         self.explorer_grip_drag(x);
                     }
-                    if let Some((px, py)) = self.drag {
+                    if let Some((px, py)) = self.drag.filter(|_| self.model_active()) {
+                        self.model_drag(x - px, y - py, GetKeyState(VK_SHIFT.0 as i32) < 0);
+                        self.drag = Some((x, y));
+                    } else if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.sync_page_to_view(); // dragging across a document moves the page bar along
                         self.drag = Some((x, y));
@@ -250,7 +253,7 @@ impl App {
                     if h == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_press(x);
                     }
-                    if h == Some(Hit::Viewport) && self.photo_up() {
+                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
                         self.drag = Some((x, y));
                     }
                     self.invalidate();
@@ -360,7 +363,9 @@ impl App {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
-                    if self.hit(x, y) == Some(Hit::Viewport) && self.photo_up() {
+                    if self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
+                        self.model_reset();
+                    } else if self.hit(x, y) == Some(Hit::Viewport) && self.photo_up() {
                         let (ax, ay) = self.zoom_anchor(x, y);
                         self.view.toggle_fit_actual(ax, ay);
                         self.after_zoom();
@@ -422,6 +427,10 @@ impl App {
                             }
                             return Some(LRESULT(0));
                         }
+                        if self.model_active() {
+                            self.model_zoom(0.85f32.powf(delta as f32 / 120.0));
+                            return Some(LRESULT(0));
+                        }
                         // Navigating works over a covering file; zooming the photo hidden under it doesn't.
                         if self.placeholder.is_none() {
                             let (ax, ay) = self.zoom_anchor(x, y);
@@ -480,7 +489,7 @@ impl App {
                         }
                         VK_F if !ctrl => self.act(Tool::Fit),
                         VK_0 if ctrl => self.act(Tool::Fit),
-                        VK_1 if self.photo_up() => {
+                        VK_1 if self.photo_up() && !self.model_active() => {
                             let a = self.image_area();
                             self.view.actual_size_at(((a.right - a.left) / 2.0) as f64, ((a.bottom - a.top) / 2.0) as f64);
                             self.after_zoom();
@@ -621,6 +630,11 @@ impl App {
                 }
                 crate::pages::WM_PAGE_RENDERED => {
                     self.on_pages_rendered();
+                    Some(LRESULT(0))
+                }
+                model::WM_MODEL_LOADED => {
+                    let l = Box::from_raw(lp.0 as *mut model::Loaded);
+                    self.on_model_loaded(*l);
                     Some(LRESULT(0))
                 }
                 crate::thumbs::WM_THUMBS => {

@@ -11,6 +11,7 @@ mod landing;
 mod strip;
 mod input;
 mod menus;
+mod model;
 mod page;
 mod slideshow;
 
@@ -393,6 +394,8 @@ pub struct App {
     update: crate::store::UpdateStatus,
     /// Covering the photo while the explorer's cursor is on a file Looker can't show.
     placeholder: Option<Placeholder>,
+    /// The 3D model on screen, while the current file is one.
+    model: Option<model::ModelView>,
     /// The slideshow's dissolve from the previous image, while it runs.
     fade: Option<slideshow::Fade>,
     /// What the viewport drew last (the bitmap, where, and whether it is SDR: `Gfx::draw_photo`), for the
@@ -478,6 +481,7 @@ impl App {
             settings::save(&self.settings);
         }
         self.explorer_follow();
+        self.sync_model();
         self.invalidate();
     }
 
@@ -528,6 +532,10 @@ impl App {
     fn upgrade(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_UPGRADE);
+        }
+        // The live view draws the model itself: no sharper still is needed.
+        if self.model_active() {
+            return;
         }
         let r = self.view.target_rect();
         // A bucket measures an image's long edge, or a document's longest page edge.
@@ -723,6 +731,7 @@ impl App {
         self.stop_slideshow();
         self.begin_navigation();
         self.viewer.close();
+        self.model = None;
         self.explorer = explorer::Explorer::new();
         self.folder_watch = None;
         self.landing.stale();
@@ -814,6 +823,9 @@ impl App {
         match t {
             Tool::Previous => self.step(-1),
             Tool::Next => self.step(1),
+            Tool::ZoomOut if self.model_active() => self.model_zoom(1.25),
+            Tool::ZoomIn if self.model_active() => self.model_zoom(1.0 / 1.25),
+            Tool::Fit if self.model_active() => self.model_reset(),
             Tool::ZoomOut => self.zoom_center(1.0 / 1.25),
             Tool::ZoomIn => self.zoom_center(1.25),
             Tool::Fit => {
@@ -877,6 +889,9 @@ impl App {
         self.viewer.reupload(g);
         self.thumbs.device_lost();
         self.landing.device_lost();
+        if let Some(m) = &mut self.model {
+            m.device_lost();
+        }
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -1065,6 +1080,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             update: Default::default(),
             missing_extension: None,
             placeholder: None,
+            model: None,
             fade: None,
             last_drawn: None,
             pdf_page: 0,

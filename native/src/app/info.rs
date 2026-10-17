@@ -211,7 +211,9 @@ impl App {
         }
         let Some(path) = self.current_path() else { return out };
         let entry = self.viewer.current_entry();
-        if entry.is_some_and(|e| e.histogram.is_some()) {
+        let model = entry.is_some_and(|e| e.format == format::Format::Obj);
+        // A model's histogram would be of its render, not of anything in the file.
+        if entry.is_some_and(|e| e.histogram.is_some()) && !model {
             out.push(Block::Histogram);
         }
         out.push(Block::Title("File"));
@@ -220,9 +222,15 @@ impl App {
             if let Some(t) = format::display_name(e.format, Some(path)) {
                 out.push(row("Type", t));
             }
-            let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
-            out.push(row("Dimensions", format!("{w} × {h}")));
-            if e.pages == 0 {
+            if model {
+                for (label, value) in self.model_facts() {
+                    out.push(row(label, value));
+                }
+            } else {
+                let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
+                out.push(row("Dimensions", format!("{w} × {h}")));
+            }
+            if e.pages == 0 && !model {
                 out.push(row("Megapixels", format!("{:.1} MP", e.native_w as f64 * e.native_h as f64 / 1_000_000.0)));
             }
         }

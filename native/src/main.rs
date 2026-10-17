@@ -20,6 +20,7 @@ mod gfx;
 mod imaging;
 mod instance;
 mod metadata;
+mod model;
 mod pages;
 mod settings;
 mod store;

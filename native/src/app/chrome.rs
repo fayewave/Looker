@@ -182,6 +182,17 @@ impl App {
             if let Some(name) = format::display_name(c.format, Some(path)) {
                 parts.push((0, name));
             }
+            // A model has triangles, not pixels (and the still's zoom means nothing).
+            if c.format == format::Format::Obj {
+                if let Some(s) = self.model_status() {
+                    parts.push((1, s));
+                }
+                if let Some(i) = &self.info {
+                    parts.push((3, format_bytes(i.size)));
+                    parts.push((6, format!("Modified {}", format_time(i.modified))));
+                }
+                return parts;
+            }
             if c.pages > 0 {
                 parts.push((4, if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) }));
             }
@@ -264,6 +275,7 @@ impl App {
         self.hits.clear();
         self.fades.begin();
         let sliding = self.step_slides();
+        self.prepare_model(&g);
         g.begin(self.theme().window);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
@@ -426,7 +438,8 @@ impl App {
         }
         // A file Looker can't open covers the photo: the photo isn't drawn at all (it would show around the
         // cover, behind the floating bars).
-        if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none()) {
+        let model = self.draw_model(g);
+        if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none() && !model) {
             {
                 let r = self.view.frame();
                 let a = self.image_area();

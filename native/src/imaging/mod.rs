@@ -127,6 +127,8 @@ enum Step {
     Pdf,
     /// A material library drawn as a sheet of swatches.
     Mtl,
+    /// A 3D model's still (model/render.rs).
+    Model,
     /// libheif (bundled), when Windows lacks the HEVC or AV1 extension.
     Heif,
     /// libavif (bundled): animated AVIF, which nothing else plays; declines a still one.
@@ -166,6 +168,7 @@ fn plan(f: Format) -> &'static [Step] {
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
         Format::Pdf => &[Pdf],
         Format::Mtl => &[Mtl],
+        Format::Obj => &[Model],
         Format::Unknown => &[],
     }
 }
@@ -195,6 +198,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
         Step::Mtl => mtl::decode(f, path, box_w, box_h).map(Some),
+        Step::Model => crate::model::render::still(f, path, box_w, box_h).map(Some),
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),
         Step::Avif => avif::decode(f, path, box_w, box_h, still),
         Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
@@ -222,6 +226,15 @@ pub fn decode_for_screen(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h:
     }
     d.generation = out.generation;
     Ok(d)
+}
+
+/// `decode` in sRGB whatever screen the calling thread is decoding for: a texture or a swatch inside another
+/// file's render (mtl.rs, the 3D models), which converts as a whole.
+pub fn decode_srgb(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let saved = TARGET.with(|t| t.replace(Space::Srgb));
+    let r = decode(f, path, box_w, box_h, true);
+    TARGET.with(|t| *t.borrow_mut() = saved);
+    r
 }
 
 /// Decodes `path` to fit `box_w × box_h` device pixels (`(0, 0)` = full size), in sRGB unless called through

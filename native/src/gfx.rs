@@ -287,6 +287,26 @@ impl Gfx {
         self.dev.warp
     }
 
+    /// The D3D11 device under Direct2D (the 3D model view draws on it, see model/render.rs).
+    pub fn d3d(&self) -> &ID3D11Device {
+        &self.dev.d3d
+    }
+
+    /// A texture of this device (premultiplied, in the photo layer's format) as a bitmap to draw.
+    pub fn texture_bitmap(&self, texture: &ID3D11Texture2D, format: DXGI_FORMAT) -> Result<ID2D1Bitmap1> {
+        unsafe {
+            let surface: IDXGISurface = texture.cast()?;
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            self.dev.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))
+        }
+    }
+
     fn make_target(&mut self) -> Result<()> {
         unsafe {
             let surface: IDXGISurface = self.swap.GetBuffer(0)?;
