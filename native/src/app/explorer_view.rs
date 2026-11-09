@@ -586,8 +586,8 @@ impl App {
             let hovered = self.hover == Some(Hit::ExplorerRow(vi)) && target.is_none();
             let hover = self.fades.hover(Hit::ExplorerRow(vi), hovered);
             let lit = hovered && self.pressed == Some(Hit::ExplorerRow(vi)) && !self.explorer.row_drag.as_ref().is_some_and(|d| d.active);
-            // Several selected (Transient's): each of them solid accent with white text and a tick for its icon,
-            // easing in and out, a pixel apart so a run of them still reads as rows.
+            // Several selected (Transient's): each of them solid accent with white text (icons kept: Faye,
+            // 2026-11-09), easing in and out, a pixel apart so a run of them still reads as rows.
             let solid = self.fades.get(Hit::RowSolid(vi), selected && self.explorer.selected.len() > 1);
             let fr = D2D_RECT_F { bottom: row.bottom - g.px(), ..row };
             if vi % 2 == 1 {
@@ -642,10 +642,7 @@ impl App {
                 // Name: the thumbnail or glyph, the name, its tags.
                 let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
                 let mut drew = false;
-                if solid > 0.5 && self.explorer.look.height == 1 {
-                    g.text(&[0xE73A], &g.fonts.body_icons, ib, rgb(t.on_accent), Align::Center);
-                    drew = true;
-                } else if r.kind == Kind::Image {
+                if r.kind == Kind::Image {
                     if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
                         g.fill_round(ib, 2.0, rgb(t.field));
                         th.draw_fit(g, ib);

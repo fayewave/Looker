@@ -851,6 +851,10 @@ impl App {
                     }
                     Some(LRESULT(0))
                 }
+                crate::explorer::WM_DRAG_OUT => {
+                    self.explorer_drag_out();
+                    Some(LRESULT(0))
+                }
                 crate::explorer::WM_SUBFOLDERS => {
                     let s = Box::from_raw(lp.0 as *mut explorer::Subfolders);
                     self.on_subfolders(*s);

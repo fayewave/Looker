@@ -2071,6 +2071,19 @@ impl App {
         }
     }
 
+    /// Rows dragged out of the window: the drag inside ends and Windows' takes the files (copy or link) into
+    /// whatever they're dropped on. The system's drag loop is modal and swallows the button release.
+    pub(super) fn explorer_drag_out(&mut self) {
+        let Some(d) = self.explorer.row_drag.take() else { return };
+        self.pressed = None;
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        self.invalidate();
+        crate::clipboard::drag_files(self.hwnd, &d.paths);
+        self.invalidate();
+    }
+
     /// A press on a tab brings it to the front (Transient's); moving on drags it.
     pub(super) fn tab_press(&mut self, i: usize, x: f32) {
         self.switch_tab(i);
@@ -2280,6 +2293,14 @@ impl App {
         let Some(d) = &self.explorer.row_drag else { return };
         let active = d.active || (x - d.start.0).abs() + (y - d.start.1).abs() > DRAG_START;
         if !active {
+            return;
+        }
+        // Out of the window: Windows' own drag takes the rows to another app (Transient's).
+        let (w, h) = (self.client_w as f32 / self.scale(), self.client_h as f32 / self.scale());
+        if x < 0.0 || y < 0.0 || x >= w || y >= h {
+            unsafe {
+                let _ = PostMessageW(Some(self.hwnd), explorer::WM_DRAG_OUT, WPARAM(0), LPARAM(0));
+            }
             return;
         }
         let target = self.drop_target_at(x, y);

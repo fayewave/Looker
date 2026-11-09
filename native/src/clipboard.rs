@@ -146,6 +146,37 @@ pub fn set_files(hwnd: HWND, paths: &[std::path::PathBuf], cut: bool) -> Option<
     ok.then(|| unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() })
 }
 
+/// Files dragged out of the window into another app (Explorer, the desktop, an editor, a browser): Windows' own
+/// drag, with Explorer's drag image, from a shell data object. Copy or link only, never move (as Transient's).
+/// Blocks in the system's drag loop until the drop or a cancel; it pumps messages, so the window keeps painting.
+/// The UI thread is a single-threaded apartment already; OLE is set up on first use.
+pub fn drag_files(hwnd: HWND, paths: &[std::path::PathBuf]) {
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, IDropSource, OleInitialize};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHCreateDataObject, SHDoDragDrop};
+    static OLE: std::sync::Once = std::sync::Once::new();
+    OLE.call_once(|| unsafe {
+        let _ = OleInitialize(None);
+    });
+    unsafe {
+        let pidls: Vec<*mut ITEMIDLIST> = paths.iter().map(|p| ILCreateFromPathW(&windows::core::HSTRING::from(p.as_os_str()))).filter(|p| !p.is_null()).collect();
+        if pidls.is_empty() {
+            return;
+        }
+        let consts: Vec<*const ITEMIDLIST> = pidls.iter().map(|&p| p as *const _).collect();
+        // Absolute ID lists, under the desktop's (the empty one: a lone zero terminator).
+        let desktop = [0u16; 1];
+        let data = SHCreateDataObject(Some(desktop.as_ptr() as *const ITEMIDLIST), Some(&consts), None);
+        for p in pidls {
+            ILFree(Some(p));
+        }
+        if let Ok(data) = data {
+            let data: windows::Win32::System::Com::IDataObject = data;
+            let _ = SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_LINK);
+        }
+    }
+}
+
 /// The clipboard's file list, from Looker, Explorer or any app, and whether it was cut (a paste moves).
 pub fn get_files(hwnd: HWND) -> Option<(Vec<std::path::PathBuf>, bool)> {
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};

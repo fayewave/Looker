@@ -30,6 +30,8 @@ pub const WM_FOLDER_CHANGED: u32 = WM_APP + 9;
 pub const WM_SUBFOLDERS: u32 = WM_APP + 20;
 /// Image sizes read for the Dimensions column (boxed `Vec<(PathBuf, u64, Option<(u32, u32)>)>`).
 pub const WM_DIMENSIONS: u32 = WM_APP + 21;
+/// Rows dragged out of the window: Windows' own drag takes them (run after the mouse message that saw it).
+pub const WM_DRAG_OUT: u32 = WM_APP + 22;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
