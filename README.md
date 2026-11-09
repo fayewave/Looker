@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="brand/slices/looker_v3_full.svg" alt="Looker" width="420">
+  <img src="brand/slices/looker_v3_full.svg" alt="Looker" width="400">
 </p>
 
 A fast, minimal photo and file viewer for Windows 11, with a proper file explorer built in.
@@ -14,7 +14,9 @@ A fast, minimal photo and file viewer for Windows 11, with a proper file explore
 Or from the [latest release](https://github.com/fayewave/Looker/releases/latest): open `Looker.appinstaller` and
 it keeps itself up to date.
 
-<img src="brand/screenshots/readme-viewer.jpg" alt="A photo filling Looker's window" width="800">
+---
+
+<img src="brand/screenshots/readme-viewer.jpg" alt="A photo filling Looker's window" width="650">
 
 ## File explorer
 
@@ -25,7 +27,7 @@ it keeps itself up to date.
 - Move, copy, rename, delete and new folder, with undo. Drag onto folders and tabs, or out to other apps.
 - Favourites and colour tags.
 
-<img src="brand/screenshots/readme-browse-mode.jpg" alt="Browse mode: tabs, the sidebar and large thumbnails" width="800">
+<img src="brand/screenshots/readme-browse-mode.jpg" alt="Browse mode: tabs, the sidebar and large thumbnails" width="650">
 
 ## Viewer
 
@@ -36,7 +38,7 @@ it keeps itself up to date.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 
-<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="800">
+<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="650">
 
 ## Formats
 
