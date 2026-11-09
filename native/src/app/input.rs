@@ -665,10 +665,19 @@ impl App {
                     }
                     Some(LRESULT(0))
                 }
+                // Shift or Ctrl going down or up mid-drag changes Copy to Move on the card.
+                WM_KEYUP if self.explorer.row_drag.as_ref().is_some_and(|d| d.active) => {
+                    self.invalidate();
+                    None
+                }
                 WM_KEYDOWN => {
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let vk = VIRTUAL_KEY(wp.0 as u16);
+                    if matches!(vk, VK_SHIFT | VK_CONTROL) && self.explorer.row_drag.as_ref().is_some_and(|d| d.active) {
+                        self.invalidate();
+                        return Some(LRESULT(0));
+                    }
                     if self.dialog.is_some() {
                         self.dialog_key(vk, shift, ctrl);
                         return Some(LRESULT(0));

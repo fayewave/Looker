@@ -615,7 +615,7 @@ impl App {
         if self.explorer_shown() {
             moving |= self.draw_crumb_popup(g);
         }
-        self.draw_drag_label(g);
+        moving |= self.draw_drag_label(g);
         if let Some(t) = &self.toast {
             let area = self.image_area();
             match t.phase() {

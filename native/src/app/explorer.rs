@@ -98,8 +98,11 @@ pub(super) struct RowDrag {
     pub paths: Vec<PathBuf>,
     /// Past `DRAG_START`: it's a drag now, not a click.
     pub active: bool,
-    /// The folder a release would drop into.
+    /// The folder a release would drop into, and the rect of what stands for it (a row, a tab, a crumb).
     pub target: Option<PathBuf>,
+    pub target_rect: Option<D2D_RECT_F>,
+    /// When it became a drag: the card fades in from then.
+    pub opened: Instant,
 }
 
 /// What a sidebar row leads to.
@@ -262,6 +265,11 @@ pub(super) struct Explorer {
     pub(super) section_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
     pub(super) section_open: HashMap<SideSection, Ease<1>>,
+    /// The box over the folder a drag would drop into: eased from one target to the next, its opacity, and the
+    /// card's height (taller once it says what a drop does).
+    pub(super) drop_box: Option<Ease<4>>,
+    pub(super) drop_shade: Ease<1>,
+    pub(super) drop_card_h: Ease<1>,
     /// The tabs, left to right; the one at `active_tab` is a stub (its state is the fields above).
     pub(super) tabs: Vec<TabState>,
     pub(super) active_tab: usize,
@@ -336,6 +344,9 @@ impl Explorer {
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
             section_open: HashMap::new(),
+            drop_box: None,
+            drop_shade: Ease::at([0.0]),
+            drop_card_h: Ease::at([30.0]),
             tabs: vec![TabState::default()],
             active_tab: 0,
             next_tab_id: 1,
@@ -2261,7 +2272,7 @@ impl App {
     pub(super) fn explorer_row_press(&mut self, vi: usize, x: f32, y: f32) {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
         let paths = if self.explorer.is_selected(&r.path) { self.explorer.targets() } else { vec![r.path] };
-        self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None });
+        self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None, target_rect: None, opened: Instant::now() });
     }
 
     /// The mouse moved with a row pressed: past a few DIPs it's a drag, and the folder under it the target.
@@ -2274,8 +2285,12 @@ impl App {
         let target = self.drop_target_at(x, y);
         let started = self.explorer.row_drag.as_ref().is_some_and(|d| !d.active);
         if let Some(d) = &mut self.explorer.row_drag {
+            if !d.active {
+                d.opened = Instant::now();
+            }
             d.active = true;
-            d.target = target;
+            d.target_rect = target.as_ref().map(|t| t.1);
+            d.target = target.map(|t| t.0);
         }
         if started {
             self.hide_tooltip();
@@ -2285,24 +2300,33 @@ impl App {
 
     /// The folder a drop at (x, y) would go into: a folder row (not one being dragged), a crumb, a sidebar
     /// folder. Never the folder the items are already all in, nor one inside what's dragged.
-    pub(super) fn drop_target_at(&mut self, x: f32, y: f32) -> Option<PathBuf> {
+    pub(super) fn drop_target_at(&mut self, x: f32, y: f32) -> Option<(PathBuf, D2D_RECT_F)> {
         let dragged = self.explorer.row_drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
-        let folder = match self.hit(x, y)? {
+        let hit = self.hit(x, y)?;
+        // A tab's close button is the tab.
+        let hit = if let Hit::TabClose(i) = hit { Hit::Tab(i) } else { hit };
+        let folder = match hit {
             Hit::ExplorerRow(vi) => self.explorer.row(vi).filter(|r| r.is_folder()).map(|r| r.path.clone())?,
             Hit::Crumb(i) => explorer::crumbs(self.explorer.place.as_ref()?).get(i)?.folder()?.to_path_buf(),
             Hit::SideRow(i) => match &self.sidebar_items().get(i)?.target {
                 SideTarget::Place(Place::Folder(p)) => p.clone(),
                 _ => return None,
             },
+            // Another tab's folder (Transient's: drop onto a tab).
+            Hit::Tab(i) => match self.tab_place(i as usize)? {
+                Place::Folder(p) => p,
+                _ => return None,
+            },
             _ => return None,
         };
+        let r = self.hits.rect_of(hit)?;
         if dragged.iter().any(|d| explorer::within(&folder, d)) {
             return None;
         }
         if dragged.iter().all(|d| d.parent().is_some_and(|p| explorer::same_path(p, &folder))) {
             return None;
         }
-        Some(folder)
+        Some((folder, r))
     }
 
     /// The button came up: a drag drops (moving, or copying with Ctrl or onto another drive); a press that

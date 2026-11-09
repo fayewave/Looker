@@ -363,11 +363,8 @@ impl App {
         if let Some(f) = self.explorer.folder() {
             rx -= NAV + 2.0;
             let marked = self.settings.is_bookmarked(&f);
-            let r = rect(rx, y, NAV, NAV);
-            self.hits.add(Hit::ExplorerBookmark, r);
-            let st = self.state(Hit::ExplorerBookmark, true);
-            let fg = ui::button_frame(g, r, ui::Kind::Subtle, &st);
-            g.text(&[if marked { 0xE840 } else { 0xE718 }], &g.fonts.body_icons, r, if marked { rgb(t.accent) } else { fg }, Align::Center);
+            // Bookmarked: toggled on, as the other buttons are when they're on.
+            self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerBookmark, if marked { 0xE840 } else { 0xE718 }, true, marked);
         }
         rx -= NAV + 2.0;
         let group_glyph = super::explorer_ops::group_glyph(self.explorer.look.group);
@@ -418,7 +415,6 @@ impl App {
             from += 1;
         }
         self.explorer.hidden_crumbs = all[..from].to_vec();
-        let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let mut x = x0;
         if from > 0 {
             let r = rect(x, y, more_w, h);
@@ -440,7 +436,7 @@ impl App {
             self.hits.add(id, r);
             let st = self.state(id, true);
             let fill = D2D_RECT_F { top: r.top + 2.0, bottom: r.bottom - 2.0, ..r };
-            let is_target = target.is_some() && all[i].folder().is_some_and(|f| target.as_deref().is_some_and(|tg| explorer::same_path(f, tg)));
+            let is_target = false;
             let open = self.explorer.path_edit.as_ref().is_some_and(|p| p.crumb == Some(i));
             let colour = ui::crumb_frame(g, fill, &st, is_target || open, if last { rgb(t.text) } else { rgb(t.label) });
             g.text(&wide(&names[i]), &g.fonts.body, r, colour, Align::Center);
@@ -584,7 +580,7 @@ impl App {
             }
             let selected = self.explorer.is_selected(&r.path);
             let cursor = self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
-            let is_target = target.as_deref().is_some_and(|tg| r.is_folder() && explorer::same_path(tg, &r.path));
+            let is_target = false;
             // Transient's row states: pressed, solid accent with white text; selected, the accent-tinted fill;
             // hovered, the hover tint with an accent outline; the cursor outlined.
             let hovered = self.hover == Some(Hit::ExplorerRow(vi)) && target.is_none();
@@ -941,7 +937,7 @@ impl App {
                         self.hits.add(Hit::SideRow(i), row);
                     }
                     let current = place.as_ref().is_some_and(|c| c.same(p)) && it.depth >= 1;
-                    let is_target = target.as_deref().is_some_and(|tg| p.folder().is_some_and(|f| explorer::same_path(f, tg)));
+                    let is_target = false;
                     let hover = self.fades.hover(Hit::SideRow(i), self.hover == Some(Hit::SideRow(i)) && target.is_none());
                     if current || is_target {
                         g.fill_round(row, 4.0, rgb(t.selected));
@@ -1127,22 +1123,78 @@ impl App {
         e < 1.0
     }
 
-    /// The label that follows a drag of rows: what a drop does there.
-    pub(super) fn draw_drag_label(&self, g: &Gfx) {
-        let Some(d) = self.explorer.row_drag.as_ref().filter(|d| d.active) else { return };
-        let raised = theme::raised();
-        let n = d.paths.len();
-        let what = if n == 1 { explorer::folder_name(&d.paths[0]) } else { format!("{n} items") };
-        let text = match &d.target {
-            Some(dest) => format!("{} to {}", if self.drop_copies(&d.paths, dest) { "Copy" } else { "Move" }, explorer::folder_name(dest)),
-            None => what,
+    /// A drag of rows, as Transient's: an accent box over the folder a drop would go into (a row, a tab, a
+    /// crumb, a sidebar folder) that pops in, glides from one to the next and fades out; and a card following
+    /// the pointer with what's dragged and, under it, what a drop there does ("Copy to …" / "Move to …": Ctrl
+    /// copies, Shift moves, else another drive copies). Returns whether anything is still moving.
+    pub(super) fn draw_drag_label(&mut self, g: &Gfx) -> bool {
+        let now = Instant::now();
+        let Some(d) = self.explorer.row_drag.as_ref().filter(|d| d.active) else {
+            self.explorer.drop_box = None;
+            self.explorer.drop_shade = crate::motion::Ease::at([0.0]);
+            self.explorer.drop_card_h = crate::motion::Ease::at([30.0]);
+            return false;
         };
-        let w = (g.measure(&wide(&text), &g.fonts.body) + 24.0).ceil();
+        let (paths, target, trect, opened) = (d.paths.clone(), d.target.clone(), d.target_rect, d.opened);
+        let raised = theme::raised();
+        let e = &mut self.explorer;
+        e.drop_shade.set([if trect.is_some() { 1.0 } else { 0.0 }], now);
+        let shade = e.drop_shade.value(now)[0].clamp(0.0, 1.0);
+        if let Some(t) = trect {
+            let to = [t.left, t.top, t.right - t.left, t.bottom - t.top];
+            match e.drop_box.as_mut() {
+                Some(b) if shade >= 0.05 => b.set(to, now),
+                _ => {
+                    // From nothing it pops in, growing from 94 %.
+                    let (w, h) = (to[2], to[3]);
+                    let mut b = crate::motion::Ease::at([t.left + w * 0.03, t.top + h * 0.03, w * 0.94, h * 0.94]);
+                    b.set(to, now);
+                    e.drop_box = Some(b);
+                }
+            }
+        }
+        let mut moving = e.drop_shade.moving(now) || opened.elapsed().as_secs_f32() < 0.25;
+        if let Some(b) = e.drop_box.as_ref() {
+            moving |= b.moving(now);
+            let v = b.value(now);
+            let r = rect(v[0], v[1], v[2], v[3]);
+            g.fill_round(r, 4.0, gfx::rgba(raised.accent, 0.22 * shade));
+            g.outline_round(r, 4.0, gfx::rgba(raised.accent, shade), 1.0);
+            if shade <= 0.0 {
+                e.drop_box = None;
+            }
+        }
+        // The card.
+        let n = paths.len();
+        let one_dir = n == 1 && paths[0].is_dir();
+        let what = if n == 1 { explorer::folder_name(&paths[0]) } else { format!("{n} items") };
+        let action = target.as_ref().map(|dest| format!("{} to {}", if self.drop_copies(&paths, dest) { "Copy" } else { "Move" }, explorer::folder_name(dest)));
+        let tw = g.measure(&wide(&what), &g.fonts.body).max(action.as_ref().map_or(0.0, |a| g.measure(&wide(a), &g.fonts.body)));
+        let w = (tw + 46.0).clamp(120.0, 340.0).ceil();
+        let e = &mut self.explorer;
+        e.drop_card_h.set([if action.is_some() { 46.0 } else { 30.0 }], now);
+        moving |= e.drop_card_h.moving(now);
+        let h = e.drop_card_h.value(now)[0].round();
+        let k = crate::motion::progress(opened);
         let (mx, my) = self.mouse;
-        let r = rect(g.snap(mx + 14.0), g.snap(my + 18.0), w, 26.0);
-        ui::shadow(g, r, 5.0);
-        g.fill_round(r, 5.0, rgb(raised.popup));
-        ui::stroke(g, r, 5.0, rgb(if d.target.is_some() { raised.accent } else { raised.divider }));
-        g.text(&wide(&text), &g.fonts.body, r, rgb(raised.text), Align::Center);
+        let fr = rect(g.snap(mx + 6.0), g.snap(my + 12.0), w, h);
+        g.push_fade(k, 0.94 + 0.06 * k, mx, my);
+        ui::shadow(g, fr, 7.0);
+        g.fill_round(fr, 7.0, rgb(raised.popup));
+        ui::stroke(g, fr, 7.0, rgb(raised.divider));
+        let ir = rect(fr.left + 10.0, fr.top + 7.0, 16.0, 16.0);
+        if one_dir {
+            g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center);
+        } else {
+            g.text(&[if n == 1 { 0xE91B } else { 0xE8B3 }], &g.fonts.body_icons, ir, rgb(raised.icon), Align::Center);
+        }
+        g.push_clip(rect(fr.left, fr.top, fr.right - fr.left - 10.0, fr.bottom - fr.top));
+        g.text(&wide(&what), &g.fonts.body, rect(fr.left + 34.0, fr.top + 7.0, fr.right - fr.left - 44.0, 16.0), rgb(raised.text), Align::Left);
+        if let Some(a) = &action {
+            g.text(&wide(a), &g.fonts.body, rect(fr.left + 34.0, fr.top + 25.0, fr.right - fr.left - 44.0, 15.0), rgb(raised.signal), Align::Left);
+        }
+        g.pop_clip();
+        g.pop_fade();
+        moving
     }
 }
