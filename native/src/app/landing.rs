@@ -191,9 +191,9 @@ impl App {
         }
         y += WORDMARK_H + 8.0 + 16.0 + 8.0;
 
-        // "Open a file" is the one thing to press here: the accent.
+        // Both buttons alike (Faye, 2026-11-09: "Open a file" was the accent).
         for (id, glyph, label, x, kind) in [
-            (Hit::Open, 0xE8E5u16, "Open a file", cx - 4.0 - 140.0, ui::Kind::Accent),
+            (Hit::Open, 0xE8E5u16, "Open a file", cx - 4.0 - 140.0, ui::Kind::Standard),
             (Hit::LandingFolder, 0xE838, "Open a folder", cx + 4.0, ui::Kind::Standard),
         ] {
             let r = rect(g.snap(x), g.snap(y), 140.0, 32.0);

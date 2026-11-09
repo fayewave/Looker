@@ -187,6 +187,9 @@ pub struct Gfx {
     ui: Option<Overlay>,
     /// One per `push_fade`: the transform to put back, if it pushed a layer.
     fade_stack: std::cell::RefCell<Vec<Option<windows_numerics::Matrix3x2>>>,
+    /// Where a format's first baseline sits in a box of a given height (by format and height): text is
+    /// placed so it lands on a whole device pixel (`snap_text`).
+    baselines: std::cell::RefCell<std::collections::HashMap<(usize, u32), f32>>,
     /// The copy of the frame `blur_backdrop` blurs, kept while the size, format and DPI stay.
     backdrop: Option<(ID3D11Texture2D, ID2D1Bitmap1, (u32, u32, i32, u32))>,
     blur_failed: bool,
@@ -258,6 +261,7 @@ impl Gfx {
                 space,
                 ui: None,
                 fade_stack: Default::default(),
+                baselines: Default::default(),
                 backdrop: None,
                 blur_failed: false,
             };
@@ -684,7 +688,42 @@ impl Gfx {
         (v * s).round() / s
     }
 
+    /// `r` nudged (by under a pixel) so the text's baseline lands on a whole device pixel. Unscaled, DirectWrite
+    /// snaps the baseline there itself; under a fade's scale it doesn't, so a menu's icons and labels used to
+    /// sit up to a pixel off while it grew in and then jump into place. Placed here already, they don't move.
+    fn snap_text(&self, fmt: &IDWriteTextFormat, r: D2D_RECT_F) -> D2D_RECT_F {
+        let h = r.bottom - r.top;
+        if !(h > 0.0 && h < 10_000.0) {
+            return r;
+        }
+        let key = (fmt.as_raw() as usize, h.to_bits());
+        let cached = self.baselines.borrow().get(&key).copied();
+        let base = match cached {
+            Some(b) => b,
+            None => {
+                let b = unsafe {
+                    self.text.dwrite.CreateTextLayout(&[b'X' as u16], fmt, 1000.0, h).ok().and_then(|l| {
+                        let mut m = DWRITE_TEXT_METRICS::default();
+                        l.GetMetrics(&mut m).ok()?;
+                        let mut lines = [DWRITE_LINE_METRICS::default(); 1];
+                        let mut n = 0u32;
+                        let _ = l.GetLineMetrics(Some(&mut lines), &mut n);
+                        Some(m.top + lines[0].baseline)
+                    })
+                }
+                .unwrap_or(0.0);
+                self.baselines.borrow_mut().insert(key, b);
+                b
+            }
+        };
+        let k = self.dpi / 96.0;
+        let y = (r.top + base) * k;
+        let dy = (y.round() - y) / k;
+        D2D_RECT_F { top: r.top + dy, bottom: r.bottom + dy, ..r }
+    }
+
     pub fn text(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+        let r = self.snap_text(fmt, r);
         unsafe {
             let _ = fmt.SetTextAlignment(match align {
                 Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
@@ -710,6 +749,7 @@ impl Gfx {
 
     /// `text` with tabular figures (the status row).
     pub fn text_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+        let r = self.snap_text(fmt, r);
         let Some(l) = self.tabular_layout(s, fmt, r.right - r.left, r.bottom - r.top) else { return };
         unsafe {
             let _ = l.SetTextAlignment(match align {
