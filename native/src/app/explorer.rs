@@ -806,8 +806,13 @@ impl App {
     }
 
     pub(super) fn explorer_focus_field(&mut self, f: EField) {
-        if self.explorer.field != Some(f) {
-            self.explorer_commit_fields();
+        // The other boxes end: a rename elsewhere commits, the path box closes (not the box taking the keys,
+        // which may have just been opened).
+        if f != EField::Rename && self.explorer.rename.is_some() {
+            self.explorer_finish_rename(true);
+        }
+        if f != EField::Path && self.explorer.path_edit.take().is_some() {
+            self.invalidate();
         }
         self.explorer.field = Some(f);
         self.explorer.focused = true;

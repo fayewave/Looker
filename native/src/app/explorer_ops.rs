@@ -25,6 +25,18 @@ pub(super) enum Step {
     Rename(PathBuf, PathBuf),
 }
 
+impl Step {
+    /// What undoing it does, for the menu: "move", "copy", "rename", "new folder".
+    fn what(&self) -> &'static str {
+        match self {
+            Step::Move(_) => "move",
+            Step::Copy(_) => "copy",
+            Step::NewFolder(_) => "new folder",
+            Step::Rename(..) => "rename",
+        }
+    }
+}
+
 fn items(n: usize) -> String {
     if n == 1 { "1 item".into() } else { format!("{n} items") }
 }
@@ -437,7 +449,12 @@ impl App {
     pub(super) fn explorer_bg_menu(&mut self, x: f32, y: f32) {
         self.explorer.focused = true;
         let folder = self.explorer.folder().is_some();
-        let e = vec![
+        let undo = self.explorer.undo.last().map(|s| format!("Undo {}", s.what()));
+        let redo = self.explorer.redo.last().map(|s| format!("Redo {}", s.what()));
+        let mut e = vec![
+            item(Action::Undo, 0xE7A7, undo.as_deref().unwrap_or("Undo"), Some("Ctrl+Z"), undo.is_some()),
+            item(Action::Redo, 0xE7A6, redo.as_deref().unwrap_or("Redo"), Some("Ctrl+Y"), redo.is_some()),
+            Entry::Separator,
             item(Action::NewFolder, 0xE8F4, "New folder", Some("Ctrl+Shift+N"), folder),
             item(Action::Paste, 0xE77F, "Paste", Some("Ctrl+V"), folder && clipboard_has_files()),
             Entry::Separator,
@@ -446,6 +463,7 @@ impl App {
             Entry::Separator,
             check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files),
         ];
+        e.shrink_to_fit();
         self.show_menu(MenuKind::ExplorerBg, e, x, y);
     }
 
@@ -591,6 +609,8 @@ impl App {
             (Action::NewFolder, _) => self.explorer_new_folder(),
             (Action::SelectAll, _) => self.explorer_select_all(),
             (Action::Refresh, _) => self.explorer_refresh(),
+            (Action::Undo, _) => self.explorer_undo(),
+            (Action::Redo, _) => self.explorer_redo(),
             (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
             _ => {}
         }

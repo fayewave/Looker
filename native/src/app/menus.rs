@@ -50,6 +50,8 @@ pub(super) enum Action {
     Group(crate::explorer::Group),
     /// A folder in a crumb's menu, by index.
     GoFolder(usize),
+    Undo,
+    Redo,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
