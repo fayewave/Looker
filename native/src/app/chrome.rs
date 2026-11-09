@@ -339,6 +339,7 @@ impl App {
         self.fades.begin();
         let sliding = self.step_slides();
         self.prepare_model(&g);
+        self.prepare_video(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
@@ -362,7 +363,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() {
             self.invalidate();
         }
     }
@@ -513,6 +514,10 @@ impl App {
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
                 if let Some(d) = &doc {
                     self.draw_pages(g, d, dest, bg);
+                } else if let Some(v) = self.video_bitmap() {
+                    // A video's picture: SDR, upright and at the still's size, so the same box.
+                    g.draw_photo(&v, dest, 1.0, true);
+                    self.last_drawn = Some((v, dest, true));
                 } else if self.turns == 0 {
                     g.draw_photo(frame, dest, 1.0, c.sdr());
                     self.last_drawn = Some((frame.clone(), dest, c.sdr()));

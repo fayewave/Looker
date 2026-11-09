@@ -9,14 +9,20 @@
 // of a bad file that FFmpeg itself would survive.
 
 #define WIN32_LEAN_AND_MEAN
+#define COBJMACROS
 #include <windows.h>
+#include <d3d11.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/display.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/parseutils.h>
 #include <libavutil/pixdesc.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
 #include <math.h>
@@ -27,7 +33,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 1
+#define LOOKER_VIDEO_API 2
 
 typedef struct LvInfo
 {
@@ -194,6 +200,9 @@ static void fill_info(const AVFormatContext *fmt, const AVStream *st, const AVSt
     else if (st->duration > 0)
         info->duration_us = av_rescale_q(st->duration, st->time_base, AV_TIME_BASE_Q);
     AVRational fps = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+    if ((fps.num <= 0 || fps.den <= 0) && st->time_base.num > 0 && st->time_base.den >= 10 * st->time_base.num &&
+        st->time_base.den <= 300 * st->time_base.num)
+        fps = av_inv_q(st->time_base);
     if (fps.num > 0 && fps.den > 0)
     {
         info->fps_num = fps.num;
@@ -227,6 +236,25 @@ static void fill_info(const AVFormatContext *fmt, const AVStream *st, const AVSt
     int64_t us = 0;
     if (t && av_parse_time(&us, t->value, 0) == 0 && us > 0)
         info->created = us / 1000000;
+}
+
+// The display size from the picture as decoded: square pixels, upright.
+static void set_display(LvInfo *info, int w, int h, AVRational sar)
+{
+    info->coded_width = w;
+    info->coded_height = h;
+    if (sar.num > 0 && sar.den > 0 && sar.num != sar.den)
+        w = (int)lround((double)w * sar.num / sar.den);
+    if (info->rotation == 90 || info->rotation == 270)
+    {
+        info->width = h;
+        info->height = w;
+    }
+    else
+    {
+        info->width = w;
+        info->height = h;
+    }
 }
 
 // The video stream to show (never cover art) and the audio that goes with it.
@@ -437,7 +465,9 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
         goto done;
     if ((r = decode_first(in.fmt, vi, dec, frame)) < 0)
         goto done;
-    // The decoded picture is the truth for its format (the headers may not have said).
+    // The decoded picture is the truth for its size and format (the headers may not have said).
+    set_display(info, frame->width, frame->height,
+                frame->sample_aspect_ratio.num > 0 ? frame->sample_aspect_ratio : st->sample_aspect_ratio);
     const AVPixFmtDescriptor *pd = av_pix_fmt_desc_get((enum AVPixelFormat)frame->format);
     if (pd)
     {
@@ -543,4 +573,586 @@ EXPORT void looker_video_error(int code, char *buf, int len)
 {
     if (av_strerror(code, buf, (size_t)len) < 0)
         snprintf(buf, (size_t)len, "error %d", code);
+}
+
+// ---- playback -------------------------------------------------------------------------------------------------
+//
+// One player per open video, driven from one thread (Looker's decode thread): lv_next hands back the next video
+// picture or block of audio in file order. Pictures decoded on the GPU (D3D11VA on Looker's own device) come back
+// as a slice of the decoder's texture array (NV12 or P010); everything else as CPU planes, or as RGBA for the odd
+// packed formats. Audio is always interleaved float stereo at 48 kHz. Times are microseconds from the video
+// stream's start. A frame stays valid until lv_frame_free, which any thread may call.
+
+enum
+{
+    LV_VIDEO = 1,
+    LV_AUDIO = 2,
+};
+enum
+{
+    LV_TEXTURE = 1, // texture + texture_index: an NV12 (8-bit) or P010 (10-bit, MSB-aligned) array slice
+    LV_PLANAR = 2,  // data[0..nplanes]: Y, U, V (+ A), or Y and interleaved UV when nplanes == 2
+    LV_RGBA = 3,    // data[0]: straight RGBA, 8 bits per channel
+};
+
+typedef struct LvFrame
+{
+    int kind, layout;
+    long long pts_us, duration_us;
+    int width, height;    // the picture, as stored (before rotation)
+    int bit_depth, shift; // samples wider than 8 bits sit in 16-bit words, shifted left by `shift`
+    int chroma_w_shift, chroma_h_shift;
+    int nplanes;
+    int matrix, full_range, transfer, primaries;
+    void *texture;
+    int texture_index;
+    const unsigned char *data[4];
+    int linesize[4];
+    const float *samples; // audio: valid until the next lv_next
+    int nb_samples;
+    void *opaque; // the AVFrame behind a picture
+} LvFrame;
+
+typedef struct LvPlayer
+{
+    Input in;
+    int vi, ai;
+    long long start_us; // the video stream's start time, the zero of every time handed out
+    AVCodecContext *vdec, *adec;
+    int hw;
+    SwrContext *swr;
+    struct SwsContext *sws;
+    AVPacket *pkt;
+    long long skip_until_us; // an exact seek drops what comes before its target
+    int demux_eof, v_done, a_done;
+    long long next_vpts; // for pictures without a timestamp
+    float *abuf;
+    int abuf_cap;
+    AVFrame *held;        // an exact seek's best picture so far (at or before the target)
+    AVFrame *pending;     // the picture after it, handed out next
+    int seek_first;       // no picture yet since the seek
+    int seek_retries;     // landed past the target: sought further back this many times
+    long long seek_target;
+    int audio_skip;       // an exact seek: audio that ends before the target is dropped
+} LvPlayer;
+
+#define LV_RATE 48000
+
+static const GUID IID_VideoDevice = {0x10ec4d5b, 0x975a, 0x4689, {0xb9, 0xe4, 0xd0, 0xaa, 0xc3, 0x0f, 0xe3, 0x33}};
+static const GUID AV1_PROFILE0 = {0xb8be4ccb, 0xcf53, 0x46ba, {0x8d, 0x59, 0xd6, 0xb8, 0xa6, 0xda, 0x5d, 0x2a}};
+
+// Whether the GPU decodes AV1 (FFmpeg's own AV1 decoder only drives the GPU; dav1d is the CPU one).
+static int gpu_decodes_av1(ID3D11Device *dev)
+{
+    ID3D11VideoDevice *vd = NULL;
+    if (FAILED(ID3D11Device_QueryInterface(dev, &IID_VideoDevice, (void **)&vd)) || vd == NULL)
+        return 0;
+    int found = 0;
+    UINT n = ID3D11VideoDevice_GetVideoDecoderProfileCount(vd);
+    for (UINT i = 0; i < n && found == 0; i++)
+    {
+        GUID g;
+        if (SUCCEEDED(ID3D11VideoDevice_GetVideoDecoderProfile(vd, i, &g)) && IsEqualGUID(&g, &AV1_PROFILE0))
+            found = 1;
+    }
+    ID3D11VideoDevice_Release(vd);
+    return found;
+}
+
+static enum AVPixelFormat pick_format(AVCodecContext *c, const enum AVPixelFormat *fmts)
+{
+    (void)c;
+    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++)
+        if (*p == AV_PIX_FMT_D3D11)
+            return *p;
+    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++)
+    {
+        const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(*p);
+        if (d && (d->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0)
+            return *p;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static int open_decoder(AVStream *st, const AVCodec *codec, AVBufferRef *hw, AVCodecContext **out)
+{
+    *out = NULL;
+    AVCodecContext *c = avcodec_alloc_context3(codec);
+    if (c == NULL)
+        return AVERROR(ENOMEM);
+    int r = avcodec_parameters_to_context(c, st->codecpar);
+    if (r >= 0)
+    {
+        c->pkt_timebase = st->time_base;
+        c->thread_count = 0;
+        c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        if (hw)
+        {
+            c->hw_device_ctx = av_buffer_ref(hw);
+            c->get_format = pick_format;
+            c->extra_hw_frames = 10; // Looker's queue and the picture on screen hold surfaces too
+            c->thread_count = 1;     // frame threads and D3D11VA don't mix
+        }
+        r = avcodec_open2(c, codec, NULL);
+    }
+    if (r < 0)
+        avcodec_free_context(&c);
+    *out = c;
+    return r;
+}
+
+EXPORT void lv_close(LvPlayer *p)
+{
+    if (p == NULL)
+        return;
+    av_frame_free(&p->held);
+    av_frame_free(&p->pending);
+    avcodec_free_context(&p->vdec);
+    avcodec_free_context(&p->adec);
+    swr_free(&p->swr);
+    sws_freeContext(p->sws);
+    av_packet_free(&p->pkt);
+    input_close(&p->in);
+    av_free(p->abuf);
+    free(p);
+}
+
+// Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
+// decodes on that GPU where it can.
+EXPORT int lv_open(const wchar_t *path, void *d3d11, LvInfo *info, LvPlayer **out)
+{
+    *out = NULL;
+    LvPlayer *p = calloc(1, sizeof *p);
+    if (p == NULL)
+        return AVERROR(ENOMEM);
+    p->in.file = INVALID_HANDLE_VALUE;
+    p->vi = p->ai = -1;
+    p->skip_until_us = INT64_MIN;
+    AVBufferRef *hw = NULL;
+    int r = input_open(&p->in, path, 0);
+    if (r < 0)
+        goto fail;
+    AVFormatContext *fmt = p->in.fmt;
+    r = pick_streams(fmt, &p->vi, &p->ai);
+    LvInfo quick;
+    if (r >= 0)
+        fill_info(fmt, fmt->streams[p->vi], NULL, &quick);
+    // The headers must give the picture's size, the audio's rate and the frame rate (ASF doesn't), else probe.
+    if (r < 0 || fmt->streams[p->vi]->codecpar->width <= 0 || quick.fps_num <= 0 ||
+        (p->ai >= 0 && fmt->streams[p->ai]->codecpar->sample_rate <= 0))
+    {
+        for (unsigned i = 0; i < fmt->nb_streams; i++)
+            fmt->streams[i]->discard = AVDISCARD_DEFAULT;
+        if ((r = avformat_find_stream_info(fmt, NULL)) < 0 || (r = pick_streams(fmt, &p->vi, &p->ai)) < 0)
+            goto fail;
+    }
+    AVStream *vs = fmt->streams[p->vi];
+    vs->discard = AVDISCARD_DEFAULT;
+    fill_info(fmt, vs, p->ai >= 0 ? fmt->streams[p->ai] : NULL, info);
+    p->start_us = vs->start_time != AV_NOPTS_VALUE ? av_rescale_q(vs->start_time, vs->time_base, AV_TIME_BASE_Q) : 0;
+
+    if (d3d11)
+    {
+        hw = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+        if (hw)
+        {
+            AVD3D11VADeviceContext *dc = ((AVHWDeviceContext *)hw->data)->hwctx;
+            ID3D11Device_AddRef((ID3D11Device *)d3d11);
+            dc->device = (ID3D11Device *)d3d11;
+            if (av_hwdevice_ctx_init(hw) < 0)
+                av_buffer_unref(&hw);
+        }
+    }
+    const AVCodec *vc = NULL;
+    if (vs->codecpar->codec_id == AV_CODEC_ID_AV1 && (hw == NULL || gpu_decodes_av1((ID3D11Device *)d3d11) == 0))
+        vc = avcodec_find_decoder_by_name("libdav1d");
+    if (vc == NULL)
+        vc = avcodec_find_decoder(vs->codecpar->codec_id);
+    if (vc == NULL)
+    {
+        r = AVERROR_DECODER_NOT_FOUND;
+        goto fail;
+    }
+    int can_hw = 0;
+    for (int i = 0; hw && can_hw == 0; i++)
+    {
+        const AVCodecHWConfig *c = avcodec_get_hw_config(vc, i);
+        if (c == NULL)
+            break;
+        can_hw = (c->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && c->device_type == AV_HWDEVICE_TYPE_D3D11VA;
+    }
+    if ((r = open_decoder(vs, vc, can_hw ? hw : NULL, &p->vdec)) < 0)
+        goto fail;
+    p->hw = can_hw;
+    if (p->ai >= 0)
+    {
+        AVStream *as = fmt->streams[p->ai];
+        const AVCodec *ac = avcodec_find_decoder(as->codecpar->codec_id);
+        if (ac && open_decoder(as, ac, NULL, &p->adec) >= 0)
+            as->discard = AVDISCARD_DEFAULT;
+        else
+            p->ai = -1; // plays silent rather than not at all
+    }
+    if (p->ai < 0)
+        p->a_done = 1;
+    p->pkt = av_packet_alloc();
+    if (p->pkt == NULL)
+    {
+        r = AVERROR(ENOMEM);
+        goto fail;
+    }
+    av_buffer_unref(&hw);
+    *out = p;
+    return 0;
+fail:
+    av_buffer_unref(&hw);
+    lv_close(p);
+    return r;
+}
+
+EXPORT int lv_hw(const LvPlayer *p)
+{
+    return p ? p->hw : 0;
+}
+
+static long long to_us(LvPlayer *p, int stream, int64_t ts)
+{
+    return av_rescale_q(ts, p->in.fmt->streams[stream]->time_base, AV_TIME_BASE_Q) - p->start_us;
+}
+
+// A decoded picture into `out`; 1 when handed out, 0 when dropped (before an exact seek's target, or unusable).
+static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
+{
+    AVStream *vs = p->in.fmt->streams[p->vi];
+    int64_t ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+    long long dur = f->duration > 0 ? av_rescale_q(f->duration, vs->time_base, AV_TIME_BASE_Q) : 0;
+    long long pts = ts != AV_NOPTS_VALUE ? to_us(p, p->vi, ts) : p->next_vpts;
+    if (dur <= 0)
+    {
+        AVRational fr = vs->avg_frame_rate.num > 0 ? vs->avg_frame_rate : av_inv_q(vs->time_base);
+        dur = fr.num > 0 && fr.den > 0 ? av_rescale(1000000, fr.den, fr.num) : 40000;
+        if (dur > 1000000)
+            dur = 40000;
+    }
+    p->next_vpts = pts + dur;
+    if (p->skip_until_us != INT64_MIN)
+    {
+        long long target = p->skip_until_us;
+        int first = p->seek_first;
+        p->seek_first = 0;
+        if (first && pts > target && p->seek_retries < 4)
+        {
+            // Landed past the target: go further back (1, 2, 4, 8 s) and decode forward again.
+            p->seek_retries++;
+            av_frame_free(&f);
+            AVStream *s = p->in.fmt->streams[p->vi];
+            long long back = target - (1000000LL << (p->seek_retries - 1));
+            int64_t t = av_rescale_q_rnd((back > 0 ? back : 0) + p->start_us, AV_TIME_BASE_Q, s->time_base, AV_ROUND_DOWN);
+            // Back to the start of an MPEG-TS/PS: by byte (a timestamp seek there can land a keyframe late even at
+            // the start). Other containers seek by time (AVI's byte seek doesn't move its streams).
+            int by_byte = back <= 0 && (p->in.fmt->iformat->flags & AVFMT_TS_DISCONT);
+            int sought = by_byte ? avformat_seek_file(p->in.fmt, -1, INT64_MIN, 0, 0, AVSEEK_FLAG_BYTE)
+                                 : av_seek_frame(p->in.fmt, p->vi, t, AVSEEK_FLAG_BACKWARD);
+            if (back <= 0)
+                p->seek_retries = 4; // nowhere further back to go
+            if (sought >= 0)
+            {
+                avcodec_flush_buffers(p->vdec);
+                if (p->adec)
+                    avcodec_flush_buffers(p->adec);
+                swr_free(&p->swr);
+                p->demux_eof = p->v_done = 0;
+                p->a_done = p->adec ? 0 : 1;
+                p->seek_first = 1;
+            }
+            return 0;
+        }
+        if (pts <= target)
+        {
+            av_frame_free(&p->held); // a later one at or before the target
+            p->held = f;
+            return 0;
+        }
+        // Past the target: the one before it is the picture showing at the target.
+        p->skip_until_us = INT64_MIN;
+        if (p->held)
+        {
+            p->pending = f;
+            f = p->held;
+            p->held = NULL;
+            ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+            pts = ts != AV_NOPTS_VALUE ? to_us(p, p->vi, ts) : target;
+            long long d2 = f->duration > 0 ? av_rescale_q(f->duration, vs->time_base, AV_TIME_BASE_Q) : dur;
+            dur = d2 > 0 ? d2 : dur;
+        }
+    }
+    memset(out, 0, sizeof *out);
+    out->kind = LV_VIDEO;
+    out->pts_us = pts;
+    out->duration_us = dur;
+    out->width = f->width;
+    out->height = f->height;
+    out->matrix = f->colorspace;
+    out->full_range = is_full_range(f);
+    out->transfer = f->color_trc;
+    out->primaries = f->color_primaries;
+
+    if (f->format == AV_PIX_FMT_D3D11 && f->hw_frames_ctx)
+    {
+        enum AVPixelFormat sw = ((AVHWFramesContext *)f->hw_frames_ctx->data)->sw_format;
+        if (sw == AV_PIX_FMT_NV12 || sw == AV_PIX_FMT_P010)
+        {
+            out->layout = LV_TEXTURE;
+            out->texture = f->data[0];
+            out->texture_index = (int)(intptr_t)f->data[1];
+            out->bit_depth = sw == AV_PIX_FMT_P010 ? 10 : 8;
+            out->shift = sw == AV_PIX_FMT_P010 ? 6 : 0;
+            out->chroma_w_shift = out->chroma_h_shift = 1;
+            out->nplanes = 2;
+            out->opaque = f;
+            return 1;
+        }
+        // 4:2:2 / 4:4:4 surfaces: read back and take the CPU path.
+        AVFrame *cpu = av_frame_alloc();
+        if (cpu == NULL || av_hwframe_transfer_data(cpu, f, 0) < 0 || av_frame_copy_props(cpu, f) < 0)
+        {
+            av_frame_free(&cpu);
+            av_frame_free(&f);
+            return 0;
+        }
+        av_frame_free(&f);
+        f = cpu;
+    }
+
+    const AVPixFmtDescriptor *d = av_pix_fmt_desc_get((enum AVPixelFormat)f->format);
+    int ok = d && (d->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_BE | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_HWACCEL)) == 0 &&
+             d->nb_components >= 3 && d->comp[0].depth <= 16;
+    for (int i = 0; ok && i < d->nb_components; i++)
+        if (d->comp[i].depth != d->comp[0].depth)
+            ok = 0;
+    if (ok)
+    {
+        int bytes = d->comp[0].depth > 8 ? 2 : 1;
+        int separate = d->comp[0].plane == 0 && d->comp[1].plane == 1 && d->comp[2].plane == 2 &&
+                       (d->nb_components == 3 || d->comp[3].plane == 3) && d->comp[0].step == bytes && d->comp[1].step == bytes;
+        int semi = d->nb_components == 3 && d->comp[0].plane == 0 && d->comp[1].plane == 1 && d->comp[2].plane == 1 &&
+                   d->comp[1].offset < d->comp[2].offset && d->comp[0].step == bytes && d->comp[1].step == 2 * bytes;
+        if (separate || semi)
+        {
+            out->layout = LV_PLANAR;
+            out->nplanes = semi ? 2 : d->nb_components;
+            out->bit_depth = d->comp[0].depth;
+            out->shift = d->comp[0].shift;
+            out->chroma_w_shift = d->log2_chroma_w;
+            out->chroma_h_shift = d->log2_chroma_h;
+            for (int i = 0; i < out->nplanes; i++)
+            {
+                out->data[i] = f->data[i];
+                out->linesize[i] = f->linesize[i];
+            }
+            out->opaque = f;
+            return 1;
+        }
+    }
+
+    // Anything else (RGB, packed 4:2:2, paletted...): straight RGBA.
+    AVFrame *rgba = av_frame_alloc();
+    if (rgba == NULL)
+    {
+        av_frame_free(&f);
+        return 0;
+    }
+    rgba->format = AV_PIX_FMT_RGBA;
+    rgba->width = f->width;
+    rgba->height = f->height;
+    p->sws = sws_getCachedContext(p->sws, f->width, f->height, (enum AVPixelFormat)f->format, f->width, f->height,
+                                  AV_PIX_FMT_RGBA, SWS_BICUBIC, NULL, NULL, NULL);
+    if (p->sws == NULL || av_frame_get_buffer(rgba, 0) < 0)
+    {
+        av_frame_free(&rgba);
+        av_frame_free(&f);
+        return 0;
+    }
+    sws_setColorspaceDetails(p->sws, sws_getCoefficients(sws_space(f->colorspace, f->height)), is_full_range(f),
+                             sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+    sws_scale(p->sws, (const uint8_t *const *)f->data, f->linesize, 0, f->height, rgba->data, rgba->linesize);
+    av_frame_free(&f);
+    out->layout = LV_RGBA;
+    out->bit_depth = 8;
+    out->nplanes = 1;
+    out->data[0] = rgba->data[0];
+    out->linesize[0] = rgba->linesize[0];
+    out->opaque = rgba;
+    return 1;
+}
+
+// A decoded block of audio into `out` as float stereo at 48 kHz; 1 when handed out, 0 when there is nothing to
+// hand out yet (the resampler holds it) or it was dropped.
+static int audio_out(LvPlayer *p, AVFrame *f, LvFrame *out)
+{
+    int64_t ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+    long long pts = ts != AV_NOPTS_VALUE ? to_us(p, p->ai, ts) : 0;
+    long long dur = f->sample_rate > 0 ? (long long)f->nb_samples * 1000000 / f->sample_rate : 0;
+    if (p->audio_skip && pts + dur <= p->seek_target)
+    {
+        av_frame_free(&f);
+        return 0;
+    }
+    p->audio_skip = 0;
+    if (p->swr == NULL)
+    {
+        AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+        if (swr_alloc_set_opts2(&p->swr, &stereo, AV_SAMPLE_FMT_FLT, LV_RATE, &f->ch_layout, (enum AVSampleFormat)f->format,
+                                f->sample_rate, 0, NULL) < 0 ||
+            swr_init(p->swr) < 0)
+        {
+            swr_free(&p->swr);
+            av_frame_free(&f);
+            p->a_done = 1;
+            return 0;
+        }
+    }
+    int cap = swr_get_out_samples(p->swr, f->nb_samples);
+    if (cap > p->abuf_cap)
+    {
+        av_free(p->abuf);
+        p->abuf = av_malloc((size_t)cap * 2 * sizeof(float));
+        p->abuf_cap = p->abuf ? cap : 0;
+    }
+    uint8_t *dst = (uint8_t *)p->abuf;
+    int n = p->abuf ? swr_convert(p->swr, &dst, cap, (const uint8_t **)f->extended_data, f->nb_samples) : 0;
+    av_frame_free(&f);
+    if (n <= 0)
+        return 0;
+    memset(out, 0, sizeof *out);
+    out->kind = LV_AUDIO;
+    out->pts_us = pts;
+    out->duration_us = (long long)n * 1000000 / LV_RATE;
+    out->samples = p->abuf;
+    out->nb_samples = n;
+    return 1;
+}
+
+// The next picture or block of audio in file order: 0 with `out` filled, AVERROR_EOF at the end of both streams.
+EXPORT int lv_next(LvPlayer *p, LvFrame *out)
+{
+    for (;;)
+    {
+        if (p->pending)
+        {
+            AVFrame *f = p->pending;
+            p->pending = NULL;
+            if (video_out(p, f, out))
+                return 0;
+            continue;
+        }
+        if (p->v_done == 0)
+        {
+            AVFrame *f = av_frame_alloc();
+            if (f == NULL)
+                return AVERROR(ENOMEM);
+            int r = avcodec_receive_frame(p->vdec, f);
+            if (r == 0)
+            {
+                if (video_out(p, f, out))
+                    return 0;
+                continue;
+            }
+            av_frame_free(&f);
+            if (r == AVERROR_EOF)
+            {
+                p->v_done = 1;
+                if (p->held)
+                {
+                    AVFrame *h = p->held;
+                    p->held = NULL;
+                    p->skip_until_us = INT64_MIN;
+                    if (video_out(p, h, out))
+                        return 0;
+                }
+            }
+            else if (r != AVERROR(EAGAIN))
+                return r;
+        }
+        if (p->a_done == 0)
+        {
+            AVFrame *f = av_frame_alloc();
+            if (f == NULL)
+                return AVERROR(ENOMEM);
+            int r = avcodec_receive_frame(p->adec, f);
+            if (r == 0)
+            {
+                if (audio_out(p, f, out))
+                    return 0;
+                continue;
+            }
+            av_frame_free(&f);
+            if (r != AVERROR(EAGAIN))
+                p->a_done = 1; // the end, or a broken audio stream (which shouldn't stop the picture)
+        }
+        if (p->v_done && p->a_done)
+            return AVERROR_EOF;
+        if (p->demux_eof)
+        {
+            // Both decoders were flushed and neither gave a frame: a drained decoder saying EAGAIN has no more.
+            p->v_done = p->a_done = 1;
+            continue;
+        }
+        int r = av_read_frame(p->in.fmt, p->pkt);
+        if (r == AVERROR_EOF || r == AVERROR(EIO))
+        {
+            p->demux_eof = 1;
+            avcodec_send_packet(p->vdec, NULL);
+            if (p->adec && p->a_done == 0)
+                avcodec_send_packet(p->adec, NULL);
+            continue;
+        }
+        if (r < 0)
+            return r;
+        if (p->pkt->stream_index == p->vi && p->v_done == 0)
+            avcodec_send_packet(p->vdec, p->pkt);
+        else if (p->pkt->stream_index == p->ai && p->a_done == 0)
+            avcodec_send_packet(p->adec, p->pkt);
+        av_packet_unref(p->pkt);
+    }
+}
+
+// Jumps to `us`: to the keyframe at or before it, or with `exact` to the picture showing at `us` (decoding from
+// that keyframe and dropping what comes before).
+EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
+{
+    AVStream *vs = p->in.fmt->streams[p->vi];
+    // Rounded down: rounded to the nearest, a time in the second half of a frame named the next one, which may be a
+    // keyframe past the target.
+    int64_t ts = av_rescale_q_rnd(us + p->start_us, AV_TIME_BASE_Q, vs->time_base, AV_ROUND_DOWN);
+    int r = avformat_seek_file(p->in.fmt, p->vi, INT64_MIN, ts, ts, 0);
+    if (r < 0)
+        r = av_seek_frame(p->in.fmt, p->vi, ts, AVSEEK_FLAG_BACKWARD);
+    if (r < 0)
+        return r;
+    avcodec_flush_buffers(p->vdec);
+    if (p->adec)
+        avcodec_flush_buffers(p->adec);
+    swr_free(&p->swr);
+    p->demux_eof = p->v_done = 0;
+    p->a_done = p->adec ? 0 : 1;
+    p->next_vpts = us;
+    p->skip_until_us = exact ? us : INT64_MIN;
+    av_frame_free(&p->held);
+    av_frame_free(&p->pending);
+    p->seek_first = 1;
+    p->seek_retries = 0;
+    p->seek_target = us;
+    p->audio_skip = exact;
+    return 0;
+}
+
+EXPORT void lv_frame_free(LvFrame *f)
+{
+    if (f && f->opaque)
+    {
+        AVFrame *a = f->opaque;
+        av_frame_free(&a);
+        f->opaque = NULL;
+    }
 }

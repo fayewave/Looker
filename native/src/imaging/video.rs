@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 1;
+const API: c_int = 2;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -224,6 +224,12 @@ struct Lib {
     still: StillFn,
     free: unsafe extern "C" fn(*mut c_void),
     error: unsafe extern "C" fn(c_int, *mut c_char, c_int),
+    open: unsafe extern "C" fn(*const u16, *mut c_void, *mut Info, *mut *mut c_void) -> c_int,
+    next: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
+    seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> c_int,
+    hw: unsafe extern "C" fn(*const c_void) -> c_int,
+    close: unsafe extern "C" fn(*mut c_void),
+    frame_free: unsafe extern "C" fn(*mut LvFrame),
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -244,7 +250,18 @@ fn load() -> Result<Lib, String> {
         if v != API {
             return Err(format!("looker_video.dll speaks API {v}, Looker {API}"));
         }
-        Ok(Lib { probe: sym!("looker_video_probe"), still: sym!("looker_video_still"), free: sym!("looker_video_free"), error: sym!("looker_video_error") })
+        Ok(Lib {
+            probe: sym!("looker_video_probe"),
+            still: sym!("looker_video_still"),
+            free: sym!("looker_video_free"),
+            error: sym!("looker_video_error"),
+            open: sym!("lv_open"),
+            next: sym!("lv_next"),
+            seek: sym!("lv_seek"),
+            hw: sym!("lv_hw"),
+            close: sym!("lv_close"),
+            frame_free: sym!("lv_frame_free"),
+        })
     }
 }
 
@@ -269,6 +286,137 @@ fn error(l: &Lib, code: c_int) -> String {
 fn wide(path: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+// --- Playback (lv_* in looker_video.c) ---
+
+pub const VIDEO: c_int = 1;
+pub const AUDIO: c_int = 2;
+/// `LvFrame::layout`: a slice of the decoder's NV12/P010 texture array on the GPU.
+pub const TEXTURE: c_int = 1;
+/// CPU planes: Y, U, V (+ A), or Y and interleaved UV when `nplanes == 2`.
+pub const PLANAR: c_int = 2;
+/// CPU, straight RGBA, 8 bits a channel.
+pub const RGBA: c_int = 3;
+/// Audio always comes as interleaved float stereo at this rate.
+pub const AUDIO_RATE: u32 = 48_000;
+
+/// `LvFrame` in looker_video.c: a picture or a block of audio.
+#[repr(C)]
+pub struct LvFrame {
+    pub kind: c_int,
+    pub layout: c_int,
+    pub pts_us: i64,
+    pub duration_us: i64,
+    pub width: c_int,
+    pub height: c_int,
+    /// Samples wider than 8 bits sit in 16-bit words, shifted left by `shift`.
+    pub bit_depth: c_int,
+    pub shift: c_int,
+    pub chroma_w_shift: c_int,
+    pub chroma_h_shift: c_int,
+    pub nplanes: c_int,
+    pub matrix: c_int,
+    pub full_range: c_int,
+    pub transfer: c_int,
+    pub primaries: c_int,
+    pub texture: *mut c_void,
+    pub texture_index: c_int,
+    pub data: [*const u8; 4],
+    pub linesize: [c_int; 4],
+    pub samples: *const f32,
+    pub nb_samples: c_int,
+    opaque: *mut c_void,
+}
+
+/// A decoded picture, freed (its decoder surface given back) on drop.
+pub struct Picture(LvFrame);
+// SAFETY: an AVFrame is reference counted and freeing it is thread-safe; the planes are read-only.
+unsafe impl Send for Picture {}
+
+impl std::ops::Deref for Picture {
+    type Target = LvFrame;
+    fn deref(&self) -> &LvFrame {
+        &self.0
+    }
+}
+
+impl Drop for Picture {
+    fn drop(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.frame_free)(&mut self.0) };
+        }
+    }
+}
+
+/// What `Decoder::next` hands back.
+pub enum Item {
+    Picture(Picture),
+    /// Interleaved stereo samples and the time of the first.
+    Audio(i64, Vec<f32>),
+    End,
+}
+
+/// An open video, decoding in file order (looker_video.c's LvPlayer). One thread at a time.
+pub struct Decoder(*mut c_void);
+// SAFETY: used by one thread at a time (moved to the decode thread once).
+unsafe impl Send for Decoder {}
+
+impl Decoder {
+    /// Opens `path`; `d3d11` is the window's ID3D11Device (made with video support) to decode on its GPU, or
+    /// null for the CPU.
+    pub fn open(path: &Path, d3d11: *mut c_void) -> Result<(Decoder, Info), String> {
+        let l = lib()?;
+        let mut info = Info::zeroed();
+        let mut p = std::ptr::null_mut();
+        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, &mut info, &mut p) };
+        if r < 0 || p.is_null() {
+            return Err(error(l, r));
+        }
+        Ok((Decoder(p), info))
+    }
+
+    /// Whether pictures come from the GPU's decoder.
+    pub fn hardware(&self) -> bool {
+        lib().is_ok_and(|l| unsafe { (l.hw)(self.0) } != 0)
+    }
+
+    pub fn next(&mut self) -> Result<Item, String> {
+        let l = lib()?;
+        let mut f: LvFrame = unsafe { std::mem::zeroed() };
+        let r = unsafe { (l.next)(self.0, &mut f) };
+        const EOF: c_int = -541478725; // AVERROR_EOF, FFERRTAG('E','O','F',' ')
+        if r == EOF {
+            return Ok(Item::End);
+        }
+        if r < 0 {
+            return Err(error(l, r));
+        }
+        Ok(match f.kind {
+            AUDIO => {
+                let n = f.nb_samples.max(0) as usize * 2;
+                let samples = if f.samples.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(f.samples, n) }.to_vec() };
+                Item::Audio(f.pts_us, samples)
+            }
+            VIDEO => Item::Picture(Picture(f)),
+            k => return Err(format!("unknown item kind {k}")),
+        })
+    }
+
+    /// Jumps to `us`: the keyframe at or before it, or with `exact` the picture showing at `us`.
+    pub fn seek(&mut self, us: i64, exact: bool) -> Result<(), String> {
+        let l = lib()?;
+        let r = unsafe { (l.seek)(self.0, us, exact as c_int) };
+        if r < 0 { Err(error(l, r)) } else { Ok(()) }
+    }
+}
+
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.close)(self.0) };
+        }
+    }
 }
 
 /// The stream's facts without decoding a picture.
@@ -338,6 +486,47 @@ mod tests {
         assert!(f.contains(&("Format", "10-bit 4:2:0".into())), "{f:?}");
         assert!(f.contains(&("Colour", "Rec. 2020, HDR (HLG)".into())), "{f:?}");
         assert!(f.contains(&("Audio", "AAC, stereo, 48 kHz".into())), "{f:?}");
+    }
+
+    /// Prints the pictures `Decoder` hands out after an exact seek to `LOOKER_SEEK` µs in `LOOKER_DECODE`.
+    #[test]
+    #[ignore]
+    fn seek_sequence() {
+        let p = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let to: i64 = std::env::var("LOOKER_SEEK").ok().and_then(|v| v.parse().ok()).unwrap_or(25_000);
+        let (mut d, _) = Decoder::open(&p, std::ptr::null_mut()).unwrap();
+        let ahead: usize = std::env::var("LOOKER_AHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        for _ in 0..ahead {
+            if let Ok(Item::Picture(f)) = d.next() {
+                println!("start: picture {}", f.pts_us);
+                if f.layout == PLANAR && f.nplanes == 4 {
+                    let a = unsafe { std::slice::from_raw_parts(f.data[3] as *const u16, 8) };
+                    let y = unsafe { std::slice::from_raw_parts(f.data[0] as *const u16, 8) };
+                    println!("  alpha {a:?} luma {y:?} depth {}", f.bit_depth);
+                }
+            }
+        }
+        d.seek(to, true).unwrap();
+        let mut n = 0;
+        while n < 3 {
+            match d.next().unwrap() {
+                Item::Picture(f) => {
+                    println!("after seek {to}: picture {}", f.pts_us);
+                    n += 1;
+                }
+                Item::Audio(t, _) => println!("after seek {to}: audio {t}"),
+                Item::End => break,
+            }
+        }
+    }
+
+    #[test]
+    fn frame_matches_the_c_layout() {
+        // sizeof(LvFrame) on x64: 15 ints with the padding before each pointer, the pointers, 4 + 1 more ints.
+        assert_eq!(std::mem::size_of::<LvFrame>(), 160);
+        assert_eq!(std::mem::offset_of!(LvFrame, texture), 72);
+        assert_eq!(std::mem::offset_of!(LvFrame, data), 88);
+        assert_eq!(std::mem::offset_of!(LvFrame, samples), 136);
     }
 
     #[test]

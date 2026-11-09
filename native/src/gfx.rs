@@ -38,19 +38,36 @@ unsafe impl<T> Send for Sendable<T> {}
 
 pub fn create_device(warp: bool) -> Result<Device> {
     unsafe {
-        let mut d3d = None;
-        D3D11CreateDevice(
-            None,
-            if warp { D3D_DRIVER_TYPE_WARP } else { D3D_DRIVER_TYPE_HARDWARE },
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0]),
-            D3D11_SDK_VERSION,
-            Some(&mut d3d),
-            None,
-            None,
-        )?;
-        let d3d: ID3D11Device = d3d.unwrap();
+        let create = |flags: D3D11_CREATE_DEVICE_FLAG| {
+            let mut d3d = None;
+            D3D11CreateDevice(
+                None,
+                if warp { D3D_DRIVER_TYPE_WARP } else { D3D_DRIVER_TYPE_HARDWARE },
+                HMODULE::default(),
+                flags,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut d3d),
+                None,
+                None,
+            )
+            .map(|_| d3d.unwrap())
+        };
+        // The hardware device also decodes video (FFmpeg's D3D11VA, see imaging/video.rs), straight into
+        // textures Direct2D draws.
+        let d3d: ID3D11Device = if warp {
+            create(D3D11_CREATE_DEVICE_BGRA_SUPPORT)?
+        } else {
+            create(D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT).or_else(|_| create(D3D11_CREATE_DEVICE_BGRA_SUPPORT))?
+        };
+        // The video decode thread (FFmpeg) uses the immediate context too: every call on it takes the device's
+        // lock. FFmpeg turns this on only for devices it makes itself; without it, decoding beside Direct2D
+        // crashed in avcodec.
+        if !warp {
+            if let Ok(mt) = d3d.GetImmediateContext().and_then(|c| c.cast::<ID3D11Multithread>()) {
+                let _ = mt.SetMultithreadProtected(true);
+            }
+        }
         crate::trace::mark(if warp { "gfx: D3D11 device (WARP)" } else { "gfx: D3D11 device (hardware)" });
         let dxgi: IDXGIDevice1 = d3d.cast()?;
         let _ = dxgi.SetMaximumFrameLatency(1);

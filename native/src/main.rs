@@ -23,6 +23,7 @@ mod metadata;
 mod model;
 mod motion;
 mod pages;
+mod player;
 mod settings;
 mod store;
 mod tags;
@@ -33,6 +34,7 @@ mod trace;
 mod ui;
 mod view;
 mod viewer;
+mod yuv;
 
 use std::path::PathBuf;
 

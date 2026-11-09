@@ -16,6 +16,7 @@ mod menus;
 mod model;
 mod page;
 mod slideshow;
+mod video;
 
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -503,6 +504,7 @@ pub struct App {
     placeholder: Option<Placeholder>,
     /// The 3D model on screen, while the current file is one.
     model: Option<model::ModelView>,
+    video: Option<video::VideoView>,
     /// The slideshow's dissolve from the previous image, while it runs.
     fade: Option<slideshow::Fade>,
     /// What the viewport drew last (the bitmap, where, and whether it is SDR: `Gfx::draw_photo`), for the
@@ -592,6 +594,7 @@ impl App {
         }
         self.explorer_follow();
         self.sync_model();
+        self.sync_video();
         self.invalidate();
     }
 
@@ -981,7 +984,10 @@ impl App {
                         let _ = PostMessageW(Some(HWND(hwnd as _)), WM_GPU_READY, WPARAM(0), LPARAM(0));
                     }
                 }
-                Err(e) => crate::trace::mark(format!("hardware device failed, staying on WARP: {e}")),
+                Err(e) => {
+                    video::HW_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    crate::trace::mark(format!("hardware device failed, staying on WARP: {e}"));
+                }
             })
             .ok();
     }
@@ -999,6 +1005,9 @@ impl App {
         self.landing.device_lost();
         if let Some(m) = &mut self.model {
             m.device_lost();
+        }
+        if let Some(v) = &mut self.video {
+            v.device_lost();
         }
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
@@ -1190,6 +1199,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             missing_extension: None,
             placeholder: None,
             model: None,
+            video: None,
             fade: None,
             last_drawn: None,
             pdf_page: 0,

@@ -642,6 +642,11 @@ impl App {
                     }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.view.has_content() {
                         let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                        // Over a video the wheel is its volume (Faye, 2026-11-09); Ctrl+wheel still zooms.
+                        if self.video_shown() && !ctrl {
+                            self.video_volume_by(delta as f32 / 120.0 * 0.05);
+                            return Some(LRESULT(0));
+                        }
                         if self.settings.wheel_navigates && !ctrl {
                             // A notch a step: down is next. Fine-grained wheels add up to a notch first.
                             self.wheel_acc += delta;
@@ -703,6 +708,9 @@ impl App {
                         if vk == VK_ESCAPE || (vk == VK_OEM_COMMA && ctrl) {
                             self.close_page();
                         }
+                        return Some(LRESULT(0));
+                    }
+                    if self.video_key(vk, shift, ctrl) {
                         return Some(LRESULT(0));
                     }
                     match vk {
@@ -1008,6 +1016,7 @@ impl App {
                     None
                 }
                 WM_DESTROY => {
+                    self.video = None; // stops the sound now, and traces its counts
                     crate::trace::flush("window closed");
                     PostQuitMessage(0);
                     Some(LRESULT(0))
