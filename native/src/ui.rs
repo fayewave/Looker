@@ -283,7 +283,8 @@ pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
 /// A scroll region's thumb (`r` is its full size): the buttons' fill, their hover fill while it's held.
 pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
     let t = theme::t();
-    let c = if held { rgb(t.hover_fill) } else { rgb(t.track) };
+    // Ink, so it reads the same on the cards, the page and the Settings card (Faye, 2026-11-09: brighter).
+    let c = rgba(t.ink, if held { 0.55 } else { 0.3 });
     g.fill_round(r, (r.right - r.left) / 2.0, c);
 }
 
