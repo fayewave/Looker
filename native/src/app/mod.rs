@@ -43,8 +43,9 @@ use crate::folder::{self, Listing};
 use crate::format;
 use crate::settings::{self, SavedWindow, Settings};
 use crate::viewer::{self, Outcome, Viewer};
-use crate::gfx::{self, Align, Gfx, rect, rgb, white};
-use crate::ui::{self, TEXT_DISABLED, TEXT_SECONDARY, TEXT_TERTIARY, contains};
+use crate::gfx::{self, Align, Gfx, rect, rgb};
+use crate::ui::{self, contains};
+use crate::theme;
 use crate::view::View;
 
 /// The standard Windows 11 caption height (the C# app's compact TitleBar), caption buttons 46 × 32.
@@ -52,15 +53,20 @@ const TITLE_H: f32 = 32.0;
 const TOOLBAR_H: f32 = 40.0;
 const STATUS_H: f32 = 28.0;
 const CAPTION_W: f32 = 46.0;
-const BUTTON_W: f32 = 40.0;
+/// The toolbar's boxed buttons, as Snapper's: 32 square, 4 apart within a group, 12 between groups, 16 from
+/// the window's edges.
+const BUTTON_W: f32 = 32.0;
 const BUTTON_H: f32 = 32.0;
-const SORT_W: f32 = 60.0;
+const BAR_GAP: f32 = 4.0;
+const BAR_APART: f32 = 12.0;
+const SIDE_PAD: f32 = 16.0;
+/// The sort button: its icon and a chevron.
+const SORT_W: f32 = 62.0;
 /// The accent "Save" button that appears while a rotation preview is unsaved.
-const SAVE_W: f32 = 56.0;
+const SAVE_W: f32 = 64.0;
 const DEFAULT_W: f32 = 1200.0;
 const DEFAULT_H: f32 = 800.0;
 
-const CLOSE_RED: u32 = 0xC42B1C;
 
 const WM_LISTED: u32 = WM_APP + 2;
 const WM_GPU_READY: u32 = WM_APP + 3;
@@ -124,13 +130,19 @@ enum Hit {
     Reveal,
     Open,
     Viewport,
-    /// The Settings page: its surface (the wheel scrolls it), Back, a drop-down, a switch (and the id its
-    /// slide animates under), a link button (GitHub, Store, Reset).
+    /// The Settings card: the window under it (modal: a press there puts it away), the card, a section in its
+    /// sidebar (and the id the picked one's wash eases under), its close button, its scrollbar, a drop-down, a
+    /// switch (and the id its slide animates under), a theme chip, a button (`page::link`).
     PageSurface,
-    PageBack,
+    PageCard,
+    PageNav(u8),
+    PageNavOn(u8),
+    PageClose,
+    PageThumb,
     Combo(page::Setting),
     Toggle(page::Setting),
     ToggleAnim(page::Setting),
+    ThemeChip(u8),
     PageLink(u8),
     /// The landing page: "Open a folder", a recent file by index, and Clear (Open is "Open a file").
     LandingFolder,
@@ -171,6 +183,8 @@ enum Hit {
     PageBar,
     PagePrevious,
     PageNext,
+    /// A caption button: only ever an id for its hover fade (the buttons are hit-tested as non-client).
+    Caption(Caption),
     /// Everything under a dialog's smoke: modal, nothing to click.
     DialogSurface,
     /// A dialog's text box, and its clear button.
@@ -178,7 +192,7 @@ enum Hit {
     DialogFieldClear,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 enum Caption {
     Min,
     Max,
@@ -379,7 +393,7 @@ pub struct App {
     /// Keeps the open folder's listing (navigation, strip, counter) live.
     folder_watch: Option<(PathBuf, crate::explorer::Watcher)>,
     landing: landing::Landing,
-    /// The Settings page, while open.
+    /// The Settings card, while open or fading away.
     page: Option<page::Page>,
     /// After Reset Looker, closing must not save the window placement again.
     skip_placement_save: bool,
@@ -695,9 +709,7 @@ impl App {
     /// A file is about to open from outside the viewer: menus, the Settings page and a slideshow give way.
     fn make_way(&mut self) {
         self.close_menu();
-        if self.page.is_some() {
-            self.close_page();
-        }
+        self.close_page();
         self.stop_slideshow();
     }
 
@@ -1030,8 +1042,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             None,
         )
         .expect("CreateWindowExW");
-        let dark = windows::core::BOOL(1);
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, size_of::<windows::core::BOOL>() as u32);
+        theme::set(settings.theme);
+        page::apply_frame_colours(hwnd);
         crate::trace::mark("window created");
         DragAcceptFiles(hwnd, true); // files and folders dropped from Explorer
         if crate::store::packaged() {

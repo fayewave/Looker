@@ -337,9 +337,9 @@ impl App {
         let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
         match thumb {
             Some(t) => t.draw_fit(g, rect(cx - bw / 2.0, top, bw, bh)),
-            None => g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), white(TEXT_SECONDARY), Align::Center),
+            None => g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), rgb(theme::t().icon), Align::Center),
         }
-        g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), white(0xFF), Align::Center);
+        g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), rgb(theme::t().text), Align::Center);
     }
 
     pub(super) fn toggle_explorer_other(&mut self) {
@@ -493,8 +493,8 @@ impl App {
             return false;
         }
         self.hits.add(Hit::ExplorerCard, card);
-        g.fill_round(card, 8.0, rgb(self.theme().window));
-        g.outline_round(card, 8.0, white(0x18), g.px());
+        ui::card(g, card);
+        let th = theme::t();
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
 
         // Header: Back, Forward, crumbs.
@@ -512,7 +512,7 @@ impl App {
         }
         self.draw_crumbs(g, fwd.right + 6.0, inner.right - 8.0, hy, NAV_W);
         let div_y = inner.top + HEADER_H;
-        g.hline(inner.left, g.snap(div_y), inner.right - inner.left, white(0x15));
+        g.hline(inner.left, g.snap(div_y), inner.right - inner.left, rgb(th.divider));
 
         // Rows.
         let list = D2D_RECT_F { left: inner.left + LIST_PAD, top: div_y + 1.0 + 6.0, right: inner.right - LIST_PAD, bottom: inner.bottom - LIST_PAD };
@@ -545,23 +545,28 @@ impl App {
                 self.hits.add(Hit::ExplorerRow(i), visible);
             }
             let selected = current.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
-            let hot = self.hover == Some(Hit::ExplorerRow(i)) || self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
+            let cursor = self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
+            let hover = self.fades.hover(Hit::ExplorerRow(i), self.hover == Some(Hit::ExplorerRow(i)));
             let pressed = self.pressed == Some(Hit::ExplorerRow(i)) && self.hover == Some(Hit::ExplorerRow(i));
+            // As Snapper's lists: the picked row is the selection fill with an accent outline; hover is an ink
+            // wash; the keyboard's cursor (away from the picked row) a hairline.
             if selected {
-                g.fill_round(row, 4.0, white(if pressed { 0x2E } else { 0x1F }));
-                g.outline_round(row, 4.0, gfx::rgba(ui::ACCENT, 1.0), 1.0);
-            } else if pressed {
-                g.fill_round(row, 4.0, white(0x26));
-                g.outline_round(row, 4.0, white(0x80), 1.0);
-            } else if hot {
-                g.fill_round(row, 4.0, white(0x14));
-                g.outline_round(row, 4.0, white(0x55), 1.0);
+                g.fill_round(row, 2.5, rgb(th.row_select));
+                ui::stroke(g, row, 2.5, rgb(th.accent));
+            } else {
+                let a = if pressed { 0.12 } else { 0.08 * hover };
+                if a > 0.0 {
+                    g.fill_round(row, 2.5, gfx::rgba(th.ink, a));
+                }
+                if cursor {
+                    ui::stroke(g, row, 2.5, rgb(th.divider));
+                }
             }
-            let alpha = if r.kind == Kind::Other { 0x73 } else { 0xFF }; // 45% for files Looker can't open
+            let alpha = if r.kind == Kind::Other { 0.45 } else { 1.0 }; // for files Looker can't open
             let ib = rect(row.left + 5.0, row.top + (ROW_H - ICON_H) / 2.0, ICON_W, ICON_H);
             let mut drew = false;
             if r.kind == Kind::Image {
-                g.fill_round(ib, 2.0, white(0x1F));
+                g.fill_round(ib, 2.0, rgb(th.field));
                 if let Some(t) = self.thumbs.get(&r.path, r.stamp) {
                     t.draw_fit(g, ib);
                     drew = true;
@@ -575,29 +580,26 @@ impl App {
                     Kind::Image => 0xE91B,
                     Kind::Other => 0xE7C3,
                 };
-                g.text(&[glyph], &g.fonts.small_icons, ib, white(alpha), Align::Center);
+                g.text(&[glyph], &g.fonts.small_icons, ib, gfx::rgba(th.icon, alpha), Align::Center);
             }
             let tx = ib.right + 6.0;
-            g.text(&wide(&r.name), &g.fonts.caption, rect(tx, row.top, (row.right - 5.0 - tx).max(0.0), ROW_H), white(alpha), Align::Left);
+            g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (row.right - 5.0 - tx).max(0.0), ROW_H), gfx::rgba(th.text, alpha), Align::Left);
         }
         g.pop_clip();
 
         let over = matches!(self.hover, Some(Hit::ExplorerCard | Hit::ExplorerRow(_)));
         if self.explorer.max_scroll > 0.0 && (over || moving) {
-            let thumb_h = (view_h * view_h / content_h).max(24.0);
+            let thumb_h = (view_h * view_h / content_h).max(28.0);
             let ty = list.top + (view_h - thumb_h) * scroll / self.explorer.max_scroll;
-            g.fill_round(rect(inner.right - 5.0, ty, 2.0, thumb_h), 1.0, white(0x8B));
+            ui::scroll_thumb(g, rect(inner.right - 8.0, ty, 6.0, thumb_h), false);
         }
 
         // The grip straddles the right border.
         let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);
         self.hits.add(Hit::ExplorerGrip, grip);
         let dragging = self.explorer.drag.is_some();
-        let t = self.fades.get(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
-        if t > 0.0 {
-            let c = if dragging { gfx::rgba(ui::ACCENT, 1.0) } else { gfx::rgba(0xFFFFFF, 0.4 * t) };
-            g.fill_round(rect(card.right - 1.0, card.top, 2.0, card.bottom - card.top), 1.0, c);
-        }
+        let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
+        ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving
     }
 
@@ -613,9 +615,9 @@ impl App {
         // Each link is padded for its rounded hover fill; the last crumb (where you are) is plain text, padded on
         // its left only, so the chevron before it sits evenly between the two names.
         const PAD: f32 = 6.0;
-        let widths: Vec<f32> = names.iter().enumerate().map(|(i, n)| g.measure(&wide(n), &g.fonts.caption) + 2.0 + if i + 1 < names.len() { 2.0 * PAD } else { PAD }).collect();
+        let widths: Vec<f32> = names.iter().enumerate().map(|(i, n)| g.measure(&wide(n), &g.fonts.body) + 2.0 + if i + 1 < names.len() { 2.0 * PAD } else { PAD }).collect();
         const CHEVRON: f32 = 13.0;
-        let more_w = g.measure(&wide("\u{2026}"), &g.fonts.caption) + 2.0 + 2.0 * PAD;
+        let more_w = g.measure(&wide("\u{2026}"), &g.fonts.body) + 2.0 + 2.0 * PAD;
         let avail = (x1 - x0).max(0.0);
         let total = |from: usize, ellipsis: bool| -> f32 {
             let mut t: f32 = widths[from..].iter().sum::<f32>() + CHEVRON * (all.len() - from - 1) as f32;
@@ -633,13 +635,11 @@ impl App {
         if from > 0 {
             let r = rect(x, y, more_w, h);
             self.hits.add(Hit::CrumbMore, r);
-            let t = self.fades.get(Hit::CrumbMore, self.hover == Some(Hit::CrumbMore));
-            let pressed = self.pressed == Some(Hit::CrumbMore) && self.hover == Some(Hit::CrumbMore);
-            ui::link_fill(g, crumb_fill(r), t, pressed);
-            let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
-            g.text(&wide("\u{2026}"), &g.fonts.caption, r, c, Align::Center);
+            let st = self.state(Hit::CrumbMore, true);
+            ui::link_fill(g, crumb_fill(r), st.hover, st.pressed);
+            g.text(&wide("\u{2026}"), &g.fonts.body, r, ui::link_color(st.hover), Align::Center);
             x += more_w;
-            g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), white(TEXT_SECONDARY), Align::Center);
+            g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), rgb(theme::t().label), Align::Center);
             x += CHEVRON;
         }
         for i in from..all.len() {
@@ -647,18 +647,16 @@ impl App {
             let w = if last { widths[i].min((x1 - x).max(0.0)) } else { widths[i] };
             let r = rect(x, y, w, h);
             if last {
-                g.text(&wide(&names[i]), &g.fonts.caption, D2D_RECT_F { left: r.left + PAD, ..r }, white(0xFF), Align::Left);
+                g.text(&wide(&names[i]), &g.fonts.body, D2D_RECT_F { left: r.left + PAD, ..r }, rgb(theme::t().text), Align::Left);
                 self.hits.add(Hit::Crumb(i), r);
             } else {
                 self.hits.add(Hit::Crumb(i), r);
                 let id = Hit::Crumb(i);
-                let t = self.fades.get(id, self.hover == Some(id));
-                let pressed = self.pressed == Some(id) && self.hover == Some(id);
-                ui::link_fill(g, crumb_fill(r), t, pressed);
-                let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
-                g.text(&wide(&names[i]), &g.fonts.caption, r, c, Align::Center);
+                let st = self.state(id, true);
+                ui::link_fill(g, crumb_fill(r), st.hover, st.pressed);
+                g.text(&wide(&names[i]), &g.fonts.body, r, ui::link_color(st.hover), Align::Center);
                 x += w;
-                g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), white(TEXT_SECONDARY), Align::Center);
+                g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), rgb(theme::t().label), Align::Center);
                 x += CHEVRON;
             }
         }

@@ -145,18 +145,17 @@ impl App {
     /// "Set Looker as your default photo viewer" and an X that hides it for good.
     fn draw_default_hint(&mut self, g: &Gfx, cx: f32, y: f32) {
         let label = "Set Looker as your default photo viewer";
-        let bw = (g.measure(&wide(label), &g.fonts.body) + 24.0).ceil();
-        let total = bw + 6.0 + 32.0;
+        let bw = ui::icon_label_width(g, label);
+        let total = bw + 4.0 + 32.0;
         let b = rect(g.snap(cx - total / 2.0), g.snap(y), bw, 32.0);
-        let x = rect(b.right + 6.0, b.top, 32.0, 32.0);
+        let x = rect(b.right + 4.0, b.top, 32.0, 32.0);
         self.hits.add(Hit::DefaultHint, b);
         let st = self.state(Hit::DefaultHint, true);
-        let fg = ui::button_frame(g, b, ui::Kind::Standard, &st);
-        g.text(&wide(label), &g.fonts.body, b, fg, Align::Center);
+        ui::icon_label_button(g, b, 0xE71D, label, ui::Kind::Standard, &st);
         self.hits.add(Hit::DefaultHintClose, x);
         let st = self.state(Hit::DefaultHintClose, true);
         let fg = ui::button_frame(g, x, ui::Kind::Standard, &st);
-        g.text(&[0xE711], &g.fonts.small_icons, x, fg, Align::Center);
+        g.text(&[0xE8BB], &g.fonts.small_icons, x, fg, Align::Center);
     }
 
     pub(super) fn draw_landing(&mut self, g: &Gfx) {
@@ -192,25 +191,28 @@ impl App {
         }
         y += WORDMARK_H + 8.0 + 16.0 + 8.0;
 
-        for (id, label, x) in [(Hit::Open, "Open a file", cx - 6.0 - 140.0), (Hit::LandingFolder, "Open a folder", cx + 6.0)] {
+        // "Open a file" is the one thing to press here: the accent.
+        for (id, glyph, label, x, kind) in [
+            (Hit::Open, 0xE8E5u16, "Open a file", cx - 4.0 - 140.0, ui::Kind::Accent),
+            (Hit::LandingFolder, 0xE838, "Open a folder", cx + 4.0, ui::Kind::Standard),
+        ] {
             let r = rect(g.snap(x), g.snap(y), 140.0, 32.0);
             self.hits.add(id, r);
             let st = self.state(id, true);
-            let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
-            g.text(&wide(label), &g.fonts.body, r, fg, Align::Center);
+            ui::icon_label_button(g, r, glyph, label, kind, &st);
         }
         y += 32.0;
 
         if has_recent {
             y += 16.0 + 16.0;
             let col = rect(g.snap(cx - COLUMN_W / 2.0), 0.0, COLUMN_W, 0.0);
-            g.text(&wide("Recent"), &g.fonts.body_strong, rect(col.left + 8.0, y, 200.0, 24.0), white(TEXT_SECONDARY), Align::Left);
-            let cw = g.measure(&wide("Clear"), &g.fonts.caption) + 20.0;
-            let clear = rect(col.right - 8.0 - cw, y, cw, 24.0);
+            ui::section(g, "Recent", rect(col.left + 8.0, y, 200.0, 24.0));
+            let cw = g.measure(&wide("Clear"), &g.fonts.body) + 24.0;
+            let clear = rect(col.right - 6.0 - cw, y, cw, 24.0);
             self.hits.add(Hit::RecentClear, clear);
             let st = self.state(Hit::RecentClear, true);
-            let fg = ui::button_frame(g, clear, ui::Kind::Standard, &st);
-            g.text(&wide("Clear"), &g.fonts.caption, clear, fg, Align::Center);
+            let fg = ui::button_frame(g, clear, ui::Kind::Subtle, &st);
+            g.text(&wide("Clear"), &g.fonts.body, clear, if st.hover > 0.0 { fg } else { ui::link_color(0.0) }, Align::Center);
             y += 28.0 + 4.0;
 
             let want = ((THUMB_W * self.scale()).ceil() as u32).max(96);
@@ -222,22 +224,23 @@ impl App {
                 }
                 let id = Hit::RecentRow(i);
                 self.hits.add(id, row);
-                // Brighter than a subtle button's states: the rows are large and sit on the plain window fill.
-                let st = self.state_out(id, true);
-                let fill = if st.pressed { white(0x2E) } else { gfx::rgba(0xFFFFFF, 0x1C as f32 / 255.0 * st.hover) };
-                if fill.a > 0.0 {
-                    g.fill_round(row, 4.0, fill);
+                // A list row: an ink wash on hover, firmer while pressed.
+                let st = self.state(id, true);
+                let th = theme::t();
+                let a = if st.pressed { 0.12 } else { 0.08 * st.hover };
+                if a > 0.0 {
+                    g.fill_round(row, 5.0, gfx::rgba(th.ink, a));
                 }
                 let tb = rect(row.left + 6.0, row.top + 3.0, THUMB_W, THUMB_H);
-                g.fill_round(tb, 4.0, white(0x15)); // ControlFillColorSecondary
+                g.fill_round(tb, 4.0, rgb(th.field));
                 if let Some(t) = self.thumbs.get(&e.path, e.stamp) {
                     t.draw_fit(g, tb);
                 }
                 self.thumbs.want(&e.path, e.stamp, want, e.cloud, true);
                 let tx = tb.right + 12.0;
                 let tw = (row.right - 6.0 - tx).max(0.0);
-                g.text(&wide(&e.name), &g.fonts.body, rect(tx, row.top + 2.0, tw, 20.0), white(0xFF), Align::Left);
-                g.text(&wide(&e.folder), &g.fonts.caption, rect(tx, row.top + 22.0, tw, 16.0), white(TEXT_TERTIARY), Align::Left);
+                g.text(&wide(&e.name), &g.fonts.body, rect(tx, row.top + 4.0, tw, 18.0), rgb(th.text), Align::Left);
+                g.text(&wide(&e.folder), &g.fonts.caption, rect(tx, row.top + 22.0, tw, 16.0), rgb(th.label), Align::Left);
             }
         }
         g.pop_clip();

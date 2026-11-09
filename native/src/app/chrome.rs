@@ -27,7 +27,7 @@ impl App {
     /// The cards and the strip follow their toggles while a photo is up, in fullscreen too, but not behind
     /// a page or during a slideshow (that is the photos alone).
     pub(super) fn panels_allowed(&self) -> bool {
-        self.viewer.current.is_some() && self.page.is_none() && !self.slideshow.running
+        self.viewer.current.is_some() && !self.slideshow.running
     }
 
     /// The panels slide to where their toggles say (a toggle, a slideshow starting or ending).
@@ -69,7 +69,7 @@ impl App {
     pub(super) fn photo_layer(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let (_, wh) = self.size_dip();
-        let (top, bottom) = if self.chrome() && self.page.is_none() { (0.0, wh) } else { (v.top, self.content_bottom()) };
+        let (top, bottom) = if self.chrome() { (0.0, wh) } else { (v.top, self.content_bottom()) };
         D2D_RECT_F { top, bottom, ..v }
     }
 
@@ -89,45 +89,85 @@ impl App {
         rect(w - CAPTION_W * i, 0.0, CAPTION_W, TITLE_H)
     }
 
+    /// The toolbar's buttons' top edge: centred in the toolbar.
+    pub(super) fn toolbar_y() -> f32 {
+        TITLE_H + (TOOLBAR_H - BUTTON_H) / 2.0
+    }
+
     pub(super) fn tool_rects(&self) -> Vec<(Tool, u16, D2D_RECT_F)> {
         // A narrow window drops left-hand buttons in this order (each has a key, the wheel or a double-click);
         // Previous, Next and Sort (no key) always stay, as does the right-hand group.
         const DROP: [Tool; 6] = [Tool::ZoomOut, Tool::ZoomIn, Tool::Fullscreen, Tool::Fit, Tool::Rotate, Tool::Delete];
-        let (w, _) = self.size_dip();
-        let y = TITLE_H + (TOOLBAR_H - 8.0 - BUTTON_H) / 2.0;
-        let width = |t: Tool| if t == Tool::Sort { SORT_W } else { BUTTON_W };
-        let right_w = RIGHT_TOOLS.len() as f32 * (BUTTON_W + 4.0) - 4.0;
-        let room = w - 12.0 - 12.0 - right_w - 16.0;
-        let save_w = if self.turns != 0 { SAVE_W + 4.0 } else { 0.0 };
-        let mut dropped = 0;
-        while dropped < DROP.len() {
-            let left_w: f32 = LEFT_TOOLS.iter().filter(|(t, _)| !DROP[..dropped].contains(t)).map(|&(t, _)| width(t) + 4.0).sum::<f32>() - 4.0 + save_w;
-            if left_w <= room {
-                break;
+        // Buttons that belong together sit 4 apart; groups 12.
+        fn group(t: Tool) -> u8 {
+            match t {
+                Tool::Previous | Tool::Next => 0,
+                Tool::ZoomOut | Tool::Fit | Tool::ZoomIn | Tool::Fullscreen => 1,
+                Tool::Rotate | Tool::Delete => 2,
+                Tool::Sort => 3,
+                Tool::SaveRotation => 4,
+                Tool::Home => 10,
+                Tool::Explorer | Tool::Strip | Tool::Info => 11,
+                Tool::Settings => 12,
             }
+        }
+        fn run(tools: &[Tool], width: impl Fn(Tool) -> f32) -> f32 {
+            let mut w = 0.0;
+            for (i, &t) in tools.iter().enumerate() {
+                if i > 0 {
+                    w += if group(tools[i - 1]) == group(t) { BAR_GAP } else { BAR_APART };
+                }
+                w += width(t);
+            }
+            w
+        }
+        let (w, _) = self.size_dip();
+        let y = Self::toolbar_y();
+        let width = |t: Tool| match t {
+            Tool::Sort => SORT_W,
+            Tool::SaveRotation => SAVE_W,
+            _ => BUTTON_W,
+        };
+        let right: Vec<Tool> = RIGHT_TOOLS.iter().map(|&(t, _)| t).collect();
+        let room = w - SIDE_PAD * 2.0 - run(&right, width) - 16.0;
+        let left_of = |dropped: usize| {
+            let mut v: Vec<Tool> = LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|t| !DROP[..dropped].contains(t)).collect();
+            if self.turns != 0 {
+                v.push(Tool::SaveRotation);
+            }
+            v
+        };
+        let mut dropped = 0;
+        while dropped < DROP.len() && run(&left_of(dropped), width) > room {
             dropped += 1;
         }
+        let glyph = |t: Tool| LEFT_TOOLS.iter().chain(RIGHT_TOOLS).find(|(x, _)| *x == t).map_or(0, |&(_, g)| g);
         let mut out = Vec::new();
-        let mut x = 12.0;
-        for &(t, g) in LEFT_TOOLS.iter().filter(|(t, _)| !DROP[..dropped].contains(t)) {
-            let bw = width(t);
-            out.push((t, g, rect(x, y, bw, BUTTON_H)));
-            x += bw + 4.0;
+        let mut x = SIDE_PAD;
+        let mut prev: Option<Tool> = None;
+        for t in left_of(dropped) {
+            if let Some(p) = prev {
+                x += if group(p) == group(t) { BAR_GAP } else { BAR_APART };
+            }
+            out.push((t, glyph(t), rect(x, y, width(t), BUTTON_H)));
+            x += width(t);
+            prev = Some(t);
         }
-        if self.turns != 0 {
-            out.push((Tool::SaveRotation, 0, rect(x, y, SAVE_W, BUTTON_H)));
-        }
-        let mut x = w - 12.0;
-        for &(t, g) in RIGHT_TOOLS.iter().rev() {
+        let mut x = w - SIDE_PAD;
+        let mut prev: Option<Tool> = None;
+        for &t in right.iter().rev() {
+            if let Some(p) = prev {
+                x -= if group(p) == group(t) { BAR_GAP } else { BAR_APART };
+            }
             x -= BUTTON_W;
-            out.push((t, g, rect(x, y, BUTTON_W, BUTTON_H)));
-            x -= 4.0;
+            out.push((t, glyph(t), rect(x, y, BUTTON_W, BUTTON_H)));
+            prev = Some(t);
         }
         out
     }
 
     pub(super) fn tool_enabled(&self, t: Tool) -> bool {
-        let has = self.viewer.current.is_some() && self.page.is_none();
+        let has = self.viewer.current.is_some();
         match t {
             Tool::Settings => true,
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
@@ -245,7 +285,7 @@ impl App {
         let (w, h) = self.size_dip();
         let parts = self.status_parts();
         let counter = self.status_rank().map_or(0.0, |s| g.measure_tabular(&wide(&s), &g.fonts.caption) + 24.0);
-        let room = (w - 24.0 - counter).max(0.0);
+        let room = (w - SIDE_PAD * 2.0 - counter).max(0.0);
         let lw = g.measure_tabular(&wide(LINK), &g.fonts.caption);
         let can_link = self.viewer.current.is_some();
         let join = |keep_below: u8| parts.iter().filter(|(p, _)| *p < keep_below).map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("   ·   ");
@@ -258,7 +298,7 @@ impl App {
                 let tw = g.measure_tabular(&wide(&text), &g.fonts.caption);
                 let need = tw + if with_link { 16.0 + lw } else { 0.0 };
                 if need <= room {
-                    let link = with_link.then(|| rect(12.0 + tw + 16.0, h - STATUS_H, lw, STATUS_H));
+                    let link = with_link.then(|| rect(SIDE_PAD + tw + 16.0, h - STATUS_H, lw, STATUS_H));
                     return (text, link);
                 }
             }
@@ -281,11 +321,12 @@ impl App {
 
     pub(super) fn render(&mut self) {
         let Some(mut g) = self.gfx.take() else { return };
+        crate::motion::refresh();
         self.hits.clear();
         self.fades.begin();
         let sliding = self.step_slides();
         self.prepare_model(&g);
-        g.begin(self.theme().window);
+        g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
         let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
@@ -294,26 +335,27 @@ impl App {
             self.draw_page_bar(&g);
         }
         if self.chrome() {
-            self.draw_title(&g);
             self.draw_toolbar(&g);
-            if self.page.is_some() {
-                self.draw_page(&g);
-            } else {
-                self.draw_status(&g);
-            }
+            self.draw_status(&g);
         }
-        let toast_moving = self.draw_overlays(&g);
+        // The Settings card blurs and dims all of that; the title bar stays over it, as Snapper's does.
+        let page_moving = self.draw_page(&mut g);
+        if self.chrome() {
+            self.draw_title(&g);
+        }
+        let overlays_moving = self.draw_overlays(&g);
         if let Err(e) = g.end() {
             crate::trace::mark(format!("present failed: {e}"));
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || toast_moving || card_moving || strip_moving || sliding || self.fade.is_some() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() {
             self.invalidate();
         }
     }
 
-    pub(super) fn draw_title(&self, g: &Gfx) {
+    pub(super) fn draw_title(&mut self, g: &Gfx) {
+        let t = theme::t();
         let (w, _) = self.size_dip();
         if let Some(icon) = &self.icon {
             let x = g.snap(16.0);
@@ -321,8 +363,8 @@ impl App {
             g.draw_bitmap(icon, rect(x, y, 16.0, 16.0), 1.0);
         }
         let title = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()).map(file_name).unwrap_or_else(|| "Looker".into());
-        let fg = if self.active { white(0xFF) } else { white(TEXT_TERTIARY) };
-        g.text(&wide(&title), &g.fonts.caption, rect(48.0, 0.0, (w - 48.0 - CAPTION_W * 3.0 - 16.0).max(0.0), TITLE_H), fg, Align::Left);
+        let fg = if self.active { rgb(t.text) } else { rgb(t.placeholder) };
+        g.text(&wide(&title), &g.fonts.body, rect(44.0, 0.0, (w - 44.0 - CAPTION_W * 3.0 - 16.0).max(0.0), TITLE_H), fg, Align::Left);
 
         for (c, glyph) in [
             (Caption::Min, 0xE921u16),
@@ -330,69 +372,67 @@ impl App {
             (Caption::Close, 0xE8BB),
         ] {
             let r = self.caption_rect(c);
-            let hover = self.cap_hover == Some(c);
-            let pressed = self.cap_pressed == Some(c);
-            let mut fg = if self.active { white(0xFF) } else { white(TEXT_DISABLED) };
-            if c == Caption::Close && (hover || pressed) {
-                g.fill(r, if pressed { ui::pressed_red(CLOSE_RED) } else { rgb(CLOSE_RED) });
-                fg = white(0xFF);
-            } else if pressed {
-                g.fill(r, white(0x1C));
-            } else if hover {
-                g.fill(r, white(0x0F));
+            let k = self.fades.hover(Hit::Caption(c), self.cap_hover == Some(c));
+            let pressed = self.cap_pressed == Some(c) && self.cap_hover == Some(c);
+            let idle = if self.active { rgb(t.text) } else { rgb(t.placeholder) };
+            if c == Caption::Close {
+                g.fill(r, gfx::rgba(t.close_hover, if pressed { 0.9 } else { k }));
+                let fg = if pressed { gfx::rgba(0xFFFFFF, 0.7) } else { theme::mix(if self.active { t.text } else { t.placeholder }, 0xFFFFFF, k) };
+                g.text(&[glyph], &g.fonts.caption_icons, r, fg, Align::Center);
+            } else {
+                let a = if pressed { 0.04 } else { 0.06 * k };
+                if a > 0.0 {
+                    g.fill(r, gfx::rgba(t.ink, a));
+                }
+                g.text(&[glyph], &g.fonts.caption_icons, r, idle, Align::Center);
             }
-            g.text(&[glyph], &g.fonts.caption_icons, r, fg, Align::Center);
         }
     }
 
-    /// Hover fade and pressed state of a hit, for drawing it.
+    /// Hover fade and pressed state of a hit, for drawing it: the hover comes on at once and fades out.
     pub(super) fn state(&mut self, id: Hit, enabled: bool) -> ui::State {
         let over = self.hover == Some(id) && (self.pressed.is_none() || self.pressed == Some(id));
-        let hover = self.fades.get(id, over && enabled);
-        ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
-    }
-
-    /// `state`, with the hover on at once and only its fade out animated (the landing page's recent rows).
-    pub(super) fn state_out(&mut self, id: Hit, enabled: bool) -> ui::State {
-        let over = self.hover == Some(id) && (self.pressed.is_none() || self.pressed == Some(id));
-        let hover = self.fades.get_out(id, over && enabled);
+        let hover = self.fades.hover(id, over && enabled);
         ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
     }
 
     pub(super) fn draw_toolbar(&mut self, g: &Gfx) {
-        let base = rgb(self.theme().window);
-        for (t, glyph, r) in self.tool_rects() {
-            // The buttons float on the photo: an opaque base under their (translucent) frames keeps them
+        let t = theme::t();
+        for (tool, glyph, r) in self.tool_rects() {
+            // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
             // looking the same whatever is behind.
-            g.fill_round(r, 4.0, base);
-            let enabled = self.tool_enabled(t);
-            let id = Hit::Tool(t);
+            g.fill_round(r, 5.0, rgb(t.content));
+            let enabled = self.tool_enabled(tool);
+            let id = Hit::Tool(tool);
             self.hits.add(id, r);
-            let open = t == Tool::Sort && matches!(self.menu, Some((menus::MenuKind::Sort, _)));
-            let mut st = self.state(id, enabled);
-            st.pressed |= open;
-            if t == Tool::SaveRotation {
+            let open = tool == Tool::Sort && matches!(self.menu, Some((menus::MenuKind::Sort, _)));
+            let st = self.state(id, enabled);
+            if tool == Tool::SaveRotation {
                 let fg = ui::button_frame(g, r, ui::Kind::Accent, &st);
                 g.text(&wide("Save"), &g.fonts.body, r, fg, Align::Center);
                 continue;
             }
-            let kind = match t {
+            let kind = match tool {
                 Tool::Info => ui::Kind::Toggle(self.info_shown()),
                 Tool::Strip => ui::Kind::Toggle(self.strip_shown()),
                 Tool::Explorer => ui::Kind::Toggle(self.explorer_shown()),
-                Tool::Settings => ui::Kind::Toggle(self.page.is_some()),
+                Tool::Settings => ui::Kind::Toggle(self.page_open()),
+                // A drop-down button is picked out while its menu is open.
+                Tool::Sort => ui::Kind::Toggle(open),
                 _ => ui::Kind::Standard,
             };
             let fg = ui::button_frame(g, r, kind, &st);
-            if t == Tool::Sort {
-                g.text(&[glyph], &g.fonts.icons, rect(r.left + 11.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
-                g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 11.0 - 12.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
+            if tool == Tool::Sort {
+                // Icon and chevron from the left, the same padding at both ends (the chevron a pixel right: its
+                // ink sits that far in from its cell).
+                g.text(&[glyph], &g.fonts.icons, rect(r.left + 14.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
+                g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 14.0 - 12.0 + 1.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
             } else {
                 g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
             }
-            // The accent dot: the Store has a newer version (the Updates block is at the top of Settings).
-            if t == Tool::Settings && self.update == crate::store::UpdateStatus::Available {
-                g.fill_round(rect(r.left + 27.0, r.top + 4.0, 7.0, 7.0), 3.5, gfx::rgb(ui::ACCENT));
+            // The accent dot: a newer version is waiting (Settings > Updates).
+            if tool == Tool::Settings && self.update == crate::store::UpdateStatus::Available {
+                g.fill_round(rect(r.right - 9.0, r.top + 3.0, 6.0, 6.0), 3.0, rgb(t.accent));
             }
         }
     }
@@ -407,18 +447,17 @@ impl App {
             return;
         }
         let rank = self.status_rank();
+        let label = rgb(theme::t().label);
         let counter_w = rank.as_ref().map_or(0.0, |s| g.measure_tabular(&wide(s), &g.fonts.caption) + 24.0);
-        g.text_tabular(&wide(&text), &g.fonts.caption, rect(12.0, y, (w - 24.0 - counter_w).max(0.0), row_h), white(TEXT_SECONDARY), Align::Left);
+        g.text_tabular(&wide(&text), &g.fonts.caption, rect(SIDE_PAD, y, (w - SIDE_PAD * 2.0 - counter_w).max(0.0), row_h), label, Align::Left);
         if let Some(r) = link {
             self.hits.add(Hit::Reveal, r);
-            let t = self.fades.get(Hit::Reveal, self.hover == Some(Hit::Reveal));
-            let pressed = self.pressed == Some(Hit::Reveal) && self.hover == Some(Hit::Reveal);
-            ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 4.0, right: r.right + 6.0, bottom: r.bottom - 4.0 }, t, pressed);
-            let c = if pressed { white(0xFF) } else { white((TEXT_SECONDARY as f32 + (255.0 - TEXT_SECONDARY as f32) * t) as u8) };
-            g.text_tabular(&wide("Open in Explorer"), &g.fonts.caption, r, c, Align::Left);
+            let st = self.state(Hit::Reveal, true);
+            ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 5.0, right: r.right + 6.0, bottom: r.bottom - 5.0 }, st.hover, st.pressed);
+            g.text_tabular(&wide("Open in Explorer"), &g.fonts.caption, r, ui::link_color(st.hover), Align::Left);
         }
-        if let Some(label) = rank {
-            g.text_tabular(&wide(&label), &g.fonts.caption, rect(12.0, y, (w - 24.0).max(0.0), row_h), white(TEXT_SECONDARY), Align::Right);
+        if let Some(text) = rank {
+            g.text_tabular(&wide(&text), &g.fonts.caption, rect(SIDE_PAD, y, (w - SIDE_PAD * 2.0).max(0.0), row_h), label, Align::Right);
         }
     }
 
@@ -426,7 +465,7 @@ impl App {
         let v = self.viewport();
         self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
-            g.begin_ui(Some(self.theme().window));
+            g.begin_ui(Some(self.theme().content));
             self.draw_landing(g);
             return;
         }
@@ -434,7 +473,7 @@ impl App {
         if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {
-            g.fill(bg, g.photo_rgb(gfx::CHECKER_DARK));
+            g.fill(bg, g.photo_rgb(gfx::checker_plain()));
         }
         self.last_drawn = None;
         let doc = self.viewer.shown.clone().filter(|e| e.layout.is_some() && self.turns == 0);
@@ -494,19 +533,18 @@ impl App {
         self.draw_scrims(g, bg);
     }
 
-    /// Black gradients behind the bars, so they read on a bright photo (black in either theme): down from
-    /// the top to the bottom of the toolbar's buttons, and up from the bottom to the top of the status text
-    /// or, while the strip shows, of its cells (following them as it slides).
+    /// Gradients behind the bars, so they read on a bright photo (black in the dark themes, the page colour in
+    /// the light one, whose text is dark): down from the top to the bottom of the toolbar's buttons, and up from
+    /// the bottom to the top of the status text or, while the strip shows, of its cells (following them as it
+    /// slides).
     fn draw_scrims(&self, g: &Gfx, bg: D2D_RECT_F) {
-        const ALPHA: f32 = 0.7;
+        let t = theme::t();
+        let (colour, alpha) = if t.dark { (0x000000, 0.7) } else { (t.content, 0.85) };
         // Fading from the window's edge all the way: alpha falls as (1 - t)^1.5 over the gradient.
         let edge_out: Vec<_> =
-            [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&t| (t, gfx::rgba(0x000000, ALPHA * (1.0 - t).powf(1.5)))).collect();
-        if self.page.is_some() {
-            return;
-        }
+            [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&k| (k, gfx::rgba(colour, alpha * (1.0 - k).powf(1.5)))).collect();
         if self.chrome() {
-            let buttons_bottom = TITLE_H + (TOOLBAR_H - 8.0 - BUTTON_H) / 2.0 + BUTTON_H;
+            let buttons_bottom = Self::toolbar_y() + BUTTON_H;
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
         }
         // The status text: 12 px, centred in its row (~16 px line).
@@ -536,16 +574,16 @@ impl App {
         let why = self.missing_extension.as_ref().and_then(|(_, e)| e.as_ref()).map(|e| e.why);
         let cy = (a.top + a.bottom) / 2.0;
         let Some(why) = why else {
-            g.text(&wide("Can't display this file"), &g.fonts.body, a, white(TEXT_SECONDARY), Align::Center);
+            g.text(&wide("Can't display this file"), &g.fonts.body, a, rgb(theme::t().label), Align::Center);
             return;
         };
         let cx = (a.left + a.right) / 2.0;
         let w = (a.right - a.left - 32.0).clamp(1.0, 480.0);
-        g.text(&wide("Can't display this file"), &g.fonts.body_strong, rect(cx - w / 2.0, cy - 58.0, w, 20.0), white(0xFF), Align::Center);
-        g.text(&wide(why), &g.fonts.body, rect(cx - w / 2.0, cy - 30.0, w, 20.0), white(TEXT_SECONDARY), Align::Center);
+        g.text(&wide("Can't display this file"), &g.fonts.title, rect(cx - w / 2.0, cy - 60.0, w, 22.0), rgb(theme::t().text), Align::Center);
+        g.text(&wide(why), &g.fonts.body, rect(cx - w / 2.0, cy - 30.0, w, 20.0), rgb(theme::t().label), Align::Center);
         let label = "Get it from the Microsoft Store";
-        let bw = (g.measure(&wide(label), &g.fonts.body) + 24.0).ceil();
-        let b = rect(g.snap(cx - bw / 2.0), g.snap(cy + 6.0), bw, 32.0);
+        let bw = (g.measure(&wide(label), &g.fonts.body) + 32.0).ceil();
+        let b = rect(g.snap(cx - bw / 2.0), g.snap(cy + 6.0), bw, 30.0);
         self.hits.add(Hit::GetExtension, b);
         let st = self.state(Hit::GetExtension, true);
         let fg = ui::button_frame(g, b, ui::Kind::Accent, &st);
@@ -558,15 +596,15 @@ impl App {
         }
     }
 
-    /// The toast, menus, dialogs and tooltips, above everything. Returns whether the toast is mid-fade.
+    /// The toast, menus, dialogs and tooltips, above everything. Returns whether any of them is moving.
     fn draw_overlays(&mut self, g: &Gfx) -> bool {
-        let mut toast_moving = false;
+        let mut moving = false;
         if let Some(t) = &self.toast {
             let area = self.image_area();
             match t.phase() {
                 ui::ToastPhase::Fading(a) => {
                     t.draw(g, area, a);
-                    toast_moving = true;
+                    moving = true;
                 }
                 ui::ToastPhase::Holding(ms) => {
                     t.draw(g, area, 1.0);
@@ -586,11 +624,8 @@ impl App {
                 Some(Hit::MenuItem(i)) => Some(i),
                 _ => None,
             };
-            let pressed = match self.pressed {
-                Some(Hit::MenuItem(i)) if hover == Some(i) => Some(i),
-                _ => None,
-            };
-            m.draw(g, hover, pressed);
+            m.draw(g, hover);
+            moving |= m.moving();
         }
         if self.dialog.is_some() {
             let (w, h) = self.size_dip();
@@ -612,8 +647,8 @@ impl App {
             }
             let clear = self.state(Hit::DialogFieldClear, true);
             if let Some((_, d)) = &mut self.dialog {
-                let theme = ui::Theme::new(self.settings.dark_grey);
-                self.caret_rect = d.draw(g, &layout, window, theme, &states, field_hover, clear);
+                self.caret_rect = d.draw(g, &layout, window, &states, field_hover, clear);
+                moving |= d.moving();
             }
         }
         if let Some(t) = self.tooltip {
@@ -622,7 +657,7 @@ impl App {
                 ui::tooltip(g, &text, anchor, rect(0.0, 0.0, w, h));
             }
         }
-        toast_moving
+        moving
     }
 }
 

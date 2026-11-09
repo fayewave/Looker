@@ -33,8 +33,8 @@ pub struct Settings {
     pub wheel_navigates: bool,
     /// Pointer zooms (wheel, double-click) aim at the middle of the view rather than the pointer.
     pub zoom_center: bool,
-    /// The dark grey (#1F1F1F) theme instead of black.
-    pub dark_grey: bool,
+    /// Ember (default), Garnet or Blush (theme.rs).
+    pub theme: crate::theme::ThemeId,
     /// The checkerboard behind the image (default on); off, the viewport is the theme's plain background.
     pub checkerboard: bool,
     /// How much memory decoded photos may take, in MB.
@@ -73,7 +73,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, dark_grey: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
     }
 }
 
@@ -138,7 +138,7 @@ pub fn parse(text: &str) -> Settings {
             "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(EXPLORER_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             "wheel" => s.wheel_navigates = v == "navigate",
             "zoom_anchor" => s.zoom_center = v == "center",
-            "theme" => s.dark_grey = v == "dark_grey",
+            "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Ember),
             "checkerboard" => s.checkerboard = v != "0",
             "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
             "recents_enabled" => s.recents_enabled = v != "0",
@@ -168,7 +168,7 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("explorer_width={}\n", s.explorer_width.round()));
     out.push_str(&format!("wheel={}\n", if s.wheel_navigates { "navigate" } else { "zoom" }));
     out.push_str(&format!("zoom_anchor={}\n", if s.zoom_center { "center" } else { "pointer" }));
-    out.push_str(&format!("theme={}\n", if s.dark_grey { "dark_grey" } else { "black" }));
+    out.push_str(&format!("theme={}\n", s.theme.name().to_lowercase()));
     out.push_str(&format!("checkerboard={}\n", s.checkerboard as i32));
     out.push_str(&format!("cache_mb={}\n", s.cache_mb));
     out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
@@ -265,7 +265,7 @@ pub fn from_legacy(get: impl Fn(&str) -> Option<Legacy>) -> Settings {
     s.cache_mb = int("CacheBudgetMB").map_or(CACHE_MB, |m| m.clamp(128, 2048) as u32);
     s.wheel_navigates = int("WheelMode") == Some(1);
     s.zoom_center = int("ZoomAnchor") == Some(1);
-    s.dark_grey = int("Theme") == Some(1);
+    s.theme = if int("Theme") == Some(1) { crate::theme::ThemeId::Garnet } else { crate::theme::ThemeId::Ember };
     s.remember_window = flag("RememberWindow").unwrap_or(true);
     s.default_hint_dismissed = flag("DefaultHintDismissed").unwrap_or(false);
     s.recents_enabled = flag("RecentsEnabled").unwrap_or(true);
@@ -313,7 +313,7 @@ mod tests {
             explorer_width: 300.0,
             wheel_navigates: true,
             zoom_center: true,
-            dark_grey: true,
+            theme: crate::theme::ThemeId::Garnet,
             checkerboard: false,
             cache_mb: 1024,
             recents_enabled: true,
@@ -368,7 +368,7 @@ mod tests {
         .collect();
         let s = from_legacy(|k| m.get(k).cloned());
         assert_eq!(s.sort, Sort { field: crate::folder::SortField::Date, descending: true });
-        assert!(s.strip_visible && s.dark_grey && s.wheel_navigates && !s.zoom_center);
+        assert!(s.strip_visible && s.theme == crate::theme::ThemeId::Garnet && s.wheel_navigates && !s.zoom_center);
         assert_eq!(s.strip_height, STRIP_MAX);
         assert_eq!(s.info_width, 400.0);
         assert_eq!(s.cache_mb, 1024);

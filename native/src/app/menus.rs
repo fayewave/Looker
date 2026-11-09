@@ -36,16 +36,12 @@ pub(super) enum Action {
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, checked: false, enabled })
+    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled })
 }
 
-/// A check box item: a tick when on.
-fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: on.then_some(0xE73E), label: label.into(), accel: None, checked: false, enabled: true })
-}
-
-fn radio(action: Action, label: &str, checked: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: None, label: label.into(), accel: None, checked, enabled: true })
+/// An item with a tickbox at the right: ticked when on (a setting, or the one picked of several).
+pub(super) fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
+    Entry::Item(MenuItem { action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true })
 }
 
 impl App {
@@ -76,12 +72,12 @@ impl App {
     fn sort_entries(&self) -> Vec<Entry<Action>> {
         let s = self.settings.sort;
         vec![
-            radio(Action::SortField(SortField::Name), "Name", s.field == SortField::Name),
-            radio(Action::SortField(SortField::Date), "Date modified", s.field == SortField::Date),
-            radio(Action::SortField(SortField::Size), "Size", s.field == SortField::Size),
+            check(Action::SortField(SortField::Name), "Name", s.field == SortField::Name),
+            check(Action::SortField(SortField::Date), "Date modified", s.field == SortField::Date),
+            check(Action::SortField(SortField::Size), "Size", s.field == SortField::Size),
             Entry::Separator,
-            radio(Action::SortDescending(false), "Ascending", !s.descending),
-            radio(Action::SortDescending(true), "Descending", s.descending),
+            check(Action::SortDescending(false), "Ascending", !s.descending),
+            check(Action::SortDescending(true), "Descending", s.descending),
         ]
     }
 
@@ -102,7 +98,7 @@ impl App {
         let Some(r) = self.hits.rect_of(Hit::Tool(Tool::Sort)) else { return };
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
-        self.menu = Some((MenuKind::Sort, Menu::open(g, self.sort_entries(), r.left, r.bottom + 4.0, rect(0.0, 0.0, w, h))));
+        self.menu = Some((MenuKind::Sort, Menu::below(g, self.sort_entries(), r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
         self.invalidate();
     }
@@ -196,7 +192,7 @@ impl App {
             .collect();
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
-        self.menu = Some((MenuKind::Crumbs(hidden), Menu::open(g, entries, r.left, r.bottom + 4.0, rect(0.0, 0.0, w, h))));
+        self.menu = Some((MenuKind::Crumbs(hidden), Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
         self.invalidate();
     }

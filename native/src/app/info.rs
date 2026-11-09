@@ -266,8 +266,8 @@ impl App {
             return false;
         }
         self.hits.add(Hit::InfoCard, card);
-        g.fill_round(card, 8.0, rgb(self.theme().window));
-        g.outline_round(card, 8.0, white(0x18), g.px()); // ControlStrokeColorSecondary
+        ui::card(g, card);
+        let th = theme::t();
 
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
         let x = inner.left + PAD_X;
@@ -320,18 +320,17 @@ impl App {
                 match b {
                     Block::Histogram => self.draw_histogram(g, rect(x, y, w, *h)),
                     Block::Title(t) => {
-                        g.text(&wide(&t.to_uppercase()), &g.fonts.overline, rect(x, y, w, TITLE_H), white(TEXT_TERTIARY), Align::Left);
+                        ui::section(g, t, rect(x, y, w, TITLE_H));
                     }
                     Block::Row { label, value, path } => {
-                        g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), white(TEXT_SECONDARY), Align::Left);
+                        g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), rgb(th.label), Align::Left);
                         let vr = rect(x, y + 1.0 + lh, w, h - 2.0 - lh);
                         if *path {
                             // A link (shows the file in Explorer): the rounded hover fill, brighter while pressed.
-                            let t = self.fades.get(Hit::InfoPath, self.hover == Some(Hit::InfoPath));
-                            let pressed = self.pressed == Some(Hit::InfoPath) && self.hover == Some(Hit::InfoPath);
-                            ui::link_fill(g, D2D_RECT_F { left: vr.left - 4.0, top: vr.top - 2.0, right: vr.right + 2.0, bottom: vr.bottom + 2.0 }, t, pressed);
+                            let st = self.state(Hit::InfoPath, true);
+                            ui::link_fill(g, D2D_RECT_F { left: vr.left - 4.0, top: vr.top - 2.0, right: vr.right + 2.0, bottom: vr.bottom + 2.0 }, st.hover, st.pressed);
                         }
-                        g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, white(0xFF), Align::Left);
+                        g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(th.text), Align::Left);
                         if *path {
                             let visible = D2D_RECT_F { top: vr.top.max(inner.top), bottom: vr.bottom.min(inner.bottom), ..vr };
                             self.hits.add(Hit::InfoPath, visible);
@@ -343,24 +342,21 @@ impl App {
         }
         g.pop_clip();
 
-        // A thin scroll indicator while the pointer is over an overflowing card, or while it scrolls.
+        // The scroll thumb while the pointer is over an overflowing card, or while it scrolls.
         let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath));
         if self.info_card.max_scroll > 0.0 && (over || moving) {
-            let thumb_h = (view_h * view_h / content_h).max(24.0);
+            let thumb_h = (view_h * view_h / content_h).max(28.0);
             let track = inner.bottom - inner.top - 8.0;
             let ty = inner.top + 4.0 + (track - thumb_h) * scroll / self.info_card.max_scroll;
-            g.fill_round(rect(inner.right - 5.0, ty, 2.0, thumb_h), 1.0, white(0x8B));
+            ui::scroll_thumb(g, rect(inner.right - 8.0, ty, 6.0, thumb_h), false);
         }
 
         // The resize grip straddles the left border; its line shows on hover and turns accent while dragging.
         let grip = rect(card.left - 4.0, card.top, 8.0, card.bottom - card.top);
         self.hits.add(Hit::InfoGrip, grip);
         let dragging = self.info_card.drag.is_some();
-        let t = self.fades.get(Hit::InfoGrip, self.hover == Some(Hit::InfoGrip) || dragging);
-        if t > 0.0 {
-            let c = if dragging { gfx::rgba(ui::ACCENT, 1.0) } else { gfx::rgba(0xFFFFFF, 0.4 * t) };
-            g.fill_round(rect(card.left - 1.0, card.top, 2.0, card.bottom - card.top), 1.0, c);
-        }
+        let t = self.fades.hover(Hit::InfoGrip, self.hover == Some(Hit::InfoGrip) || dragging);
+        ui::grip_line(g, rect(card.left - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving
     }
 
@@ -368,8 +364,9 @@ impl App {
     /// card's width at the C# panel's 256 × 120 proportions.
     fn draw_histogram(&self, g: &Gfx, r: D2D_RECT_F) {
         let Some(h) = self.viewer.current_entry().and_then(|e| e.histogram.clone()) else { return };
-        g.fill_round(r, 6.0, white(0x08)); // CardBackgroundFillColorSecondary
-        g.outline_round(r, 6.0, gfx::rgba(0x000000, 0x19 as f32 / 255.0), g.px());
+        let t = theme::t();
+        g.fill_round(r, 5.0, rgb(t.field));
+        ui::stroke(g, r, 5.0, rgb(t.divider));
         let p = D2D_RECT_F { left: r.left + 7.0, top: r.top + 7.0, right: r.right - 7.0, bottom: r.bottom - 7.0 };
         let (pw, ph) = (p.right - p.left, p.bottom - p.top);
         let max = h.max.max(1) as f32;
@@ -379,7 +376,7 @@ impl App {
         let mut area = vec![(p.left, p.bottom)];
         area.extend(curve(&h.luma));
         area.push((p.right, p.bottom));
-        g.fill_polygon(&area, gfx::rgba(0x888888, 0x55 as f32 / 255.0));
+        g.fill_polygon(&area, gfx::rgba(t.label, 0.3));
         let a = 0xC0 as f32 / 255.0;
         g.polyline(&curve(&h.red), gfx::rgba(0xE0574B, a), 1.0);
         g.polyline(&curve(&h.green), gfx::rgba(0x4CAF50, a), 1.0);

@@ -163,15 +163,16 @@ impl App {
     /// of more than one page (a single page has nothing to turn).
     pub(super) fn draw_page_bar(&mut self, g: &Gfx) {
         let n = self.page_count();
-        if n < 2 || self.page.is_some() {
+        if n < 2 {
             return;
         }
         let i = self.pdf_page.min(n - 1);
         let label = format!("Page {} of {}", i + 1, n);
         let r = self.page_bar_rect(g, &label);
+        let raised = theme::raised();
         ui::shadow(g, r, 8.0);
-        g.fill_round(r, 8.0, rgb(self.theme().window));
-        g.outline_round(r, 8.0, white(0x18), g.px());
+        g.fill_round(r, 8.0, rgb(raised.popup));
+        ui::stroke(g, r, 8.0, rgb(raised.divider));
         let y = r.top + BAR_PAD_Y;
         let prev = rect(r.left + BAR_PAD_X, y, BAR_BUTTON, BAR_BUTTON);
         let next = rect(r.right - BAR_PAD_X - BAR_BUTTON, y, BAR_BUTTON, BAR_BUTTON);
@@ -180,10 +181,10 @@ impl App {
         for (id, b, glyph, enabled) in [(Hit::PagePrevious, prev, 0xE76Bu16, i > 0), (Hit::PageNext, next, 0xE76C, i + 1 < n)] {
             self.hits.add(id, b);
             let st = self.state(id, enabled);
-            let fg = ui::button_frame(g, b, ui::Kind::Standard, &st);
+            let fg = ui::button_frame(g, b, ui::Kind::Subtle, &st);
             g.text(&[glyph], &g.fonts.body_icons, b, fg, Align::Center);
         }
         let text = rect(prev.right + 2.0 + BAR_LABEL_MARGIN, y, next.left - 2.0 - BAR_LABEL_MARGIN - (prev.right + 2.0 + BAR_LABEL_MARGIN), BAR_BUTTON);
-        g.text(&wide(&label), &g.fonts.body, text, white(0xFF), Align::Center);
+        g.text(&wide(&label), &g.fonts.body, text, rgb(raised.text), Align::Center);
     }
 }

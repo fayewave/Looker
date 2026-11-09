@@ -20,7 +20,10 @@ use windows::core::{Interface, PCWSTR, Result, w};
 
 use crate::colour::{self, Space};
 
-static INTER: &[u8] = include_bytes!("../assets/Fonts/InterVariable.ttf");
+/// Inter's 24 pt optical size, Regular and SemiBold, as Snapper sets its UI (the variable font's default
+/// 14 pt cut set the type looser and heavier at Looker's small sizes).
+static INTER_REGULAR: &[u8] = include_bytes!("../assets/Fonts/Inter_24pt-Regular.ttf");
+static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/Fonts/Inter_24pt-SemiBold.ttf");
 
 pub struct Device {
     d3d: ID3D11Device,
@@ -72,9 +75,11 @@ pub fn init_text() -> Result<Text> {
         let dwrite: IDWriteFactory5 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
         let loader = dwrite.CreateInMemoryFontFileLoader()?;
         dwrite.RegisterFontFileLoader(&loader)?;
-        let file = loader.CreateInMemoryFontFileReference(&dwrite, INTER.as_ptr() as _, INTER.len() as u32, None)?;
         let builder = dwrite.CreateFontSetBuilder()?;
-        builder.AddFontFile(&file)?;
+        for bytes in [INTER_REGULAR, INTER_SEMIBOLD] {
+            let file = loader.CreateInMemoryFontFileReference(&dwrite, bytes.as_ptr() as _, bytes.len() as u32, None)?;
+            builder.AddFontFile(&file)?;
+        }
         let set = builder.CreateFontSet()?;
         let inter = dwrite.CreateFontCollectionFromFontSet(&set)?;
         let family = inter.GetFontFamily(0)?;
@@ -109,30 +114,30 @@ impl Text {
 }
 
 pub struct Fonts {
-    /// 12 px: title bar caption and status row.
+    /// 11 px: the status row, hints, menu shortcuts, tooltips.
     pub caption: IDWriteTextFormat,
+    /// 12 px: labels, buttons, menu rows, the title bar.
     pub body: IDWriteTextFormat,
-    pub body_strong: IDWriteTextFormat,
-    /// 14 px, wrapping, top-aligned, 20 px lines (WinUI's BodyTextBlockStyle): dialog text.
+    /// 12 px, wrapping, top-aligned, 18 px lines: dialog text.
     pub body_wrap: IDWriteTextFormat,
-    /// 20 px semibold: dialog titles.
+    /// 16 px semibold: dialog titles.
     pub title: IDWriteTextFormat,
-    /// 12 px, wrapping, top-aligned, 16 px lines (CaptionTextBlockStyle): info card rows.
+    /// 11 px, wrapping, top-aligned, 16 px lines: info card rows, setting notes.
     pub caption_wrap: IDWriteTextFormat,
-    /// 11 px semibold: info card group titles.
+    /// 11 px semibold: UPPERCASE section headings.
     pub overline: IDWriteTextFormat,
-    /// 28 px semibold (TitleTextBlockStyle): a page's title.
+    /// 14 px semibold: the Settings card's headings.
     pub page_title: IDWriteTextFormat,
-    /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons).
+    /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons, chevrons).
     pub icons: IDWriteTextFormat,
     pub caption_icons: IDWriteTextFormat,
-    /// 12 px icons: a text box's clear button.
+    /// 12 px icons: a text box's clear button, the Settings card's section icons.
     pub small_icons: IDWriteTextFormat,
-    /// 14 px icons: glyphs on text buttons.
+    /// 14 px icons: menu rows, glyphs on text buttons.
     pub body_icons: IDWriteTextFormat,
     /// 96 px icons: the file glyph standing in for a file Looker can't show.
     pub hero_icons: IDWriteTextFormat,
-    /// 16 px, wrapping, centred, top-aligned: that file's name.
+    /// 14 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
     /// Inter's tabular figures (`tnum`): every digit the same width, so the status row's numbers don't
     /// shuffle as they change (`Gfx::text_tabular`).
@@ -152,12 +157,18 @@ pub struct Gfx {
     pub brush: ID2D1SolidColorBrush,
     pub fonts: Fonts,
     pub dpi: f32,
-    checker: Option<(ID2D1BitmapBrush1, f32)>,
+    /// The checkerboard's brush, for the DPI and light or dark it was made for.
+    checker: Option<(ID2D1BitmapBrush1, f32, bool)>,
     /// The space the swap chain is in (see colour.rs). Under scRGB the swap chain is 16-bit float and holds
     /// only the photo layer; everything else draws into `ui` (8-bit sRGB, the same pixels as an SDR frame),
     /// laid over it at the end of the frame.
     space: Space,
     ui: Option<Overlay>,
+    /// One per `push_fade`: the transform to put back, if it pushed a layer.
+    fade_stack: std::cell::RefCell<Vec<Option<windows_numerics::Matrix3x2>>>,
+    /// The copy of the frame `blur_backdrop` blurs, kept while the size, format and DPI stay.
+    backdrop: Option<(ID3D11Texture2D, ID2D1Bitmap1, (u32, u32, i32, u32))>,
+    blur_failed: bool,
 }
 
 /// The UI layer under scRGB and the effects that bring it into scRGB.
@@ -173,8 +184,16 @@ pub enum Align {
     Center,
 }
 
-/// The checkerboard's darker square: also the plain viewport fill when the checkerboard is off.
-pub const CHECKER_DARK: u32 = 0x0F0F0F;
+/// The checkerboard's two squares, in a dark theme and in the light one. Neutral greys, not the theme's
+/// tint: they sit right around the photo.
+const CHECKER_ON_DARK: (u32, u32) = (0x0F0F0F, 0x161616);
+const CHECKER_ON_LIGHT: (u32, u32) = (0xE9E9E9, 0xF2F2F2);
+
+/// The checkerboard's darker square for the theme in use: also the plain viewport fill when the checkerboard is
+/// off.
+pub fn checker_plain() -> u32 {
+    if crate::theme::t().dark { CHECKER_ON_DARK.0 } else { CHECKER_ON_LIGHT.0 }
+}
 
 pub fn rgb(hex: u32) -> D2D1_COLOR_F {
     rgba(hex, 1.0)
@@ -187,11 +206,6 @@ pub fn rgba(hex: u32, a: f32) -> D2D1_COLOR_F {
         b: (hex & 0xFF) as f32 / 255.0,
         a,
     }
-}
-
-/// White at an alpha byte, as the WinUI theme resources are written (`#24FFFFFF` = `white(0x24)`).
-pub fn white(alpha: u8) -> D2D1_COLOR_F {
-    rgba(0xFFFFFF, alpha as f32 / 255.0)
 }
 
 pub fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
@@ -227,6 +241,9 @@ impl Gfx {
                 checker: None,
                 space,
                 ui: None,
+                fade_stack: Default::default(),
+                backdrop: None,
+                blur_failed: false,
             };
             g.make_target()?;
             Ok(g)
@@ -244,6 +261,7 @@ impl Gfx {
             self.target = None;
             self.checker = None;
             self.ui = None;
+            self.backdrop = None;
             self.swap = swap;
             self.brush = brush;
             self.dev = dev;
@@ -259,6 +277,7 @@ impl Gfx {
         self.space = space;
         self.checker = None;
         self.ui = None;
+        self.backdrop = None;
         if new_chain {
             unsafe {
                 let swap = swap_chain(&self.dev, self.size.0, self.size.1, self.space.is_scrgb())?;
@@ -335,6 +354,7 @@ impl Gfx {
             self.dev.dc.SetTarget(None);
             self.target = None;
             self.ui = None;
+            self.backdrop = None;
             if dpi != self.dpi {
                 self.checker = None;
             }
@@ -547,13 +567,15 @@ impl Gfx {
         }
     }
 
-    /// The preview-area checkerboard: two near-blacks a hair apart in 8-DIP squares, rendered at the
-    /// display's DPI so the squares stay crisp and whole-pixel, anchored at the viewport's top-left.
+    /// The preview-area checkerboard: two greys a hair apart (near-black, or near-white in the light theme) in
+    /// 8-DIP squares, rendered at the display's DPI so the squares stay crisp and whole-pixel, anchored at the
+    /// viewport's top-left.
     pub fn checkerboard(&mut self, r: D2D_RECT_F) {
-        const DARK: u32 = CHECKER_DARK;
-        const LIGHT: u32 = 0x161616;
+        let dark = crate::theme::t().dark;
+        #[allow(non_snake_case)]
+        let (DARK, LIGHT) = if dark { CHECKER_ON_DARK } else { CHECKER_ON_LIGHT };
         let scale = self.dpi / 96.0;
-        if self.checker.as_ref().is_none_or(|(_, d)| *d != self.dpi) {
+        if self.checker.as_ref().is_none_or(|(_, d, k)| *d != self.dpi || *k != dark) {
             let cell = (8.0 * scale).round().max(1.0) as u32;
             let n = cell * 2;
             // Under scRGB the tile is half floats at the photo layer's level (`photo_rgb`).
@@ -595,10 +617,10 @@ impl Gfx {
                     interpolationMode: D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
                 };
                 let Ok(brush) = self.dev.dc.CreateBitmapBrush(&tile, Some(&bp), None) else { return };
-                self.checker = Some((brush, self.dpi));
+                self.checker = Some((brush, self.dpi, dark));
             }
         }
-        if let Some((brush, _)) = &self.checker {
+        if let Some((brush, _, _)) = &self.checker {
             unsafe {
                 brush.SetTransform(&windows_numerics::Matrix3x2::translation(r.left, r.top));
                 self.dev.dc.FillRectangle(&r, brush);
@@ -661,6 +683,9 @@ impl Gfx {
     fn tabular_layout(&self, s: &[u16], fmt: &IDWriteTextFormat, w: f32, h: f32) -> Option<IDWriteTextLayout> {
         unsafe {
             let l = self.text.dwrite.CreateTextLayout(s, fmt, w.max(1.0), h.max(1.0)).ok()?;
+            // Formats are shared and `text` leaves its alignment on them: measured right-aligned in a 10,000 DIP
+            // box, a width came out a hair short and the text drawn into it was trimmed.
+            l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok()?;
             l.SetTypography(&self.fonts.tabular, DWRITE_TEXT_RANGE { startPosition: 0, length: s.len() as u32 }).ok()?;
             Some(l)
         }
@@ -703,6 +728,7 @@ impl Gfx {
     pub fn measure(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
         unsafe {
             let Ok(layout) = self.text.dwrite.CreateTextLayout(s, fmt, 10_000.0, 100.0) else { return 0.0 };
+            let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let mut m = DWRITE_TEXT_METRICS::default();
             if layout.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 }
         }
@@ -712,6 +738,7 @@ impl Gfx {
     pub fn measure_height(&self, s: &[u16], fmt: &IDWriteTextFormat, width: f32) -> f32 {
         unsafe {
             let Ok(layout) = self.text.dwrite.CreateTextLayout(s, fmt, width.max(1.0), 10_000.0) else { return 0.0 };
+            let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let mut m = DWRITE_TEXT_METRICS::default();
             if layout.GetMetrics(&mut m).is_ok() { m.height } else { 0.0 }
         }
@@ -856,6 +883,132 @@ impl Gfx {
         unsafe { self.dev.dc.PopAxisAlignedClip() }
     }
 
+    /// Draws what follows at `opacity`, scaled by `scale` about (ox, oy) in DIPs: a menu, dialog or card
+    /// opening (Snapper's fade-and-grow). Pair with `pop_fade`. Once fully shown no layer is pushed.
+    pub fn push_fade(&self, opacity: f32, scale: f32, ox: f32, oy: f32) {
+        let mut stack = self.fade_stack.borrow_mut();
+        if opacity >= 1.0 && scale == 1.0 {
+            stack.push(None);
+            return;
+        }
+        unsafe {
+            let dc = &self.dev.dc;
+            let mut prev = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut prev);
+            stack.push(Some(prev));
+            let params = D2D1_LAYER_PARAMETERS1 {
+                contentBounds: D2D_RECT_F { left: -1e6, top: -1e6, right: 1e6, bottom: 1e6 },
+                geometricMask: std::mem::ManuallyDrop::new(None),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: windows_numerics::Matrix3x2::identity(),
+                opacity: opacity.clamp(0.0, 1.0),
+                opacityBrush: std::mem::ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            };
+            dc.PushLayer(&params, None);
+            // Scaled about (ox, oy), then by whatever an outer fade is doing.
+            let (tx, ty) = (ox * (1.0 - scale), oy * (1.0 - scale));
+            let p = prev;
+            dc.SetTransform(&windows_numerics::Matrix3x2 {
+                M11: scale * p.M11,
+                M12: scale * p.M12,
+                M21: scale * p.M21,
+                M22: scale * p.M22,
+                M31: tx * p.M11 + ty * p.M21 + p.M31,
+                M32: tx * p.M12 + ty * p.M22 + p.M32,
+            });
+        }
+    }
+
+    pub fn pop_fade(&self) {
+        let Some(Some(prev)) = self.fade_stack.borrow_mut().pop() else { return };
+        unsafe {
+            self.dev.dc.SetTransform(&prev);
+            self.dev.dc.PopLayer();
+        }
+    }
+
+    /// Blurs everything drawn so far this frame by `radius` DIPs: the Settings card's backdrop, as Snapper
+    /// blurs its captures behind its card. The frame so far is copied off the back buffer on the GPU and drawn
+    /// back blurred. Under scRGB the UI drawn so far is laid on the photo layer first and the UI layer starts
+    /// again empty, so what follows draws over the blur. False (nothing changed) when it can't be done.
+    pub fn blur_backdrop(&mut self, radius: f32) -> bool {
+        if radius < 0.05 {
+            return true;
+        }
+        match unsafe { self.try_blur(radius) } {
+            Ok(()) => true,
+            Err(e) => {
+                if !self.blur_failed {
+                    self.blur_failed = true;
+                    crate::trace::mark(format!("backdrop blur failed: {e}"));
+                }
+                false
+            }
+        }
+    }
+
+    unsafe fn try_blur(&mut self, radius: f32) -> Result<()> {
+        unsafe {
+            let dc = self.dev.dc.clone();
+            let Some(target) = self.target.clone() else { return Err(windows::Win32::Foundation::E_FAIL.into()) };
+            let mut prev = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut prev);
+            dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+            let overlay = if self.space.is_scrgb() { self.ui.as_ref().map(|o| (o.bitmap.clone(), o.out.clone())) } else { None };
+            if let Some((_, out)) = &overlay {
+                dc.SetTarget(&target);
+                dc.DrawImage(&out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            }
+            dc.Flush(None, None)?;
+            let back: ID3D11Texture2D = self.swap.GetBuffer(0)?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            back.GetDesc(&mut desc);
+            let key = (desc.Width, desc.Height, desc.Format.0, self.dpi.to_bits());
+            if self.backdrop.as_ref().is_none_or(|b| b.2 != key) {
+                let copy = D3D11_TEXTURE2D_DESC {
+                    Width: desc.Width,
+                    Height: desc.Height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: desc.Format,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+                let mut tex = None;
+                self.dev.d3d.CreateTexture2D(&copy, None, Some(&mut tex))?;
+                let tex = tex.ok_or(windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
+                let surface: IDXGISurface = tex.cast()?;
+                let props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: desc.Format, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                    dpiX: self.dpi,
+                    dpiY: self.dpi,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                    colorContext: std::mem::ManuallyDrop::new(None),
+                };
+                let bmp = dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))?;
+                self.backdrop = Some((tex, bmp, key));
+            }
+            let (tex, bmp, _) = self.backdrop.as_ref().unwrap();
+            self.dev.d3d.GetImmediateContext()?.CopyResource(tex, &back);
+            let blur = dc.CreateEffect(&CLSID_D2D1GaussianBlur)?;
+            blur.SetInput(0, bmp, true);
+            set_f32(&blur, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32, radius)?;
+            // Edges keep their colour rather than fading to nothing.
+            set_u32(&blur, D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32, D2D1_BORDER_MODE_HARD.0 as u32)?;
+            dc.DrawImage(&blur.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            if let Some((bitmap, _)) = &overlay {
+                dc.SetTarget(bitmap);
+                dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            }
+            dc.SetTransform(&prev);
+            Ok(())
+        }
+    }
+
     /// Draws with a transform (DIPs) applied, restoring identity afterwards.
     pub fn with_transform(&self, m: &windows_numerics::Matrix3x2, draw: impl FnOnce()) {
         unsafe {
@@ -879,21 +1032,21 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             ellipsis.push(sign);
             Ok(f)
         };
-        let caption = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let body = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let body_strong = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let title = inter(20.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let body_wrap = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        // Snapper's ramp (VEIL Transient's): 12 body, 11 small and section headings, 14 titles, 16 headers.
+        let caption = inter(11.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let body = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let title = inter(16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let body_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         body_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         body_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 20.0, 15.0)?;
-        let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 18.0, 13.5)?;
+        let caption_wrap = inter(11.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         caption_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.5)?;
+        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.0)?;
         let overline = inter(11.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let page_title = inter(28.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let subtitle_wrap = inter(16.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let page_title = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         subtitle_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
@@ -912,7 +1065,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_strong, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 

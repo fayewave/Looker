@@ -3,7 +3,12 @@
 //! press-and-release between two frames is never lost. A little state is retained per widget id: hover fades
 //! ([`Fades`]) and the tooltip timer.
 //!
-//! Visuals follow WinUI's dark theme as the C# app shows it (Looker's brighter button fills, white on accent).
+//! Looks and moves like Snapper (and VEIL Transient before it), in Looker's red (theme.rs):
+//! - Buttons are boxes: an `ink` wash with a divider hairline at rest; on hover the hover fill and the outline
+//!   warming to the accent; solid accent while pressed; a toggle that's on is the selection fill with an accent
+//!   outline. Radii: 2.5 rows, 4 menu highlights, 5 buttons, fields and tooltips, 8 menus, 10 cards and dialogs.
+//! - One motion rule (motion.rs): hover washes come on at once and fade out; switches, panels, menus (fade and
+//!   grow from 94 % about the corner they hang from), dialogs and cards (from 96 %) ease over 190 ms.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -12,107 +17,69 @@ use std::time::Instant;
 use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 
-use crate::gfx::{Align, Gfx, rect, rgba, white};
+use crate::gfx::{Align, Gfx, rect, rgb, rgba};
+use crate::motion::{self, EASE, Ease};
 use crate::textedit::TextEdit;
-
-pub const ACCENT: u32 = 0xF52524;
-/// TextFillColorSecondary / Tertiary / Disabled on the dark theme.
-pub const TEXT_SECONDARY: u8 = 0xC5;
-pub const TEXT_TERTIARY: u8 = 0x8B;
-pub const TEXT_DISABLED: u8 = 0x5D;
-/// The few colours a theme drives (the C# `ThemeColors`): the window and card fill, and the two dialog
-/// layers. Buttons, text, the accent and the checkerboard are the same in every theme.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Theme {
-    pub window: u32,
-    pub dialog_strip: u32,
-    pub dialog_body: u32,
-}
-
-impl Theme {
-    pub fn new(dark_grey: bool) -> Theme {
-        if dark_grey {
-            Theme { window: 0x1F1F1F, dialog_strip: 0x262626, dialog_body: 0x2E2E2E }
-        } else {
-            Theme { window: 0x000000, dialog_strip: 0x0C0C0C, dialog_body: 0x141414 }
-        }
-    }
-}
-
-/// A panel sliding in or out (the cards, the strip): 0 = hidden, 1 = shown, eased out like the zoom.
-pub struct Slide {
-    from: f32,
-    to: f32,
-    start: Option<std::time::Instant>,
-}
-
-pub const SLIDE_MS: f32 = 250.0;
-
-impl Slide {
-    pub fn new(shown: bool) -> Slide {
-        Slide { from: shown as u8 as f32, to: shown as u8 as f32, start: None }
-    }
-
-    fn progress(&self) -> Option<f32> {
-        self.start.map(|t0| (t0.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0))
-    }
-
-    /// How far in the panel is now.
-    pub fn value(&self) -> f32 {
-        match self.progress() {
-            None => self.to,
-            Some(t) => self.from + (self.to - self.from) * (1.0 - (1.0 - t).powi(3)),
-        }
-    }
-
-    /// Where it is going.
-    pub fn shown(&self) -> bool {
-        self.to > 0.5
-    }
-
-    pub fn moving(&self) -> bool {
-        self.progress().is_some_and(|t| t < 1.0)
-    }
-
-    /// Slides from wherever it is now (a toggle mid-slide turns it round).
-    pub fn animate(&mut self, shown: bool) {
-        if self.shown() != shown {
-            self.from = self.value();
-            self.to = shown as u8 as f32;
-            self.start = Some(std::time::Instant::now());
-        }
-    }
-
-    /// Jumps there (the launch, the landing page, a page opening).
-    pub fn snap(&mut self, shown: bool) {
-        self.from = shown as u8 as f32;
-        self.to = self.from;
-        self.start = None;
-    }
-
-    /// True once, on the first call after the slide has run its course.
-    pub fn settle(&mut self) -> bool {
-        if self.progress().is_some_and(|t| t >= 1.0) {
-            self.start = None;
-            return true;
-        }
-        false
-    }
-}
-
-/// WinUI's brush transition for pointer-over states.
-const FADE_MS: f32 = 83.0;
+use crate::theme::{self, Theme, mix};
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
-fn lerp(a: D2D1_COLOR_F, b: D2D1_COLOR_F, t: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t }
-}
-
 pub fn contains(r: &D2D_RECT_F, x: f32, y: f32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// `c` at `a` times its own opacity.
+fn faded(c: D2D1_COLOR_F, a: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F { a: c.a * a, ..c }
+}
+
+/// A rect grown by `d` on every side.
+pub fn grow(r: D2D_RECT_F, d: f32) -> D2D_RECT_F {
+    D2D_RECT_F { left: r.left - d, top: r.top - d, right: r.right + d, bottom: r.bottom + d }
+}
+
+// --- Panels ------------------------------------------------------------------------------------------
+
+/// A panel sliding in or out (the cards, the strip): 0 = hidden, 1 = shown, on the one curve.
+pub struct Slide {
+    e: Ease<1>,
+}
+
+impl Slide {
+    pub fn new(shown: bool) -> Slide {
+        Slide { e: Ease::at([shown as u8 as f32]) }
+    }
+
+    /// How far in the panel is now.
+    pub fn value(&self) -> f32 {
+        self.e.value(Instant::now())[0]
+    }
+
+    /// Where it is going.
+    pub fn shown(&self) -> bool {
+        self.e.target()[0] > 0.5
+    }
+
+    pub fn moving(&self) -> bool {
+        self.e.moving(Instant::now())
+    }
+
+    /// Slides from wherever it is now (a toggle mid-slide turns it round).
+    pub fn animate(&mut self, shown: bool) {
+        self.e.set([shown as u8 as f32], Instant::now());
+    }
+
+    /// Jumps there (the launch, the landing page).
+    pub fn snap(&mut self, shown: bool) {
+        self.e = Ease::at([shown as u8 as f32]);
+    }
+
+    /// True once, on the first call after the slide has run its course.
+    pub fn settle(&mut self) -> bool {
+        self.e.settle(Instant::now())
+    }
 }
 
 // --- Hit regions -------------------------------------------------------------------------------------
@@ -142,9 +109,9 @@ impl<T: Copy + PartialEq> Hits<T> {
 
 // --- Fades -------------------------------------------------------------------------------------------
 
-/// Per-id 0..1 values that ease toward a target (hover in/out), and whether any is still moving.
+/// Per-id 0..1 values eased toward a target, and whether any is still moving.
 pub struct Fades<T> {
-    map: HashMap<T, (f32, Instant)>,
+    map: HashMap<T, Ease<1>>,
     pub moving: bool,
 }
 
@@ -158,28 +125,22 @@ impl<T: Copy + Eq + Hash> Fades<T> {
         self.moving = false;
     }
 
+    /// Eased both ways (a switch's knob, an edge fade). A new id starts at its target.
     pub fn get(&mut self, id: T, on: bool) -> f32 {
-        let target = if on { 1.0 } else { 0.0 };
+        let target = on as u8 as f32;
         let now = Instant::now();
-        let e = self.map.entry(id).or_insert((target, now));
-        let dt = now.duration_since(e.1).as_secs_f32() * 1000.0;
-        e.1 = now;
-        let step = (dt / FADE_MS).min(1.0);
-        if e.0 < target {
-            e.0 = (e.0 + step).min(target);
-        } else if e.0 > target {
-            e.0 = (e.0 - step).max(target);
-        }
-        if e.0 != target {
+        let e = self.map.entry(id).or_insert_with(|| Ease::at([target]));
+        e.set([target], now);
+        if e.moving(now) {
             self.moving = true;
         }
-        e.0
+        e.value(now)[0]
     }
 
-    /// Like `get`, but on is instant: only the fade out animates (lists you sweep the pointer across).
-    pub fn get_out(&mut self, id: T, on: bool) -> f32 {
+    /// A hover highlight: on at once, fading back out once it isn't.
+    pub fn hover(&mut self, id: T, on: bool) -> f32 {
         if on {
-            self.map.insert(id, (1.0, Instant::now()));
+            self.map.insert(id, Ease::at([1.0]));
             return 1.0;
         }
         self.get(id, false)
@@ -190,13 +151,13 @@ impl<T: Copy + Eq + Hash> Fades<T> {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Kind {
-    /// Default button: Looker's brighter resting fill on black.
+    /// The boxed button.
     Standard,
-    /// AccentButtonStyle: brand red, white content.
+    /// Solid accent, white content: the one thing to press (Save, a dialog's action).
     Accent,
-    /// A ToggleButton: standard until checked, then accent.
+    /// A boxed toggle: the selection fill and an accent outline while on.
     Toggle(bool),
-    /// No resting fill (caption buttons, menu items, links).
+    /// No box: an ink wash on hover (icon buttons, a card's close button).
     Subtle,
 }
 
@@ -207,107 +168,129 @@ pub struct State {
     pub enabled: bool,
 }
 
-/// Fill, border and content colour for a button in a state (WinUI dark-theme resources, except that a press
-/// brightens past the hover instead of dimming).
-pub fn colors(kind: Kind, s: &State) -> (D2D1_COLOR_F, Option<D2D1_COLOR_F>, D2D1_COLOR_F) {
-    let accent = |a: f32| rgba(ACCENT, a);
+impl State {
+    pub const IDLE: State = State { hover: 0.0, pressed: false, enabled: true };
+}
+
+/// Draws a button's frame in `r` and returns its content colour.
+pub fn button_frame(g: &Gfx, r: D2D_RECT_F, kind: Kind, s: &State) -> D2D1_COLOR_F {
+    frame(g, r, 5.0, kind, s)
+}
+
+/// `button_frame` with a radius of its own (the theme chips).
+pub fn frame(g: &Gfx, r: D2D_RECT_F, radius: f32, kind: Kind, s: &State) -> D2D1_COLOR_F {
+    let t = theme::t();
+    // Disabled: drawn at 45 %, and nothing reacts.
+    let k = if s.enabled { 1.0 } else { 0.45 };
+    let h = if s.enabled { s.hover } else { 0.0 };
+    let pressed = s.pressed && s.enabled;
     match kind {
-        Kind::Accent | Kind::Toggle(true) => {
-            if !s.enabled {
-                (white(0x28), None, white(0x87))
-            } else if s.pressed {
-                (pressed_red(ACCENT), None, white(0xFF))
-            } else {
-                (lerp(accent(1.0), accent(0.9), s.hover), None, white(0xFF))
-            }
-        }
-        Kind::Standard | Kind::Toggle(false) => {
-            if !s.enabled {
-                (white(0x0B), Some(white(0x12)), white(TEXT_DISABLED))
-            } else if s.pressed {
-                (white(0x45), Some(white(0x1C)), white(0xFF))
-            } else {
-                (lerp(white(0x24), white(0x33), s.hover), Some(white(0x12)), white(0xFF))
-            }
+        Kind::Accent => {
+            g.fill_round(r, radius, faded(rgb(t.accent), k));
+            faded(rgb(t.on_accent), k)
         }
         Kind::Subtle => {
-            if !s.enabled {
-                (white(0), None, white(TEXT_DISABLED))
-            } else if s.pressed {
-                (white(0x1C), None, white(0xFF))
-            } else {
-                (lerp(white(0), white(0x0F), s.hover), None, white(0xFF))
+            let a = if pressed { 0.04 } else { 0.06 * h };
+            if a > 0.0 {
+                g.fill_round(r, radius, rgba(t.ink, a));
             }
+            faded(rgb(t.text), k)
+        }
+        Kind::Standard | Kind::Toggle(_) => {
+            if pressed {
+                g.fill_round(r, radius, rgb(t.accent));
+                return rgb(t.on_accent);
+            }
+            if kind == Kind::Toggle(true) {
+                g.fill_round(r, radius, faded(rgb(t.row_select), k));
+                stroke(g, r, radius, faded(rgb(t.accent), k));
+                return faded(rgb(t.text), k);
+            }
+            g.fill_round(r, radius, rgba(t.ink, t.box_fill * (1.0 - h) * k));
+            if h > 0.0 {
+                g.fill_round(r, radius, rgba(t.hover_fill, h));
+            }
+            stroke(g, r, radius, faded(mix(t.divider, t.accent, h), k));
+            faded(rgb(t.text), k)
         }
     }
 }
 
-/// A red (the accent, the Close button) lifted towards white: how it looks while pressed.
-pub fn pressed_red(c: u32) -> D2D1_COLOR_F {
-    lerp(rgba(c, 1.0), white(0xFF), 0.18)
+/// A hairline just inside `r`.
+pub fn stroke(g: &Gfx, r: D2D_RECT_F, radius: f32, c: D2D1_COLOR_F) {
+    g.outline_round(r, radius, c, g.px());
 }
 
-/// The rounded fill behind a text link (a breadcrumb, a path): fades in with the hover, brighter while pressed.
+/// The wash behind a text link (a breadcrumb, a path): fades in with the hover.
 pub fn link_fill(g: &Gfx, r: D2D_RECT_F, hover: f32, pressed: bool) {
-    let c = if pressed { white(0x1F) } else { rgba(0xFFFFFF, 0x0F as f32 / 255.0 * hover) };
-    if c.a > 0.0 {
-        g.fill_round(r, 4.0, c);
+    let a = if pressed { 0.04 } else { 0.06 * hover };
+    if a > 0.0 {
+        g.fill_round(r, 4.0, rgba(theme::t().ink, a));
     }
 }
 
-pub fn button_frame(g: &Gfx, r: D2D_RECT_F, kind: Kind, s: &State) -> D2D1_COLOR_F {
-    let (fill, stroke, fg) = colors(kind, s);
-    if fill.a > 0.0 {
-        g.fill_round(r, 4.0, fill);
-    }
-    if let Some(c) = stroke {
-        g.outline_round(r, 4.0, c, g.px());
-    }
-    fg
-}
-
-pub fn icon(g: &Gfx, glyph: u16, r: D2D_RECT_F, fg: D2D1_COLOR_F) {
-    g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+/// A link's text colour: the label colour, warming to the text colour with the hover.
+pub fn link_color(hover: f32) -> D2D1_COLOR_F {
+    let t = theme::t();
+    mix(t.label, t.text, hover)
 }
 
 pub fn label(g: &Gfx, text: &str, fmt: &IDWriteTextFormat, r: D2D_RECT_F, fg: D2D1_COLOR_F, align: Align) {
     g.text(&wide(text), fmt, r, fg, align);
 }
 
-/// A soft drop shadow under a floating surface (flyouts, cards): a few widening, fading rounded rects, which
-/// reads like WinUI's elevation shadow without an effect graph.
+/// An UPPERCASE section heading, in the label colour.
+pub fn section(g: &Gfx, text: &str, r: D2D_RECT_F) {
+    g.text(&wide(&text.to_uppercase()), &g.fonts.overline, r, rgb(theme::t().label), Align::Left);
+}
+
+/// The soft three-step shadow under menus, dialogs and cards.
 pub fn shadow(g: &Gfx, r: D2D_RECT_F, radius: f32) {
     shadow_faded(g, r, radius, 1.0);
 }
 
 /// [`shadow`] at an opacity, for surfaces that fade in and out.
 pub fn shadow_faded(g: &Gfx, r: D2D_RECT_F, radius: f32, opacity: f32) {
-    for i in 1..=6 {
-        let d = i as f32 * 2.0;
-        let rr = D2D_RECT_F { left: r.left - d * 0.5, top: r.top - d * 0.2, right: r.right + d * 0.5, bottom: r.bottom + d };
-        g.fill_round(rr, radius + d, rgba(0x000000, 0.07 * opacity));
+    for (d, a) in [(3.0, 0.05), (2.0, 0.07), (1.0, 0.10)] {
+        let s = D2D_RECT_F { left: r.left - d, top: r.top - d + 2.0, right: r.right + d, bottom: r.bottom + d + 2.0 };
+        g.fill_round(s, radius + d, rgba(0x000000, a * opacity));
     }
 }
 
-/// WinUI's keyboard focus visual: a 2 px white ring outside the control with a 1 px dark ring inside it.
+/// The keyboard focus: a 2 px ring in the signal red just outside the control.
 pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
-    let out = D2D_RECT_F { left: r.left - 3.0, top: r.top - 3.0, right: r.right + 3.0, bottom: r.bottom + 3.0 };
-    g.outline_round(out, radius + 3.0, white(0xFF), 2.0);
-    let inner = D2D_RECT_F { left: r.left - 1.0, top: r.top - 1.0, right: r.right + 1.0, bottom: r.bottom + 1.0 };
-    g.outline_round(inner, radius + 1.0, rgba(0x000000, 0.7), 1.0);
+    g.outline_round(grow(r, 3.0), radius + 3.0, rgb(theme::t().signal), 2.0);
 }
 
-/// SurfaceStrokeColorDefault on the dark theme: the hairline round flyouts, dialogs and toasts.
-fn surface_stroke(opacity: f32) -> D2D1_COLOR_F {
-    rgba(0x757575, 0.4 * opacity)
+/// A scroll region's thumb (`r` is its full size): the buttons' fill, their hover fill while it's held.
+pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
+    let t = theme::t();
+    let c = if held { rgb(t.hover_fill) } else { rgba(t.ink, t.box_fill * 1.5) };
+    g.fill_round(r, (r.right - r.left) / 2.0, c);
+}
+
+/// A card's resize edge: an ink line on hover, the accent while it's dragged.
+pub fn grip_line(g: &Gfx, r: D2D_RECT_F, hover: f32, dragging: bool) {
+    let t = theme::t();
+    let c = if dragging { rgb(t.accent) } else { rgba(t.ink, 0.45 * hover) };
+    if c.a > 0.0 {
+        g.fill_round(r, 1.0, c);
+    }
+}
+
+/// A card floating over the photo: the lighter fill, a divider hairline, radius 10.
+pub fn card(g: &Gfx, r: D2D_RECT_F) {
+    let t = theme::t();
+    g.fill_round(r, 10.0, rgb(t.sidebar));
+    stroke(g, r, 10.0, rgb(t.divider));
 }
 
 // --- Dialogs -----------------------------------------------------------------------------------------
 
-const DIALOG_PAD: f32 = 24.0;
-const DIALOG_MIN_W: f32 = 320.0;
-const DIALOG_MAX_W: f32 = 548.0;
-const DIALOG_TITLE_H: f32 = 28.0;
+const DIALOG_PAD: f32 = 20.0;
+const DIALOG_MIN_W: f32 = 400.0;
+const DIALOG_MAX_W: f32 = 520.0;
+const DIALOG_BUTTON_H: f32 = 30.0;
 const DIALOG_BUTTON_GAP: f32 = 8.0;
 
 pub struct DialogButton<A> {
@@ -329,9 +312,10 @@ pub enum Focus {
     Button(usize),
 }
 
-/// A modal ContentDialog: smoke over the window, a centred card with a title, text and/or a text box, and a
-/// strip of equal-width buttons. The default button is the accent one; it has keyboard focus to start with,
-/// unless there is a text box, which then does (Enter in it presses the default button).
+/// A modal card, as Snapper asks "Delete this capture?": the window dimmed, a card with a title, text and/or a
+/// text box, and its buttons along the bottom: the first (the action) solid accent at the right, the others
+/// boxed from the left. Enter presses the default button, which has the keyboard focus to start with unless
+/// there is a text box (Enter in it presses the default button too). Opens fading in and growing from 96 %.
 pub struct Dialog<A> {
     pub title: String,
     pub body: String,
@@ -341,6 +325,7 @@ pub struct Dialog<A> {
     pub focus: Focus,
     /// Show the focus ring (the dialog was opened from the keyboard, or Tab was pressed).
     pub focus_visible: bool,
+    opened: Instant,
 }
 
 pub struct DialogLayout {
@@ -351,12 +336,11 @@ pub struct DialogLayout {
     pub field_clear: Option<D2D_RECT_F>,
     title: D2D_RECT_F,
     body: D2D_RECT_F,
-    strip_top: f32,
 }
 
 impl<A: Copy> Dialog<A> {
     pub fn new(title: String, body: String, buttons: Vec<DialogButton<A>>, default: usize, from_keyboard: bool) -> Dialog<A> {
-        Dialog { title, body, field: None, buttons, default, focus: Focus::Button(default), focus_visible: from_keyboard }
+        Dialog { title, body, field: None, buttons, default, focus: Focus::Button(default), focus_visible: from_keyboard, opened: Instant::now() }
     }
 
     /// Adds a text box, which takes the keyboard focus.
@@ -370,6 +354,15 @@ impl<A: Copy> Dialog<A> {
         self.focus == Focus::Field && self.field.is_some()
     }
 
+    /// Still opening: draw again next frame.
+    pub fn moving(&self) -> bool {
+        motion::progress(self.opened) < 1.0
+    }
+
+    fn button_w(g: &Gfx, label: &str) -> f32 {
+        (g.measure(&wide(label), &g.fonts.body) + 32.0).ceil().max(80.0)
+    }
+
     pub fn layout(&self, g: &Gfx, bounds: D2D_RECT_F) -> DialogLayout {
         let mut natural = g.measure(&wide(&self.title), &g.fonts.title).max(g.measure(&wide(&self.body), &g.fonts.body_wrap));
         if self.field.is_some() {
@@ -379,18 +372,31 @@ impl<A: Copy> Dialog<A> {
         let inner = w - DIALOG_PAD * 2.0;
         let body_h = if self.body.is_empty() { 0.0 } else { g.measure_height(&wide(&self.body), &g.fonts.body_wrap, inner).ceil() };
         let field_h = if self.field.is_some() { FIELD_H + if body_h > 0.0 { 12.0 } else { 0.0 } } else { 0.0 };
-        let content_h = DIALOG_PAD + DIALOG_TITLE_H + 12.0 + body_h + field_h + DIALOG_PAD;
-        let strip_h = DIALOG_PAD * 2.0 + 32.0;
-        let h = content_h + strip_h;
+        let content_h = body_h + field_h;
+        let h = 48.0 + content_h + 24.0 + DIALOG_BUTTON_H + 18.0;
         let x = g.snap((bounds.left + bounds.right - w) / 2.0);
         let y = g.snap((bounds.top + bounds.bottom - h) / 2.0);
         let card = rect(x, y, w, h);
-        let n = self.buttons.len().max(1) as f32;
-        let bw = (inner - DIALOG_BUTTON_GAP * (n - 1.0)) / n;
-        let by = y + content_h + DIALOG_PAD;
-        let buttons = (0..self.buttons.len()).map(|i| rect(x + DIALOG_PAD + i as f32 * (bw + DIALOG_BUTTON_GAP), by, bw, 32.0)).collect();
-        let body_top = y + DIALOG_PAD + DIALOG_TITLE_H + 12.0;
-        let field = self.field.as_ref().map(|_| rect(x + DIALOG_PAD, body_top + field_h - FIELD_H + body_h, inner, FIELD_H));
+        let by = y + h - 18.0 - DIALOG_BUTTON_H;
+        // The action at the right; the others (Cancel) from the left.
+        let mut left = x + DIALOG_PAD;
+        let buttons = self
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let bw = Self::button_w(g, &b.label);
+                if i == 0 {
+                    rect(x + w - DIALOG_PAD - bw, by, bw, DIALOG_BUTTON_H)
+                } else {
+                    let r = rect(left, by, bw, DIALOG_BUTTON_H);
+                    left += bw + DIALOG_BUTTON_GAP;
+                    r
+                }
+            })
+            .collect();
+        let body_top = y + 48.0;
+        let field = self.field.as_ref().map(|_| rect(x + DIALOG_PAD, body_top + content_h - FIELD_H, inner, FIELD_H));
         let field_clear = match (&self.field, field) {
             (Some(f), Some(r)) if self.focus == Focus::Field && !f.edit.units().is_empty() => Some(TextField::clear_rect(r)),
             _ => None,
@@ -400,9 +406,8 @@ impl<A: Copy> Dialog<A> {
             buttons,
             field,
             field_clear,
-            title: rect(x + DIALOG_PAD, y + DIALOG_PAD, inner, DIALOG_TITLE_H),
+            title: rect(x + DIALOG_PAD, y + 18.0, inner, 22.0),
             body: rect(x + DIALOG_PAD, body_top, inner, body_h),
-            strip_top: y + content_h,
         }
     }
 
@@ -432,60 +437,52 @@ impl<A: Copy> Dialog<A> {
     }
 
     /// Draws the dialog. Returns the caret rect while the text box has focus (for placing the IME window).
-    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, theme: Theme, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
-        g.fill(window, rgba(0x000000, 0x4D as f32 / 255.0)); // SmokeFillColorDefault
+    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
+        let e = motion::progress(self.opened);
+        let raised = theme::raised();
+        g.fill(window, rgba(0x000000, 0.5 * e));
         let c = l.card;
-        shadow(g, c, 8.0);
-        g.fill_round(c, 8.0, rgba(theme.dialog_strip, 1.0));
-        // The content layer: rounded at the top, square where it meets the button strip.
-        g.fill_round(D2D_RECT_F { bottom: l.strip_top, ..c }, 8.0, rgba(theme.dialog_body, 1.0));
-        g.fill(D2D_RECT_F { top: l.strip_top - 8.0, bottom: l.strip_top, ..c }, rgba(theme.dialog_body, 1.0));
-        g.outline_round(c, 8.0, surface_stroke(1.0), g.px());
-        label(g, &self.title, &g.fonts.title, l.title, white(0xFF), Align::Left);
+        g.push_fade(e, 0.96 + 0.04 * e, (c.left + c.right) / 2.0, (c.top + c.bottom) / 2.0);
+        shadow(g, c, 10.0);
+        g.fill_round(c, 10.0, rgb(raised.popup));
+        stroke(g, c, 10.0, rgb(raised.divider));
+        label(g, &self.title, &g.fonts.title, l.title, rgb(raised.text), Align::Left);
         if !self.body.is_empty() {
-            label(g, &self.body, &g.fonts.body_wrap, l.body, white(0xFF), Align::Left);
+            label(g, &self.body, &g.fonts.body_wrap, l.body, rgb(raised.label), Align::Left);
         }
         let focused = self.focus == Focus::Field;
         let caret = match (&mut self.field, l.field) {
-            (Some(f), Some(r)) => f.draw(g, r, theme.dialog_body, focused, field_hover, l.field_clear.map(|cr| (cr, clear))),
+            (Some(f), Some(r)) => f.draw(g, r, raised, focused, field_hover, l.field_clear.map(|cr| (cr, clear))),
             _ => None,
         };
         for (i, (b, r)) in self.buttons.iter().zip(&l.buttons).enumerate() {
-            let kind = if i == self.default { Kind::Accent } else { Kind::Standard };
-            let st = State { enabled: b.enabled, ..buttons.get(i).copied().unwrap_or(State { hover: 0.0, pressed: false, enabled: true }) };
+            let kind = if i == 0 { Kind::Accent } else { Kind::Standard };
+            let st = State { enabled: b.enabled, ..buttons.get(i).copied().unwrap_or(State::IDLE) };
             let fg = button_frame(g, *r, kind, &st);
             label(g, &b.label, &g.fonts.body, *r, fg, Align::Center);
             if self.focus_visible && self.focus == Focus::Button(i) {
-                focus_ring(g, *r, 4.0);
+                focus_ring(g, *r, 5.0);
             }
         }
+        g.pop_fade();
         caret
     }
 }
 
 // --- Text box ----------------------------------------------------------------------------------------
 
-pub const FIELD_H: f32 = 32.0;
-/// A dialog's text box is at least this wide (the rename box's MinWidth).
+pub const FIELD_H: f32 = 30.0;
+/// A dialog's text box is at least this wide (the rename box).
 const FIELD_MIN_W: f32 = 320.0;
-/// TextControlThemePadding (10, 5, 6, 6) plus the 1 px border.
-const FIELD_PAD_L: f32 = 11.0;
-const FIELD_PAD_R: f32 = 7.0;
-const FIELD_CLEAR_W: f32 = 30.0;
+const FIELD_PAD: f32 = 9.0;
+const FIELD_CLEAR_W: f32 = 26.0;
 
-/// A single-line TextBox: the [`TextEdit`] model plus its horizontal scroll and caret blink.
+/// A single-line text box: the [`TextEdit`] model plus its horizontal scroll and caret blink.
 pub struct TextField {
     pub edit: TextEdit,
     scroll: f32,
     /// The caret's blink phase (reset to visible on every edit or move).
     pub caret_on: bool,
-}
-
-/// `over` composited onto an opaque `base` (WinUI's translucent control fills, made opaque so two layers
-/// of the box can be stacked).
-fn over(base: u32, c: D2D1_COLOR_F) -> D2D1_COLOR_F {
-    let b = rgba(base, 1.0);
-    D2D1_COLOR_F { r: b.r + (c.r - b.r) * c.a, g: b.g + (c.g - b.g) * c.a, b: b.b + (c.b - b.b) * c.a, a: 1.0 }
 }
 
 impl TextField {
@@ -494,12 +491,12 @@ impl TextField {
     }
 
     pub fn clear_rect(r: D2D_RECT_F) -> D2D_RECT_F {
-        rect(r.right - FIELD_CLEAR_W - 2.0, r.top + 4.0, FIELD_CLEAR_W, r.bottom - r.top - 8.0)
+        rect(r.right - FIELD_CLEAR_W - 2.0, r.top + 3.0, FIELD_CLEAR_W, r.bottom - r.top - 6.0)
     }
 
     fn text_rect(r: D2D_RECT_F, with_clear: bool) -> D2D_RECT_F {
-        let right = if with_clear { r.right - FIELD_CLEAR_W - 2.0 } else { r.right - FIELD_PAD_R };
-        D2D_RECT_F { left: r.left + FIELD_PAD_L, right, ..r }
+        let right = if with_clear { r.right - FIELD_CLEAR_W - 2.0 } else { r.right - FIELD_PAD };
+        D2D_RECT_F { left: r.left + FIELD_PAD, right, ..r }
     }
 
     /// The caret position under DIP `x` (mouse press or drag), for a box drawn at `r`.
@@ -511,29 +508,25 @@ impl TextField {
         }
     }
 
-    /// Draws the box over a `base`-coloured surface; `clear` is the clear button's rect and state while it
-    /// shows. Returns the caret rect when focused.
-    pub fn draw(&mut self, g: &Gfx, r: D2D_RECT_F, base: u32, focused: bool, hover: f32, clear: Option<(D2D_RECT_F, State)>) -> Option<D2D_RECT_F> {
-        // Fill, with the bottom edge as WinUI draws it: a 2 px accent line when focused, else a 1 px strong
-        // stroke under the faint border.
-        let fill = if focused { over(base, rgba(0x1E1E1E, 0.7)) } else { over(base, lerp(white(0x0F), white(0x15), hover)) };
-        let (edge, edge_h) = if focused { (rgba(ACCENT, 1.0), 2.0) } else { (over(base, white(0x8B)), g.px()) };
-        g.fill_round(r, 4.0, edge);
-        g.fill_round(D2D_RECT_F { bottom: r.bottom - edge_h, ..r }, 4.0, fill);
-        g.outline_round(D2D_RECT_F { bottom: r.bottom - edge_h + g.px(), ..r }, 4.0, white(0x12), g.px());
+    /// Draws the box in theme `t`'s colours; `clear` is the clear button's rect and state while it shows.
+    /// Returns the caret rect when focused.
+    pub fn draw(&mut self, g: &Gfx, r: D2D_RECT_F, t: &Theme, focused: bool, hover: f32, clear: Option<(D2D_RECT_F, State)>) -> Option<D2D_RECT_F> {
+        g.fill_round(r, 5.0, rgb(t.field));
+        let edge = if focused { 1.0 } else { hover * 0.5 };
+        stroke(g, r, 5.0, mix(t.divider, t.accent, edge));
 
         let tr = Self::text_rect(r, clear.is_some());
         let Some(layout) = g.layout(self.edit.units(), &g.fonts.body, r.bottom - r.top) else { return None };
         let width = tr.right - tr.left;
-        let (cx, ctop, ch) = g.caret_at(&layout, self.edit.caret());
+        let (cx, _, _) = g.caret_at(&layout, self.edit.caret());
         // Keep the caret in view, and never scroll further than the text needs.
-        if cx - self.scroll > width - 1.0 {
-            self.scroll = cx - width + 1.0;
+        if cx - self.scroll > width - 2.0 {
+            self.scroll = cx - width + 2.0;
         }
         if cx - self.scroll < 0.0 {
             self.scroll = cx;
         }
-        self.scroll = self.scroll.min((g.layout_width(&layout) - width + 1.0).max(0.0)).max(0.0);
+        self.scroll = self.scroll.min((g.layout_width(&layout) - width + 2.0).max(0.0)).max(0.0);
 
         g.push_clip(tr);
         let x0 = tr.left - self.scroll;
@@ -541,22 +534,18 @@ impl TextField {
         if focused && a != b {
             let (xa, _, _) = g.caret_at(&layout, a);
             let (xb, _, _) = g.caret_at(&layout, b);
-            g.fill(rect(x0 + xa, r.top + ctop, xb - xa, ch), rgba(ACCENT, 1.0));
+            g.fill(rect(x0 + xa, r.top + 5.0, xb - xa, r.bottom - r.top - 10.0), rgb(t.accent_fill));
         }
-        g.draw_layout(&layout, x0, r.top, white(0xFF));
-        let caret = rect(g.snap(x0 + cx), r.top + ctop, 1.0, ch);
+        g.draw_layout(&layout, x0, r.top, rgb(t.text));
+        let caret = rect(g.snap(x0 + cx), r.top + 6.0, g.px().max(1.0), r.bottom - r.top - 12.0);
         if focused && self.caret_on {
-            g.fill(caret, white(0xFF));
+            g.fill(caret, rgb(t.text));
         }
         g.pop_clip();
 
         if let Some((cr, st)) = clear {
-            let (fill, _, _) = colors(Kind::Subtle, &st);
-            if fill.a > 0.0 {
-                g.fill_round(cr, 4.0, fill);
-            }
-            let fg = if st.pressed { white(0xFF) } else { white(TEXT_SECONDARY) };
-            g.text(&[0xE894], &g.fonts.small_icons, cr, fg, Align::Center);
+            let fg = button_frame(g, cr, Kind::Subtle, &st);
+            g.text(&[0xE894], &g.fonts.small_icons, cr, if st.hover > 0.0 { fg } else { rgb(t.label) }, Align::Center);
         }
         focused.then_some(caret)
     }
@@ -564,8 +553,9 @@ impl TextField {
 
 // --- Toasts ------------------------------------------------------------------------------------------
 
-/// The OSD toast (OsdOverlay): fades in, holds, fades out. Showing again while one is up replaces the text
-/// and restarts the hold from the current opacity, so a burst (wheel zoom) reads as one steady pill.
+/// The OSD toast: a pill that fades in rising 16 px and growing from 97 %, holds, and fades out. Showing again
+/// while one is up replaces the text and restarts the hold from the current opacity, so a burst (wheel zoom)
+/// reads as one steady pill.
 pub struct Toast {
     pub text: String,
     start: Instant,
@@ -573,8 +563,6 @@ pub struct Toast {
     hold_ms: f32,
     fade_out_ms: f32,
 }
-
-const TOAST_FADE_IN_MS: f32 = 120.0;
 
 pub enum ToastPhase {
     /// Moving: draw at this opacity and keep redrawing.
@@ -588,18 +576,20 @@ impl Toast {
     /// `quick`: a continuous readout (zoom %) that is only interesting while it changes.
     pub fn new(text: String, quick: bool, previous: Option<&Toast>) -> Toast {
         let from = previous.map_or(0.0, |p| p.opacity());
-        let (hold_ms, fade_out_ms) = if quick { (350.0, 180.0) } else { (1200.0, 400.0) };
+        let (hold_ms, fade_out_ms) = if quick { (350.0, 190.0) } else { (1200.0, 380.0) };
         Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms }
     }
 
     pub fn phase(&self) -> ToastPhase {
         let t = self.start.elapsed().as_secs_f32() * 1000.0;
-        if t < TOAST_FADE_IN_MS {
-            ToastPhase::Fading(self.from + (1.0 - self.from) * t / TOAST_FADE_IN_MS)
+        let fade_in = EASE * 1000.0;
+        let animate = motion::enabled();
+        if t < fade_in && animate && self.from < 1.0 {
+            ToastPhase::Fading(self.from + (1.0 - self.from) * motion::ease_out(t / fade_in))
         } else if t < self.hold_ms {
             ToastPhase::Holding((self.hold_ms - t).ceil().max(1.0) as u32)
-        } else if t < self.hold_ms + self.fade_out_ms {
-            ToastPhase::Fading(1.0 - (t - self.hold_ms) / self.fade_out_ms)
+        } else if t < self.hold_ms + self.fade_out_ms && animate {
+            ToastPhase::Fading(1.0 - motion::ease_out((t - self.hold_ms) / self.fade_out_ms))
         } else {
             ToastPhase::Done
         }
@@ -615,30 +605,45 @@ impl Toast {
 
     /// Bottom-right of `area`, 16 DIPs in.
     pub fn draw(&self, g: &Gfx, area: D2D_RECT_F, opacity: f32) {
-        let w = (g.measure(&wide(&self.text), &g.fonts.body_strong) + 28.0).ceil();
-        let h = 36.0;
-        let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h), w, h);
-        shadow_faded(g, r, 8.0, opacity);
-        g.fill_round(r, 8.0, rgba(0x202020, opacity)); // SolidBackgroundFillColorBase
-        g.outline_round(r, 8.0, surface_stroke(opacity), g.px());
-        label(g, &self.text, &g.fonts.body_strong, r, white((255.0 * opacity) as u8), Align::Center);
+        let raised = theme::raised();
+        let w = (g.measure(&wide(&self.text), &g.fonts.body) + 28.0).ceil();
+        let h = 32.0;
+        // Rising into place as it comes in, not as it goes.
+        let coming = self.start.elapsed().as_secs_f32() < EASE;
+        let rise = if coming { 16.0 * (1.0 - opacity) } else { 0.0 };
+        let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h + rise), w, h);
+        let scale = if coming { 0.97 + 0.03 * opacity } else { 1.0 };
+        g.push_fade(opacity, scale, r.right, r.bottom);
+        shadow(g, r, 8.0);
+        g.fill_round(r, 8.0, rgb(raised.popup));
+        stroke(g, r, 8.0, rgb(raised.divider));
+        label(g, &self.text, &g.fonts.body, r, rgb(raised.text), Align::Center);
+        g.pop_fade();
     }
 }
 
 // --- Menus -------------------------------------------------------------------------------------------
 
-pub const MENU_ITEM_H: f32 = 32.0;
-const MENU_PAD: f32 = 4.0;
-const MENU_SEP_H: f32 = 9.0;
-pub const MENU_BG: u32 = 0x2C2C2C;
+const MENU_ROW: f32 = 25.0;
+const MENU_SEP: f32 = 11.0;
+const MENU_PAD_TOP: f32 = 4.0;
+const MENU_PAD_BOTTOM: f32 = 6.0;
+const MENU_INSET: f32 = 6.0;
+const MENU_MIN_W: f32 = 200.0;
+/// Where labels start, without and with an icon column; and where the icons start.
+const MENU_LABEL_X: f32 = 14.0;
+const MENU_LABEL_X_ICONS: f32 = 35.0;
+const MENU_ICON_X: f32 = 12.0;
 
 pub struct MenuItem<A> {
     pub action: A,
+    /// A Segoe Fluent glyph in the icon column.
     pub glyph: Option<u16>,
     pub label: String,
+    /// A shortcut, set small at the right.
     pub accel: Option<&'static str>,
-    /// A radio item's dot (sort menu).
-    pub checked: bool,
+    /// A tickbox at the right: ticked, or empty.
+    pub check: Option<bool>,
     pub enabled: bool,
 }
 
@@ -647,78 +652,105 @@ pub enum Entry<A> {
     Separator,
 }
 
+/// A menu, as Snapper draws its own: rows 25 tall, the hovered row a solid accent bar, a hairline border, radius
+/// 8, a soft three-step shadow. If any item has an icon, icons sit in a column 12 px in and labels move 35 px
+/// in; ticks are boxes at the right. It opens with a fade, growing from 94 % about the corner it hangs from, and
+/// closes instantly.
 pub struct Menu<A> {
     pub entries: Vec<Entry<A>>,
-    /// A ComboBox's drop-down: as wide as the box, the selected item over it, marked with an accent pill.
-    pub combo: bool,
-    /// Top-left in DIPs, already clamped into the window.
+    /// Top-left in DIPs, already placed inside the window.
     pub x: f32,
     pub y: f32,
     pub width: f32,
     /// Keyboard cursor (index into entries).
     pub cursor: Option<usize>,
+    /// The corner it grows from.
+    origin: (f32, f32),
+    opened: Instant,
 }
 
 impl<A: Copy> Menu<A> {
-    /// Sizes the menu for its content and places it at (x, y), flipped/clamped to stay inside `bounds`.
-    pub fn open(g: &Gfx, entries: Vec<Entry<A>>, x: f32, y: f32, bounds: D2D_RECT_F) -> Menu<A> {
-        let mut text_w: f32 = 0.0;
-        let mut accel_w: f32 = 0.0;
-        let mut any_icon = false;
-        let mut any_check = false;
-        for e in &entries {
+    fn natural_width(g: &Gfx, entries: &[Entry<A>]) -> f32 {
+        let icons = entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()));
+        let checks = entries.iter().any(|e| matches!(e, Entry::Item(i) if i.check.is_some()));
+        let label_x = if icons { MENU_LABEL_X_ICONS } else { MENU_LABEL_X };
+        let mut w = MENU_MIN_W;
+        for e in entries {
             if let Entry::Item(i) = e {
-                text_w = text_w.max(g.measure(&wide(&i.label), &g.fonts.body));
-                if let Some(a) = i.accel {
-                    accel_w = accel_w.max(g.measure(&wide(a), &g.fonts.caption));
-                }
-                any_icon |= i.glyph.is_some();
-                any_check |= i.checked;
+                let hint = i.accel.map_or(0.0, |a| g.measure(&wide(a), &g.fonts.caption) + 24.0);
+                let check = if checks { 32.0 } else { 0.0 };
+                w = w.max(label_x + g.measure(&wide(&i.label), &g.fonts.body) + hint + check + 18.0);
             }
         }
-        let lead = if any_icon || any_check { 12.0 + 16.0 + 12.0 } else { 12.0 };
-        let width = (lead + text_w + if accel_w > 0.0 { 24.0 + accel_w } else { 0.0 } + 12.0 + MENU_PAD * 2.0).max(120.0);
-        let mut m = Menu { entries, combo: false, x, y, width, cursor: None };
-        let h = m.height();
-        if m.x + width > bounds.right - 4.0 {
-            m.x = (x - width).max(bounds.left + 4.0);
-        }
-        if m.y + h > bounds.bottom - 4.0 {
-            m.y = (y - h).max(bounds.top + 4.0);
-        }
-        m
+        w.ceil()
     }
 
-    /// A ComboBox's drop-down over `field`, placed so the selected item sits on top of it (WinUI does the
-    /// same), then nudged inside `bounds`.
-    pub fn combo(entries: Vec<Entry<A>>, field: D2D_RECT_F, bounds: D2D_RECT_F) -> Menu<A> {
-        let selected = entries.iter().position(|e| matches!(e, Entry::Item(i) if i.checked)).unwrap_or(0);
-        let mut m = Menu { entries, combo: true, x: field.left, y: 0.0, width: field.right - field.left, cursor: Some(selected) };
-        let h = m.height();
-        let y = field.top - MENU_PAD - selected as f32 * MENU_ITEM_H + ((field.bottom - field.top) - MENU_ITEM_H) / 2.0;
-        m.y = y.min(bounds.bottom - 4.0 - h).max(bounds.top + 4.0);
-        m
+    fn make(entries: Vec<Entry<A>>, x: f32, y: f32, width: f32, origin: (f32, f32)) -> Menu<A> {
+        Menu { entries, x, y, width, cursor: None, origin, opened: Instant::now() }
+    }
+
+    /// A menu with its top-left at (x, y) (the pointer), flipped to stay inside `bounds`.
+    pub fn open(g: &Gfx, entries: Vec<Entry<A>>, x: f32, y: f32, bounds: D2D_RECT_F) -> Menu<A> {
+        let width = Self::natural_width(g, &entries);
+        let h = Self::height_of(&entries);
+        let (mut mx, mut my, mut ox, mut oy) = (x, y, x, y);
+        if mx + width > bounds.right - 4.0 {
+            mx = (x - width).max(bounds.left + 4.0);
+            ox = mx + width;
+        }
+        if my + h > bounds.bottom - 4.0 {
+            my = (y - h).max(bounds.top + 4.0);
+            oy = my + h;
+        }
+        Self::make(entries, mx, my, width, (ox, oy))
+    }
+
+    /// A menu hanging 4 DIPs below `anchor` (a drop-down, the sort button), at least as wide as it; above it
+    /// when there's no room below.
+    pub fn below(g: &Gfx, entries: Vec<Entry<A>>, anchor: D2D_RECT_F, bounds: D2D_RECT_F) -> Menu<A> {
+        let width = Self::natural_width(g, &entries).max((anchor.right - anchor.left).ceil());
+        let h = Self::height_of(&entries);
+        let (mut x, mut ox) = (anchor.left, anchor.left);
+        if x + width > bounds.right - 4.0 {
+            x = (anchor.right - width).max(bounds.left + 4.0);
+            ox = x + width;
+        }
+        let (y, oy) = if anchor.bottom + 4.0 + h > bounds.bottom - 4.0 && anchor.top - 4.0 - h >= bounds.top {
+            (anchor.top - 4.0 - h, anchor.top - 4.0)
+        } else {
+            (anchor.bottom + 4.0, anchor.bottom + 4.0)
+        };
+        Self::make(entries, x, y, width, (ox, oy))
+    }
+
+    fn height_of(entries: &[Entry<A>]) -> f32 {
+        MENU_PAD_TOP + MENU_PAD_BOTTOM + entries.iter().map(|e| if matches!(e, Entry::Item(_)) { MENU_ROW } else { MENU_SEP }).sum::<f32>()
     }
 
     pub fn height(&self) -> f32 {
-        MENU_PAD * 2.0 + self.entries.iter().map(|e| if matches!(e, Entry::Item(_)) { MENU_ITEM_H } else { MENU_SEP_H }).sum::<f32>()
+        Self::height_of(&self.entries)
     }
 
     pub fn bounds(&self) -> D2D_RECT_F {
         rect(self.x, self.y, self.width, self.height())
     }
 
+    /// Still opening: draw again next frame.
+    pub fn moving(&self) -> bool {
+        motion::progress(self.opened) < 1.0
+    }
+
     /// Item rects, by entry index.
     pub fn item_rects(&self) -> Vec<(usize, D2D_RECT_F)> {
-        let mut y = self.y + MENU_PAD;
+        let mut y = self.y + MENU_PAD_TOP;
         let mut out = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             match e {
                 Entry::Item(_) => {
-                    out.push((i, rect(self.x + MENU_PAD, y, self.width - MENU_PAD * 2.0, MENU_ITEM_H)));
-                    y += MENU_ITEM_H;
+                    out.push((i, rect(self.x + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW)));
+                    y += MENU_ROW;
                 }
-                Entry::Separator => y += MENU_SEP_H,
+                Entry::Separator => y += MENU_SEP,
             }
         }
         out
@@ -752,111 +784,149 @@ impl<A: Copy> Menu<A> {
         self.cursor = Some(items[next]);
     }
 
-    /// Draws the flyout. `hover` is the entry under the pointer, `fade` its hover amount.
-    pub fn draw(&self, g: &Gfx, hover: Option<usize>, pressed: Option<usize>) {
-        let b = self.bounds();
-        shadow(g, b, 8.0);
-        g.fill_round(b, 8.0, rgba(MENU_BG, 1.0));
-        g.outline_round(b, 8.0, white(0x14), g.px());
-        let any_lead = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some() || i.checked));
-        let mut y = self.y + MENU_PAD;
-        for (i, e) in self.entries.iter().enumerate() {
-            match e {
+    /// Draws the menu. `hover` is the entry under the pointer.
+    pub fn draw(&self, g: &Gfx, hover: Option<usize>) {
+        let raised = theme::raised();
+        let e = motion::progress(self.opened);
+        g.push_fade(e, 0.94 + 0.06 * e, self.origin.0, self.origin.1);
+        let panel = self.bounds();
+        shadow(g, panel, 8.0);
+        g.fill_round(panel, 8.0, rgb(raised.popup));
+        stroke(g, panel, 8.0, rgb(raised.divider));
+        let icons = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()));
+        let checks = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.check.is_some()));
+        let label_x = if icons { MENU_LABEL_X_ICONS } else { MENU_LABEL_X };
+        let mut y = panel.top + MENU_PAD_TOP;
+        for (i, en) in self.entries.iter().enumerate() {
+            let it = match en {
                 Entry::Separator => {
-                    g.hline(self.x, g.snap(y + MENU_SEP_H / 2.0), self.width, white(0x15));
-                    y += MENU_SEP_H;
+                    g.hline(panel.left + 1.0, g.snap((y + MENU_SEP / 2.0).floor()), self.width - 2.0, rgb(raised.divider));
+                    y += MENU_SEP;
+                    continue;
                 }
-                Entry::Item(it) => {
-                    let r = rect(self.x + MENU_PAD, y, self.width - MENU_PAD * 2.0, MENU_ITEM_H);
-                    let on = hover == Some(i) || self.cursor == Some(i);
-                    let st = State { hover: if on { 1.0 } else { 0.0 }, pressed: pressed == Some(i), enabled: it.enabled };
-                    let (fill, _, fg) = colors(Kind::Subtle, &st);
-                    if fill.a > 0.0 {
-                        g.fill_round(r, 4.0, fill);
-                    }
-                    let mut x = r.left + 12.0;
-                    if self.combo {
-                        if it.checked {
-                            if !on {
-                                g.fill_round(r, 4.0, white(0x0F));
-                            }
-                            g.fill_round(rect(r.left, r.top + (MENU_ITEM_H - 16.0) / 2.0, 3.0, 16.0), 1.5, rgba(ACCENT, 1.0));
-                        }
-                    } else if any_lead {
-                        if it.checked {
-                            // RadioMenuFlyoutItem's bullet.
-                            let d = rect(x + 5.0, r.top + MENU_ITEM_H / 2.0 - 3.0, 6.0, 6.0);
-                            g.fill_round(d, 3.0, fg);
-                        } else if let Some(gl) = it.glyph {
-                            icon(g, gl, rect(x, r.top, 16.0, MENU_ITEM_H), fg);
-                        }
-                        x += 16.0 + 12.0;
-                    }
-                    label(g, &it.label, &g.fonts.body, rect(x, r.top, r.right - x - 12.0, MENU_ITEM_H), fg, Align::Left);
-                    if let Some(a) = it.accel {
-                        let c = if it.enabled { white(TEXT_SECONDARY) } else { white(TEXT_DISABLED) };
-                        label(g, a, &g.fonts.caption, rect(r.left, r.top, r.right - r.left - 12.0, MENU_ITEM_H), c, Align::Right);
-                    }
-                    y += MENU_ITEM_H;
-                }
+                Entry::Item(it) => it,
+            };
+            let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW);
+            let hot = it.enabled && (hover == Some(i) || (hover.is_none() && self.cursor == Some(i)));
+            if hot {
+                g.fill_round(row, 4.0, rgb(raised.accent));
             }
+            let fg = if hot {
+                rgb(raised.on_accent)
+            } else if it.enabled {
+                rgb(raised.text)
+            } else {
+                rgb(raised.placeholder)
+            };
+            if let Some(glyph) = it.glyph {
+                let ic = if hot || !it.enabled { fg } else { rgb(raised.icon) };
+                g.text(&[glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), ic, Align::Center);
+            }
+            label(g, &it.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 14.0, MENU_ROW), fg, Align::Left);
+            let mut right = panel.right - 13.0;
+            if checks {
+                let b = rect(panel.right - 11.0 - 16.0, y + (MENU_ROW - 16.0) / 2.0, 16.0, 16.0);
+                match it.check {
+                    Some(true) => {
+                        let on = if hot { rgb(raised.on_accent) } else { faded(rgb(raised.accent), if it.enabled { 1.0 } else { 0.45 }) };
+                        g.fill_round(b, 4.0, on);
+                        let tick = if hot { rgb(raised.accent) } else { rgb(raised.on_accent) };
+                        g.text(&[0xE73E], &g.fonts.caption_icons, b, tick, Align::Center);
+                    }
+                    Some(false) => stroke(g, b, 4.0, if hot { rgb(raised.on_accent) } else { rgb(raised.divider) }),
+                    None => {}
+                }
+                right = b.left - 8.0;
+            }
+            if let Some(a) = it.accel {
+                let hc = if hot { faded(rgb(raised.on_accent), 0.8) } else { rgb(raised.label) };
+                label(g, a, &g.fonts.caption, rect(right - 200.0, y, 200.0, MENU_ROW), hc, Align::Right);
+            }
+            y += MENU_ROW;
         }
+        g.pop_fade();
     }
 }
 
-// --- ComboBox and ToggleSwitch -----------------------------------------------------------------------
+// --- Drop-down, switch, theme chip -------------------------------------------------------------------
 
-/// A closed ComboBox (the header is drawn by the caller): the value and a chevron in a control-fill box.
-pub fn combo_box(g: &Gfx, r: D2D_RECT_F, value: &str, s: &State, open: bool) {
-    let fill = if s.pressed { white(0x1F) } else if open { white(0x15) } else { lerp(white(0x0F), white(0x15), s.hover) };
-    g.fill_round(r, 4.0, fill);
-    g.outline_round(r, 4.0, white(0x12), g.px());
-    label(g, value, &g.fonts.body, rect(r.left + 12.0, r.top, (r.right - r.left - 44.0).max(0.0), r.bottom - r.top), white(0xFF), Align::Left);
-    g.text(&[0xE70D], &g.fonts.small_icons, rect(r.right - 32.0, r.top, 20.0, r.bottom - r.top), white(TEXT_SECONDARY), Align::Center);
+/// A closed drop-down: the value and a chevron in a field-styled box, its outline warming to the accent on
+/// hover or while its menu is open.
+pub fn dropdown(g: &Gfx, r: D2D_RECT_F, value: &str, s: &State, open: bool) {
+    let t = theme::t();
+    g.fill_round(r, 5.0, rgb(t.field));
+    stroke(g, r, 5.0, mix(t.divider, t.accent, if open { 1.0 } else { s.hover }));
+    label(g, value, &g.fonts.body, rect(r.left + 10.0, r.top, (r.right - r.left - 34.0).max(0.0), r.bottom - r.top), rgb(t.text), Align::Left);
+    g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 28.0, r.top, 20.0, r.bottom - r.top), rgb(t.text), Align::Center);
 }
 
-pub const SWITCH_W: f32 = 40.0;
+pub const SWITCH_W: f32 = 36.0;
 pub const SWITCH_H: f32 = 20.0;
 
-/// A ToggleSwitch's track and knob in `r` (40 x 20), `on` eased 0..1 so the knob slides and the track fades
-/// between the outlined off look and the accent fill.
+/// A switch's track and knob in `r` (36 x 20), `on` eased 0..1 so the knob slides and the track fills: off,
+/// the track colour with a divider outline (hover tints both); on, solid accent.
 pub fn toggle_switch(g: &Gfx, r: D2D_RECT_F, on: f32, s: &State) {
-    let off_fill = lerp(rgba(0x000000, 0.1), white(0x0B), s.hover);
-    let on_fill = lerp(rgba(ACCENT, 1.0), rgba(ACCENT, 0.9), s.hover);
-    g.fill_round(r, 10.0, lerp(off_fill, on_fill, on));
+    let t = theme::t();
+    let off = mix(t.track, t.hover_fill, s.hover);
+    let acc = rgb(t.accent);
+    let fill = D2D1_COLOR_F { r: off.r + (acc.r - off.r) * on, g: off.g + (acc.g - off.g) * on, b: off.b + (acc.b - off.b) * on, a: 1.0 };
+    g.fill_round(r, 10.0, fill);
     if on < 1.0 {
-        g.outline_round(r, 10.0, rgba(0xFFFFFF, (0x8B as f32 / 255.0) * (1.0 - on)), 1.0);
+        stroke(g, r, 10.0, faded(mix(t.divider, t.accent, s.hover), 1.0 - on));
     }
-    // The knob: 12 px at rest, 14 on hover, a 17 x 14 pill while pressed.
-    let (kw, kh) = if s.pressed { (17.0, 14.0) } else if s.hover > 0.5 { (14.0, 14.0) } else { (12.0, 12.0) };
-    let left = r.left + 4.0;
-    let right = r.right - 4.0 - kw;
-    let kx = left + (right - left) * on;
-    let ky = (r.top + r.bottom - kh) / 2.0;
-    // Off: secondary text colour; on: the text-on-accent colour (black on the dark theme).
-    let knob = lerp(white(TEXT_SECONDARY), rgba(0x000000, 1.0), on);
-    g.fill_round(rect(kx, ky, kw, kh), kh / 2.0, knob);
+    let knob = rect(r.left + 4.0 + 16.0 * on, r.top + 4.0, 12.0, 12.0);
+    g.fill_round(knob, 6.0, mix(t.label, t.on_accent, on));
+}
+
+/// A theme to pick: a square of its page colour with its accent as a dot in the middle, then its name. Picked
+/// like a toggle when `on`.
+pub fn theme_chip(g: &Gfx, r: D2D_RECT_F, name: &str, on: bool, s: &State, of: &Theme) {
+    let t = theme::t();
+    let fg = frame(g, r, 6.0, Kind::Toggle(on), s);
+    let sw = rect(r.left + 9.0, g.snap(r.top + (r.bottom - r.top - 22.0) / 2.0), 22.0, 22.0);
+    g.fill_round(sw, 5.0, rgb(of.content));
+    stroke(g, sw, 5.0, rgba(t.ink, 0.22));
+    g.fill_round(rect(sw.left + 6.0, sw.top + 6.0, 10.0, 10.0), 5.0, rgb(of.accent));
+    label(g, name, &g.fonts.body, rect(sw.right + 10.0, r.top, (r.right - sw.right - 14.0).max(0.0), r.bottom - r.top), fg, Align::Left);
+}
+
+/// A boxed button with a glyph before its label, both centred (an empty label: just the glyph).
+pub fn icon_label_button(g: &Gfx, r: D2D_RECT_F, glyph: u16, text: &str, kind: Kind, s: &State) {
+    let fg = button_frame(g, r, kind, s);
+    let tw = if text.is_empty() { 0.0 } else { 8.0 + g.measure(&wide(text), &g.fonts.body).ceil() };
+    let x = g.snap(r.left + (r.right - r.left - 16.0 - tw) / 2.0);
+    g.text(&[glyph], &g.fonts.icons, rect(x, r.top, 16.0, r.bottom - r.top), fg, Align::Center);
+    if !text.is_empty() {
+        // A pixel up: centred, Inter's capitals sit that much low beside the icon.
+        label(g, text, &g.fonts.body, rect(x + 24.0, r.top - 1.0, tw, r.bottom - r.top), fg, Align::Left);
+    }
+}
+
+/// How wide `icon_label_button` needs to be for `text`.
+pub fn icon_label_width(g: &Gfx, text: &str) -> f32 {
+    let tw = if text.is_empty() { 0.0 } else { 8.0 + g.measure(&wide(text), &g.fonts.body).ceil() };
+    (16.0 + tw + 28.0).max(32.0)
 }
 
 // --- Tooltips ----------------------------------------------------------------------------------------
 
-pub const TOOLTIP_DELAY_MS: u32 = 800;
+pub const TOOLTIP_DELAY_MS: u32 = 550;
 
 /// A tooltip under (or above, near the bottom edge) an anchor rect, clamped into `bounds`.
 pub fn tooltip(g: &Gfx, text: &str, anchor: D2D_RECT_F, bounds: D2D_RECT_F) {
-    let w = g.measure(&wide(text), &g.fonts.caption) + 18.0;
-    let h = 30.0;
+    let raised = theme::raised();
+    let w = (g.measure(&wide(text), &g.fonts.caption) + 16.0).ceil();
+    let h = 26.0;
     let mut x = (anchor.left + anchor.right) / 2.0 - w / 2.0;
-    let mut y = anchor.bottom + 8.0;
+    let mut y = anchor.bottom + 6.0;
     if y + h > bounds.bottom - 4.0 {
-        y = anchor.top - 8.0 - h;
+        y = anchor.top - 6.0 - h;
     }
     x = x.clamp(bounds.left + 4.0, (bounds.right - w - 4.0).max(bounds.left + 4.0));
     let r = rect(g.snap(x), g.snap(y), w, h);
-    shadow(g, r, 4.0);
-    g.fill_round(r, 4.0, rgba(MENU_BG, 1.0));
-    g.outline_round(r, 4.0, white(0x14), g.px());
-    label(g, text, &g.fonts.caption, r, white(0xFF), Align::Center);
+    g.fill_round(r, 5.0, rgb(raised.popup));
+    stroke(g, r, 5.0, rgb(raised.divider));
+    label(g, text, &g.fonts.caption, r, rgb(raised.text), Align::Center);
 }
 
 #[cfg(test)]
@@ -877,7 +947,10 @@ mod tests {
     fn fades_reach_their_target() {
         let mut f: Fades<u8> = Fades::new();
         assert_eq!(f.get(1, true), 1.0); // a new id starts settled
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        f.get(1, false);
+        std::thread::sleep(std::time::Duration::from_millis(250));
         assert_eq!(f.get(1, false), 0.0);
+        assert_eq!(f.hover(2, true), 1.0);
     }
 }

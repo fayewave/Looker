@@ -35,7 +35,7 @@ impl App {
     }
 
     fn start_slideshow(&mut self) {
-        if self.viewer.current.is_none() || self.page.is_some() {
+        if self.viewer.current.is_none() || self.page_open() {
             return;
         }
         if self.fullscreen.is_none() {

@@ -406,9 +406,10 @@ impl App {
             let cell = rect(g.snap(SIDE + i as f32 * pitch - scroll), top, cw, ch);
             self.hits.add(Hit::StripCell(i), cell);
             let selected = sel == Some(i);
-            let hover = self.fades.get_out(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
+            let hover = self.fades.hover(Hit::StripCell(i), self.hover == Some(Hit::StripCell(i)));
             let pressed = self.pressed == Some(Hit::StripCell(i)) && self.hover == Some(Hit::StripCell(i));
-            g.fill_round(cell, 4.0, gfx::rgb(0x2C2C2C));
+            let th = theme::t();
+            g.fill_round(cell, 5.0, rgb(th.field));
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
@@ -417,29 +418,30 @@ impl App {
                 let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
                 let mid = (inner.top + inner.bottom) / 2.0;
                 let glyph_y = if ext.is_empty() { mid - 10.0 } else { mid - 18.0 };
-                g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), white(0x73), Align::Center);
+                g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), gfx::rgba(th.icon, 0.45), Align::Center);
                 if !ext.is_empty() {
-                    g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, mid + 4.0, (inner.right - inner.left - 8.0).max(0.0), 16.0), white(0x73), Align::Center);
+                    g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, mid + 4.0, (inner.right - inner.left - 8.0).max(0.0), 16.0), gfx::rgba(th.label, 0.7), Align::Center);
                 }
             } else if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);
             }
+            // As Snapper's strip: an ink wash and outline on hover, the accent round the current photo.
             if pressed {
-                g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.35));
+                g.fill_round(inner, 3.0, gfx::rgba(th.ink, 0.20));
             } else if hover > 0.0 {
-                g.fill_round(inner, 2.0, gfx::rgba(0xFFFFFF, 0.2 * hover));
+                g.fill_round(inner, 3.0, gfx::rgba(th.ink, 0.10 * hover));
             }
             let border = if selected && !fixed_frame {
-                Some(gfx::rgba(ui::ACCENT, 1.0))
+                Some(rgb(th.accent))
             } else if pressed {
-                Some(gfx::rgba(0xFFFFFF, 0.9))
+                Some(rgb(th.accent))
             } else if hover > 0.0 {
-                Some(gfx::rgba(0xFFFFFF, 0.6 * hover))
+                Some(gfx::rgba(th.ink, 0.6 * hover))
             } else {
                 None
             };
             if let Some(c) = border {
-                g.outline_round(cell, 4.0, c, 2.0);
+                g.outline_round(cell, 5.0, c, 2.0);
             }
 
             // Load it (again, sharper) unless one of the right size is here or on its way.
@@ -451,7 +453,7 @@ impl App {
         // The selection frame, fixed in the middle: the cells glide under it to the current photo.
         if fixed_frame {
             let frame = rect(g.snap(r.left + view_w / 2.0 - cw / 2.0), top, cw, ch);
-            g.outline_round(frame, 4.0, gfx::rgba(ui::ACCENT, 1.0), 2.0);
+            g.outline_round(frame, 5.0, rgb(theme::t().accent), 2.0);
         }
         g.pop_clip();
 
@@ -459,11 +461,8 @@ impl App {
         let grip = rect(r.left, r.top, r.right - r.left, TOP_PAD);
         self.hits.add(Hit::StripGrip, grip);
         let dragging = self.strip.drag.is_some();
-        let t = self.fades.get(Hit::StripGrip, self.hover == Some(Hit::StripGrip) || dragging);
-        if t > 0.0 {
-            let c = if dragging { gfx::rgba(ui::ACCENT, 1.0) } else { gfx::rgba(0xFFFFFF, 0.4 * t) };
-            g.fill(rect(r.left, r.top, r.right - r.left, 2.0), c);
-        }
+        let t = self.fades.hover(Hit::StripGrip, self.hover == Some(Hit::StripGrip) || dragging);
+        ui::grip_line(g, rect(r.left + 16.0, r.top, r.right - r.left - 32.0, 2.0), t, dragging);
         g.pop_clip();
         moving
     }

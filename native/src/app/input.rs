@@ -196,6 +196,9 @@ impl App {
                     if self.explorer.drag.is_some() {
                         self.explorer_grip_drag(x);
                     }
+                    if self.pressed == Some(Hit::PageThumb) {
+                        self.page_thumb_drag(y);
+                    }
                     if let Some((px, py, moved)) = self.pan_drag {
                         // A few DIPs of slack, so a right-click that wobbles still opens the menu.
                         if moved || (x - px).abs() + (y - py).abs() > 4.0 {
@@ -224,11 +227,38 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+                    // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
-                        Some(Hit::Reveal | Hit::InfoPath) => IDC_HAND,
                         Some(Hit::InfoGrip | Hit::ExplorerGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::DialogField) => IDC_IBEAM,
+                        Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
+                        Some(
+                            Hit::Reveal
+                            | Hit::InfoPath
+                            | Hit::Open
+                            | Hit::LandingFolder
+                            | Hit::RecentRow(_)
+                            | Hit::RecentClear
+                            | Hit::DialogButton(_)
+                            | Hit::DialogFieldClear
+                            | Hit::PageNav(_)
+                            | Hit::PageClose
+                            | Hit::Combo(_)
+                            | Hit::Toggle(_)
+                            | Hit::ThemeChip(_)
+                            | Hit::PageLink(_)
+                            | Hit::GetExtension
+                            | Hit::DefaultHint
+                            | Hit::DefaultHintClose
+                            | Hit::PagePrevious
+                            | Hit::PageNext
+                            | Hit::ExplorerBack
+                            | Hit::ExplorerForward
+                            | Hit::Crumb(_)
+                            | Hit::CrumbMore
+                            | Hit::StripCell(_),
+                        ) => IDC_HAND,
                         _ => IDC_ARROW,
                     };
                     SetCursor(LoadCursorW(None, cursor).ok());
@@ -240,11 +270,18 @@ impl App {
                     let h = self.hit(x, y);
                     // Light dismiss: a press outside an open menu only closes it.
                     if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface)) {
+                        // On the card, a press elsewhere on it closes the menu and carries on (another drop-down).
+                        let on_card = self.page_open() && h.is_some_and(|h| h != Hit::PageSurface);
                         let reopening_sort = h == Some(Hit::Tool(Tool::Sort));
                         self.close_menu();
-                        if !reopening_sort {
+                        if !reopening_sort && !on_card {
                             return Some(LRESULT(0));
                         }
+                    }
+                    // A press outside the Settings card puts it away.
+                    if h == Some(Hit::PageSurface) {
+                        self.close_page();
+                        return Some(LRESULT(0));
                     }
                     SetCapture(self.hwnd);
                     self.pressed = h;
@@ -259,6 +296,9 @@ impl App {
                     }
                     if h == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_press(x);
+                    }
+                    if h == Some(Hit::PageThumb) {
+                        self.page_thumb_press(y);
                     }
                     if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
                         self.drag = Some((x, y));
@@ -275,6 +315,7 @@ impl App {
                     self.info_grip_release();
                     self.strip_grip_release();
                     self.explorer_grip_release();
+                    self.page_thumb_release();
                     let h = self.hit(x, y);
                     if pressed.is_some() && pressed == h {
                         match h {
@@ -287,14 +328,16 @@ impl App {
                             Some(Hit::Crumb(i)) => self.crumb_click(i),
                             Some(Hit::CrumbMore) => self.open_crumb_menu(),
                             Some(Hit::Open) => self.open_dialog(),
-                            Some(Hit::PageBack) => self.close_page(),
+                            Some(Hit::PageClose) => self.close_page(),
+                            Some(Hit::PageNav(i)) => self.page_section(i as usize),
+                            Some(Hit::ThemeChip(i)) => self.pick_theme(i as usize),
                             Some(Hit::Combo(s)) => self.open_combo(s),
                             Some(Hit::Toggle(s)) => self.toggle_setting(s),
                             Some(Hit::PageLink(i)) => self.page_link(i),
                             Some(Hit::LandingFolder) => self.open_folder_dialog(),
                             Some(Hit::RecentRow(i)) => self.open_recent(i),
                             Some(Hit::RecentClear) => self.clear_recents(),
-                            Some(Hit::DefaultHint) => self.page_link(5),
+                            Some(Hit::DefaultHint) => self.page_link(page::link::DEFAULT_APP),
                             Some(Hit::GetExtension) => self.get_extension(),
                             Some(Hit::DefaultHintClose) => self.dismiss_default_hint(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
@@ -313,7 +356,7 @@ impl App {
                 }
                 WM_RBUTTONDOWN => {
                     let (x, y) = self.dip_from_lparam(lp);
-                    if self.dialog.is_none() && self.menu.is_none() && self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
+                    if self.dialog.is_none() && self.menu.is_none() && !self.page_open() && self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
                         SetCapture(self.hwnd);
                         self.pan_drag = Some((x, y, false));
                         return Some(LRESULT(0));
@@ -321,7 +364,7 @@ impl App {
                     None
                 }
                 WM_RBUTTONUP => {
-                    if self.dialog.is_some() {
+                    if self.dialog.is_some() || self.page_open() {
                         return Some(LRESULT(0));
                     }
                     // A right-drag that panned a model: no menu.
@@ -382,7 +425,7 @@ impl App {
                         self.field_press(x, true);
                         return Some(LRESULT(0));
                     }
-                    if self.menu.is_some() || self.dialog.is_some() {
+                    if self.menu.is_some() || self.dialog.is_some() || self.page_open() {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
@@ -406,6 +449,7 @@ impl App {
                     self.info_grip_release();
                     self.strip_grip_release();
                     self.explorer_grip_release();
+                    self.page_thumb_release();
                     None
                 }
                 WM_MOUSEWHEEL => {
@@ -416,7 +460,7 @@ impl App {
                     self.hide_tooltip();
                     let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f64;
                     let (x, y) = self.screen_to_dip(lp);
-                    if self.page.is_some() {
+                    if self.page_open() {
                         self.scroll_page(delta as f32);
                         return Some(LRESULT(0));
                     }
@@ -478,7 +522,7 @@ impl App {
                     }
                     self.hide_tooltip();
                     // A page has the keyboard to itself: Escape closes it, nothing else reaches the viewer.
-                    if self.page.is_some() {
+                    if self.page_open() {
                         if vk == VK_ESCAPE || (vk == VK_OEM_COMMA && ctrl) {
                             self.close_page();
                         }
