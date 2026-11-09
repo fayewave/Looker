@@ -14,6 +14,7 @@ pub mod pdf;
 mod raster;
 pub mod raw;
 pub mod svg;
+pub mod video;
 pub mod wic;
 
 use std::path::Path;
@@ -137,6 +138,8 @@ enum Step {
     LibRaw,
     /// A JPEG's HDR gain map, on an HDR display; declines otherwise.
     GainMap,
+    /// A video's first picture through FFmpeg (bundled).
+    Video,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -169,6 +172,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Pdf => &[Pdf],
         Format::Mtl => &[Mtl],
         Format::Model => &[Model],
+        Format::Video => &[Video],
         Format::Unknown => &[],
     }
 }
@@ -203,6 +207,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Avif => avif::decode(f, path, box_w, box_h, still),
         Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
         Step::GainMap => gainmap::decode(f, path, box_w, box_h),
+        Step::Video => video::decode(f, path, box_w, box_h).map(Some),
     }
 }
 

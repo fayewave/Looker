@@ -40,10 +40,17 @@ pub struct Exif {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub altitude: Option<String>,
+    /// A video's facts (codec, frame rate, duration...), already worded; empty for a photo.
+    pub video: Vec<(&'static str, String)>,
 }
 
-/// Reads the file's EXIF block; None when it has none or the container isn't one EXIF can live in.
+/// Reads the file's EXIF block; None when it has none or the container isn't one EXIF can live in. A video's
+/// facts come from its container instead.
 pub fn read(path: &Path) -> Option<Exif> {
+    if crate::format::sniff_file(path) == crate::format::Format::Video {
+        let info = crate::imaging::video::probe(path).ok()?;
+        return Some(Exif { video: crate::imaging::video::facts(&info), taken: local_time(info.created), ..Default::default() });
+    }
     let file = std::fs::File::open(path).ok()?;
     let mut r = std::io::BufReader::new(file);
     let exif = exif::Reader::new().read_from_container(&mut r).ok()?;
@@ -172,6 +179,23 @@ fn parse_time(s: &str) -> Option<ExifTime> {
     Some(ExifTime { year: n[0], month: n[1], day: n[2], hour: n[3], minute: n[4], second: *n.get(5).unwrap_or(&0) })
 }
 
+/// Unix seconds (UTC) as local wall-clock time, the way EXIF dates are written.
+fn local_time(unix: i64) -> Option<ExifTime> {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    if unix <= 0 {
+        return None;
+    }
+    let ticks = (unix as u64 + 11_644_473_600) * 10_000_000;
+    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    unsafe {
+        FileTimeToSystemTime(&ft, &mut utc).ok()?;
+        SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).ok()?;
+    }
+    Some(ExifTime { year: local.wYear, month: local.wMonth, day: local.wDay, hour: local.wHour, minute: local.wMinute, second: local.wSecond })
+}
+
 /// A titled group of label/value rows.
 pub struct Group {
     pub title: &'static str,
@@ -187,6 +211,7 @@ pub fn groups(e: &Exif, date: impl Fn(ExifTime) -> String) -> Vec<Group> {
             out.push(Group { title, rows });
         }
     };
+    push("Video", e.video.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
     push("Camera", vec![("Make", e.make.clone()), ("Model", e.model.clone()), ("Lens", e.lens.clone())]);
     push(
         "Exposure",
@@ -201,7 +226,7 @@ pub fn groups(e: &Exif, date: impl Fn(ExifTime) -> String) -> Vec<Group> {
             ("White balance", e.white_balance.clone()),
         ],
     );
-    push("Date", vec![("Taken", e.taken.map(&date)), ("Digitized", e.digitized.map(&date))]);
+    push("Date", vec![(if e.video.is_empty() { "Taken" } else { "Recorded" }, e.taken.map(&date)), ("Digitized", e.digitized.map(&date))]);
     push(
         "Location",
         vec![

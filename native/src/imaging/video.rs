@@ -1,0 +1,415 @@
+//! Video through FFmpeg (bundled, `codecs\`: the FFmpeg DLLs and `looker_video.dll`, scripts/Build-Codecs.ps1).
+//! Looker calls only `looker_video.dll`, its own small C API over FFmpeg (native/codecs/ports/looker-video), so
+//! FFmpeg's struct layouts never reach Rust. Loaded the first time a video needs it: no startup cost otherwise.
+//! For now a video shows its first picture as a still (N6a in native/PLAN.md); playback comes next.
+
+use std::ffi::{c_char, c_int, c_void};
+use std::path::Path;
+use std::sync::OnceLock;
+
+use windows::Win32::Graphics::Imaging::IWICImagingFactory;
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LoadLibraryExW};
+use windows::core::{HSTRING, PCSTR};
+
+use super::{Decoded, wic};
+
+/// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
+const API: c_int = 1;
+
+/// `LvInfo` in looker_video.c.
+#[repr(C)]
+#[derive(Clone)]
+pub struct Info {
+    /// Display size: upright, square pixels.
+    pub width: c_int,
+    pub height: c_int,
+    pub coded_width: c_int,
+    pub coded_height: c_int,
+    /// Clockwise degrees applied to show it upright.
+    pub rotation: c_int,
+    pub duration_us: i64,
+    pub fps_num: c_int,
+    pub fps_den: c_int,
+    pub bit_rate: i64,
+    pub bit_depth: c_int,
+    pub has_alpha: c_int,
+    /// FFmpeg's AVCOL_PRI_*, AVCOL_TRC_*, AVCOL_SPC_* numbers.
+    pub primaries: c_int,
+    pub transfer: c_int,
+    pub matrix: c_int,
+    pub full_range: c_int,
+    pub audio_channels: c_int,
+    pub audio_rate: c_int,
+    /// Unix seconds, 0 when the container doesn't say.
+    pub created: i64,
+    codec: [c_char; 32],
+    profile: [c_char; 48],
+    pix_fmt: [c_char; 32],
+    audio_codec: [c_char; 32],
+}
+
+fn text(b: &[c_char]) -> String {
+    let bytes: Vec<u8> = b.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+impl Info {
+    fn zeroed() -> Info {
+        // SAFETY: plain C data, all-zero is a valid value.
+        unsafe { std::mem::zeroed() }
+    }
+    /// FFmpeg's short codec name ("h264", "hevc", "prores"...).
+    pub fn codec(&self) -> String {
+        text(&self.codec)
+    }
+    /// The codec profile ("High", "Main 10", "422 HQ"...), or empty.
+    pub fn profile(&self) -> String {
+        text(&self.profile)
+    }
+    pub fn pix_fmt(&self) -> String {
+        text(&self.pix_fmt)
+    }
+    pub fn audio_codec(&self) -> String {
+        text(&self.audio_codec)
+    }
+    pub fn fps(&self) -> Option<f64> {
+        (self.fps_num > 0 && self.fps_den > 0).then(|| self.fps_num as f64 / self.fps_den as f64)
+    }
+}
+
+/// The codec's name as people know it.
+pub fn codec_name(codec: &str) -> &str {
+    match codec {
+        "h264" => "H.264",
+        "hevc" => "HEVC",
+        "av1" => "AV1",
+        "vp8" => "VP8",
+        "vp9" => "VP9",
+        "prores" => "ProRes",
+        "dnxhd" => "DNxHD/HR",
+        "cfhd" => "CineForm",
+        "mpeg1video" => "MPEG-1",
+        "mpeg2video" => "MPEG-2",
+        "mpeg4" => "MPEG-4",
+        "mjpeg" => "Motion JPEG",
+        "vc1" => "VC-1",
+        "wmv1" | "wmv2" | "wmv3" => "WMV",
+        "v210" | "v210x" | "rawvideo" => "Uncompressed",
+        c => c,
+    }
+}
+
+/// Codec and profile the way an editor says them: "ProRes 422 HQ", "DNxHR HQX", "HEVC Main 10".
+pub fn codec_label(codec: &str, profile: &str) -> String {
+    match (codec, profile) {
+        ("prores", p) => {
+            let p = match p {
+                "Proxy" => "422 Proxy",
+                "LT" => "422 LT",
+                "Standard" => "422",
+                "HQ" => "422 HQ",
+                "XQ" => "4444 XQ",
+                "" => return "ProRes".into(),
+                p => p,
+            };
+            format!("ProRes {p}")
+        }
+        ("dnxhd", p) if p.starts_with("DNXHR") => format!("DNxHR{}", &p[5..]),
+        ("dnxhd", _) => "DNxHD".into(),
+        (c, "") => codec_name(c).to_string(),
+        (c, p) => format!("{} {p}", codec_name(c)),
+    }
+}
+
+/// "25", "29.97", "23.976".
+fn fps_text(fps: f64) -> String {
+    let s = format!("{fps:.3}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// "0:07", "12:34", "1:02:03".
+pub fn duration_text(us: i64) -> String {
+    let s = (us.max(0) as f64 / 1e6).round() as i64;
+    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// The info card's Video rows.
+pub fn facts(i: &Info) -> Vec<(&'static str, String)> {
+    let mut out = vec![("Codec", codec_label(&i.codec(), &i.profile()))];
+    if i.duration_us > 0 {
+        out.push(("Duration", duration_text(i.duration_us)));
+    }
+    if let Some(f) = i.fps() {
+        out.push(("Frame rate", format!("{} fps", fps_text(f))));
+    }
+    let pf = i.pix_fmt();
+    let chroma = if pf.contains("444") || pf.starts_with("gbr") || pf.starts_with("rgb") || pf.starts_with("bgr") {
+        Some("4:4:4")
+    } else if pf.contains("422") || pf == "uyvy422" || pf == "yuyv422" {
+        Some("4:2:2")
+    } else if pf.contains("420") || pf.starts_with("nv12") || pf.starts_with("p010") || pf.starts_with("p016") {
+        Some("4:2:0")
+    } else {
+        None
+    };
+    if i.bit_depth > 0 {
+        let mut s = format!("{}-bit", i.bit_depth);
+        if let Some(c) = chroma {
+            s += &format!(" {c}");
+        }
+        if i.has_alpha != 0 {
+            s += " with alpha";
+        }
+        out.push(("Format", s));
+    }
+    let gamut = match i.primaries {
+        1 => Some("Rec. 709"),
+        5 | 6 => Some("Rec. 601"),
+        9 => Some("Rec. 2020"),
+        11 => Some("DCI-P3"),
+        12 => Some("Display P3"),
+        _ => None,
+    };
+    let hdr = match i.transfer {
+        16 => Some("HDR (PQ)"),
+        18 => Some("HDR (HLG)"),
+        _ => None,
+    };
+    match (gamut, hdr) {
+        (Some(g), Some(h)) => out.push(("Colour", format!("{g}, {h}"))),
+        (Some(g), None) => out.push(("Colour", g.to_string())),
+        (None, Some(h)) => out.push(("Colour", h.to_string())),
+        (None, None) => {}
+    }
+    if i.bit_rate > 0 {
+        out.push(("Bit rate", format!("{:.1} Mbit/s", i.bit_rate as f64 / 1e6)));
+    }
+    if i.audio_channels > 0 {
+        let ch = match i.audio_channels {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            6 => "5.1".to_string(),
+            8 => "7.1".to_string(),
+            n => format!("{n} channels"),
+        };
+        let codec = match i.audio_codec().as_str() {
+            "aac" => "AAC".to_string(),
+            "mp3" | "mp3float" => "MP3".to_string(),
+            "ac3" => "Dolby Digital".to_string(),
+            "eac3" => "Dolby Digital Plus".to_string(),
+            "opus" => "Opus".to_string(),
+            "flac" => "FLAC".to_string(),
+            "alac" => "Apple Lossless".to_string(),
+            c if c.starts_with("pcm_") => "PCM".to_string(),
+            c => c.to_uppercase(),
+        };
+        let mut s = format!("{codec}, {ch}");
+        if i.audio_rate > 0 {
+            s += &format!(", {} kHz", fps_text(i.audio_rate as f64 / 1000.0));
+        }
+        out.push(("Audio", s));
+    } else {
+        out.push(("Audio", "None".into()));
+    }
+    out
+}
+
+type ApiFn = unsafe extern "C" fn() -> c_int;
+type ProbeFn = unsafe extern "C" fn(*const u16, *mut Info) -> c_int;
+type StillFn = unsafe extern "C" fn(*const u16, c_int, c_int, *mut Info, *mut c_int, *mut c_int, *mut *mut u8) -> c_int;
+
+struct Lib {
+    probe: ProbeFn,
+    still: StillFn,
+    free: unsafe extern "C" fn(*mut c_void),
+    error: unsafe extern "C" fn(c_int, *mut c_char, c_int),
+}
+
+static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
+
+fn load() -> Result<Lib, String> {
+    let dll = super::heif::codecs_dir().ok_or("no exe path")?.join("looker_video.dll");
+    unsafe {
+        // DLL_LOAD_DIR: its imports (the FFmpeg DLLs, dav1d) resolve from the same folder.
+        let m = LoadLibraryExW(&HSTRING::from(dll.as_os_str()), None, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)
+            .map_err(|e| format!("{}: {}", dll.display(), e.message()))?;
+        macro_rules! sym {
+            ($name:literal) => {
+                std::mem::transmute(GetProcAddress(m, PCSTR(concat!($name, "\0").as_ptr())).ok_or(concat!("looker_video.dll lacks ", $name))?)
+            };
+        }
+        let api: ApiFn = sym!("looker_video_api");
+        let v = api();
+        if v != API {
+            return Err(format!("looker_video.dll speaks API {v}, Looker {API}"));
+        }
+        Ok(Lib { probe: sym!("looker_video_probe"), still: sym!("looker_video_still"), free: sym!("looker_video_free"), error: sym!("looker_video_error") })
+    }
+}
+
+fn lib() -> Result<&'static Lib, String> {
+    LIB.get_or_init(|| {
+        let r = load();
+        if let Err(e) = &r {
+            crate::trace::mark(format!("video unavailable: {e}"));
+        }
+        r
+    })
+    .as_ref()
+    .map_err(|e| e.clone())
+}
+
+fn error(l: &Lib, code: c_int) -> String {
+    let mut buf = [0 as c_char; 256];
+    unsafe { (l.error)(code, buf.as_mut_ptr(), buf.len() as c_int) };
+    format!("FFmpeg {code}: {}", text(&buf))
+}
+
+fn wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+/// The stream's facts without decoding a picture.
+pub fn probe(path: &Path) -> Result<Info, String> {
+    let l = lib()?;
+    let mut info = Info::zeroed();
+    let r = unsafe { (l.probe)(wide(path).as_ptr(), &mut info) };
+    if r < 0 {
+        return Err(error(l, r));
+    }
+    Ok(info)
+}
+
+/// The first picture fitted to `box_w × box_h` (`(0, 0)` = full size), as a still.
+pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let l = lib()?;
+    let mut info = Info::zeroed();
+    let (mut w, mut h) = (0, 0);
+    let mut px: *mut u8 = std::ptr::null_mut();
+    let r = unsafe { (l.still)(wide(path).as_ptr(), box_w as c_int, box_h as c_int, &mut info, &mut w, &mut h, &mut px) };
+    if r < 0 || px.is_null() || w <= 0 || h <= 0 {
+        if !px.is_null() {
+            unsafe { (l.free)(px as _) };
+        }
+        return Err(if r < 0 { error(l, r) } else { "no picture".into() });
+    }
+    let (w, h) = (w as u32, h as u32);
+    let rgba = unsafe { std::slice::from_raw_parts(px, w as usize * h as usize * 4) };
+    let converted = wic::from_rgba(f, rgba, w, h, w, h);
+    unsafe { (l.free)(px as _) };
+    let (dw, dh, bgra) = converted.map_err(|e| e.message().to_string())?;
+    let taken = (info.created > 0).then(|| {
+        let ticks = (info.created as u64 + 11_644_473_600) * 10_000_000;
+        windows::Win32::Foundation::FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 }
+    });
+    let native_w = (info.width.max(0) as u32).max(w);
+    let native_h = (info.height.max(0) as u32).max(h);
+    Ok(Decoded::still(dw, dh, bgra, native_w, native_h, taken))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wording() {
+        assert_eq!(codec_label("prores", "HQ"), "ProRes 422 HQ");
+        assert_eq!(codec_label("prores", "4444"), "ProRes 4444");
+        assert_eq!(codec_label("dnxhd", "DNXHR HQX"), "DNxHR HQX");
+        assert_eq!(codec_label("hevc", "Main 10"), "HEVC Main 10");
+        assert_eq!(codec_label("vp9", ""), "VP9");
+        assert_eq!(fps_text(30000.0 / 1001.0), "29.97");
+        assert_eq!(fps_text(24000.0 / 1001.0), "23.976");
+        assert_eq!(fps_text(25.0), "25");
+        assert_eq!(duration_text(7_400_000), "0:07");
+        assert_eq!(duration_text(754_000_000), "12:34");
+        assert_eq!(duration_text(3_723_000_000), "1:02:03");
+        let mut i = Info::zeroed();
+        i.bit_depth = 10;
+        i.primaries = 9;
+        i.transfer = 18;
+        i.audio_channels = 2;
+        i.audio_rate = 48000;
+        i.pix_fmt[..12].copy_from_slice(&b"yuv420p10le\0".map(|b| b as c_char));
+        i.audio_codec[..4].copy_from_slice(&b"aac\0".map(|b| b as c_char));
+        let f = facts(&i);
+        assert!(f.contains(&("Format", "10-bit 4:2:0".into())), "{f:?}");
+        assert!(f.contains(&("Colour", "Rec. 2020, HDR (HLG)".into())), "{f:?}");
+        assert!(f.contains(&("Audio", "AAC, stereo, 48 kHz".into())), "{f:?}");
+    }
+
+    #[test]
+    fn info_matches_the_c_layout() {
+        // The fields in order with the 4 bytes of padding before duration_us, then the four strings:
+        // sizeof(LvInfo) in looker_video.c.
+        assert_eq!(std::mem::size_of::<Info>(), 4 * 4 + 4 + 4 + 8 + 4 * 2 + 8 + 4 * 8 + 8 + 32 + 48 + 32 + 32);
+    }
+
+    /// The first picture of `LOOKER_DECODE` (or of every video in `LOOKER_VIDEOS`, a folder), written beside it
+    /// as a PNG, with the stream's facts and timings.
+    /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs LOOKER_DECODE=x.mov cargo test --release -- --ignored --nocapture first_frames`
+    #[test]
+    #[ignore]
+    fn first_frames() {
+        use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2;
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let mut paths = Vec::new();
+        if let Some(p) = std::env::var_os("LOOKER_DECODE") {
+            paths.push(std::path::PathBuf::from(p));
+        }
+        if let Some(d) = std::env::var_os("LOOKER_VIDEOS") {
+            let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| crate::format::from_extension(p.extension().and_then(|e| e.to_str())) == crate::format::Format::Video).collect();
+            v.sort();
+            paths.extend(v);
+        }
+        assert!(!paths.is_empty(), "set LOOKER_DECODE or LOOKER_VIDEOS");
+        let t = std::time::Instant::now();
+        lib().unwrap();
+        println!("looker_video.dll loaded in {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+        for p in &paths {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let t = std::time::Instant::now();
+            let info = match probe(p) {
+                Ok(i) => i,
+                Err(e) => {
+                    println!("FAIL {name}: {e}");
+                    continue;
+                }
+            };
+            let probe_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let t = std::time::Instant::now();
+            match decode(&f, p, 1280, 1280) {
+                Ok(d) => {
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    println!(
+                        "ok   {name}: {} {} {}x{} rot {} {:.3} fps {}-bit {} trc {} audio {} {}ch, {:.1} s; still {}x{} in {ms:.0} ms (probe {probe_ms:.0} ms)",
+                        codec_name(&info.codec()),
+                        info.profile(),
+                        info.width,
+                        info.height,
+                        info.rotation,
+                        info.fps().unwrap_or(0.0),
+                        info.bit_depth,
+                        info.pix_fmt(),
+                        info.transfer,
+                        info.audio_codec(),
+                        info.audio_channels,
+                        info.duration_us as f64 / 1e6,
+                        d.width,
+                        d.height,
+                    );
+                    let out = p.with_extension(format!("{}.png", p.extension().unwrap().to_string_lossy()));
+                    let out = std::env::temp_dir().join(out.file_name().unwrap());
+                    wic::save_png(&f, &out, d.width, d.height, &d.frames[0].pixels).unwrap();
+                }
+                Err(e) => println!("FAIL {name}: {e}"),
+            }
+        }
+    }
+}

@@ -230,7 +230,7 @@ impl App {
                 let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
                 out.push(row("Dimensions", format!("{w} × {h}")));
             }
-            if e.pages == 0 && !model {
+            if e.pages == 0 && !model && e.format != crate::format::Format::Video {
                 out.push(row("Megapixels", format!("{:.1} MP", e.native_w as f64 * e.native_h as f64 / 1_000_000.0)));
             }
         }

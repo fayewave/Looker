@@ -137,6 +137,28 @@
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="video">
+            <uap:DisplayName>Video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcon.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.mp4</uap:FileType>
+              <uap:FileType>.m4v</uap:FileType>
+              <uap:FileType>.mov</uap:FileType>
+              <uap:FileType>.mkv</uap:FileType>
+              <uap:FileType>.webm</uap:FileType>
+              <uap:FileType>.avi</uap:FileType>
+              <uap:FileType>.wmv</uap:FileType>
+              <uap:FileType>.mxf</uap:FileType>
+              <uap:FileType>.mts</uap:FileType>
+              <uap:FileType>.m2ts</uap:FileType>
+              <uap:FileType>.mpg</uap:FileType>
+              <uap:FileType>.mpeg</uap:FileType>
+              <uap:FileType>.3gp</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
 
         <!-- `Looker photo.jpg` from any terminal (App Execution Alias). -->
         <uap3:Extension Category="windows.appExecutionAlias" Executable="Looker.exe" EntryPoint="Windows.FullTrustApplication">

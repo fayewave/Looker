@@ -37,6 +37,8 @@ pub enum Format {
     Mtl,
     /// A 3D model: OBJ, STL, PLY, 3MF, glTF/GLB (rendered with Direct3D, see model/).
     Model,
+    /// A video (FFmpeg through looker_video.dll, see imaging/video.rs).
+    Video,
 }
 
 #[cfg(test)]
@@ -66,6 +68,7 @@ pub const ALL: &[Format] = &[
     Format::Pdf,
     Format::Mtl,
     Format::Model,
+    Format::Video,
 ];
 
 /// Every extension Looker opens (lower case, no dot). Must equal the manifest FTA list.
@@ -78,6 +81,8 @@ pub const EXTENSIONS: &[&str] = &[
     "iiq", "mrw", "dcr", "kdc", "erf", "mef",
     // 3D models and material libraries.
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
+    // Video.
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -115,6 +120,7 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "qoi" => Format::Qoi,
         "mtl" => Format::Mtl,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" => Format::Model,
+        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -185,6 +191,19 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
         if ["heic", "heix", "heif", "hevc", "mif1", "msf1"].iter().any(|b| ascii(h, 8, b)) {
             return Format::Heif;
         }
+        // Every other ISO-BMFF brand is a movie: isom, mp41/mp42, M4V, qt, 3gp4...
+        return Format::Video;
+    }
+    // Video containers: Matroska/WebM (EBML), AVI, ASF/WMV, MXF (partition pack key), MPEG program stream, and a
+    // QuickTime movie old enough to start with an atom other than ftyp.
+    if starts(h, &[0x1A, 0x45, 0xDF, 0xA3])
+        || (ascii(h, 0, "RIFF") && ascii(h, 8, "AVI "))
+        || starts(h, &[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11])
+        || starts(h, &[0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01])
+        || starts(h, &[0, 0, 1, 0xBA])
+        || (["moov", "mdat", "wide", "pnot"].iter().any(|a| ascii(h, 4, a)) && from_extension(ext) == Format::Video)
+    {
+        return Format::Video;
     }
     if ascii(h, 0, "8BPS") {
         return Format::Psd;
@@ -274,6 +293,7 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
             "" => "3D model",
             e => return Some(e.to_string()),
         },
+        Format::Video => return Some(if ext.is_empty() { "Video".into() } else { ext }),
     };
     Some(s.to_string())
 }
@@ -320,6 +340,23 @@ mod tests {
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x18], b"ftyp", b"heic"]), None), Format::Heif);
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x18], b"ftyp", b"avif"]), None), Format::Avif);
         assert_eq!(sniff(&cat(&[&[0xEF, 0xBB, 0xBF], b"<svg>"]), None), Format::Svg);
+    }
+
+    #[test]
+    fn video_containers() {
+        for brand in [&b"isom"[..], b"mp42", b"qt  ", b"M4V ", b"3gp4"] {
+            assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x20], b"ftyp", brand]), None), Format::Video, "{brand:?}");
+        }
+        assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], None), Format::Video);
+        assert_eq!(sniff(&cat(&[b"RIFF", &[0, 0, 0, 0], b"AVI LIST"]), None), Format::Video);
+        assert_eq!(sniff(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6], None), Format::Video);
+        assert_eq!(sniff(&[0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01, 0x0D], None), Format::Video);
+        assert_eq!(sniff(&[0, 0, 1, 0xBA, 0x44], None), Format::Video);
+        assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"wide"]), Some("mov")), Format::Video);
+        // An image keeps its brand, and a stray atom name means nothing without a video extension.
+        assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x18], b"ftyp", b"heic"]), Some("mp4")), Format::Heif);
+        assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"mdat"]), Some("txt")), Format::Unknown);
+        assert_eq!(display_name(Format::Video, Some(Path::new("clip.mov"))).as_deref(), Some("MOV"));
     }
 
     #[test]

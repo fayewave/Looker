@@ -1,0 +1,24 @@
+{
+  "name": "looker-video",
+  "version": "1.0.0",
+  "description": "Looker's entry points into FFmpeg (looker_video.dll).",
+  "license": null,
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avfilter",
+        "avformat",
+        "dav1d",
+        "swresample",
+        "swscale"
+      ]
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}
