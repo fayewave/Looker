@@ -443,8 +443,8 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
     let e = |e: windows::core::Error| e.message().to_string();
     unsafe {
         let name_font = text.inter(16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD).map_err(e)?;
-        let body = text.inter(12.0, DWRITE_FONT_WEIGHT_NORMAL).map_err(e)?;
-        let small = text.inter(11.0, DWRITE_FONT_WEIGHT_NORMAL).map_err(e)?;
+        let body = text.inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM).map_err(e)?;
+        let small = text.inter(11.0, DWRITE_FONT_WEIGHT_MEDIUM).map_err(e)?;
         let bmp = f.CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad).map_err(e)?;
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,

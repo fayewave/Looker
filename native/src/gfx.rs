@@ -20,9 +20,10 @@ use windows::core::{Interface, PCWSTR, Result, w};
 
 use crate::colour::{self, Space};
 
-/// Inter's 24 pt optical size, Regular and SemiBold, as Snapper sets its UI (the variable font's default
-/// 14 pt cut set the type looser and heavier at Looker's small sizes).
-static INTER_REGULAR: &[u8] = include_bytes!("../assets/Fonts/Inter_24pt-Regular.ttf");
+/// Inter's 24 pt optical size, Medium and SemiBold, as Transient sets its UI (Faye, 2026-11-09: Medium for all
+/// text, SemiBold where it stands out; Regular read thin on the dark themes). The variable font's default 14 pt
+/// cut set the type looser and heavier at Looker's small sizes.
+static INTER_MEDIUM: &[u8] = include_bytes!("../assets/Fonts/Inter_24pt-Medium.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/Fonts/Inter_24pt-SemiBold.ttf");
 
 pub struct Device {
@@ -66,8 +67,10 @@ pub fn create_device(warp: bool) -> Result<Device> {
 pub struct Text {
     pub dwrite: IDWriteFactory5,
     inter: IDWriteFontCollection1,
-    /// NUL-terminated family name as DirectWrite reports it.
+    /// NUL-terminated family names as DirectWrite reports them: Medium's, and SemiBold's (the two cuts can
+    /// come out as separate families, as in Transient).
     inter_family: Vec<u16>,
+    inter_strong: Vec<u16>,
 }
 
 pub fn init_text() -> Result<Text> {
@@ -76,28 +79,46 @@ pub fn init_text() -> Result<Text> {
         let loader = dwrite.CreateInMemoryFontFileLoader()?;
         dwrite.RegisterFontFileLoader(&loader)?;
         let builder = dwrite.CreateFontSetBuilder()?;
-        for bytes in [INTER_REGULAR, INTER_SEMIBOLD] {
+        for bytes in [INTER_MEDIUM, INTER_SEMIBOLD] {
             let file = loader.CreateInMemoryFontFileReference(&dwrite, bytes.as_ptr() as _, bytes.len() as u32, None)?;
             builder.AddFontFile(&file)?;
         }
         let set = builder.CreateFontSet()?;
         let inter = dwrite.CreateFontCollectionFromFontSet(&set)?;
-        let family = inter.GetFontFamily(0)?;
-        let names = family.GetFamilyNames()?;
-        let len = names.GetStringLength(0)? as usize;
-        let mut inter_family = vec![0u16; len + 1];
-        names.GetString(0, &mut inter_family)?;
+        let (mut inter_family, mut inter_strong) = (Vec::new(), Vec::new());
+        for i in 0..inter.GetFontFamilyCount() {
+            let names = inter.GetFontFamily(i)?.GetFamilyNames()?;
+            let len = names.GetStringLength(0)? as usize;
+            let mut name = vec![0u16; len + 1];
+            names.GetString(0, &mut name)?;
+            if String::from_utf16_lossy(&name[..len]).contains("SemiBold") {
+                inter_strong = name;
+            } else {
+                inter_family = name;
+            }
+        }
+        if inter_family.is_empty() {
+            inter_family = inter_strong.clone();
+        }
+        if inter_strong.is_empty() {
+            inter_strong = inter_family.clone();
+        }
         crate::trace::mark("gfx: Inter loaded");
-        Ok(Text { dwrite, inter, inter_family })
+        Ok(Text { dwrite, inter, inter_family, inter_strong })
     }
 }
 
 impl Text {
+    /// The family holding `weight`: SemiBold's from 600 up, else Medium's.
+    fn family(&self, weight: DWRITE_FONT_WEIGHT) -> PCWSTR {
+        PCWSTR(if weight.0 >= DWRITE_FONT_WEIGHT_SEMI_BOLD.0 { self.inter_strong.as_ptr() } else { self.inter_family.as_ptr() })
+    }
+
     /// A one-line Inter format, ellipsis-trimmed, vertically centred (for drawing outside the UI, e.g. mtl.rs).
     pub fn inter(&self, size: f32, weight: DWRITE_FONT_WEIGHT) -> Result<IDWriteTextFormat> {
         unsafe {
             let f = self.dwrite.CreateTextFormat(
-                PCWSTR(self.inter_family.as_ptr()),
+                self.family(weight),
                 &self.inter,
                 weight,
                 DWRITE_FONT_STYLE_NORMAL,
@@ -1018,10 +1039,9 @@ impl Gfx {
 fn make_fonts(core: &Text) -> Result<Fonts> {
     unsafe {
         let dw = &core.dwrite;
-        let fam = PCWSTR(core.inter_family.as_ptr());
         let mut ellipsis = Vec::new();
         let mut inter = |size: f32, weight: DWRITE_FONT_WEIGHT| -> Result<IDWriteTextFormat> {
-            let f = dw.CreateTextFormat(fam, &core.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
+            let f = dw.CreateTextFormat(core.family(weight), &core.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
             prep(&f)?;
             let sign = dw.CreateEllipsisTrimmingSign(&f)?;
             f.SetTrimming(&DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 }, &sign)?;
@@ -1030,20 +1050,20 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         // Snapper's ramp (VEIL Transient's), but nothing under 12 (Faye, 2026-11-09): its 11 px small text and
         // section headings are 12 here, beside 12 body, 14 titles and 16 headers.
-        let caption = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let body = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let caption = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
+        let body = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         let title = inter(16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let body_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let body_wrap = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         body_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         body_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 18.0, 13.5)?;
-        let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         caption_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 17.0, 13.0)?;
         let overline = inter(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let page_title = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         subtitle_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
