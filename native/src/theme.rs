@@ -100,8 +100,9 @@ pub struct Theme {
     pub field: u32,
     /// An idle button's or chip's fill (opaque, so it's the same grey on any surface).
     pub button: u32,
-    /// A button that's on (a panel's toggle, the picked theme chip): `button` tinted with the accent, under
-    /// an accent outline. The one control fill that's red.
+    /// A button that's on (a panel's toggle, the picked theme chip), the file the explorer is on and the
+    /// Settings section open: `button` tinted with the accent (under an accent outline, on the buttons and
+    /// rows). The one control fill that's red.
     pub selected: u32,
 }
 

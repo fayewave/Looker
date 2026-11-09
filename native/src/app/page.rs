@@ -508,12 +508,12 @@ impl App {
             }
             let on = self.fades.get(Hit::PageNavOn(i as u8), current == Some(sec));
             let hov = self.state(id, open).hover;
-            // Neutral tiles: the picked section's grey, a lighter one on hover.
+            // The picked section's tile is accent-tinted, as a button that's on; hover a neutral grey.
             if hov > 0.0 && on < 1.0 {
                 g.fill_round(r, 5.0, gfx::rgba(t.button, hov * (1.0 - on)));
             }
             if on > 0.0 {
-                g.fill_round(r, 5.0, gfx::rgba(t.row_select, on));
+                g.fill_round(r, 5.0, gfx::rgba(t.selected, on));
             }
             let fg = theme::mix(t.label, t.text, on.max(hov));
             g.text(&[sec.icon()], &g.fonts.small_icons, rect(r.left + 6.0, r.top, 24.0, ITEM_H), fg, Align::Center);
