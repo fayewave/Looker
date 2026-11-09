@@ -705,6 +705,9 @@ impl App {
         let mut ys: Vec<Option<f32>> = vec![None; items.len()];
         for (k, b) in blocks.iter().enumerate() {
             if Some(k) == dragged {
+                if let Some((_, head_y)) = drag {
+                    self.explorer.section_pos.insert(b.0, crate::motion::Ease::at([head_y - origin]));
+                }
                 continue;
             }
             let e = self.explorer.section_pos.entry(b.0).or_insert_with(|| crate::motion::Ease::at([tops[k]]));
@@ -721,6 +724,7 @@ impl App {
             }
         }
 
+        let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
         g.push_clip(r);
         if let (Some(di), Some(sy)) = (dragged, slot) {
             let sr = rect(r.left + 6.0, origin + sy + 4.0, r.right - r.left - 12.0, blocks[di].3 - 6.0);
@@ -732,7 +736,14 @@ impl App {
             match &it.target {
                 SideTarget::Header(sec) => {
                     let hr = rect(r.left + 10.0, y + 8.0, r.right - r.left - 20.0, ROW);
-                    self.hits.add(Hit::SideHeader(*sec), rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, ROW));
+                    let box_ = rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, ROW);
+                    self.hits.add(Hit::SideHeader(*sec), box_);
+                    let hid = Hit::SideHeader(*sec);
+                    let hover = self.fades.hover(hid, self.hover == Some(hid) && drag.is_none() && target.is_none());
+                    if hover > 0.0 {
+                        g.fill_round(box_, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
+                        ui::stroke(g, box_, 4.0, gfx::rgba(t.accent, hover));
+                    }
                     g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, ROW), rgb(t.label), Align::Center);
                     g.text(&wide(&it.label), &g.fonts.body, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 24.0, ROW), rgb(t.label), Align::Left);
                 }
@@ -753,7 +764,10 @@ impl App {
                             ui::stroke(g, row, 4.0, rgb(t.accent));
                         }
                     } else if hover > 0.0 {
-                        g.fill_round(row, 4.0, gfx::rgba(t.hover_fill, hover));
+                        g.fill_round(row, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
+                    }
+                    if hover > 0.0 && !is_target {
+                        ui::stroke(g, row, 4.0, gfx::rgba(t.accent, hover));
                     }
                     let x = row.left + 4.0 + (it.depth.saturating_sub(1)) as f32 * 14.0;
                     if let Some(node) = &it.node {

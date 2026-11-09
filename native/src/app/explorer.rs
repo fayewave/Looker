@@ -1836,7 +1836,7 @@ impl App {
     // --- Sidebar sections, dragged by their headings ----------------------------------------------------
 
     pub(super) fn section_press(&mut self, sec: SideSection, y: f32) {
-        let top = self.hits.rect_of(Hit::SideHeader(sec)).map_or(y, |r| r.top);
+        let top = self.hits.rect_of(Hit::SideHeader(sec)).map_or(y, |r| r.top - 8.0);
         self.explorer.section_drag = Some(SectionDrag { sec, start_y: y, y, grab: y - top, active: false, insert: 0 });
     }
 
