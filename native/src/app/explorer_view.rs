@@ -641,9 +641,6 @@ impl App {
         self.hits.add(Hit::Sidebar, r);
         let items = self.sidebar_items();
         let item_h = |it: &super::explorer::SideItem| if matches!(it.target, SideTarget::Header(_)) { 34.0 } else { ROW };
-        let content_h = items.iter().map(item_h).sum::<f32>() + 16.0;
-        self.explorer.side_max = (content_h - (r.bottom - r.top)).max(0.0);
-        self.explorer.side_scroll = self.explorer.side_scroll.min(self.explorer.side_max);
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let place = self.explorer.place.clone();
 
@@ -660,8 +657,23 @@ impl App {
                 b.3 += item_h(it);
             }
         }
-        let origin = r.top + 6.0 - self.explorer.side_scroll;
+        // A folded section is its heading alone; folding or opening, its height eases and its rows are cut off
+        // at its bottom.
         let now = Instant::now();
+        let mut opens: Vec<f32> = vec![1.0; blocks.len()];
+        let mut folding = false;
+        for (k, b) in blocks.iter_mut().enumerate() {
+            let want = if self.settings.sidebar_closed.contains(&b.0) { 0.0 } else { 1.0 };
+            let e = self.explorer.section_open.entry(b.0).or_insert_with(|| crate::motion::Ease::at([want]));
+            e.set([want], now);
+            folding |= e.moving(now);
+            opens[k] = e.value(now)[0].clamp(0.0, 1.0);
+            b.3 = 34.0 + (b.3 - 34.0) * opens[k];
+        }
+        let content_h = blocks.iter().map(|b| b.3).sum::<f32>() + 16.0;
+        self.explorer.side_max = (content_h - (r.bottom - r.top)).max(0.0);
+        self.explorer.side_scroll = self.explorer.side_scroll.min(self.explorer.side_max);
+        let origin = r.top + 6.0 - self.explorer.side_scroll;
         let drag = self.explorer.section_drag.as_ref().filter(|d| d.active).map(|d| (d.sec, d.y - d.grab));
         let dragged = drag.and_then(|(sec, _)| blocks.iter().position(|b| b.0 == sec));
         let mut slot = None;
@@ -701,8 +713,9 @@ impl App {
             }
         }
         let animate = drag.is_some() || now < self.explorer.section_anim_until;
-        let mut moving = drag.is_some();
+        let mut moving = drag.is_some() || folding;
         let mut ys: Vec<Option<f32>> = vec![None; items.len()];
+        let mut bottoms: Vec<f32> = vec![f32::MAX; items.len()];
         for (k, b) in blocks.iter().enumerate() {
             if Some(k) == dragged {
                 if let Some((_, head_y)) = drag {
@@ -718,8 +731,10 @@ impl App {
             }
             moving |= e.moving(now);
             let mut y = origin + e.value(now)[0];
+            let bottom = y + b.3;
             for i in b.1..b.2 {
                 ys[i] = Some(y);
+                bottoms[i] = bottom;
                 y += item_h(&items[i]);
             }
         }
@@ -733,19 +748,42 @@ impl App {
         }
         for (i, it) in items.iter().enumerate() {
             let Some(y) = ys[i] else { continue };
+            // A row of a section folding away: gone past its bottom, cut off where it crosses it.
+            let header = matches!(it.target, SideTarget::Header(_));
+            if !header && y >= bottoms[i] {
+                continue;
+            }
+            let cut = !header && y + item_h(it) > bottoms[i];
+            if cut {
+                g.push_clip(rect(r.left, y, r.right - r.left, bottoms[i] - y));
+            }
             match &it.target {
                 SideTarget::Header(sec) => {
+                    // A button, as Transient's headings are: hover tinted and outlined, pressed solid accent; the
+                    // label semibold; a chevron at the right while hovered, and while folded.
                     let hr = rect(r.left + 10.0, y + 8.0, r.right - r.left - 20.0, ROW);
                     let box_ = rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, ROW);
                     self.hits.add(Hit::SideHeader(*sec), box_);
                     let hid = Hit::SideHeader(*sec);
-                    let hover = self.fades.hover(hid, self.hover == Some(hid) && drag.is_none() && target.is_none());
-                    if hover > 0.0 {
+                    let hovered = self.hover == Some(hid) && drag.is_none() && target.is_none();
+                    let hover = self.fades.hover(hid, hovered);
+                    let pressed = hovered && self.pressed == Some(hid);
+                    if pressed {
+                        g.fill_round(box_, 4.0, rgb(t.accent));
+                    } else if hover > 0.0 {
                         g.fill_round(box_, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
                         ui::stroke(g, box_, 4.0, gfx::rgba(t.accent, hover));
                     }
-                    g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, ROW), rgb(t.label), Align::Center);
-                    g.text(&wide(&it.label), &g.fonts.body, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 24.0, ROW), rgb(t.label), Align::Left);
+                    let (c, chev) = if pressed { (t.on_accent, t.on_accent) } else if hovered { (t.text, t.label) } else { (t.label, t.placeholder) };
+                    g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, ROW), rgb(c), Align::Center);
+                    g.text(&wide(&it.label), &g.fonts.overline, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 48.0, ROW), rgb(c), Align::Left);
+                    let closed = self.settings.sidebar_closed.contains(sec);
+                    let open = blocks.iter().position(|b| b.0 == *sec).map_or(1.0, |k| opens[k]);
+                    let a = hover.max(1.0 - open);
+                    if a > 0.0 {
+                        let glyph = if closed { 0xE76C } else { 0xE70D };
+                        g.text(&[glyph], &g.fonts.small_icons, rect(box_.right - 24.0, hr.top, 16.0, ROW), gfx::rgba(chev, a), Align::Center);
+                    }
                 }
                 SideTarget::Hint => {
                     g.text(&wide(&it.label), &g.fonts.body, rect(r.left + 20.0, y, r.right - r.left - 28.0, ROW), rgb(t.placeholder), Align::Left);
@@ -787,6 +825,9 @@ impl App {
                     }
                     g.text(&wide(&it.label), &g.fonts.body, rect(ix + 24.0, row.top, (row.right - ix - 28.0).max(0.0), ROW), rgb(t.text), Align::Left);
                 }
+            }
+            if cut {
+                g.pop_clip();
             }
         }
         // The dragged heading, lifted over the rest where the pointer holds it.

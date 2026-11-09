@@ -76,6 +76,8 @@ pub struct Settings {
     pub views: Vec<crate::explorer::SavedView>,
     /// The explorer sidebar's sections, top to bottom.
     pub sidebar_order: Vec<crate::explorer::SideSection>,
+    /// The sections folded away to their headings.
+    pub sidebar_closed: Vec<crate::explorer::SideSection>,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -96,7 +98,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec() }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new() }
     }
 }
 
@@ -238,6 +240,7 @@ pub fn parse(text: &str) -> Settings {
             "explorer_height" => s.explorer_height = v.parse::<u8>().map_or(1, |h| h.clamp(1, crate::explorer::HEIGHT_MAX)),
             "view" => s.views.extend(crate::explorer::SavedView::parse(v)),
             "sidebar_order" => s.sidebar_order = crate::explorer::SideSection::parse_list(v),
+            "sidebar_closed" => s.sidebar_closed = crate::explorer::SideSection::parse_set(v),
             "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
         }
@@ -287,6 +290,7 @@ pub fn format(s: &Settings) -> String {
         out.push_str(&format!("view={}\n", v.format()));
     }
     out.push_str(&format!("sidebar_order={}\n", crate::explorer::SideSection::format(&s.sidebar_order)));
+    out.push_str(&format!("sidebar_closed={}\n", crate::explorer::SideSection::format(&s.sidebar_closed)));
     out
 }
 
@@ -447,6 +451,7 @@ mod tests {
                 crate::explorer::SavedView { path: PathBuf::from(r"D:\"), scope: crate::explorer::Scope::Off, view: crate::explorer::View::default() },
             ],
             sidebar_order: vec![crate::explorer::SideSection::History, crate::explorer::SideSection::Places, crate::explorer::SideSection::Bookmarks, crate::explorer::SideSection::Collections],
+            sidebar_closed: vec![crate::explorer::SideSection::Places],
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

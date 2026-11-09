@@ -396,6 +396,19 @@ impl SideSection {
         out
     }
 
+    /// A set of sections (the folded ones): the known keys, once each, nothing added.
+    pub fn parse_set(s: &str) -> Vec<SideSection> {
+        let mut out: Vec<SideSection> = Vec::new();
+        for k in s.split(',') {
+            if let Some(x) = SideSection::DEFAULT.into_iter().find(|x| x.key() == k.trim()) {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
+            }
+        }
+        out
+    }
+
     pub fn format(v: &[SideSection]) -> String {
         v.iter().map(|x| x.key()).collect::<Vec<_>>().join(",")
     }

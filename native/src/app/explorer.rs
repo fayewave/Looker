@@ -233,6 +233,8 @@ pub(super) struct Explorer {
     pub(super) section_drag: Option<SectionDrag>,
     pub(super) section_pos: HashMap<SideSection, Ease<1>>,
     pub(super) section_anim_until: Instant,
+    /// How open each section is (1 open, 0 folded to its heading), eased.
+    pub(super) section_open: HashMap<SideSection, Ease<1>>,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -295,6 +297,7 @@ impl Explorer {
             section_drag: None,
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
+            section_open: HashMap::new(),
             side_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
@@ -1834,6 +1837,19 @@ impl App {
     }
 
     // --- Sidebar sections, dragged by their headings ----------------------------------------------------
+
+    /// A click on a heading folds its section away to the heading, or opens it again (Transient's).
+    pub(super) fn toggle_section(&mut self, sec: SideSection) {
+        let closed = &mut self.settings.sidebar_closed;
+        match closed.iter().position(|&s| s == sec) {
+            Some(i) => {
+                closed.remove(i);
+            }
+            None => closed.push(sec),
+        }
+        settings::save(&self.settings);
+        self.invalidate();
+    }
 
     pub(super) fn section_press(&mut self, sec: SideSection, y: f32) {
         let top = self.hits.rect_of(Hit::SideHeader(sec)).map_or(y, |r| r.top - 8.0);

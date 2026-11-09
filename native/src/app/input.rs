@@ -400,6 +400,7 @@ impl App {
                                 self.explorer_commit_fields();
                             }
                             Some(Hit::SideRow(i)) => self.sidebar_click(i),
+                            Some(Hit::SideHeader(s)) => self.toggle_section(s),
                             Some(Hit::SideChevron(i)) => {
                                 if let Some(k) = self.sidebar_items().get(i).and_then(|it| it.node.clone()) {
                                     self.toggle_node(k);
