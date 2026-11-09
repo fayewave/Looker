@@ -586,16 +586,26 @@ impl App {
             let hovered = self.hover == Some(Hit::ExplorerRow(vi)) && target.is_none();
             let hover = self.fades.hover(Hit::ExplorerRow(vi), hovered);
             let lit = hovered && self.pressed == Some(Hit::ExplorerRow(vi)) && !self.explorer.row_drag.as_ref().is_some_and(|d| d.active);
+            // Several selected (Transient's): each of them solid accent with white text and a tick for its icon,
+            // easing in and out, a pixel apart so a run of them still reads as rows.
+            let solid = self.fades.get(Hit::RowSolid(vi), selected && self.explorer.selected.len() > 1);
+            let fr = D2D_RECT_F { bottom: row.bottom - g.px(), ..row };
             if vi % 2 == 1 {
                 g.fill_round(row, 4.0, rgb(t.stripe));
             }
             if lit {
                 g.fill_round(row, 4.0, rgb(t.accent));
+            } else if solid > 0.01 {
+                if solid < 0.99 && selected {
+                    g.fill_round(fr, 4.0, rgb(t.selected));
+                }
+                g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid));
             } else if selected || is_target {
                 g.fill_round(row, 4.0, rgb(t.selected));
             } else if hover > 0.0 {
                 g.fill_round(row, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
             }
+            let lit = lit || solid > 0.5;
             if !lit {
                 if is_target || (cursor && (selected || focused)) {
                     ui::stroke(g, row, 4.0, rgb(t.accent));
@@ -632,7 +642,10 @@ impl App {
                 // Name: the thumbnail or glyph, the name, its tags.
                 let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
                 let mut drew = false;
-                if r.kind == Kind::Image {
+                if solid > 0.5 && self.explorer.look.height == 1 {
+                    g.text(&[0xE73A], &g.fonts.body_icons, ib, rgb(t.on_accent), Align::Center);
+                    drew = true;
+                } else if r.kind == Kind::Image {
                     if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
                         g.fill_round(ib, 2.0, rgb(t.field));
                         th.draw_fit(g, ib);

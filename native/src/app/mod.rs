@@ -200,6 +200,8 @@ enum Hit {
     Sidebar,
     SidebarGrip,
     SideRow(usize),
+    /// Not a hit: the key a row's multi-selection fill eases under.
+    RowSolid(usize),
     /// The explorer's tabs: one, its close button, and the + after them.
     Tab(u8),
     TabClose(u8),
