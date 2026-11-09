@@ -2,9 +2,9 @@
 //! lightness steps) but in Looker's red: Ember (the default: nearly black, a faint warm tint), Garnet (dark,
 //! on deep wine) and Blush (light). Each has a "raised" variant for popups, menus, dialogs and tooltips.
 //!
-//! The tint is the surfaces' only (the page, the cards, menus): the controls on them (buttons, chips, rows,
-//! tiles, fields, switches, their hairlines) are neutral greys, as the old Looker's were, so nothing but the
-//! accent itself reads red.
+//! The tint is the page's and the popups' only (the page behind the photo and the landing page, menus,
+//! dialogs, tooltips): the cards, the Settings card and every control (buttons, chips, rows, tiles, fields,
+//! switches, their hairlines) are neutral greys, as the old Looker's were, so nothing but the accent reads red.
 //!
 //! The UI is drawn on one thread, so the theme in use is a global that the window sets from the settings
 //! (`set`) and every widget reads (`t`, `raised`).
@@ -65,7 +65,8 @@ pub struct Theme {
     /// Faint overlays (a subtle button's hover, a link's wash) are this at a low opacity: white in the dark
     /// themes, black in the light one, so they stay grey.
     pub ink: u32,
-    /// The lighter fill: the cards, the Settings card, the photo's surround where nothing else is.
+    /// The cards' fill (the file explorer, the info card) and the Settings card's: neutral grey, like the
+    /// controls, so nothing that holds content takes the tint.
     pub sidebar: u32,
     /// The page: darker, under the toolbar's buttons and behind the landing page.
     pub content: u32,
@@ -104,7 +105,7 @@ pub struct Theme {
 pub const EMBER: Theme = Theme {
     dark: true,
     ink: 0xFFFFFF,
-    sidebar: 0x130B0B,
+    sidebar: 0x141414,
     content: 0x060303,
     stripe: 0x171010,
     divider: 0x303030,
@@ -131,7 +132,7 @@ pub const EMBER_RAISED: Theme = Theme { divider: 0x444444, track: 0x4A4A4A, fiel
 pub const GARNET: Theme = Theme {
     dark: true,
     ink: 0xFFFFFF,
-    sidebar: 0x221818,
+    sidebar: 0x222222,
     content: 0x1C1313,
     stripe: 0x221818,
     divider: 0x3A3A3A,
@@ -158,7 +159,7 @@ pub const GARNET_RAISED: Theme = Theme { divider: 0x4E4E4E, track: 0x555555, fie
 pub const BLUSH: Theme = Theme {
     dark: false,
     ink: 0x000000,
-    sidebar: 0xF5E5E5,
+    sidebar: 0xF3F3F3,
     content: 0xFBF4F4,
     stripe: 0xF6EAEA,
     divider: 0xD9D9D9,
