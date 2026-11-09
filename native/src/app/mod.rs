@@ -200,6 +200,8 @@ enum Hit {
     Sidebar,
     SidebarGrip,
     SideRow(usize),
+    /// A sidebar section's heading: drag it to move the section.
+    SideHeader(crate::explorer::SideSection),
     SideChevron(usize),
     /// A colour swatch in the open menu: (entry, swatch).
     MenuSwatch(usize, usize),

@@ -356,6 +356,51 @@ impl Group {
     }
 }
 
+/// The sidebar's sections, in the order the user dragged them into (Transient's: their headings drag).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum SideSection {
+    Bookmarks,
+    Collections,
+    Places,
+    History,
+}
+
+impl SideSection {
+    /// History last (Faye, 2026-11-09).
+    pub const DEFAULT: [SideSection; 4] = [SideSection::Bookmarks, SideSection::Collections, SideSection::Places, SideSection::History];
+
+    fn key(self) -> &'static str {
+        match self {
+            SideSection::Bookmarks => "bookmarks",
+            SideSection::Collections => "collections",
+            SideSection::Places => "places",
+            SideSection::History => "history",
+        }
+    }
+
+    /// The settings' list: the known sections in its order, once each, any missing appended in the default's.
+    pub fn parse_list(s: &str) -> Vec<SideSection> {
+        let mut out: Vec<SideSection> = Vec::new();
+        for k in s.split(',') {
+            if let Some(x) = SideSection::DEFAULT.into_iter().find(|x| x.key() == k.trim()) {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
+            }
+        }
+        for x in SideSection::DEFAULT {
+            if !out.contains(&x) {
+                out.push(x);
+            }
+        }
+        out
+    }
+
+    pub fn format(v: &[SideSection]) -> String {
+        v.iter().map(|x| x.key()).collect::<Vec<_>>().join(",")
+    }
+}
+
 /// How the explorer shows a folder (Transient's Folders and files menu): where the folders go, whether the
 /// subfolders' files are listed too, whether files Looker can't open show, how tall the rows are, and the
 /// columns. The default is the settings'; a folder can keep its own (`SavedView`).

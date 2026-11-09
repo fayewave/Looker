@@ -202,6 +202,9 @@ impl App {
                     if self.explorer.header_drag.is_some() {
                         self.header_drag_move(x);
                     }
+                    if self.explorer.section_drag.is_some() {
+                        self.section_drag_move(y);
+                    }
                     if self.explorer.col_resize.is_some() {
                         self.col_edge_drag(x);
                     }
@@ -246,6 +249,7 @@ impl App {
                     let cursor = match self.hover {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
+                        Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
@@ -325,6 +329,7 @@ impl App {
                         Some(Hit::ColEdge(i)) => self.col_edge_press(i as usize, x),
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
                         Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
+                        Some(Hit::SideHeader(s)) => self.section_press(s, y),
                         _ => {}
                     }
                     match h {
@@ -354,7 +359,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release() | self.header_release();
+                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release();
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;

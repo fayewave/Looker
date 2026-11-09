@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::*;
-use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, Watcher};
+use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, SideSection, Watcher};
 use crate::motion::Ease;
 use crate::settings::{EXPLORER_WIDTH, INFO_MAX, INFO_MIN};
 use crate::textedit::TextEdit;
@@ -105,7 +105,7 @@ pub(super) struct RowDrag {
 /// What a sidebar row leads to.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum SideTarget {
-    Header,
+    Header(SideSection),
     Hint,
     Place(Place),
 }
@@ -130,6 +130,19 @@ pub(super) struct Meta {
     pub taken: Option<crate::metadata::ExifTime>,
     pub camera: Option<String>,
     pub lens: Option<String>,
+}
+
+/// A sidebar section dragged by its heading, as Transient's: the heading follows the pointer, the others make
+/// room, an outlined slot shows where it lands.
+pub(super) struct SectionDrag {
+    pub sec: SideSection,
+    pub start_y: f32,
+    pub y: f32,
+    /// The pointer's offset from the heading's top when pressed.
+    pub grab: f32,
+    pub active: bool,
+    /// Where it would land among the other sections (worked out as the sidebar draws).
+    pub insert: usize,
 }
 
 /// A column header dragged along the headers (its cells come with it).
@@ -215,6 +228,11 @@ pub(super) struct Explorer {
     pub(super) thumb_drag: Option<f32>,
     /// How the place showing is shown: its saved view, else the default (`Settings::default_view`).
     pub(super) look: explorer::View,
+    /// A sidebar section being dragged by its heading, each section's eased top, and how long they ease
+    /// after a drop.
+    pub(super) section_drag: Option<SectionDrag>,
+    pub(super) section_pos: HashMap<SideSection, Ease<1>>,
+    pub(super) section_anim_until: Instant,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -274,6 +292,9 @@ impl Explorer {
             col_shown: Vec::new(),
             thumb_drag: None,
             look: explorer::View::default(),
+            section_drag: None,
+            section_pos: HashMap::new(),
+            section_anim_until: Instant::now(),
             side_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
@@ -1408,38 +1429,50 @@ impl App {
     /// indented under them.
     pub(super) fn sidebar_items(&mut self) -> Vec<SideItem> {
         let mut out = Vec::new();
-        let heading = |label: &str, glyph: u16| SideItem { depth: 0, glyph, tint: None, label: label.into(), target: SideTarget::Header, node: None, expanded: false };
-        out.push(heading("Bookmarks", 0xE840));
-        if self.settings.bookmarks.is_empty() {
-            out.push(SideItem { depth: 1, glyph: 0, tint: None, label: "Pin folders with the bookmark button".into(), target: SideTarget::Hint, node: None, expanded: false });
-        }
-        let bookmarks = self.settings.bookmarks.clone();
-        for b in bookmarks {
-            self.push_tree(&mut out, "b", &b, explorer::folder_name(&b), 0xE8B7, 1);
-        }
-        out.push(heading("Collections", 0xE734));
-        out.push(SideItem { depth: 1, glyph: 0xE735, tint: Some(0xF2C94C), label: "Favourites".into(), target: SideTarget::Place(Place::Collection(Collection::Favourites)), node: None, expanded: false });
-        for c in self.explorer.tags.colours_in_use() {
-            let (name, rgb_) = explorer::COLOURS[c as usize];
-            out.push(SideItem { depth: 1, glyph: 0xEA3B, tint: Some(rgb_), label: name.into(), target: SideTarget::Place(Place::Collection(Collection::Colour(c))), node: None, expanded: false });
-        }
-        if !self.settings.visited.is_empty() {
-            out.push(heading("History", 0xE81C));
-            for v in self.settings.visited.clone() {
-                out.push(SideItem { depth: 1, glyph: 0xE8B7, tint: Some(FOLDER_TINT), label: explorer::folder_name(&v), target: SideTarget::Place(Place::Folder(v)), node: None, expanded: false });
+        let heading = |sec: SideSection, label: &str, glyph: u16| SideItem { depth: 0, glyph, tint: None, label: label.into(), target: SideTarget::Header(sec), node: None, expanded: false };
+        for sec in self.settings.sidebar_order.clone() {
+            match sec {
+                SideSection::Bookmarks => {
+                    out.push(heading(sec, "Bookmarks", 0xE840));
+                    if self.settings.bookmarks.is_empty() {
+                        out.push(SideItem { depth: 1, glyph: 0, tint: None, label: "Pin folders with the bookmark button".into(), target: SideTarget::Hint, node: None, expanded: false });
+                    }
+                    let bookmarks = self.settings.bookmarks.clone();
+                    for b in bookmarks {
+                        self.push_tree(&mut out, "b", &b, explorer::folder_name(&b), 0xE8B7, 1);
+                    }
+                }
+                SideSection::Collections => {
+                    out.push(heading(sec, "Collections", 0xE734));
+                    out.push(SideItem { depth: 1, glyph: 0xE735, tint: Some(0xF2C94C), label: "Favourites".into(), target: SideTarget::Place(Place::Collection(Collection::Favourites)), node: None, expanded: false });
+                    for c in self.explorer.tags.colours_in_use() {
+                        let (name, rgb_) = explorer::COLOURS[c as usize];
+                        out.push(SideItem { depth: 1, glyph: 0xEA3B, tint: Some(rgb_), label: name.into(), target: SideTarget::Place(Place::Collection(Collection::Colour(c))), node: None, expanded: false });
+                    }
+                }
+                SideSection::History => {
+                    if !self.settings.visited.is_empty() {
+                        out.push(heading(sec, "History", 0xE81C));
+                        for v in self.settings.visited.clone() {
+                            out.push(SideItem { depth: 1, glyph: 0xE8B7, tint: Some(FOLDER_TINT), label: explorer::folder_name(&v), target: SideTarget::Place(Place::Folder(v)), node: None, expanded: false });
+                        }
+                    }
+                }
+                SideSection::Places => {
+                    out.push(heading(sec, "Places", 0xE8B7));
+                    if self.explorer.places.is_none() {
+                        self.explorer.places = Some((explorer::known_places(), explorer::drives()));
+                    }
+                    let (known, drives) = self.explorer.places.clone().unwrap_or_default();
+                    for (name, path, glyph) in known {
+                        self.push_tree(&mut out, "p", &path, name, glyph, 1);
+                    }
+                    out.push(SideItem { depth: 1, glyph: 0xE7F8, tint: None, label: explorer::COMPUTER_NAME.into(), target: SideTarget::Place(Place::Computer), node: None, expanded: false });
+                    for d in drives {
+                        self.push_tree(&mut out, "d", &d.path, d.name.clone(), 0xEDA2, 1);
+                    }
+                }
             }
-        }
-        out.push(heading("Places", 0xE8B7));
-        if self.explorer.places.is_none() {
-            self.explorer.places = Some((explorer::known_places(), explorer::drives()));
-        }
-        let (known, drives) = self.explorer.places.clone().unwrap_or_default();
-        for (name, path, glyph) in known {
-            self.push_tree(&mut out, "p", &path, name, glyph, 1);
-        }
-        out.push(SideItem { depth: 1, glyph: 0xE7F8, tint: None, label: explorer::COMPUTER_NAME.into(), target: SideTarget::Place(Place::Computer), node: None, expanded: false });
-        for d in drives {
-            self.push_tree(&mut out, "d", &d.path, d.name.clone(), 0xEDA2, 1);
         }
         out
     }
@@ -1798,6 +1831,41 @@ impl App {
                 self.save_columns();
             }
         }
+    }
+
+    // --- Sidebar sections, dragged by their headings ----------------------------------------------------
+
+    pub(super) fn section_press(&mut self, sec: SideSection, y: f32) {
+        let top = self.hits.rect_of(Hit::SideHeader(sec)).map_or(y, |r| r.top);
+        self.explorer.section_drag = Some(SectionDrag { sec, start_y: y, y, grab: y - top, active: false, insert: 0 });
+    }
+
+    pub(super) fn section_drag_move(&mut self, y: f32) {
+        let Some(d) = self.explorer.section_drag.as_mut() else { return };
+        d.y = y;
+        if !d.active && (y - d.start_y).abs() > DRAG_START {
+            d.active = true;
+        }
+        if d.active {
+            self.invalidate();
+        }
+    }
+
+    /// Let go: the section moves to its slot (and the order is saved). True when it was a drag.
+    pub(super) fn section_release(&mut self) -> bool {
+        let Some(d) = self.explorer.section_drag.take() else { return false };
+        if !d.active {
+            return false;
+        }
+        let mut order: Vec<SideSection> = self.settings.sidebar_order.iter().copied().filter(|&s| s != d.sec).collect();
+        order.insert(d.insert.min(order.len()), d.sec);
+        if order != self.settings.sidebar_order {
+            self.settings.sidebar_order = order;
+            settings::save(&self.settings);
+        }
+        self.explorer.section_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        self.invalidate();
+        true
     }
 
     // --- Sidebar width --------------------------------------------------------------------------------
