@@ -6,8 +6,10 @@
 
 use std::time::Instant;
 
-const MIN_SCALE_FACTOR: f64 = 0.5;
-const MAX_SCALE_FACTOR: f64 = 8.0;
+/// How far out and in the zoom goes: a tenth of the smaller of fit and 100 %, and 32 times the larger (Faye,
+/// 2026-11-09: it was half and 8 times).
+const MIN_SCALE_FACTOR: f64 = 0.1;
+const MAX_SCALE_FACTOR: f64 = 32.0;
 const MIN_VISIBLE_FRACTION: f64 = 0.2;
 const ANIM_MS: f64 = 160.0;
 
