@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use windows::Win32::Foundation::*;
-use windows::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS};
+use windows::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetLocaleInfoEx, GetTimeFormatEx, LOCALE_SSHORTDATE, TIME_NOSECONDS};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
@@ -374,6 +374,54 @@ fn format_time(ft: FILETIME) -> String {
             return String::new();
         }
         format_local(&local)
+    }
+}
+
+/// How the explorer's date columns read: the date, the time, a two-digit year (bits 1, 2, 4).
+static DATE_COLUMNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
+
+pub(super) fn set_date_columns(date: bool, time: bool, yy: bool) {
+    DATE_COLUMNS.store(date as u8 | (time as u8) << 1 | (yy as u8) << 2, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A local time as the explorer's date columns show it: the user's short date (its year cut to two digits if
+/// asked) and short time, either left out if asked (never both: then the date).
+fn format_column(local: &SYSTEMTIME) -> String {
+    let bits = DATE_COLUMNS.load(std::sync::atomic::Ordering::Relaxed);
+    let (time, yy) = (bits & 2 != 0, bits & 4 != 0);
+    let date = bits & 1 != 0 || !time;
+    unsafe {
+        let mut out = Vec::new();
+        if date {
+            // The locale's short-date picture with "yyyy" cut to "yy" (Windows' own pictures use y's).
+            let mut pic = [0u16; 80];
+            let pn = if yy { GetLocaleInfoEx(PCWSTR::null(), LOCALE_SSHORTDATE, Some(&mut pic)) } else { 0 };
+            let picture = (pn > 1).then(|| String::from_utf16_lossy(&pic[..(pn - 1) as usize]).replace("yyyy", "yy"));
+            let picture_w = picture.map(|p| HSTRING::from(p.as_str()));
+            let mut d = [0u16; 64];
+            let flags = if picture_w.is_some() { Default::default() } else { DATE_SHORTDATE };
+            let fmt = picture_w.as_ref().map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr()));
+            let dn = GetDateFormatEx(PCWSTR::null(), flags, Some(local), fmt, Some(&mut d), PCWSTR::null());
+            out.push(String::from_utf16_lossy(&d[..(dn.max(1) - 1) as usize]));
+        }
+        if time {
+            let mut t = [0u16; 64];
+            let tn = GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, Some(local), PCWSTR::null(), Some(&mut t));
+            out.push(String::from_utf16_lossy(&t[..(tn.max(1) - 1) as usize]));
+        }
+        out.join(" ")
+    }
+}
+
+/// A FILETIME as the explorer's date columns show it (`format_column`).
+fn format_column_time(ft: FILETIME) -> String {
+    unsafe {
+        let mut utc = SYSTEMTIME::default();
+        let mut local = SYSTEMTIME::default();
+        if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err() {
+            return String::new();
+        }
+        format_column(&local)
     }
 }
 
@@ -1086,6 +1134,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         )
         .expect("CreateWindowExW");
         theme::set(settings.theme);
+        set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year);
         page::apply_frame_colours(hwnd);
         crate::trace::mark("window created");
         DragAcceptFiles(hwnd, true); // files and folders dropped from Explorer

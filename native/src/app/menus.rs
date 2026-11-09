@@ -49,6 +49,8 @@ pub(super) enum Action {
     HistoryJump(usize),
     Group(crate::explorer::Group),
     ToggleSubfolders,
+    /// The date columns' options: 0 the date, 1 the time, 2 a two-digit year.
+    DateOption(u8),
     NewTab,
     CloseTab,
     CloseOtherTabs,

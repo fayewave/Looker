@@ -592,6 +592,20 @@ impl App {
                 let shown = cols.iter().any(|(s, _)| *s == k);
                 e.push(Entry::Item(MenuItem { action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
             }
+            // Transient's Date and Time options, under its columns: how the dates read.
+            if kinds.contains(&ColKind::Modified) {
+                e.push(Entry::Separator);
+                let s = &self.settings;
+                for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year)] {
+                    // The date can't go while the time is off (something has to show), nor the year without the date.
+                    let enabled = match i {
+                        0 => s.date_show_time,
+                        2 => s.date_show_date,
+                        _ => s.date_show_date,
+                    };
+                    e.push(Entry::Item(MenuItem { action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
+                }
+            }
         }
         self.show_menu(MenuKind::Columns(idx), e, x, y);
     }
@@ -676,6 +690,17 @@ impl App {
             (Action::Redo, _) => self.explorer_redo(),
             (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
             (Action::ToggleSubfolders, _) => self.toggle_subfolders(),
+            (Action::DateOption(i), _) => {
+                let s = &mut self.settings;
+                match i {
+                    0 => s.date_show_date = !s.date_show_date,
+                    1 => s.date_show_time = !s.date_show_time,
+                    _ => s.date_two_digit_year = !s.date_two_digit_year,
+                }
+                super::set_date_columns(s.date_show_date, s.date_show_time, s.date_two_digit_year);
+                settings::save(&self.settings);
+                self.invalidate();
+            }
             (Action::NewTab, MenuKind::Tab(i)) => {
                 let p = self.tab_place(i);
                 self.new_tab(p);

@@ -31,7 +31,7 @@ const ICON_H: f32 = 18.0;
 
 /// A cell's text (not Name's, which draws its own way).
 pub(super) fn cell_text(r: &explorer::Row, c: ColKind, m: Option<&Meta>) -> String {
-    let ft = |t: u64| format_time(FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 });
+    let ft = |t: u64| format_column_time(FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 });
     match c {
         ColKind::Name => r.name.clone(),
         ColKind::Extension if !r.is_folder() => r.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default(),
@@ -43,7 +43,7 @@ pub(super) fn cell_text(r: &explorer::Row, c: ColKind, m: Option<&Meta>) -> Stri
         ColKind::Created if r.kind != Kind::Drive => ft(r.created),
         ColKind::Taken => m.and_then(|m| m.taken).map_or(String::new(), |t| {
             let st = SYSTEMTIME { wYear: t.year, wMonth: t.month, wDay: t.day, wHour: t.hour, wMinute: t.minute, wSecond: t.second, ..Default::default() };
-            format_local(&st)
+            format_column(&st)
         }),
         ColKind::Dimensions => m.and_then(|m| m.dims).map_or(String::new(), |(w, h)| format!("{w} \u{00D7} {h}")),
         ColKind::Megapixels => m.and_then(|m| m.dims).map_or(String::new(), |(w, h)| format!("{:.1} MP", w as f64 * h as f64 / 1_000_000.0)),

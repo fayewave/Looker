@@ -81,6 +81,11 @@ pub struct Settings {
     /// The explorer's tabs, left to right (`explorer::place_key`), and the one in front.
     pub tabs: Vec<String>,
     pub tab_active: usize,
+    /// How the explorer's date columns read (Transient's Date and Time options): the date, the time, and the
+    /// year in two digits.
+    pub date_show_date: bool,
+    pub date_show_time: bool,
+    pub date_two_digit_year: bool,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -101,7 +106,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0 }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false }
     }
 }
 
@@ -252,6 +257,11 @@ pub fn parse(text: &str) -> Settings {
             "sidebar_closed" => s.sidebar_closed = crate::explorer::SideSection::parse_set(v),
             "tab" if !v.is_empty() && s.tabs.len() < 64 => s.tabs.push(v.to_string()),
             "tab_active" => s.tab_active = v.parse().unwrap_or(0),
+            "explorer_dates" => {
+                s.date_show_date = v.contains('d');
+                s.date_show_time = v.contains('t');
+                s.date_two_digit_year = v.contains('y');
+            }
             "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
         }
@@ -306,6 +316,12 @@ pub fn format(s: &Settings) -> String {
         out.push_str(&format!("tab={t}\n"));
     }
     out.push_str(&format!("tab_active={}\n", s.tab_active));
+    out.push_str(&format!(
+        "explorer_dates={}{}{}\n",
+        if s.date_show_date { "d" } else { "" },
+        if s.date_show_time { "t" } else { "" },
+        if s.date_two_digit_year { "y" } else { "" }
+    ));
     out
 }
 
@@ -469,6 +485,9 @@ mod tests {
             sidebar_closed: vec![crate::explorer::SideSection::Places],
             tabs: vec![r"C:\Users\me\Pictures".into(), "::favourites".into()],
             tab_active: 1,
+            date_show_date: false,
+            date_show_time: true,
+            date_two_digit_year: true,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());
