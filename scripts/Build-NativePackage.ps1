@@ -69,7 +69,10 @@ else {
     if ($TrustedSigning) {
         if (-not $Dlib) {
             $Dlib = Get-ChildItem $env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:USERPROFILE '.nuget\packages') -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' -ErrorAction SilentlyContinue |
-                Where-Object FullName -match 'x64' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+                Where-Object { $_.FullName -notmatch '\\(x86|arm64)\\' } |
+                # An x64 folder's when there is one (older tools); the newer tools keep the x64 dll at the top level.
+                Sort-Object @{ e = { $_.FullName -match 'x64' }; Descending = $true }, @{ e = { $_.LastWriteTime }; Descending = $true } |
+                Select-Object -First 1 -ExpandProperty FullName
             if (-not $Dlib) { throw 'Azure.CodeSigning.Dlib.dll not found: winget install Microsoft.Azure.TrustedSigningClientTools (or pass -Dlib).' }
         }
         # The certificate lives three days; the timestamp keeps the signature valid after it lapses.
