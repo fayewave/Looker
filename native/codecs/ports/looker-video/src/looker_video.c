@@ -417,10 +417,109 @@ EXPORT int looker_video_probe(const wchar_t *path, LvInfo *info)
     return r < 0 ? r : 0;
 }
 
+// ---- HDR as SDR -----------------------------------------------------------------------------------------------
+// A PQ or HLG picture made into an SDR one (the still shown before playback, thumbnails, the seek bar's previews):
+// linear light with SDR white (BT.2408's 203 nits) at 1, Rec. 709's primaries, the highlights rolled off into SDR
+// white, sRGB-encoded. The same maths as the player's shader (Looker's src/yuv.rs) with a headroom of 1: below 0.75
+// as it is, above it the brightest channel eased towards 1, the hue kept.
+
+static int is_hdr_trc(int trc)
+{
+    return trc == AVCOL_TRC_SMPTE2084 || trc == AVCOL_TRC_ARIB_STD_B67;
+}
+
+// SMPTE ST 2084: a 0..1 signal to linear light, SDR white = 1.
+static float pq_rel(float e)
+{
+    const float m1 = 2610.0f / 16384.0f, m2 = 2523.0f / 4096.0f * 128.0f;
+    const float c1 = 3424.0f / 4096.0f, c2 = 2413.0f / 4096.0f * 32.0f, c3 = 2392.0f / 4096.0f * 32.0f;
+    float p = powf(e, 1.0f / m2);
+    return 10000.0f / 203.0f * powf(fmaxf(p - c1, 0.0f) / (c2 - c3 * p), 1.0f / m1);
+}
+
+// BT.2100 HLG: a 0..1 signal to scene light 0..1 (the inverse OETF).
+static float hlg_scene(float e)
+{
+    const float a = 0.17883277f, b = 0.28466892f, c = 0.55991073f;
+    return e <= 0.5f ? e * e / 3.0f : (expf((e - c) / a) + b) / 12.0f;
+}
+
+// Full-range RGBA, 16 bits a channel, PQ/HLG-encoded in `primaries` (unspecified = BT.2020), to straight 8-bit sRGB
+// RGBA in Rec. 709. -1 when out of memory.
+static int hdr_to_sdr(const uint16_t *src, unsigned char *dst, size_t n, int trc, int primaries)
+{
+    static const float BT2020_TO_709[9] = {1.6605f, -0.5876f, -0.0728f, -0.1246f, 1.1329f,
+                                           -0.0083f, -0.0182f, -0.1006f, 1.1187f};
+    static const float P3_TO_709[9] = {1.2249f, -0.2247f, 0.0f, -0.0420f, 1.0419f, 0.0f, -0.0197f, -0.0786f, 1.0979f};
+    const float *m = primaries == AVCOL_PRI_BT709                                        ? NULL
+                     : primaries == AVCOL_PRI_SMPTE431 || primaries == AVCOL_PRI_SMPTE432 ? P3_TO_709
+                                                                                          : BT2020_TO_709;
+    const int hlg = trc == AVCOL_TRC_ARIB_STD_B67;
+    // 12-bit tables: signal to linear light (scene light for HLG), and linear 0..1 to sRGB's 8 bits.
+    float *lin = malloc(4096 * sizeof(float));
+    unsigned char *enc = malloc(4096);
+    if (!lin || !enc)
+    {
+        free(lin);
+        free(enc);
+        return -1;
+    }
+    for (int i = 0; i < 4096; i++)
+    {
+        float e = i / 4095.0f;
+        lin[i] = hlg ? hlg_scene(e) : pq_rel(e);
+        float c = e <= 0.0031308f ? e * 12.92f : 1.055f * powf(e, 1.0f / 2.4f) - 0.055f;
+        enc[i] = (unsigned char)lrintf(c * 255.0f);
+    }
+    const float knee = 0.75f, room = 0.25f;
+    for (size_t i = 0; i < n; i++)
+    {
+        const uint16_t *s = src + i * 4;
+        float r = lin[s[0] >> 4], g = lin[s[1] >> 4], b = lin[s[2] >> 4];
+        if (hlg)
+        {
+            // The OOTF of BT.2100's nominal 1000-nit display (system gamma 1.2), in SDR whites.
+            float y = 0.2627f * r + 0.6780f * g + 0.0593f * b;
+            float k = 1000.0f / 203.0f * powf(fmaxf(y, 1e-6f), 0.2f);
+            r *= k;
+            g *= k;
+            b *= k;
+        }
+        if (m)
+        {
+            float r2 = m[0] * r + m[1] * g + m[2] * b;
+            float g2 = m[3] * r + m[4] * g + m[5] * b;
+            float b2 = m[6] * r + m[7] * g + m[8] * b;
+            r = r2;
+            g = g2;
+            b = b2;
+        }
+        float mx = fmaxf(r, fmaxf(g, b));
+        if (mx > knee)
+        {
+            float k = (knee + room * (1.0f - expf(-(mx - knee) / room))) / mx;
+            r *= k;
+            g *= k;
+            b *= k;
+        }
+#define ENC(v) enc[(int)(fminf(fmaxf((v), 0.0f), 1.0f) * 4095.0f + 0.5f)]
+        unsigned char *d = dst + i * 4;
+        d[0] = ENC(r);
+        d[1] = ENC(g);
+        d[2] = ENC(b);
+        d[3] = (unsigned char)(s[3] >> 8);
+#undef ENC
+    }
+    free(lin);
+    free(enc);
+    return 0;
+}
+
 // A picture square-pixelled, fitted into box_w x box_h (0 x 0 = full size; never enlarged) and turned upright, as
-// straight RGBA in a buffer freed by looker_video_free.
-static int fit_rgba(const AVFrame *frame, AVRational sar, int rot, int box_w, int box_h, int sws_flags, int *out_w,
-                    int *out_h, unsigned char **out_rgba)
+// straight RGBA in a buffer freed by looker_video_free. `trc` and `primaries` are the stream's (AVCOL_*): PQ and
+// HLG pictures are made SDR (hdr_to_sdr).
+static int fit_rgba(const AVFrame *frame, AVRational sar, int rot, int box_w, int box_h, int sws_flags, int trc,
+                    int primaries, int *out_w, int *out_h, unsigned char **out_rgba)
 {
     *out_rgba = NULL;
     *out_w = *out_h = 0;
@@ -447,24 +546,32 @@ static int fit_rgba(const AVFrame *frame, AVRational sar, int rot, int box_w, in
         sw = 1;
     if (sh < 1)
         sh = 1;
-    struct SwsContext *sws =
-        sws_getContext(fw, fh, (enum AVPixelFormat)frame->format, sw, sh, AV_PIX_FMT_RGBA, sws_flags, NULL, NULL, NULL);
+    const int hdr = is_hdr_trc(trc);
+    struct SwsContext *sws = sws_getContext(fw, fh, (enum AVPixelFormat)frame->format, sw, sh,
+                                            hdr ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGBA, sws_flags, NULL, NULL, NULL);
     if (!sws)
         return AVERROR(EINVAL);
-    const int *coeffs = sws_getCoefficients(sws_space(frame->colorspace, fh));
+    // HDR without a matrix tag is BT.2020's.
+    enum AVColorSpace space =
+        hdr && frame->colorspace == AVCOL_SPC_UNSPECIFIED ? AVCOL_SPC_BT2020_NCL : frame->colorspace;
+    const int *coeffs = sws_getCoefficients(sws_space(space, fh));
     // Fails (harmlessly) for RGB sources.
     sws_setColorspaceDetails(sws, coeffs, is_full_range(frame), sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
     unsigned char *rgba = malloc((size_t)sw * sh * 4);
+    uint16_t *deep = hdr ? malloc((size_t)sw * sh * 8) : NULL;
     int r = 0;
-    if (!rgba)
+    if (!rgba || (hdr && !deep))
         r = AVERROR(ENOMEM);
     else
     {
-        uint8_t *dst[4] = {rgba, NULL, NULL, NULL};
-        int dst_stride[4] = {sw * 4, 0, 0, 0};
+        uint8_t *dst[4] = {hdr ? (uint8_t *)deep : rgba, NULL, NULL, NULL};
+        int dst_stride[4] = {sw * (hdr ? 8 : 4), 0, 0, 0};
         r = sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, fh, dst, dst_stride);
         r = r > 0 ? 0 : r < 0 ? r : AVERROR(EINVAL);
+        if (r == 0 && hdr && hdr_to_sdr(deep, rgba, (size_t)sw * sh, trc, primaries) < 0)
+            r = AVERROR(ENOMEM);
     }
+    free(deep);
     sws_freeContext(sws);
     if (r == 0 && rot)
     {
@@ -562,7 +669,8 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
         info->matrix = frame->colorspace;
 
     r = fit_rgba(frame, frame->sample_aspect_ratio.num > 0 ? frame->sample_aspect_ratio : st->sample_aspect_ratio,
-                 info->rotation, box_w, box_h, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, out_w, out_h, out_rgba);
+                 info->rotation, box_w, box_h, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, info->transfer,
+                 info->primaries, out_w, out_h, out_rgba);
 
 done:
     av_frame_free(&frame);
@@ -1387,7 +1495,8 @@ EXPORT int lv_frame_rgba(const LvFrame *f, int rotation, int box_w, int box_h, i
     const AVFrame *a = f ? (const AVFrame *)f->opaque : NULL;
     if (a == NULL || f->layout == LV_TEXTURE)
         return AVERROR(EINVAL);
-    return fit_rgba(a, a->sample_aspect_ratio, rotation, box_w, box_h, SWS_BILINEAR, w, h, rgba);
+    return fit_rgba(a, a->sample_aspect_ratio, rotation, box_w, box_h, SWS_BILINEAR, a->color_trc, a->color_primaries,
+                    w, h, rgba);
 }
 
 // The next block of audio only, reading past video packets (kept for lv_next, undecoded) to reach it: for when

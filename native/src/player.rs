@@ -1,7 +1,12 @@
 //! Playing a video: a decode thread runs the FFmpeg decoder (imaging/video.rs) a few pictures and about a second
-//! of audio ahead; an audio thread feeds WASAPI from that; the UI thread asks, once per vsync, for the picture due
-//! now (`Player::due`) and draws it (app/video.rs). The clock is the audio device's when the sound is playing (at
-//! 0.25x to 2x: other speeds go through FFmpeg's atempo, same pitch), else the wall clock.
+//! of audio ahead, and puts CPU pictures on the GPU as they come (yuv::Uploader); an audio thread feeds WASAPI from
+//! that; the UI thread asks, once per vsync, for the picture due when that frame reaches the screen
+//! (`Player::due`) and draws it (app/video.rs).
+//!
+//! The clock is the wall clock, steered by the sound while it plays (at 0.25x to 2x: other speeds go through
+//! FFmpeg's atempo, same pitch): the audio device's own position (`IAudioClock`, stamped with the QPC time it was
+//! read) pulls it gently towards the sound, so the pictures keep an even pace and stay in sync. Read directly,
+//! the device clock moves in steps of its period (10 ms), which at 165 Hz showed some pictures a vsync early.
 //!
 //! Every seek bumps an epoch: what the decode thread had queued is thrown away, and the first picture of the new
 //! epoch is shown at once, playing or paused (scrubbing and frame steps show where they landed).
@@ -11,7 +16,34 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Item, Picture, Tempo};
+use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Item, LvFrame, Picture, TEXTURE, Tempo};
+use crate::yuv::{Uploaded, Uploader};
+
+/// A picture in the queue: the decoder's frame, and its planes on the GPU when the decode thread uploaded them
+/// (its CPU planes are let go then).
+pub struct Frame {
+    pub picture: Picture,
+    pub uploaded: Option<Uploaded>,
+}
+
+impl std::ops::Deref for Frame {
+    type Target = LvFrame;
+    fn deref(&self) -> &LvFrame {
+        &self.picture
+    }
+}
+
+/// How much of the gap between the sound and the wall clock is closed at each of the sound's updates (about
+/// 100 a second), and the most that may move the clock each time: the pictures speed up or slow down by 10 % at
+/// most while they catch up, which can't be seen.
+const STEER: f64 = 0.05;
+const STEER_MAX_US: i64 = 1_000;
+/// Further apart than this (the sound has just started, or stalled), the clock jumps to the sound instead.
+const SNAP_US: i64 = 150_000;
+/// The first reading after the clock was set (a seek, play) jumps back to the sound when it's further behind than
+/// this (the picture on screen stays a moment longer). Ahead, it's eased into like any other: a jump forward
+/// would skip pictures.
+const FIRST_SNAP_US: i64 = 20_000;
 
 /// Pictures decoded ahead, normally; up to `HARD_PICTURES` while the audio is behind, and past that the decoder
 /// reads ahead for the sound alone (`Decoder::next_audio`). A GPU decoder holds one surface per picture queued
@@ -29,7 +61,7 @@ struct Chunk {
 }
 
 struct State {
-    pictures: VecDeque<Picture>,
+    pictures: VecDeque<Frame>,
     audio: VecDeque<Chunk>,
     audio_frames: usize,
     /// Bumped by each seek; the decode thread drops what it decoded for an older one.
@@ -52,6 +84,10 @@ struct State {
     /// the device (in media time: at 2x a second queued is two), and when that was read. None until sound plays
     /// (again) after a pause or seek.
     audio_clock: Option<(i64, i64, Instant)>,
+    /// The sound has steered the clock since it was last set.
+    steered: bool,
+    /// The first picture of this epoch is on screen: the sound waits for it, so both start together.
+    picture_up: bool,
     /// The audio thread should drop what the device holds (a seek).
     audio_reset: bool,
     /// No device or no stream: the wall clock it is.
@@ -66,15 +102,32 @@ struct State {
 }
 
 impl State {
+    /// Media time at `now` (which may be a little ahead: the vsync a frame will be shown at).
     fn clock(&self, now: Instant) -> i64 {
         if !self.playing {
             return self.anchor;
         }
-        if let Some((end, queued, at)) = self.audio_clock.filter(|_| self.audio_live()) {
-            let t = end - queued + (now.saturating_duration_since(at).as_secs_f64() * 1e6 * self.speed) as i64;
-            return t.min(end);
+        self.wall(now)
+    }
+
+    fn wall(&self, at: Instant) -> i64 {
+        let dt = if at >= self.anchor_at { (at - self.anchor_at).as_secs_f64() } else { -(self.anchor_at - at).as_secs_f64() };
+        self.anchor + (dt * 1e6 * self.speed) as i64
+    }
+
+    /// The sound was at `heard` at `at`: the clock moves towards it (see the module doc).
+    fn steer(&mut self, heard: i64, at: Instant) {
+        if !self.playing {
+            return;
         }
-        self.anchor + (now.saturating_duration_since(self.anchor_at).as_secs_f64() * 1e6 * self.speed) as i64
+        let err = heard - self.wall(at);
+        if err.abs() > SNAP_US || (!self.steered && err < -FIRST_SNAP_US) {
+            self.anchor = heard;
+            self.anchor_at = at;
+        } else {
+            self.anchor += ((err as f64 * STEER) as i64).clamp(-STEER_MAX_US, STEER_MAX_US);
+        }
+        self.steered = true;
     }
 
     /// Whether the sound is what's playing (0.25x to 2x; faster plays silent).
@@ -87,6 +140,7 @@ impl State {
         self.anchor = t;
         self.anchor_at = now;
         self.audio_clock = None;
+        self.steered = false;
     }
 
     fn clear(&mut self) {
@@ -98,6 +152,7 @@ impl State {
         self.audio_clock = None;
         self.audio_ended = false;
         self.audio_exhausted = false;
+        self.picture_up = false;
     }
 }
 
@@ -115,7 +170,7 @@ impl Shared {
 
 /// What the UI thread draws from: the picture due now, if it changed.
 pub struct Due {
-    pub picture: Picture,
+    pub picture: Frame,
 }
 
 pub struct Player {
@@ -127,9 +182,12 @@ pub struct Player {
     pub looping: bool,
     /// A frame step waiting for its picture.
     step: bool,
-    /// Pictures shown and skipped (late), for the trace.
+    /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
+    /// such wait counted once), for the trace.
     shown_count: u64,
     dropped: u64,
+    starved: u64,
+    waiting: bool,
     opened: Arc<Mutex<Option<Result<Info, String>>>>,
 }
 
@@ -155,6 +213,8 @@ impl Player {
                 anchor: 0,
                 anchor_at: now,
                 audio_clock: None,
+                steered: false,
+                picture_up: false,
                 audio_reset: false,
                 audio_dead: false,
                 audio_ended: false,
@@ -173,7 +233,7 @@ impl Player {
                 decode_thread(s, &p, device.0, o)
             })
             .ok();
-        Player { shared, info: None, shown: None, looping: false, step: false, shown_count: 0, dropped: 0, opened }
+        Player { shared, info: None, shown: None, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -195,12 +255,13 @@ impl Player {
         }))
     }
 
-    /// The picture to draw now, when it changed since the last call; also stops (or loops) at the end.
+    /// The picture to show at `now` (the vsync the frame being drawn will reach the screen at), when it changed
+    /// since the last call; also stops (or loops) at the end.
     pub fn due(&mut self, now: Instant) -> Option<Due> {
         let mut st = self.shared.lock();
         let epoch = st.epoch;
         let fresh = self.shown.is_none_or(|(e, _, _)| e != epoch);
-        let mut pick: Option<Picture> = None;
+        let mut pick: Option<Frame> = None;
         if self.step && !fresh {
             // A frame step: the next picture, and the clock moves to it.
             if let Some(p) = st.pictures.pop_front() {
@@ -212,6 +273,7 @@ impl Player {
             // The first picture after a seek (or the very first): shown at once, and the clock starts from it.
             if let Some(p) = st.pictures.pop_front() {
                 st.set_anchor(p.pts_us, now);
+                st.picture_up = true;
                 pick = Some(p);
             }
         } else {
@@ -222,6 +284,17 @@ impl Player {
                 }
                 pick = st.pictures.pop_front();
             }
+            // The picture on screen has had its time and the next isn't decoded yet.
+            let overdue = self.shown.is_some_and(|(_, pts, dur)| t >= pts + dur.max(1));
+            if pick.is_none() && st.playing && !st.end && st.pictures.is_empty() && overdue {
+                if !self.waiting {
+                    self.starved += 1;
+                    self.waiting = true;
+                }
+            } else if pick.is_some() {
+                self.waiting = false;
+            }
+
             // At the end: loop, or stop on the last picture.
             if pick.is_none() && st.end && st.pictures.is_empty() && st.playing {
                 let last_end = self.shown.map_or(0, |(_, pts, dur)| pts + dur);
@@ -360,7 +433,10 @@ impl Drop for Player {
             let st = self.shared.lock();
             if st.audio_dead { "wall (no sound)" } else if st.audio_ended { "wall (sound ended)" } else if st.audio_clock.is_some() { "audio" } else { "wall" }
         };
-        crate::trace::mark(format!("video: closed after {} pictures shown, {} skipped late; clock {clock}", self.shown_count, self.dropped));
+        crate::trace::mark(format!(
+            "video: closed after {} pictures shown, {} skipped late, {} waits for the decoder; clock {clock}",
+            self.shown_count, self.dropped, self.starved
+        ));
         // The threads see this and end on their own (never joined: a decode may be mid-picture).
         self.shared.lock().quit = true;
         self.shared.wake.notify_all();
@@ -369,6 +445,9 @@ impl Drop for Player {
 
 fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<Info, String>>>>) {
     let t = Instant::now();
+    // CPU pictures go on the window's device from here, so the UI thread only draws them.
+    let uploader = unsafe { <windows::Win32::Graphics::Direct3D11::ID3D11Device as windows::core::Interface>::from_raw_borrowed(&d3d11) }.and_then(|d| Uploader::new(d).ok());
+    let mut upload_failed = false;
     let mut dec = match Decoder::open(path, d3d11, false) {
         Ok((d, info)) => {
             crate::trace::mark(format!(
@@ -447,7 +526,22 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             }
             continue;
         }
-        let item = dec.next();
+        let mut item = dec.next();
+        let mut uploaded = None;
+        if let (Ok(Item::Picture(p)), Some(u)) = (&mut item, &uploader) {
+            if p.layout != TEXTURE && !upload_failed {
+                match u.upload(p) {
+                    Ok(up) => {
+                        p.release();
+                        uploaded = Some(up);
+                    }
+                    Err(e) => {
+                        crate::trace::mark(format!("video: upload: {e}"));
+                        upload_failed = true; // the UI thread uploads them then
+                    }
+                }
+            }
+        }
         let mut st = shared.lock();
         if st.quit {
             return;
@@ -457,7 +551,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
         }
         match item {
             Ok(Item::Picture(p)) => {
-                st.pictures.push_back(p);
+                st.pictures.push_back(Frame { picture: p, uploaded });
                 st.audio_exhausted = false; // a picture further on: the sound may be in reach again
             }
             Ok(Item::Audio(pts, samples)) => {
@@ -622,10 +716,14 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
     // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
     const IEEE_FLOAT: windows::core::GUID = windows::core::GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
     use windows::Win32::System::Com::*;
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        // MMCSS, as players do: the sound keeps its timing while a CPU decoder (4K ProRes) has every core busy.
+        let mut task = 0u32;
+        let _ = windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task);
         let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
         let device = devices.GetDefaultAudioEndpoint(eRender, eConsole)?;
         let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
@@ -656,6 +754,26 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
         client.SetEventHandle(event)?;
         let size = client.GetBufferSize()? as usize;
         let render: IAudioRenderClient = client.GetService()?;
+        let audio_clock: IAudioClock = client.GetService()?;
+        let clock_rate = audio_clock.GetFrequency()?.max(1) as f64;
+        let mut qpf = 0i64;
+        let _ = QueryPerformanceFrequency(&mut qpf);
+        // Frames written to the device since it was last reset, and the time just after the last one.
+        let mut dev_written = 0i64;
+        let mut dev_end = 0i64;
+        // Where the device is now in media time, from its position (stamped in QPC ticks of 100 ns): what was
+        // written less what it hasn't played yet; `per_frame` is the media time a frame stands for.
+        let heard = |dev_written: i64, dev_end: i64, per_frame: f64| -> Option<(i64, Instant)> {
+            let (mut pos, mut qpc) = (0u64, 0u64);
+            audio_clock.GetPosition(&mut pos, Some(&mut qpc)).ok()?;
+            let mut now_qpc = 0i64;
+            let _ = QueryPerformanceCounter(&mut now_qpc);
+            let now = Instant::now();
+            let now_100ns = (now_qpc as f64 * 1e7 / qpf.max(1) as f64) as u64;
+            let at = now.checked_sub(Duration::from_nanos(now_100ns.saturating_sub(qpc) * 100))?;
+            let played = pos as f64 * AUDIO_RATE as f64 / clock_rate;
+            Some((dev_end - ((dev_written as f64 - played).max(0.0) * per_frame) as i64, at))
+        };
         let mut started = false;
         // Other speeds: the sound goes through atempo. `t0` is the time of the first sample fed to it since it was
         // (re)made, `out[out_read..]` what it gave that isn't written yet, `written` the frames that have been.
@@ -676,13 +794,14 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
                 st.audio_reset = false;
                 let _ = client.Stop();
                 let _ = client.Reset();
+                dev_written = 0;
                 started = false;
                 st.audio_clock = None;
                 tempo = None;
                 out.clear();
                 out_read = 0;
             }
-            if !st.playing || !st.audio_live() {
+            if !st.playing || !st.audio_live() || !st.picture_up {
                 if started {
                     let _ = client.Stop();
                     started = false;
@@ -752,7 +871,9 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
                     }
                     render.ReleaseBuffer(n as u32, 0)?;
                     written += n as i64;
+                    dev_written += n as i64;
                     let end = t0.unwrap_or(0) + media(written as f64);
+                    dev_end = end;
                     st.audio_clock = Some((end, media((queued + n) as f64), now));
                     shared.wake.notify_all();
                     if !started {
@@ -769,6 +890,11 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
                             let _ = client.Stop();
                             started = false;
                         }
+                    }
+                }
+                if started {
+                    if let Some((t, at)) = heard(dev_written, dev_end, speed * 1e6 / AUDIO_RATE as f64) {
+                        st.steer(t, at);
                     }
                 }
                 continue;
@@ -800,6 +926,8 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
                 }
                 st.audio_frames -= written;
                 render.ReleaseBuffer(written as u32, 0)?;
+                dev_written += written as i64;
+                dev_end = end;
                 let in_device = queued + written;
                 st.audio_clock = Some((end, in_device as i64 * 1_000_000 / AUDIO_RATE as i64, now));
                 shared.wake.notify_all();
@@ -819,6 +947,11 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
                         let _ = client.Stop();
                         started = false;
                     }
+                }
+            }
+            if started {
+                if let Some((t, at)) = heard(dev_written, dev_end, 1e6 / AUDIO_RATE as f64) {
+                    st.steer(t, at);
                 }
             }
         }

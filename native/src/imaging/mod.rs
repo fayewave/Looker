@@ -7,7 +7,7 @@ mod animated;
 mod avif;
 mod fallback;
 mod gainmap;
-mod hdr;
+pub(crate) mod hdr;
 pub mod heif;
 pub mod mtl;
 pub mod pdf;

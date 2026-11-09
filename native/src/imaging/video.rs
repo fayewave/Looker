@@ -352,6 +352,14 @@ impl std::ops::Deref for Picture {
 }
 
 impl Picture {
+    /// Lets the CPU planes go (they're on the GPU now): only the picture's facts stay.
+    pub fn release(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.frame_free)(&mut self.0) };
+        }
+        self.0.data = [std::ptr::null(); 4];
+    }
+
     /// A CPU picture (not a texture) fitted into `box_w × box_h`, square-pixelled and turned `rotation` degrees,
     /// as straight RGBA: (width, height, pixels).
     pub fn rgba(&self, rotation: i32, box_w: u32, box_h: u32) -> Result<(u32, u32, Vec<u8>), String> {

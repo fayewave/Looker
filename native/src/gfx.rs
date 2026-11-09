@@ -343,6 +343,14 @@ impl Gfx {
         self.dev.warp
     }
 
+    /// The QPC time of the vblank the swap chain's last frame was shown at (on the monitor the window is on), when
+    /// DXGI keeps statistics for it.
+    pub fn last_vblank_qpc(&self) -> Option<i64> {
+        let mut st = DXGI_FRAME_STATISTICS::default();
+        unsafe { self.swap.GetFrameStatistics(&mut st) }.ok()?;
+        (st.SyncQPCTime > 0).then_some(st.SyncQPCTime)
+    }
+
     /// The D3D11 device under Direct2D (the 3D model view draws on it, see model/render.rs).
     pub fn d3d(&self) -> &ID3D11Device {
         &self.dev.d3d

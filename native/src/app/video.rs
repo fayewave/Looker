@@ -20,7 +20,7 @@ use windows::core::Interface;
 
 use super::*;
 use crate::player::{Player, Preview};
-use crate::yuv::Converter;
+use crate::yuv::{self, Converter, Look};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT};
 
 /// The hardware device couldn't be made: videos play from the CPU on WARP rather than wait for it.
@@ -73,6 +73,88 @@ pub(super) struct VideoView {
     still: Option<(i64, ID2D1Bitmap1, f32, f32)>,
     /// The loop button, once pressed; until then the setting decides.
     looping: Option<bool>,
+    /// The picture is SDR Rec. 709 (clamped to SDR white under scRGB like a photo); HDR and wide-gamut ones aren't.
+    sdr: bool,
+    stats: Stats,
+}
+
+/// How the UI thread kept up while it played, for the trace.
+#[derive(Default)]
+struct Stats {
+    pictures: u32,
+    /// Vsyncs that passed without a frame drawn, while playing.
+    missed: u32,
+    last: Option<Instant>,
+    convert_ms: f64,
+    convert_max_ms: f64,
+}
+
+/// The refresh rate of the monitor `hwnd` is on, in Hz (read again every couple of seconds, or when the window
+/// moves to another monitor).
+fn monitor_hz(hwnd: HWND) -> Option<f64> {
+    use std::cell::Cell;
+    use windows::Win32::Graphics::Gdi::{DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow};
+    thread_local! {
+        static HZ: Cell<Option<(isize, f64, Instant)>> = const { Cell::new(None) };
+    }
+    let mon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if let Some((m, hz, at)) = HZ.get() {
+        if m == mon.0 as isize && at.elapsed() < Duration::from_secs(2) {
+            return Some(hz);
+        }
+    }
+    let mut mi = MONITORINFOEXW::default();
+    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+    unsafe {
+        if !GetMonitorInfoW(mon, &mut mi as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+            return None;
+        }
+        if !EnumDisplaySettingsW(windows::core::PCWSTR(mi.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
+            return None;
+        }
+    }
+    let hz = dm.dmDisplayFrequency as f64;
+    if hz < 20.0 {
+        return None; // 0 or 1: "the hardware's default"
+    }
+    HZ.set(Some((mon.0 as isize, hz, Instant::now())));
+    Some(hz)
+}
+
+/// When the frame being drawn now reaches the screen (the next vblank of the monitor the window is on), the
+/// refresh period there, and where the vblank's timing came from. The period is that monitor's; the phase is the
+/// swap chain's last vblank, else DWM's when DWM runs at this monitor's rate (DWM's timing is the primary
+/// monitor's: Faye's is 360 Hz, the second one 165 Hz).
+fn next_vblank(g: &Gfx, hwnd: HWND) -> (Instant, Duration, &'static str) {
+    use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+    let now = Instant::now();
+    let (mut qpc, mut freq) = (0i64, 0i64);
+    unsafe {
+        if QueryPerformanceCounter(&mut qpc).is_err() || QueryPerformanceFrequency(&mut freq).is_err() || freq <= 0 {
+            return (now, Duration::from_millis(16), "none");
+        }
+    }
+    let mut info = DWM_TIMING_INFO { cbSize: std::mem::size_of::<DWM_TIMING_INFO>() as u32, ..Default::default() };
+    let dwm = unsafe { DwmGetCompositionTimingInfo(HWND::default(), &mut info) }.is_ok() && info.qpcRefreshPeriod > 0;
+    let period = match monitor_hz(hwnd) {
+        Some(hz) => (freq as f64 / hz) as i64,
+        None if dwm => info.qpcRefreshPeriod as i64,
+        None => freq / 60,
+    }
+    .max(1);
+    let secs = |ticks: i64| Duration::from_secs_f64(ticks as f64 / freq as f64);
+    let recent = |v: i64| v > 0 && v <= qpc && qpc - v < freq;
+    let (vblank, source) = if let Some(v) = g.last_vblank_qpc().filter(|&v| recent(v)) {
+        (v, "swap chain")
+    } else if dwm && ((info.qpcRefreshPeriod as i64 - period).abs() as f64) < period as f64 * 0.02 && recent(info.qpcVBlank as i64) {
+        (info.qpcVBlank as i64, "DWM")
+    } else {
+        return (now, secs(period), "none");
+    };
+    let next = vblank + ((qpc - vblank) / period + 1) * period;
+    (now + secs(next - qpc), secs(period), source)
 }
 
 impl VideoView {
@@ -204,6 +286,8 @@ impl App {
             preview: None,
             still: None,
             looping: None,
+            sdr: true,
+            stats: Stats::default(),
         });
     }
 
@@ -228,6 +312,16 @@ impl App {
     /// The video going away (another file, the window closing): a long one remembers where it was left.
     pub(super) fn leave_video(&mut self) {
         let Some(v) = self.video.take() else { return };
+        let s = &v.stats;
+        if s.pictures > 0 {
+            crate::trace::mark(format!(
+                "video: UI drew {} pictures, {} vsyncs missed while playing; picture to texture {:.2} ms average, {:.2} max",
+                s.pictures,
+                s.missed,
+                s.convert_ms / s.pictures as f64,
+                s.convert_max_ms
+            ));
+        }
         let Some(p) = v.player.as_ref().filter(|p| p.info.is_some()) else { return };
         let dur = p.duration();
         if !self.settings.video_resume || dur < settings::RESUME_MIN_SECS as i64 * 1_000_000 {
@@ -339,7 +433,22 @@ impl App {
                 v.still = Some((s.asked, b, s.width as f32, s.height as f32));
             }
         }
-        let Some(due) = p.due(Instant::now()) else { return };
+        // The picture for the vsync this frame will be shown at: picked by the clock at that moment, not at
+        // whenever this frame happened to start (which wanders, and at 165 Hz flipped pictures a vsync early or late).
+        let (shown_at, period, timing) = next_vblank(g, self.hwnd);
+        if p.playing() {
+            let now = Instant::now();
+            if let Some(last) = v.stats.last {
+                let gap = now.duration_since(last).as_secs_f64() / period.as_secs_f64();
+                if gap > 1.5 {
+                    v.stats.missed += (gap - 1.0).round() as u32;
+                }
+            }
+            v.stats.last = Some(now);
+        } else {
+            v.stats.last = None;
+        }
+        let Some(due) = p.due(shown_at) else { return };
         let Some(info) = p.info.as_ref() else { return };
         // The display size, scaled by how the picture compares with the size the headers gave (a 1080p stream can
         // be stored 1088 high): square pixels and upright, as the still was.
@@ -352,7 +461,15 @@ impl App {
         };
         let cap = g.max_bitmap_size().max(1);
         let (w, h) = ((dw.round().max(1.0) as u32).min(cap), (dh.round().max(1.0) as u32).min(cap));
-        let white = g.space().is_scrgb().then(|| g.space().white_scale());
+        // The picture's own colour tags, else the container's (2 = unspecified).
+        let tag = |own: i32, stream: i32| if own != 2 && own != 0 { own } else { stream };
+        let (transfer, primaries) = (tag(due.picture.transfer, info.transfer), tag(due.picture.primaries, info.primaries));
+        let space = g.space();
+        let white = space.is_scrgb().then(|| space.white_scale());
+        // Only HDR asks for the panel's peak (its first reading costs ~12 ms).
+        let headroom = if yuv::is_hdr(transfer) { space.headroom() } else { 1.0 };
+        let look = Look { white, headroom, transfer, primaries };
+        v.sdr = !yuv::is_wide(transfer, primaries);
         if v.conv.is_none() {
             match Converter::new(g.d3d()) {
                 Ok(c) => v.conv = Some(c),
@@ -366,12 +483,29 @@ impl App {
         if v.bitmap.is_none() {
             let f = &due.picture;
             crate::trace::mark(format!(
-                "video: first picture {}x{} layout {} planes {} {}-bit (shift {}) chroma {}/{} matrix {} full {}",
-                f.width, f.height, f.layout, f.nplanes, f.bit_depth, f.shift, f.chroma_w_shift, f.chroma_h_shift, f.matrix, f.full_range
+                "video: first picture {}x{} layout {} planes {} {}-bit (shift {}) chroma {}/{} matrix {} full {}{}; {look:?}",
+                f.width,
+                f.height,
+                f.layout,
+                f.nplanes,
+                f.bit_depth,
+                f.shift,
+                f.chroma_w_shift,
+                f.chroma_h_shift,
+                f.matrix,
+                f.full_range,
+                if f.uploaded.is_some() { ", uploaded by the decode thread" } else { "" }
             ));
+            crate::trace::mark(format!("video: vsyncs every {:.2} ms, timed by the {timing}", period.as_secs_f64() * 1000.0));
         }
         let conv = v.conv.as_mut().unwrap();
-        match conv.convert(&due.picture, info.rotation, w, h, white) {
+        let t = Instant::now();
+        let converted = conv.convert(&due.picture, due.picture.uploaded.as_ref(), info.rotation, w, h, &look);
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        v.stats.pictures += 1;
+        v.stats.convert_ms += ms;
+        v.stats.convert_max_ms = v.stats.convert_max_ms.max(ms);
+        match converted {
             Ok(remade) => {
                 if remade || v.bitmap.is_none() {
                     let format = if white.is_some() { DXGI_FORMAT_R16G16B16A16_FLOAT } else { DXGI_FORMAT_B8G8R8A8_UNORM };
@@ -382,9 +516,9 @@ impl App {
         }
     }
 
-    /// The current picture, to draw instead of the still.
-    pub(super) fn video_bitmap(&self) -> Option<ID2D1Bitmap1> {
-        self.video.as_ref().filter(|_| self.placeholder.is_none()).and_then(|v| v.bitmap.clone())
+    /// The current picture, to draw instead of the still, and whether it's SDR (see `VideoView::sdr`).
+    pub(super) fn video_bitmap(&self) -> Option<(ID2D1Bitmap1, bool)> {
+        self.video.as_ref().filter(|_| self.placeholder.is_none()).and_then(|v| Some((v.bitmap.clone()?, v.sdr)))
     }
 
     fn player(&mut self) -> Option<&mut Player> {

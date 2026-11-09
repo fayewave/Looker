@@ -310,6 +310,12 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Linear 0..1 to sRGB-encoded.
+#[cfg(test)]
+pub fn srgb_encode(c: f32) -> f32 {
+    if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
 /// f32 to IEEE half (round to nearest; enough for pixels in 0..65504).
 pub fn f16(v: f32) -> u16 {
     let b = v.to_bits();

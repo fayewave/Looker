@@ -520,10 +520,10 @@ impl App {
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
                 if let Some(d) = &doc {
                     self.draw_pages(g, d, dest, bg);
-                } else if let Some(v) = self.video_bitmap() {
-                    // A video's picture: SDR, upright and at the still's size, so the same box.
-                    g.draw_photo(&v, dest, 1.0, true);
-                    self.last_drawn = Some((v, dest, true));
+                } else if let Some((v, sdr)) = self.video_bitmap() {
+                    // A video's picture: upright and at the still's size, so the same box.
+                    g.draw_photo(&v, dest, 1.0, sdr);
+                    self.last_drawn = Some((v, dest, sdr));
                 } else if self.turns == 0 {
                     g.draw_photo(frame, dest, 1.0, c.sdr());
                     self.last_drawn = Some((frame.clone(), dest, c.sdr()));
