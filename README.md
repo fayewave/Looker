@@ -16,7 +16,7 @@ it keeps itself up to date.
 
 ---
 
-<img src="brand/screenshots/readme-viewer.jpg" alt="A photo filling Looker's window" width="650">
+<img src="brand/screenshots/readme-fit.jpg" alt="A photo in Looker" width="650">
 
 ## File explorer
 
@@ -27,7 +27,7 @@ it keeps itself up to date.
 - Move, copy, rename, delete and new folder, with undo. Drag onto folders and tabs, or out to other apps.
 - Favourites and colour tags.
 
-<img src="brand/screenshots/readme-browse-mode.jpg" alt="Browse mode: tabs, the sidebar and large thumbnails" width="650">
+<img src="brand/screenshots/readme-explorer.jpg" alt="Browse mode: tabs, the sidebar and the file list" width="650">
 
 ## Viewer
 
