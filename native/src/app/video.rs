@@ -36,7 +36,6 @@ pub(super) const SPEEDS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 const BAR_H: f32 = 44.0;
 /// What the bar takes from the bottom of the photo's area, its margin included (toasts go above it).
 pub(super) const BAR_ROOM: f32 = BAR_H + 16.0;
-const BAR_PAD: f32 = 6.0;
 const BAR_BTN: f32 = 32.0;
 const BAR_MAX_W: f32 = 760.0;
 const VOLUME_W: f32 = 76.0;
@@ -74,8 +73,6 @@ pub(super) struct VideoView {
     still: Option<(i64, ID2D1Bitmap1, f32, f32)>,
     /// The loop button, once pressed; until then the setting decides.
     looping: Option<bool>,
-    /// M or the speaker turned the sound on in browse mode (which otherwise plays muted).
-    browse_sound: bool,
 }
 
 impl VideoView {
@@ -102,13 +99,14 @@ impl VideoView {
 /// The bar's parts, laid out from the image area each frame.
 struct BarLayout {
     bar: D2D_RECT_F,
-    play: D2D_RECT_F,
-    elapsed: D2D_RECT_F,
-    /// The seek bar's line, and the taller strip that takes its clicks.
+    radius: f32,
+    play: Option<D2D_RECT_F>,
+    /// The two times, left and right of the seek bar.
+    times: Option<(D2D_RECT_F, D2D_RECT_F)>,
+    /// The seek bar's line, and the taller strip that takes its clicks. Always there.
     track: D2D_RECT_F,
     seek: D2D_RECT_F,
-    total: D2D_RECT_F,
-    mute: D2D_RECT_F,
+    mute: Option<D2D_RECT_F>,
     volume: Option<D2D_RECT_F>,
     speed: Option<D2D_RECT_F>,
     looped: Option<D2D_RECT_F>,
@@ -206,7 +204,6 @@ impl App {
             preview: None,
             still: None,
             looping: None,
-            browse_sound: false,
         });
     }
 
@@ -330,8 +327,6 @@ impl App {
         if p.info.is_none() {
             return;
         }
-        // Browse mode mutes (until M or the speaker turns it on there): followed as it comes and goes.
-        p.set_volume(volume, muted);
         // Scrubbing: the next seek once the last one's picture is up.
         if let Some(s) = &mut v.scrub {
             if s.sent != Some(s.at) && (s.sent.is_none() || p.settled()) {
@@ -404,17 +399,14 @@ impl App {
         self.set_video_volume(self.settings.video_volume + delta, true);
     }
 
-    /// Whether the sound is off: muted, or in browse mode (where a preview plays muted until M turns it on).
+    /// Whether the sound is off. Browse mode doesn't change it (Faye, 2026-11-10).
     pub(super) fn video_muted(&self) -> bool {
-        self.settings.video_muted || (self.browsing() && !self.video.as_ref().is_some_and(|v| v.browse_sound))
+        self.settings.video_muted
     }
 
     fn set_video_volume(&mut self, v: f32, toast: bool) {
         self.settings.video_volume = (v.clamp(0.0, 1.0) * 100.0).round() / 100.0;
         self.settings.video_muted = false;
-        if let Some(v) = self.video.as_mut() {
-            v.browse_sound = true; // a volume change means sound, browse mode or not
-        }
         self.apply_volume();
         if toast {
             self.show_toast(format!("Volume {:.0}%", self.settings.video_volume * 100.0), true);
@@ -429,16 +421,9 @@ impl App {
         settings::save(&self.settings);
     }
 
-    /// M, the speaker button: from what's heard now (browse mode's own muting included) to the opposite.
+    /// M, the speaker button.
     fn toggle_mute(&mut self) {
-        if self.video_muted() {
-            self.settings.video_muted = false;
-            if let Some(v) = self.video.as_mut() {
-                v.browse_sound = true;
-            }
-        } else {
-            self.settings.video_muted = true;
-        }
+        self.settings.video_muted = !self.settings.video_muted;
         self.apply_volume();
     }
 
@@ -574,49 +559,69 @@ impl App {
 
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
         let a = self.image_area();
-        let room = a.right - a.left - 32.0;
-        if room < 240.0 {
+        let aw = a.right - a.left;
+        // A small photo area (browse mode's preview) gets a compact bar on tighter margins.
+        let compact = aw < 360.0;
+        let (margin, h, btn) = if compact { (8.0, 30.0, 24.0) } else { (16.0, BAR_H, BAR_BTN) };
+        let pad = (h - btn) / 2.0;
+        let w = (aw - 2.0 * margin).min(BAR_MAX_W);
+        if w < 40.0 || a.bottom - a.top < h + 2.0 * margin {
             return None;
         }
-        let w = room.min(BAR_MAX_W);
         let x = g.snap((a.left + a.right - w) / 2.0);
-        let bar = rect(x, g.snap(a.bottom - 16.0 - BAR_H), w, BAR_H);
-        let y = bar.top + BAR_PAD;
+        let bar = rect(x, g.snap(a.bottom - margin - h), w, h);
+        let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
         let tw = g.measure_tabular(&wide(if long { "0:00:00" } else { "00:00" }), &g.fonts.caption).ceil() + 2.0;
-        // Narrow: the loop button goes first, then the volume slider, then the speed.
-        let wide_enough = |extra: f32| w >= 2.0 * BAR_PAD + 2.0 * BAR_BTN + 2.0 * tw + 24.0 + 160.0 + extra;
-        let with_speed = wide_enough(SPEED_W + 4.0);
-        let with_volume = with_speed && wide_enough(SPEED_W + 4.0 + VOLUME_W);
-        let with_loop = with_volume && wide_enough(SPEED_W + 4.0 + VOLUME_W + BAR_BTN + 4.0);
-        let play = rect(bar.left + BAR_PAD, y, BAR_BTN, BAR_BTN);
-        let mut right = bar.right - BAR_PAD;
+        // As it narrows the loop button goes first, then the volume slider, the speed (each while the seek bar
+        // would stay 160 wide), then the times, the speaker and play (while it would stay 48): the seek bar stays.
+        let essentials = |play: bool, times: bool, mute: bool| {
+            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + 12.0 } else { 0.0 } + if mute { btn + 8.0 } else { 0.0 }
+        };
+        let (with_play, with_times, with_mute) =
+            [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
+        let base = essentials(with_play, with_times, with_mute) + 160.0;
+        let all = with_play && with_times && with_mute;
+        let with_speed = all && base + SPEED_W + 4.0 <= w;
+        let with_volume = with_speed && base + SPEED_W + 4.0 + VOLUME_W <= w;
+        let with_loop = with_volume && base + SPEED_W + 4.0 + VOLUME_W + btn + 4.0 <= w;
+        let play = with_play.then(|| rect(bar.left + pad, y, btn, btn));
+        let mut right = bar.right - pad;
         let looped = with_loop.then(|| {
-            right -= BAR_BTN;
-            let r = rect(right, y, BAR_BTN, BAR_BTN);
+            right -= btn;
+            let r = rect(right, y, btn, btn);
             right -= 4.0;
             r
         });
         let speed = with_speed.then(|| {
             right -= SPEED_W;
-            let r = rect(right, y, SPEED_W, BAR_BTN);
+            let r = rect(right, y, SPEED_W, btn);
             right -= 4.0;
             r
         });
         let volume = with_volume.then(|| {
             right -= VOLUME_W;
-            rect(right, y, VOLUME_W, BAR_BTN)
+            rect(right, y, VOLUME_W, btn)
         });
-        right -= BAR_BTN;
-        let mute = rect(right, y, BAR_BTN, BAR_BTN);
-        right -= 8.0;
-        let total = rect(right - tw, y, tw, BAR_BTN);
-        let elapsed = rect(play.right + 6.0, y, tw, BAR_BTN);
-        let (tl, tr) = (elapsed.right + 12.0, total.left - 12.0);
-        let cy = y + BAR_BTN / 2.0;
+        let mute = with_mute.then(|| {
+            right -= btn;
+            let r = rect(right, y, btn, btn);
+            right -= 8.0;
+            r
+        });
+        let mut left = play.map_or(bar.left + pad, |p| p.right + 6.0);
+        let times = with_times.then(|| {
+            let elapsed = rect(left, y, tw, btn);
+            right -= tw;
+            let total = rect(right, y, tw, btn);
+            left += tw;
+            (elapsed, total)
+        });
+        let (tl, tr) = (left + 6.0 + if times.is_some() { 6.0 } else { 0.0 }, right - 6.0 - if times.is_some() { 6.0 } else { 0.0 });
+        let cy = y + btn / 2.0;
         let track = rect(tl, cy - 2.0, (tr - tl).max(1.0), 4.0);
-        let seek = rect(tl - 6.0, bar.top, (tr - tl) + 12.0, BAR_H);
-        Some(BarLayout { bar, play, elapsed, track, seek, total, mute, volume, speed, looped })
+        let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
+        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, speed, looped })
     }
 
     /// The bar, over the photo (above the page bar's place: a video has no pages). Returns whether it's fading.
@@ -640,9 +645,9 @@ impl App {
         // Hits only while it's (mostly) there: a click on a fading bar is meant for the video.
         let live = a > 0.5;
         g.push_fade(a, 1.0, 0.0, 0.0);
-        ui::shadow(g, l.bar, 10.0);
-        g.fill_round(l.bar, 10.0, rgb(raised.popup));
-        ui::stroke(g, l.bar, 10.0, rgb(raised.divider));
+        ui::shadow(g, l.bar, l.radius);
+        g.fill_round(l.bar, l.radius, rgb(raised.popup));
+        ui::stroke(g, l.bar, l.radius, rgb(raised.divider));
         if live {
             self.hits.add(Hit::VideoBar, l.bar);
         }
@@ -654,12 +659,16 @@ impl App {
             ui::button_frame(g, r, kind, &st)
         };
         let glyph = if ended { 0xE72C } else if playing { 0xE769 } else { 0xE768 };
-        let fg = button(self, Hit::VideoPlay, l.play, ui::Kind::Subtle);
-        g.text(&[glyph], &g.fonts.body_icons, l.play, fg, Align::Center);
+        if let Some(r) = l.play {
+            let fg = button(self, Hit::VideoPlay, r, ui::Kind::Subtle);
+            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+        }
 
         let long = dur >= 3_600_000_000;
-        g.text_tabular(&wide(&clock_text(pos, long)), &g.fonts.caption, l.elapsed, rgb(raised.text), Align::Right);
-        g.text_tabular(&wide(&clock_text(dur, long)), &g.fonts.caption, l.total, rgb(raised.label), Align::Left);
+        if let Some((elapsed, total)) = l.times {
+            g.text_tabular(&wide(&clock_text(pos, long)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
+            g.text_tabular(&wide(&clock_text(dur, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
+        }
 
         // The seek bar: the line, what's played in the accent, the knob while the pointer is on it.
         if live {
@@ -696,8 +705,10 @@ impl App {
         } else {
             0xE995
         };
-        let fg = button(self, Hit::VideoMute, l.mute, ui::Kind::Subtle);
-        g.text(&[glyph], &g.fonts.body_icons, l.mute, fg, Align::Center);
+        if let Some(r) = l.mute {
+            let fg = button(self, Hit::VideoMute, r, ui::Kind::Subtle);
+            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+        }
         if let Some(r) = l.volume {
             if live {
                 self.hits.add(Hit::VideoVolume, r);
