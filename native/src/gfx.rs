@@ -157,8 +157,8 @@ pub struct Gfx {
     pub brush: ID2D1SolidColorBrush,
     pub fonts: Fonts,
     pub dpi: f32,
-    /// The checkerboard's brush, for the DPI and light or dark it was made for.
-    checker: Option<(ID2D1BitmapBrush1, f32, bool)>,
+    /// The checkerboard's brush, for the DPI and the squares (a key of the theme's colours) it was made for.
+    checker: Option<(ID2D1BitmapBrush1, f32, u32)>,
     /// The space the swap chain is in (see colour.rs). Under scRGB the swap chain is 16-bit float and holds
     /// only the photo layer; everything else draws into `ui` (8-bit sRGB, the same pixels as an SDR frame),
     /// laid over it at the end of the frame.
@@ -184,16 +184,10 @@ pub enum Align {
     Center,
 }
 
-/// The checkerboard's two squares, in a dark theme and in the light one. Neutral greys, not the theme's
-/// tint: they sit right around the photo.
-/// A hair apart: they read as texture, not a pattern (Faye, 2026-11-09: less visible than the 7-step squares).
-const CHECKER_ON_DARK: (u32, u32) = (0x0F0F0F, 0x131313);
-const CHECKER_ON_LIGHT: (u32, u32) = (0xECECEC, 0xF1F1F1);
-
-/// The checkerboard's darker square for the theme in use: also the plain viewport fill when the checkerboard is
-/// off.
+/// The checkerboard's darker square for the theme in use (`Theme::checker`: neutral greys a hair apart, so they
+/// read as texture, not a pattern): also the plain viewport fill when the checkerboard is off.
 pub fn checker_plain() -> u32 {
-    if crate::theme::t().dark { CHECKER_ON_DARK.0 } else { CHECKER_ON_LIGHT.0 }
+    crate::theme::t().checker[0]
 }
 
 pub fn rgb(hex: u32) -> D2D1_COLOR_F {
@@ -572,11 +566,12 @@ impl Gfx {
     /// 8-DIP squares, rendered at the display's DPI so the squares stay crisp and whole-pixel, anchored at the
     /// viewport's top-left.
     pub fn checkerboard(&mut self, r: D2D_RECT_F) {
-        let dark = crate::theme::t().dark;
+        let squares = crate::theme::t().checker;
+        let key = squares[0] ^ (squares[1] << 1);
         #[allow(non_snake_case)]
-        let (DARK, LIGHT) = if dark { CHECKER_ON_DARK } else { CHECKER_ON_LIGHT };
+        let (DARK, LIGHT) = (squares[0], squares[1]);
         let scale = self.dpi / 96.0;
-        if self.checker.as_ref().is_none_or(|(_, d, k)| *d != self.dpi || *k != dark) {
+        if self.checker.as_ref().is_none_or(|(_, d, k)| *d != self.dpi || *k != key) {
             let cell = (8.0 * scale).round().max(1.0) as u32;
             let n = cell * 2;
             // Under scRGB the tile is half floats at the photo layer's level (`photo_rgb`).
@@ -618,7 +613,7 @@ impl Gfx {
                     interpolationMode: D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
                 };
                 let Ok(brush) = self.dev.dc.CreateBitmapBrush(&tile, Some(&bp), None) else { return };
-                self.checker = Some((brush, self.dpi, dark));
+                self.checker = Some((brush, self.dpi, key));
             }
         }
         if let Some((brush, _, _)) = &self.checker {

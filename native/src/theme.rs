@@ -100,39 +100,43 @@ pub struct Theme {
     pub field: u32,
     /// An idle button's or chip's fill (opaque, so it's the same grey on any surface).
     pub button: u32,
+    /// The checkerboard's two squares behind the photo (neutral greys a hair apart).
+    pub checker: [u32; 2],
     /// A button that's on (a panel's toggle, the picked theme chip), the file the explorer is on and the
     /// Settings section open: `button` tinted with the accent (under an accent outline, on the buttons and
     /// rows). The one control fill that's red.
     pub selected: u32,
 }
 
-// Nearly black, warmed a touch; its greys darker than Garnet's, close to the old Looker's black theme.
+// Black, as the old Looker's black theme was: the page pure black, the greys of the cards and controls a step
+// above it, the popups warmed a touch.
 pub const EMBER: Theme = Theme {
     dark: true,
     ink: 0xFFFFFF,
-    sidebar: 0x0A0A0A,
-    content: 0x060303,
-    stripe: 0x171010,
-    divider: 0x242424,
-    track: 0x2C2C2C,
+    sidebar: 0x060606,
+    content: 0x000000,
+    stripe: 0x0D0909,
+    divider: 0x1C1C1C,
+    track: 0x242424,
     text: 0xEEEEEE,
     label: 0xACACAC,
     placeholder: 0x878787,
     icon: 0xA4A4A4,
     accent: 0xF52524,
     on_accent: 0xFFFFFF,
-    accent_fill: 0x5A2626,
-    hover_fill: 0x242424,
-    row_select: 0x2C2C2C,
+    accent_fill: 0x4A1E1E,
+    hover_fill: 0x1C1C1C,
+    row_select: 0x242424,
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
-    popup: 0x2A1C1C,
-    field: 0x0F0F0F,
-    button: 0x161616,
-    selected: 0x4E1A1A,
+    popup: 0x1A1212,
+    field: 0x090909,
+    button: 0x101010,
+    selected: 0x3C1414,
+    checker: [0x070707, 0x0A0A0A],
 };
-pub const EMBER_RAISED: Theme = Theme { divider: 0x333333, track: 0x383838, field: 0x121212, button: 0x1F1F1F, hover_fill: 0x2C2C2C, row_select: 0x363636, ..EMBER };
+pub const EMBER_RAISED: Theme = Theme { divider: 0x2A2A2A, track: 0x303030, field: 0x0C0C0C, button: 0x181818, hover_fill: 0x242424, row_select: 0x2C2C2C, ..EMBER };
 
 // Dark, on deep wine.
 pub const GARNET: Theme = Theme {
@@ -159,6 +163,7 @@ pub const GARNET: Theme = Theme {
     field: 0x262626,
     button: 0x2E2E2E,
     selected: 0x602C2C,
+    checker: [0x0F0F0F, 0x131313],
 };
 pub const GARNET_RAISED: Theme = Theme { divider: 0x4E4E4E, track: 0x555555, field: 0x2B2B2B, button: 0x3A3A3A, hover_fill: 0x4A4A4A, row_select: 0x555555, ..GARNET };
 
@@ -187,6 +192,7 @@ pub const BLUSH: Theme = Theme {
     field: 0xFFFFFF,
     button: 0xEEEEEE,
     selected: 0xF2CACA,
+    checker: [0xECECEC, 0xF1F1F1],
 };
 pub const BLUSH_RAISED: Theme = Theme { divider: 0xE2E2E2, track: 0xD8D8D8, field: 0xF4F4F4, ..BLUSH };
 
