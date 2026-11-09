@@ -894,8 +894,9 @@ pub fn icon_label_button(g: &Gfx, r: D2D_RECT_F, glyph: u16, text: &str, kind: K
     let x = g.snap(r.left + (r.right - r.left - 16.0 - tw) / 2.0);
     g.text(&[glyph], &g.fonts.icons, rect(x, r.top, 16.0, r.bottom - r.top), fg, Align::Center);
     if !text.is_empty() {
-        // A pixel up: centred, Inter's capitals sit that much low beside the icon.
-        label(g, text, &g.fonts.body, rect(x + 24.0, r.top - 1.0, tw, r.bottom - r.top), fg, Align::Left);
+        // Two pixels up: centred in the box, a mostly lowercase label sat below the icon's middle (its
+        // x-height centred a pixel low, Inter's capitals half a pixel). This puts its x-height on the icon's centre.
+        label(g, text, &g.fonts.body, rect(x + 24.0, r.top - 2.0, tw, r.bottom - r.top), fg, Align::Left);
     }
 }
 
