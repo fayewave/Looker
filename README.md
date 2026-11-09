@@ -25,7 +25,7 @@ it keeps itself up to date.
 - Move, copy, rename, delete and new folder, with undo. Drag onto folders and tabs, or out to other apps.
 - Favourites and colour tags.
 
-<img src="brand/screenshots/readme-browse.jpg" alt="Browse mode: tabs, the sidebar and large thumbnails" width="800">
+<img src="brand/screenshots/readme-browse-mode.jpg" alt="Browse mode: tabs, the sidebar and large thumbnails" width="800">
 
 ## Viewer
 
@@ -36,7 +36,7 @@ it keeps itself up to date.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 
-<img src="brand/screenshots/readme-info.jpg" alt="The info panel and the thumbnail strip" width="800">
+<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="800">
 
 ## Formats
 
