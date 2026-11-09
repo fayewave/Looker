@@ -78,6 +78,10 @@ pub(super) struct CrumbPopup {
     pub cursor: Option<usize>,
     pub scroll: f32,
     pub max_scroll: f32,
+    /// When it opened: it fades in growing from 94 % about its top-left corner, as menus do.
+    pub opened: Instant,
+    /// The crumb it's for (shown outlined while it's open).
+    pub crumb: Option<usize>,
 }
 
 /// A text box of the explorer's with the keyboard.
@@ -128,14 +132,24 @@ pub(super) struct Meta {
     pub lens: Option<String>,
 }
 
-/// A column header dragged along the headers.
+/// A column header dragged along the headers (its cells come with it).
 pub(super) struct HeaderDrag {
     pub idx: usize,
     pub start_x: f32,
     pub x: f32,
+    /// Where in the header the pointer took hold of it.
+    pub grab: f32,
     pub active: bool,
-    /// Where it would go: before the shown column at this position.
+    /// Where it would land: before the other shown column at this position (worked out as it's drawn).
     pub insert: usize,
+}
+
+/// A column edge being dragged: which column's right edge (its place among the shown ones), where the
+/// press was, and every shown column's index and width then.
+pub(super) struct ColResize {
+    pub pos: usize,
+    pub x0: f32,
+    pub widths: Vec<(usize, ColKind, f32)>,
 }
 
 pub(super) struct Explorer {
@@ -191,10 +205,16 @@ pub(super) struct Explorer {
     pub(super) xsort: Option<(ColKind, bool)>,
     /// A column header being dragged to a new place.
     pub(super) header_drag: Option<HeaderDrag>,
-    /// A column's right edge being dragged: the column, where the press was, its width then.
-    pub(super) col_resize: Option<(usize, f32, f32)>,
+    pub(super) col_resize: Option<ColResize>,
+    /// Where each column is drawn, eased while columns move (a drag, a menu's Shift or fit).
+    pub(super) col_pos: HashMap<ColKind, Ease<2>>,
+    pub(super) col_anim_until: Instant,
+    /// The shown columns as last laid out, in order: index, kind, width.
+    pub(super) col_shown: Vec<(usize, ColKind, f32)>,
     /// The scrollbar being dragged: the pointer's offset from the thumb's top.
     pub(super) thumb_drag: Option<f32>,
+    /// The sidebar's edge being dragged: where the press was, and its width then.
+    pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
     pub(super) browse: Ease<1>,
     pub(super) tags: crate::tags::Tags,
@@ -247,7 +267,11 @@ impl Explorer {
             xsort: None,
             header_drag: None,
             col_resize: None,
+            col_pos: HashMap::new(),
+            col_anim_until: Instant::now(),
+            col_shown: Vec::new(),
             thumb_drag: None,
+            side_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
@@ -1024,6 +1048,9 @@ impl App {
         let anchor = self.hits.rect_of(Hit::Crumb(last)).unwrap_or(anchor);
         let dir = self.explorer.folder();
         self.open_popup(dir, anchor);
+        if let Some(pp) = &mut self.explorer.path_edit {
+            pp.crumb = Some(last);
+        }
     }
 
     /// The popup for crumb `i` (its chevron, a right-click on it): peeks into that folder without leaving
@@ -1033,7 +1060,10 @@ impl App {
         match explorer::crumbs(&place).get(i) {
             Some(Place::Folder(f)) => self.open_popup(Some(f.clone()), anchor),
             Some(Place::Computer) => self.open_popup(None, anchor),
-            _ => {}
+            _ => return,
+        }
+        if let Some(pp) = &mut self.explorer.path_edit {
+            pp.crumb = Some(i);
         }
     }
 
@@ -1043,7 +1073,7 @@ impl App {
         let mut edit = TextEdit::new(&text);
         edit.select_all();
         self.explorer.path_edit =
-            Some(CrumbPopup { field: TextField::new(edit), anchor, listed: None, serial: 0, entries: Vec::new(), shown: Vec::new(), cursor: None, scroll: 0.0, max_scroll: 0.0 });
+            Some(CrumbPopup { field: TextField::new(edit), anchor, listed: None, serial: 0, entries: Vec::new(), shown: Vec::new(), cursor: None, scroll: 0.0, max_scroll: 0.0, opened: Instant::now(), crumb: None });
         self.popup_list(dir);
         self.explorer_focus_field(EField::Path);
     }
@@ -1462,52 +1492,104 @@ impl App {
         self.invalidate();
     }
 
-    pub(super) fn header_press(&mut self, idx: usize, x: f32) {
-        self.explorer.header_drag = Some(HeaderDrag { idx, start_x: x, x, active: false, insert: idx });
+    /// Columns ease to where they're going for a moment (a move, a fit, one shown or closed).
+    pub(super) fn animate_columns(&mut self) {
+        self.explorer.col_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        self.invalidate();
     }
 
-    /// Dragging a header: past a few DIPs it lifts, and the gap it would go into follows the pointer.
+    pub(super) fn header_press(&mut self, idx: usize, x: f32) {
+        let left = self.hits.rect_of(Hit::ColHeader(idx as u8)).map_or(x, |r| r.left);
+        self.explorer.header_drag = Some(HeaderDrag { idx, start_x: x, x, grab: x - left, active: false, insert: 0 });
+    }
+
+    /// Dragging a header: past a few DIPs it lifts and follows the pointer with its cells; the others ease
+    /// aside round the slot it would land in (worked out as the headers are drawn).
     pub(super) fn header_drag_move(&mut self, x: f32) {
-        let shown: Vec<(usize, D2D_RECT_F)> =
-            (0..self.settings.explorer_columns.len()).filter_map(|i| self.hits.rect_of(Hit::ColHeader(i as u8)).map(|r| (i, r))).collect();
         let Some(d) = &mut self.explorer.header_drag else { return };
         d.x = x;
         if !d.active && (x - d.start_x).abs() > DRAG_START {
             d.active = true;
+            self.hide_tooltip();
         }
-        if d.active {
-            d.insert = shown.iter().filter(|(_, r)| (r.left + r.right) / 2.0 < x).map(|(i, _)| i + 1).max().unwrap_or(0);
-        }
+        self.explorer.col_anim_until = Instant::now() + std::time::Duration::from_millis(400);
         self.invalidate();
     }
 
-    /// The button came up on a header: a drag moves the column. True when it was a drag (not a click).
+    /// The button came up on a header: a drag drops the column into its slot, easing there from where it was
+    /// let go. True when it was a drag (not a click, which sorts).
     pub(super) fn header_release(&mut self) -> bool {
         let Some(d) = self.explorer.header_drag.take() else { return false };
         if !d.active {
             return false;
         }
+        // The others, as shown, in order; the column goes before the one at `insert`, else after the last.
+        let others: Vec<usize> = self.explorer.col_shown.iter().map(|&(i, _, _)| i).filter(|&i| i != d.idx).collect();
         let cols = &mut self.settings.explorer_columns;
         if d.idx < cols.len() {
+            let before = others.get(d.insert).map(|&i| cols[i].0);
+            let after = others.last().map(|&i| cols[i].0);
             let c = cols.remove(d.idx);
-            let at = if d.insert > d.idx { d.insert - 1 } else { d.insert };
+            let at = match (before, after) {
+                (Some(b), _) => cols.iter().position(|(k, _)| *k == b).unwrap_or(0),
+                (None, Some(a)) => cols.iter().position(|(k, _)| *k == a).map_or(cols.len(), |p| p + 1),
+                (None, None) => 0,
+            };
             cols.insert(at.min(cols.len()), c);
         }
+        self.animate_columns();
         self.save_columns();
         true
     }
 
+    /// A press on the edge between two columns.
     pub(super) fn col_edge_press(&mut self, idx: usize, x: f32) {
-        if let Some(&(_, w)) = self.settings.explorer_columns.get(idx) {
-            self.explorer.col_resize = Some((idx, x, w));
+        let widths = self.explorer.col_shown.clone();
+        if let Some(pos) = widths.iter().position(|&(i, _, _)| i == idx) {
+            self.explorer.col_resize = Some(ColResize { pos, x0: x, widths });
         }
     }
 
+    /// Dragging an edge, as File Pilot and Transient do: the column left of it takes the change, and the
+    /// columns to its right share it in proportion (down to their narrowest), so the edge stays under the
+    /// pointer and Name, which fills the rest, sizes like the others.
     pub(super) fn col_edge_drag(&mut self, x: f32) {
-        let Some((idx, x0, w0)) = self.explorer.col_resize else { return };
-        if let Some(c) = self.settings.explorer_columns.get_mut(idx) {
-            c.1 = (w0 + x - x0).round().clamp(40.0, 800.0);
+        let Some(r) = &self.explorer.col_resize else { return };
+        let min = |c: ColKind| if c == ColKind::Name { 120.0 } else { 40.0 };
+        let mut w: Vec<f32> = r.widths.iter().map(|&(_, _, w)| w).collect();
+        let p = r.pos;
+        if p + 1 >= w.len() {
+            return;
         }
+        let d = x - r.x0;
+        if d > 0.0 {
+            let room: f32 = (p + 1..w.len()).map(|k| (w[k] - min(r.widths[k].1)).max(0.0)).sum();
+            let d = d.min(room);
+            if room > 0.0 {
+                w[p] += d;
+                for k in p + 1..w.len() {
+                    let spare = (w[k] - min(r.widths[k].1)).max(0.0);
+                    w[k] -= spare / room * d;
+                }
+            }
+        } else {
+            let d = (-d).min((w[p] - min(r.widths[p].1)).max(0.0));
+            let total: f32 = (p + 1..w.len()).map(|k| w[k]).sum();
+            w[p] -= d;
+            for k in p + 1..w.len() {
+                w[k] += if total > 0.0 { w[k] / total * d } else { d / (w.len() - p - 1) as f32 };
+            }
+        }
+        // Name's own width is what the others leave, so only theirs are kept.
+        let updates: Vec<(usize, ColKind, f32)> = r.widths.iter().zip(&w).map(|(&(i, c, _), &nw)| (i, c, nw)).collect();
+        for (i, c, nw) in updates {
+            if c != ColKind::Name {
+                if let Some(col) = self.settings.explorer_columns.get_mut(i) {
+                    col.1 = nw.round().clamp(40.0, 1200.0);
+                }
+            }
+        }
+        self.explorer.col_anim_until = Instant::now();
         self.invalidate();
     }
 
@@ -1533,6 +1615,7 @@ impl App {
         if let Some(col) = self.settings.explorer_columns.get_mut(idx) {
             col.1 = w.ceil().clamp(40.0, 600.0);
         }
+        self.animate_columns();
         self.save_columns();
     }
 
@@ -1547,6 +1630,7 @@ impl App {
     pub(super) fn col_close(&mut self, idx: usize) {
         if self.settings.explorer_columns.get(idx).is_some_and(|(c, _)| *c != ColKind::Name) {
             let (c, _) = self.settings.explorer_columns.remove(idx);
+            self.animate_columns();
             if self.explorer.xsort.is_some_and(|(k, _)| k == c) {
                 self.explorer.xsort = None;
                 self.explorer.resort(self.settings.sort, self.settings.explorer_group);
@@ -1560,12 +1644,14 @@ impl App {
         let to = if right { idx + 1 } else { idx.wrapping_sub(1) };
         if idx < cols.len() && to < cols.len() {
             cols.swap(idx, to);
+            self.animate_columns();
             self.save_columns();
         }
     }
 
     pub(super) fn col_restore(&mut self) {
         self.settings.explorer_columns = ColKind::defaults();
+        self.animate_columns();
         if self.explorer.xsort.take().is_some() {
             self.explorer.resort(self.settings.sort, self.settings.explorer_group);
         }
@@ -1578,9 +1664,37 @@ impl App {
             Some(i) => self.col_close(i),
             None => {
                 self.settings.explorer_columns.push((c, c.default_width()));
+                self.animate_columns();
                 self.save_columns();
             }
         }
+    }
+
+    // --- Sidebar width --------------------------------------------------------------------------------
+
+    pub(super) fn sidebar_grip_press(&mut self, x: f32) {
+        self.explorer.side_drag = Some((x, self.settings.sidebar_width));
+    }
+
+    pub(super) fn sidebar_grip_drag(&mut self, x: f32) {
+        let Some((x0, w0)) = self.explorer.side_drag else { return };
+        let w = (w0 + x - x0).round().clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
+        if w != self.settings.sidebar_width {
+            self.settings.sidebar_width = w;
+            self.invalidate();
+        }
+    }
+
+    pub(super) fn sidebar_grip_release(&mut self) {
+        if self.explorer.side_drag.take().is_some() {
+            settings::save(&self.settings);
+        }
+    }
+
+    pub(super) fn sidebar_grip_reset(&mut self) {
+        self.settings.sidebar_width = crate::settings::SIDEBAR_WIDTH;
+        settings::save(&self.settings);
+        self.invalidate();
     }
 
     // --- Scrollbar ----------------------------------------------------------------------------------
@@ -1819,6 +1933,7 @@ impl App {
                     | Hit::ColHeader(_)
                     | Hit::ColEdge(_)
                     | Hit::ExplorerThumb
+                    | Hit::SidebarGrip
                     | Hit::ExplorerFilter
                     | Hit::ExplorerFilterClear
                     | Hit::ExplorerRename

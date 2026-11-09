@@ -226,6 +226,27 @@ pub fn link_fill(g: &Gfx, r: D2D_RECT_F, hover: f32, pressed: bool) {
     }
 }
 
+/// Transient's states for things like crumbs: pressed, solid accent; hover, the hover fill with an accent
+/// outline (fading out); `on` (its popup is open), the accent tint with the outline. Returns the text colour.
+pub fn crumb_frame(g: &Gfx, r: D2D_RECT_F, s: &State, on: bool, idle_text: D2D1_COLOR_F) -> D2D1_COLOR_F {
+    let t = theme::t();
+    if s.pressed {
+        g.fill_round(r, 4.0, rgb(t.accent));
+        return rgb(t.on_accent);
+    }
+    if on {
+        g.fill_round(r, 4.0, rgb(t.selected));
+        stroke(g, r, 4.0, rgb(t.accent));
+        return rgb(t.text);
+    }
+    if s.hover > 0.0 {
+        g.fill_round(r, 4.0, rgba(t.hover_fill, s.hover));
+        stroke(g, r, 4.0, faded(rgb(t.accent), s.hover));
+    }
+    let k = s.hover;
+    D2D1_COLOR_F { r: idle_text.r + (rgb(t.text).r - idle_text.r) * k, g: idle_text.g + (rgb(t.text).g - idle_text.g) * k, b: idle_text.b + (rgb(t.text).b - idle_text.b) * k, a: 1.0 }
+}
+
 /// A link's text colour: the label colour, warming to the text colour with the hover.
 pub fn link_color(hover: f32) -> D2D1_COLOR_F {
     let t = theme::t();

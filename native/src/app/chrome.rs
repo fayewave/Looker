@@ -613,7 +613,7 @@ impl App {
     fn draw_overlays(&mut self, g: &Gfx) -> bool {
         let mut moving = false;
         if self.explorer_shown() {
-            self.draw_crumb_popup(g);
+            moving |= self.draw_crumb_popup(g);
         }
         self.draw_drag_label(g);
         if let Some(t) = &self.toast {

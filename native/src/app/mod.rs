@@ -198,6 +198,7 @@ enum Hit {
     ExplorerFilterClear,
     ExplorerRename,
     Sidebar,
+    SidebarGrip,
     SideRow(usize),
     SideChevron(usize),
     /// A colour swatch in the open menu: (entry, swatch).
@@ -345,7 +346,11 @@ fn file_name(p: &Path) -> String {
 }
 
 fn format_bytes(b: u64) -> String {
-    if b >= 1 << 20 {
+    if b >= 1 << 40 {
+        format!("{:.2} TB", b as f64 / (1u64 << 40) as f64)
+    } else if b >= 1 << 30 {
+        format!("{:.2} GB", b as f64 / (1u64 << 30) as f64)
+    } else if b >= 1 << 20 {
         format!("{:.1} MB", b as f64 / (1u64 << 20) as f64)
     } else if b >= 1 << 10 {
         format!("{:.1} KB", b as f64 / 1024.0)

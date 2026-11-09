@@ -6,17 +6,19 @@
 //! folders in yellow, the picked rows in the accent tint with the cursor's outlined, stars and colour dots
 //! at the end of the name.
 
+use std::time::Instant;
+
 use super::explorer::{EField, FOLDER_TINT, Meta, SideTarget};
 use super::*;
 use crate::explorer::{self, ColKind, Kind, Place};
 
 const ROW: f32 = 26.0;
 const NAV: f32 = 28.0;
-const SIDEBAR_W: f32 = 210.0;
+/// The sidebar column's width range (its width is the user's, `Settings::sidebar_width`).
+pub(super) const SIDEBAR_MIN: f32 = 150.0;
+pub(super) const SIDEBAR_MAX: f32 = 420.0;
 /// From this inner width the sidebar is a column of its own; narrower, it's behind a toggle.
 const SIDEBAR_AT: f32 = 600.0;
-/// From this width the crumbs share the buttons' row.
-const ONE_ROW_AT: f32 = 560.0;
 const HEADER: f32 = 26.0;
 const FILTER_H: f32 = 28.0;
 const ICON_W: f32 = 24.0;
@@ -49,29 +51,86 @@ pub(super) fn cell_text(r: &explorer::Row, c: ColKind, m: Option<&Meta>) -> Stri
     }
 }
 
-/// The columns that fit `w` in the user's order, Name taking what the others leave; columns that would leave
-/// Name narrower than 160 DIPs drop off from the end. Each: its index in the settings, kind, x and width.
-fn columns(cols: &[(ColKind, f32)], left: f32, w: f32) -> Vec<(usize, ColKind, f32, f32)> {
-    const NAME_MIN: f32 = 160.0;
-    let mut shown: Vec<usize> = (0..cols.len()).collect();
-    let others = |shown: &[usize]| shown.iter().filter(|&&i| cols[i].0 != ColKind::Name).map(|&i| cols[i].1).sum::<f32>();
-    while others(&shown) > w - NAME_MIN {
-        let Some(pos) = shown.iter().rposition(|&i| cols[i].0 != ColKind::Name) else { break };
-        shown.remove(pos);
-    }
-    let name_w = (w - others(&shown)).max(NAME_MIN.min(w));
-    let mut out = Vec::new();
-    let mut x = left;
-    for i in shown {
-        let (c, cw) = cols[i];
-        let cw = if c == ColKind::Name { name_w } else { cw };
-        out.push((i, c, x, cw));
-        x += cw;
-    }
-    out
+/// A column as drawn this frame (eased, or following the pointer while it's dragged).
+#[derive(Clone, Copy)]
+struct ColDraw {
+    idx: usize,
+    kind: ColKind,
+    x: f32,
+    w: f32,
+    dragged: bool,
 }
 
 impl App {
+    /// The columns that fit `avail`, in the user's order, Name taking what the others leave (those that would
+    /// leave it under 160 DIPs drop off the end). While a header is dragged it follows the pointer and the
+    /// others close round the slot it would land in; columns ease to their places while they're moving.
+    /// Returns them (the dragged one last), its slot, and whether any is still moving.
+    fn col_layout(&mut self, left: f32, avail: f32) -> (Vec<ColDraw>, Option<(f32, f32)>, bool) {
+        const NAME_MIN: f32 = 160.0;
+        let cols = self.settings.explorer_columns.clone();
+        let mut shown: Vec<usize> = (0..cols.len()).collect();
+        let others = |shown: &[usize]| shown.iter().filter(|&&i| cols[i].0 != ColKind::Name).map(|&i| cols[i].1).sum::<f32>();
+        while others(&shown) > avail - NAME_MIN {
+            let Some(pos) = shown.iter().rposition(|&i| cols[i].0 != ColKind::Name) else { break };
+            shown.remove(pos);
+        }
+        let name_w = (avail - others(&shown)).max(NAME_MIN.min(avail));
+        let width = |i: usize| if cols[i].0 == ColKind::Name { name_w } else { cols[i].1 };
+        self.explorer.col_shown = shown.iter().map(|&i| (i, cols[i].0, width(i))).collect();
+
+        // A dragged header: the others in order, and where its middle falls among them.
+        let drag = self.explorer.header_drag.as_ref().filter(|d| d.active && shown.contains(&d.idx)).map(|d| (d.idx, d.x - d.grab));
+        let mut order = shown.clone();
+        if let Some((di, fx)) = drag {
+            let rest: Vec<usize> = shown.iter().copied().filter(|&i| i != di).collect();
+            let centre = fx + width(di) / 2.0;
+            let mut x = left;
+            let mut insert = 0;
+            for &i in &rest {
+                if x + width(i) / 2.0 < centre {
+                    insert += 1;
+                }
+                x += width(i);
+            }
+            if let Some(d) = &mut self.explorer.header_drag {
+                d.insert = insert;
+            }
+            order = rest;
+            order.insert(insert.min(order.len()), di);
+        }
+
+        let now = Instant::now();
+        let animate = crate::motion::enabled() && now < self.explorer.col_anim_until;
+        let mut out = Vec::new();
+        let mut dragged = None;
+        let mut slot = None;
+        let mut moving = false;
+        let mut x = left;
+        for i in order {
+            let (k, w) = (cols[i].0, width(i));
+            if let Some((di, fx)) = drag.filter(|&(di, _)| di == i) {
+                slot = Some((x, w));
+                // From here it eases into its slot when it's let go.
+                self.explorer.col_pos.insert(k, crate::motion::Ease::at([fx, w]));
+                dragged = Some(ColDraw { idx: di, kind: k, x: fx, w, dragged: true });
+            } else {
+                let e = self.explorer.col_pos.entry(k).or_insert_with(|| crate::motion::Ease::at([x, w]));
+                if animate {
+                    e.set([x, w], now);
+                } else {
+                    *e = crate::motion::Ease::at([x, w]);
+                }
+                moving |= e.moving(now);
+                let v = e.value(now);
+                out.push(ColDraw { idx: i, kind: k, x: v[0], w: v[1], dragged: false });
+            }
+            x += w;
+        }
+        out.extend(dragged);
+        (out, slot, moving || drag.is_some())
+    }
+
     pub(super) fn draw_explorer(&mut self, g: &Gfx) -> bool {
         if self.slides.explorer.value() <= 0.0 {
             return false;
@@ -88,9 +147,16 @@ impl App {
         g.push_clip(inner);
         let mut moving = false;
         let main = if column_sidebar {
-            let side = D2D_RECT_F { right: inner.left + SIDEBAR_W, ..inner };
+            let side_w = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
+            let side = D2D_RECT_F { right: inner.left + side_w, ..inner };
             self.draw_sidebar(g, side);
             g.fill(rect(side.right, inner.top, g.px(), inner.bottom - inner.top), rgb(theme::t().divider));
+            // Its edge resizes it: a line in the accent while held, the ink on hover.
+            let grip = rect(side.right - 4.0, inner.top, 8.0, inner.bottom - inner.top);
+            self.hits.add(Hit::SidebarGrip, grip);
+            let dragging = self.explorer.side_drag.is_some();
+            let k = self.fades.hover(Hit::SidebarGrip, self.hover == Some(Hit::SidebarGrip) || dragging);
+            ui::grip_line(g, rect(side.right - 1.0, inner.top + 10.0, 2.0, inner.bottom - inner.top - 20.0), k, dragging);
             D2D_RECT_F { left: side.right + 1.0, ..inner }
         } else {
             inner
@@ -121,7 +187,7 @@ impl App {
         g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
     }
 
-    /// The breadcrumb row (two rows when narrow: buttons, then crumbs). Returns where it ends.
+    /// The breadcrumb rows: the buttons, then the crumbs under them. Returns where they end.
     fn draw_nav(&mut self, g: &Gfx, main: D2D_RECT_F, column_sidebar: bool) -> f32 {
         let t = theme::t();
         let y = main.top + 6.0;
@@ -170,12 +236,13 @@ impl App {
             self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerSidebar, 0xE8A0, true, open);
         }
 
-        let one_row = main.right - main.left >= ONE_ROW_AT;
-        let (cx0, cx1, cy) = if one_row { (left_end, rx - 8.0, y) } else { (main.left + 8.0, main.right - 8.0, y + NAV + 4.0) };
+        // The crumbs always have a row of their own under the buttons (Faye, 2026-11-09).
+        let _ = left_end;
+        let (cx0, cx1, cy) = (main.left + 8.0, main.right - 8.0, y + NAV + 4.0);
         let crumbs = rect(cx0, cy, (cx1 - cx0).max(0.0), NAV);
         self.hits.add(Hit::CrumbArea, crumbs);
         self.draw_crumbs(g, crumbs.left, crumbs.right, crumbs.top, NAV);
-        let bottom = if one_row { y + NAV + 6.0 } else { cy + NAV + 6.0 };
+        let bottom = cy + NAV + 6.0;
         g.hline(main.left, g.snap(bottom), main.right - main.left, rgb(t.divider));
         bottom + 1.0
     }
@@ -214,8 +281,9 @@ impl App {
             let r = rect(x, y, more_w, h);
             self.hits.add(Hit::CrumbMore, r);
             let st = self.state(Hit::CrumbMore, true);
-            ui::link_fill(g, D2D_RECT_F { top: r.top + 2.0, bottom: r.bottom - 2.0, ..r }, st.hover, st.pressed);
-            g.text(&wide("\u{2026}"), &g.fonts.body, r, ui::link_color(st.hover), Align::Center);
+            let open = matches!(self.menu, Some((menus::MenuKind::Crumbs(_), _)));
+            let fg = ui::crumb_frame(g, D2D_RECT_F { top: r.top + 2.0, bottom: r.bottom - 2.0, ..r }, &st, open, rgb(t.label));
+            g.text(&wide("\u{2026}"), &g.fonts.body, r, fg, Align::Center);
             x += more_w;
             let cr = rect(x, y, CHEVRON, h);
             g.text(&[0xE76C], &g.fonts.caption_icons, cr, rgb(t.placeholder), Align::Center);
@@ -229,13 +297,9 @@ impl App {
             self.hits.add(id, r);
             let st = self.state(id, true);
             let fill = D2D_RECT_F { top: r.top + 2.0, bottom: r.bottom - 2.0, ..r };
-            if target.is_some() && all[i].folder().is_some_and(|f| target.as_deref().is_some_and(|tg| explorer::same_path(f, tg))) {
-                g.fill_round(fill, 4.0, rgb(t.selected));
-                ui::stroke(g, fill, 4.0, rgb(t.accent));
-            } else {
-                ui::link_fill(g, fill, st.hover, st.pressed);
-            }
-            let colour = if last { rgb(t.text) } else { ui::link_color(st.hover) };
+            let is_target = target.is_some() && all[i].folder().is_some_and(|f| target.as_deref().is_some_and(|tg| explorer::same_path(f, tg)));
+            let open = self.explorer.path_edit.as_ref().is_some_and(|p| p.crumb == Some(i));
+            let colour = ui::crumb_frame(g, fill, &st, is_target || open, if last { rgb(t.text) } else { rgb(t.label) });
             g.text(&wide(&names[i]), &g.fonts.body, r, colour, Align::Center);
             x += w;
             if !last {
@@ -243,8 +307,9 @@ impl App {
                 let cid = Hit::CrumbChevron(i);
                 self.hits.add(cid, cr);
                 let st = self.state(cid, true);
-                ui::link_fill(g, cr, st.hover, st.pressed);
-                g.text(&[0xE76C], &g.fonts.caption_icons, cr, if st.hover > 0.0 { rgb(t.text) } else { rgb(t.placeholder) }, Align::Center);
+                let open = self.explorer.path_edit.as_ref().is_some_and(|p| p.crumb == Some(i + 1));
+                let fg = ui::crumb_frame(g, cr, &st, false, rgb(t.placeholder));
+                g.text(&[if open { 0xE70D } else { 0xE76C }], &g.fonts.caption_icons, cr, fg, Align::Center);
                 x += CHEVRON;
             }
         }
@@ -257,59 +322,59 @@ impl App {
         let footer_h = if wide_footer { FILTER_H + 16.0 } else { FILTER_H + 16.0 + 20.0 };
         let list_left = body.left + 6.0;
         let list_right = body.right - 6.0;
-        let cols = columns(&self.settings.explorer_columns, list_left, list_right - list_left - 10.0);
+        let (cols, slot, cols_moving) = self.col_layout(list_left, list_right - list_left - 10.0);
 
-        // Headers: click sorts, drag moves, the right edge resizes, right-click customises.
+        // Headers: click sorts, drag moves (the others ease aside), an edge resizes, right-click customises.
         let hy = body.top + 2.0;
         let sort = self.settings.sort;
         let xsort = self.explorer.xsort;
-        let header_drag = self.explorer.header_drag.as_ref().filter(|d| d.active).map(|d| (d.idx, d.x, d.insert));
-        for &(i, c, x, w) in &cols {
-            let r = rect(x, hy, w, HEADER);
-            let id = Hit::ColHeader(i as u8);
-            self.hits.add(id, r);
+        let resizing = self.explorer.col_resize.as_ref().and_then(|r| r.widths.get(r.pos).map(|&(i, _, _)| i));
+        let raised = theme::raised();
+        let last_idx = cols.iter().filter(|c| !c.dragged).max_by(|a, b| a.x.total_cmp(&b.x)).map(|c| c.idx);
+        let list_bottom = body.bottom - footer_h;
+        if let Some((sx, sw)) = slot {
+            let ghost = rect(sx + 1.0, hy + 1.0, sw - 2.0, list_bottom - hy - 2.0);
+            ui::stroke(g, ghost, 5.0, rgb(t.accent));
+        }
+        for c in &cols {
+            let r = rect(c.x, hy, c.w, HEADER);
+            let id = Hit::ColHeader(c.idx as u8);
+            if !c.dragged {
+                self.hits.add(id, r);
+            }
             let st = self.state(id, true);
-            let lifted = header_drag.is_some_and(|(di, _, _)| di == i);
-            if !lifted {
+            if c.dragged {
+                ui::shadow(g, r, 5.0);
+                g.fill_round(r, 5.0, rgb(raised.popup));
+                ui::stroke(g, r, 5.0, rgb(raised.accent));
+            } else {
                 ui::link_fill(g, D2D_RECT_F { left: r.left + 2.0, right: r.right - 2.0, top: r.top + 2.0, bottom: r.bottom - 2.0 }, st.hover, st.pressed);
             }
-            let right = c.right_aligned();
-            let pad = if c == ColKind::Name { ICON_W + 14.0 } else { 8.0 };
-            let lr = if right { rect(x, hy, w - 10.0, HEADER) } else { rect(x + pad, hy, w - pad - 4.0, HEADER) };
-            let colour = if lifted { gfx::rgba(t.label, 0.35) } else { rgb(t.label) };
-            g.text(&wide(c.label()), &g.fonts.body, lr, colour, if right { Align::Right } else { Align::Left });
+            let right = c.kind.right_aligned();
+            let pad = if c.kind == ColKind::Name { ICON_W + 14.0 } else { 8.0 };
+            let lr = if right { rect(c.x, hy, c.w - 10.0, HEADER) } else { rect(c.x + pad, hy, c.w - pad - 4.0, HEADER) };
+            let colour = if c.dragged { rgb(raised.text) } else { rgb(t.label) };
+            g.text(&wide(c.kind.label()), &g.fonts.body, lr, colour, if right { Align::Right } else { Align::Left });
             let sorted = match xsort {
-                Some((k, d)) => (k == c).then_some(d),
-                None => (c.shared_sort() == Some(sort.field)).then_some(sort.descending),
+                Some((k, d)) => (k == c.kind).then_some(d),
+                None => (c.kind.shared_sort() == Some(sort.field)).then_some(sort.descending),
             };
             if let Some(desc) = sorted {
                 let glyph = if desc { 0xE70D } else { 0xE70E };
-                let lw = g.measure(&wide(c.label()), &g.fonts.body);
+                let lw = g.measure(&wide(c.kind.label()), &g.fonts.body);
                 let ax = if right { lr.right - lw - 16.0 } else { lr.left + lw + 6.0 };
                 g.text(&[glyph], &g.fonts.caption_icons, rect(ax, hy, 12.0, HEADER), colour, Align::Center);
             }
-            if c != ColKind::Name {
-                let edge = rect(x + w - 4.0, hy, 8.0, HEADER);
-                self.hits.add(Hit::ColEdge(i as u8), edge);
-                let hot = self.hover == Some(Hit::ColEdge(i as u8)) || self.explorer.col_resize.is_some_and(|(ri, _, _)| ri == i);
-                if hot {
-                    g.fill(rect(x + w - 1.0, hy + 5.0, 2.0, HEADER - 10.0), rgb(t.accent));
-                }
-            }
         }
-        // A header being dragged: where it would go, and the header itself following the pointer.
-        if let Some((di, dx, insert)) = header_drag {
-            let edge_x = cols.iter().find(|&&(i, _, _, _)| i >= insert).map(|&(_, _, x, _)| x).or_else(|| cols.last().map(|&(_, _, x, w)| x + w));
-            if let Some(ex) = edge_x {
-                g.fill(rect(ex - 1.0, hy + 2.0, 2.0, HEADER - 4.0), rgb(t.accent));
-            }
-            if let Some(&(c, _)) = self.settings.explorer_columns.get(di) {
-                let lw = g.measure(&wide(c.label()), &g.fonts.body) + 24.0;
-                let gr = rect(dx - lw / 2.0, hy + 1.0, lw, HEADER - 2.0);
-                let raised = theme::raised();
-                g.fill_round(gr, 5.0, rgb(raised.popup));
-                ui::stroke(g, gr, 5.0, rgb(raised.accent));
-                g.text(&wide(c.label()), &g.fonts.body, gr, rgb(raised.text), Align::Center);
+        // The edges between columns, a generous 12 DIPs to grab (over the headers): every one but the last
+        // column's, Name's too.
+        if slot.is_none() {
+            for c in cols.iter().filter(|c| Some(c.idx) != last_idx) {
+                let edge = rect(c.x + c.w - 6.0, hy, 12.0, HEADER);
+                self.hits.add(Hit::ColEdge(c.idx as u8), edge);
+                let hot = self.hover == Some(Hit::ColEdge(c.idx as u8)) || resizing == Some(c.idx);
+                let line = if hot { rgb(t.accent) } else { gfx::rgba(t.divider, 1.0) };
+                g.fill(rect(c.x + c.w - if hot { 1.0 } else { 0.5 }, hy + 6.0, if hot { 2.0 } else { g.px() }, HEADER - 12.0), line);
             }
         }
 
@@ -334,7 +399,7 @@ impl App {
         let want = ((ICON_W * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
         let focused = self.explorer.focused;
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
-        let lazy_shown = cols.iter().any(|&(_, c, _, _)| c.lazy());
+        let lazy_shown = cols.iter().any(|c| c.kind.lazy());
         let mut lazy_wanted = Vec::new();
 
         g.push_clip(D2D_RECT_F { left: body.left, right: body.right, ..list });
@@ -373,40 +438,47 @@ impl App {
                 ui::stroke(g, row, 4.0, rgb(t.accent));
             }
             let faded = if r.kind == Kind::Other || self.explorer.is_cut(&r.path) { 0.45 } else { 1.0 };
-            let ib = rect(row.left + 6.0, row.top + (ROW - ICON_H) / 2.0, ICON_W, ICON_H);
-            let mut drew = false;
             if r.kind == Kind::Image {
-                if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
-                    g.fill_round(ib, 2.0, rgb(t.field));
-                    th.draw_fit(g, ib);
-                    drew = true;
-                }
                 self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
                 if lazy_shown {
                     lazy_wanted.push((r.path.clone(), r.stamp, r.cloud));
                 }
             }
-            if !drew {
-                let (glyph, tint) = match r.kind {
-                    Kind::Drive => (0xEDA2u16, t.icon),
-                    Kind::Folder => (0xE8D5, FOLDER_TINT),
-                    Kind::Image => (0xE91B, t.icon),
-                    Kind::Other => (0xE7C3, t.icon),
-                };
-                g.text(&[glyph], &g.fonts.body_icons, ib, gfx::rgba(tint, faded), Align::Center);
-            }
-
             let tag = self.explorer.tags.get(&r.path);
             let meta = self.explorer.meta.get(&explorer::norm(&r.path)).cloned();
-            for &(_, c, x, w) in &cols {
-                if c != ColKind::Name {
-                    let text = cell_text(&r, c, meta.as_ref());
+            for c in &cols {
+                let (x, w) = (c.x, c.w);
+                if c.dragged {
+                    // Lifted over the others, as its header is.
+                    g.fill(rect(x, row.top, w, ROW), gfx::rgba(raised.popup, 0.92));
+                }
+                if c.kind != ColKind::Name {
+                    let text = cell_text(&r, c.kind, meta.as_ref());
                     if !text.is_empty() {
-                        let right = c.right_aligned();
+                        let right = c.kind.right_aligned();
                         let cr = if right { rect(x, row.top, w - 10.0, ROW) } else { rect(x + 8.0, row.top, w - 12.0, ROW) };
                         g.text_tabular(&wide(&text), &g.fonts.body, cr, gfx::rgba(t.placeholder, faded), if right { Align::Right } else { Align::Left });
                     }
                     continue;
+                }
+                // Name: the thumbnail or glyph, the name, its tags.
+                let ib = rect(x + 6.0, row.top + (ROW - ICON_H) / 2.0, ICON_W, ICON_H);
+                let mut drew = false;
+                if r.kind == Kind::Image {
+                    if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
+                        g.fill_round(ib, 2.0, rgb(t.field));
+                        th.draw_fit(g, ib);
+                        drew = true;
+                    }
+                }
+                if !drew {
+                    let (glyph, tint) = match r.kind {
+                        Kind::Drive => (0xEDA2u16, t.icon),
+                        Kind::Folder => (0xE8D5, FOLDER_TINT),
+                        Kind::Image => (0xE91B, t.icon),
+                        Kind::Other => (0xE7C3, t.icon),
+                    };
+                    g.text(&[glyph], &g.fonts.body_icons, ib, gfx::rgba(tint, faded), Align::Center);
                 }
                 let tx = x + ICON_W + 14.0;
                 let mut name_right = x + w - 6.0;
@@ -415,8 +487,8 @@ impl App {
                     name_right -= 18.0;
                 }
                 if let Some(ci) = tag.colour {
-                    let c = explorer::COLOURS[ci as usize].1;
-                    g.fill_round(rect(name_right - 9.0, row.top + (ROW - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(c));
+                    let col = explorer::COLOURS[ci as usize].1;
+                    g.fill_round(rect(name_right - 9.0, row.top + (ROW - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(col));
                     name_right -= 14.0;
                 }
                 let renaming = self.explorer.rename.as_ref().is_some_and(|(p, _)| explorer::same_path(p, &r.path));
@@ -453,7 +525,7 @@ impl App {
         }
 
         self.draw_footer(g, body, list.bottom, wide_footer);
-        moving
+        moving || cols_moving
     }
 
     /// The filter box (a search glyph, the text, a clear button) and the count.
@@ -611,8 +683,9 @@ impl App {
 
     /// Transient's crumb popup (explorer.rs has what it does): the path box with Up and close, the folder's
     /// entries, and a footer of keys.
-    pub(super) fn draw_crumb_popup(&mut self, g: &Gfx) {
-        let Some(pp) = &self.explorer.path_edit else { return };
+    pub(super) fn draw_crumb_popup(&mut self, g: &Gfx) -> bool {
+        let Some(pp) = &self.explorer.path_edit else { return false };
+        let e = crate::motion::progress(pp.opened);
         let raised = theme::raised();
         let (ww, wh) = self.size_dip();
         let n = pp.shown.len();
@@ -626,6 +699,7 @@ impl App {
         let y = g.snap((anchor.bottom + 4.0).min(wh - h - 8.0).max(8.0));
         let panel = rect(x, y, w, h);
         self.hits.add(Hit::CrumbPopup, panel);
+        g.push_fade(e, 0.94 + 0.06 * e, x, y);
         ui::shadow(g, panel, 8.0);
         g.fill_round(panel, 8.0, rgb(raised.popup));
         ui::stroke(g, panel, 8.0, rgb(raised.divider));
@@ -651,7 +725,10 @@ impl App {
             let fg = ui::button_frame(g, r, ui::Kind::Subtle, &st);
             g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
         }
-        let Some(pp) = self.explorer.path_edit.as_mut() else { return };
+        let Some(pp) = self.explorer.path_edit.as_mut() else {
+            g.pop_fade();
+            return false;
+        };
         let caret = pp.field.draw_text(g, text_r, raised, focused, clear);
         if focused {
             self.caret_rect = caret;
@@ -712,6 +789,8 @@ impl App {
                 break;
             }
         }
+        g.pop_fade();
+        e < 1.0
     }
 
     /// The label that follows a drag of rows: what a drop does there.

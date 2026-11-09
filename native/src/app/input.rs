@@ -208,6 +208,9 @@ impl App {
                     if self.explorer.thumb_drag.is_some() {
                         self.thumb_move(y);
                     }
+                    if self.explorer.side_drag.is_some() {
+                        self.sidebar_grip_drag(x);
+                    }
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
                     }
@@ -241,7 +244,7 @@ impl App {
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
-                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_)) => IDC_SIZEWE,
+                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
@@ -321,6 +324,7 @@ impl App {
                         Some(Hit::ColHeader(i)) => self.header_press(i as usize, x),
                         Some(Hit::ColEdge(i)) => self.col_edge_press(i as usize, x),
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
+                        Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
                         _ => {}
                     }
                     match h {
@@ -352,6 +356,7 @@ impl App {
                 WM_LBUTTONUP => {
                     let dropped = self.explorer_row_release() | self.header_release();
                     self.col_edge_release();
+                    self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;
                     let _ = ReleaseCapture();
                     let (x, y) = self.dip_from_lparam(lp);
@@ -514,6 +519,10 @@ impl App {
                         self.col_fit(i as usize);
                         return Some(LRESULT(0));
                     }
+                    if self.hit(x, y) == Some(Hit::SidebarGrip) {
+                        self.sidebar_grip_reset();
+                        return Some(LRESULT(0));
+                    }
                     if let Some(Hit::ExplorerRow(i)) = self.hit(x, y) {
                         if self.menu.is_none() && self.dialog.is_none() {
                             self.explorer_double_click(i);
@@ -552,6 +561,7 @@ impl App {
                     self.explorer.header_drag = None;
                     self.explorer.thumb_drag = None;
                     self.col_edge_release();
+                    self.sidebar_grip_release();
                     self.pan_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
@@ -645,7 +655,10 @@ impl App {
                     }
                     self.hide_tooltip();
                     if !self.page_open() {
-                        if self.explorer.field.is_some() && self.explorer_field_key(vk, shift, ctrl) {
+                        // A text box with the keys keeps them all: what it doesn't use (a letter, whose character
+                        // follows as WM_CHAR) mustn't reach the viewer's shortcuts (I, T, E, B…).
+                        if self.explorer.field.is_some() {
+                            self.explorer_field_key(vk, shift, ctrl);
                             return Some(LRESULT(0));
                         }
                         if let Some(r) = self.explorer_key(vk, ctrl, shift) {
