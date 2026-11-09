@@ -2,8 +2,8 @@
 //! lightness steps) but in Looker's red: Ember (the default: nearly black, a faint warm tint), Garnet (dark,
 //! on deep wine) and Blush (light). Each has a "raised" variant for popups, menus, dialogs and tooltips.
 //!
-//! The tint is the page's and the popups' only (the page behind the photo and the landing page, menus,
-//! dialogs, tooltips): the cards, the Settings card, every control (buttons, chips, rows, tiles, fields,
+//! The tint is the page's only (the page behind the photo and the landing page): the popups (menus, dialogs,
+//! tooltips; Faye, 2026-11-09), the cards, the Settings card, every control (buttons, chips, rows, tiles, fields,
 //! switches, their hairlines) and all text and icons are neutral greys, as the old Looker's were, so nothing but
 //! the accent reads red.
 //!
@@ -107,7 +107,7 @@ pub struct Theme {
 }
 
 // Black, after Transient's Black (Faye, 2026-11-09: its contrast, Looker's red): the page pure black, the
-// cards a step above, hairlines, tracks and fields firm enough to read, text near white; the popups warmed a touch.
+// cards a step above, hairlines, tracks and fields firm enough to read, text near white.
 pub const EMBER: Theme = Theme {
     dark: true,
     ink: 0xFFFFFF,
@@ -128,7 +128,7 @@ pub const EMBER: Theme = Theme {
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
-    popup: 0x1F1717,
+    popup: 0x1D1D1D,
     field: 0x131313,
     button: 0x131313,
     selected: 0x401616,
@@ -157,7 +157,7 @@ pub const GARNET: Theme = Theme {
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
-    popup: 0x322323,
+    popup: 0x2C2C2C,
     field: 0x262626,
     button: 0x2E2E2E,
     selected: 0x602C2C,
@@ -186,7 +186,7 @@ pub const BLUSH: Theme = Theme {
     warn: 0xB35C00,
     signal: 0xD21E1E,
     close_hover: 0xC42B1C,
-    popup: 0xFFFAFA,
+    popup: 0xFFFFFF,
     field: 0xFFFFFF,
     button: 0xEEEEEE,
     selected: 0xF2CACA,
