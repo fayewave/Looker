@@ -49,6 +49,10 @@ pub(super) enum Action {
     HistoryJump(usize),
     Group(crate::explorer::Group),
     ToggleSubfolders,
+    NewTab,
+    CloseTab,
+    CloseOtherTabs,
+    OpenInNewTab,
     RowHeight(u8),
     SavedView(Option<crate::explorer::Scope>),
     SetDefaultView,
@@ -188,7 +192,7 @@ impl App {
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         match kind {
-            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_))) => {
+            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::Tab(_))) => {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
@@ -282,6 +286,8 @@ pub(super) enum MenuKind {
     Group,
     /// A column header's menu, for the column at this index.
     Columns(usize),
+    /// An explorer tab's menu, for the tab at this index.
+    Tab(usize),
     /// The breadcrumb overflow, holding these places.
     Crumbs(Vec<crate::explorer::Place>),
     /// A recent file on the landing page.

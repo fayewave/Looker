@@ -106,6 +106,29 @@ impl Place {
     }
 }
 
+/// A place as a settings value (a tab): a folder's path, else `::pc`, `::favourites`, `::colour:N`.
+pub fn place_key(p: &Place) -> String {
+    match p {
+        Place::Folder(f) => f.display().to_string(),
+        Place::Computer => "::pc".into(),
+        Place::Collection(Collection::Favourites) => "::favourites".into(),
+        Place::Collection(Collection::Colour(i)) => format!("::colour:{i}"),
+    }
+}
+
+pub fn place_from_key(s: &str) -> Option<Place> {
+    match s {
+        "" => None,
+        "::pc" => Some(Place::Computer),
+        "::favourites" => Some(Place::Collection(Collection::Favourites)),
+        _ => match s.strip_prefix("::colour:") {
+            Some(n) => n.parse::<u8>().ok().filter(|&i| (i as usize) < COLOURS.len()).map(|i| Place::Collection(Collection::Colour(i))),
+            None if s.starts_with("::") => None,
+            None => Some(Place::Folder(PathBuf::from(s))),
+        },
+    }
+}
+
 /// A folder's display name: its last segment, or "C:\" for a drive root.
 pub fn folder_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned())

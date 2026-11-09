@@ -200,6 +200,10 @@ enum Hit {
     Sidebar,
     SidebarGrip,
     SideRow(usize),
+    /// The explorer's tabs: one, its close button, and the + after them.
+    Tab(u8),
+    TabClose(u8),
+    TabNew,
     /// A sidebar section's heading: drag it to move the section.
     SideHeader(crate::explorer::SideSection),
     SideChevron(usize),

@@ -78,6 +78,9 @@ pub struct Settings {
     pub sidebar_order: Vec<crate::explorer::SideSection>,
     /// The sections folded away to their headings.
     pub sidebar_closed: Vec<crate::explorer::SideSection>,
+    /// The explorer's tabs, left to right (`explorer::place_key`), and the one in front.
+    pub tabs: Vec<String>,
+    pub tab_active: usize,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -98,7 +101,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new() }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0 }
     }
 }
 
@@ -177,6 +180,12 @@ impl Settings {
                 changed = true;
             }
         }
+        for t in &mut self.tabs {
+            if let Some(n) = crate::explorer::rebase(std::path::Path::new(t.as_str()), from, to) {
+                *t = n.display().to_string();
+                changed = true;
+            }
+        }
         changed
     }
 }
@@ -241,6 +250,8 @@ pub fn parse(text: &str) -> Settings {
             "view" => s.views.extend(crate::explorer::SavedView::parse(v)),
             "sidebar_order" => s.sidebar_order = crate::explorer::SideSection::parse_list(v),
             "sidebar_closed" => s.sidebar_closed = crate::explorer::SideSection::parse_set(v),
+            "tab" if !v.is_empty() && s.tabs.len() < 64 => s.tabs.push(v.to_string()),
+            "tab_active" => s.tab_active = v.parse().unwrap_or(0),
             "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
         }
@@ -291,6 +302,10 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("sidebar_order={}\n", crate::explorer::SideSection::format(&s.sidebar_order)));
     out.push_str(&format!("sidebar_closed={}\n", crate::explorer::SideSection::format(&s.sidebar_closed)));
+    for t in &s.tabs {
+        out.push_str(&format!("tab={t}\n"));
+    }
+    out.push_str(&format!("tab_active={}\n", s.tab_active));
     out
 }
 
@@ -452,6 +467,8 @@ mod tests {
             ],
             sidebar_order: vec![crate::explorer::SideSection::History, crate::explorer::SideSection::Places, crate::explorer::SideSection::Bookmarks, crate::explorer::SideSection::Collections],
             sidebar_closed: vec![crate::explorer::SideSection::Places],
+            tabs: vec![r"C:\Users\me\Pictures".into(), "::favourites".into()],
+            tab_active: 1,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

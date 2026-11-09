@@ -132,6 +132,33 @@ pub(super) struct Meta {
     pub lens: Option<String>,
 }
 
+/// A tab that isn't in front: where it is and how it was left (the one in front lives in `Explorer` itself).
+#[derive(Default)]
+pub(super) struct TabState {
+    pub id: u64,
+    pub place: Option<Place>,
+    pub history: History,
+    pub cursor: Option<PathBuf>,
+    pub anchor: Option<PathBuf>,
+    pub selected: HashSet<String>,
+    pub scroll: f32,
+    pub filter: String,
+    pub xsort: Option<(ColKind, bool)>,
+}
+
+/// A tab dragged along the strip, as Transient's: it follows the pointer, the others ease aside around an
+/// outlined slot.
+pub(super) struct TabDrag {
+    pub idx: usize,
+    pub start_x: f32,
+    pub x: f32,
+    /// The pointer's offset from the tab's left edge when pressed.
+    pub grab: f32,
+    pub active: bool,
+    /// The slot it would land in (worked out as the strip draws).
+    pub insert: usize,
+}
+
 /// A sidebar section dragged by its heading, as Transient's: the heading follows the pointer, the others make
 /// room, an outlined slot shows where it lands.
 pub(super) struct SectionDrag {
@@ -235,6 +262,17 @@ pub(super) struct Explorer {
     pub(super) section_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
     pub(super) section_open: HashMap<SideSection, Ease<1>>,
+    /// The tabs, left to right; the one at `active_tab` is a stub (its state is the fields above).
+    pub(super) tabs: Vec<TabState>,
+    pub(super) active_tab: usize,
+    next_tab_id: u64,
+    tabs_loaded: bool,
+    pub(super) tab_drag: Option<TabDrag>,
+    /// Each tab's eased left edge (by id), and how long they ease after a drop, a new tab or a close.
+    pub(super) tab_pos: HashMap<u64, Ease<1>>,
+    pub(super) tab_anim_until: Instant,
+    /// The strip's tab width as last laid out (they jump, not ease, when it changes).
+    pub(super) tab_pitch: f32,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -298,6 +336,14 @@ impl Explorer {
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
             section_open: HashMap::new(),
+            tabs: vec![TabState::default()],
+            active_tab: 0,
+            next_tab_id: 1,
+            tabs_loaded: false,
+            tab_drag: None,
+            tab_pos: HashMap::new(),
+            tab_anim_until: Instant::now(),
+            tab_pitch: 0.0,
             side_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
@@ -515,6 +561,7 @@ impl App {
 
     /// Lists a place (a new one goes into the history unless Back/Forward are walking it).
     pub(super) fn explorer_go(&mut self, place: Place, record: bool) {
+        self.load_tabs();
         let e = &mut self.explorer;
         // Going up: the cursor will land on the folder we came out of.
         e.came_from = match (&e.place, &place) {
@@ -547,6 +594,7 @@ impl App {
         let v = self.view_for(&place);
         self.adopt_view(v);
         self.explorer_list(place, false);
+        self.save_tabs();
         self.invalidate();
     }
 
@@ -969,10 +1017,8 @@ impl App {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
         if r.is_folder() {
             self.explorer_go(Place::Folder(r.path), true);
-        } else if r.kind == Kind::Image {
-            self.explorer_pick(vi);
-            self.leave_browse();
         } else {
+            // Browse mode stays as it is (Faye, 2026-11-09: it used to drop back to the card).
             self.explorer_pick(vi);
         }
     }
@@ -1836,6 +1882,221 @@ impl App {
         }
     }
 
+    // --- Tabs, as Transient's -------------------------------------------------------------------------
+
+    /// The tabs as the settings last had them (once, before the first listing): the one in front then takes
+    /// the photo's folder.
+    fn load_tabs(&mut self) {
+        if self.explorer.tabs_loaded {
+            return;
+        }
+        self.explorer.tabs_loaded = true;
+        let places: Vec<Option<Place>> = self.settings.tabs.iter().map(|k| explorer::place_from_key(k)).collect();
+        if places.len() > 1 {
+            let e = &mut self.explorer;
+            e.tabs = places
+                .into_iter()
+                .enumerate()
+                .map(|(i, place)| TabState { id: i as u64, place, ..TabState::default() })
+                .collect();
+            e.next_tab_id = e.tabs.len() as u64;
+            e.active_tab = self.settings.tab_active.min(e.tabs.len() - 1);
+        }
+    }
+
+    /// Where tab `i` is (the one in front: where the explorer is).
+    pub(super) fn tab_place(&self, i: usize) -> Option<Place> {
+        if i == self.explorer.active_tab { self.explorer.place.clone() } else { self.explorer.tabs.get(i).and_then(|t| t.place.clone()) }
+    }
+
+    pub(super) fn save_tabs(&mut self) {
+        let keys: Vec<String> = (0..self.explorer.tabs.len()).map(|i| self.tab_place(i).map_or_else(|| "::pc".into(), |p| explorer::place_key(&p))).collect();
+        if keys != self.settings.tabs || self.settings.tab_active != self.explorer.active_tab {
+            self.settings.tabs = keys;
+            self.settings.tab_active = self.explorer.active_tab;
+            settings::save(&self.settings);
+        }
+    }
+
+    /// Puts the tab in front aside: its place, history, cursor, selection, scroll, filter and column sort.
+    fn park_tab(&mut self) {
+        let e = &mut self.explorer;
+        let i = e.active_tab;
+        let Some(t) = e.tabs.get_mut(i) else { return };
+        t.place = e.place.clone();
+        t.history = std::mem::take(&mut e.history);
+        t.cursor = e.cursor.take();
+        t.anchor = e.anchor.take();
+        t.selected = std::mem::take(&mut e.selected);
+        t.scroll = e.scroll;
+        t.filter = e.filter.edit.text();
+        t.xsort = e.xsort.take();
+    }
+
+    /// Brings tab `i` to the front as it was left, listing its place again.
+    fn unpark_tab(&mut self, i: usize) {
+        let e = &mut self.explorer;
+        e.active_tab = i;
+        let Some(t) = e.tabs.get_mut(i) else { return };
+        let place = t.place.clone();
+        e.history = std::mem::take(&mut t.history);
+        e.cursor = t.cursor.take();
+        e.anchor = t.anchor.take();
+        e.selected = std::mem::take(&mut t.selected);
+        e.xsort = t.xsort.take();
+        let scroll = t.scroll;
+        e.filter = TextField::new(TextEdit::new(&std::mem::take(&mut t.filter)));
+        e.watcher = None;
+        e.rows.clear();
+        e.view.clear();
+        e.rename = None;
+        e.path_edit = None;
+        e.anim = None;
+        e.came_from = None;
+        if e.field.is_some() {
+            e.field = None;
+        }
+        e.place = place.clone();
+        e.scroll = scroll;
+        match place {
+            Some(p) => {
+                if e.history.entries().0.is_empty() {
+                    e.history.record(&p);
+                }
+                let v = self.view_for(&p);
+                self.adopt_view(v);
+                self.explorer_list(p, true);
+            }
+            None => self.explorer_go(Place::Computer, true),
+        }
+        self.save_tabs();
+        self.invalidate();
+    }
+
+    pub(super) fn switch_tab(&mut self, i: usize) {
+        if i == self.explorer.active_tab || i >= self.explorer.tabs.len() {
+            return;
+        }
+        self.park_tab();
+        self.unpark_tab(i);
+    }
+
+    /// A new tab right of the one in front, at `place` (the one in front's when None), brought to the front.
+    pub(super) fn new_tab(&mut self, place: Option<Place>) {
+        self.load_tabs();
+        let place = place.or_else(|| self.explorer.place.clone()).unwrap_or(Place::Computer);
+        self.park_tab();
+        let e = &mut self.explorer;
+        let id = e.next_tab_id;
+        e.next_tab_id += 1;
+        let at = (e.active_tab + 1).min(e.tabs.len());
+        e.tabs.insert(at, TabState { id, place: Some(place.clone()), ..TabState::default() });
+        e.active_tab = at;
+        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        e.selected.clear();
+        e.cursor = None;
+        e.anchor = None;
+        e.xsort = None;
+        e.place = None;
+        self.explorer_go(place, true);
+    }
+
+    pub(super) fn close_tab(&mut self, i: usize) {
+        let n = self.explorer.tabs.len();
+        if n <= 1 || i >= n {
+            return;
+        }
+        let e = &mut self.explorer;
+        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        let id = e.tabs[i].id;
+        e.tab_pos.remove(&id);
+        if i == e.active_tab {
+            // Its right neighbour comes to the front, else its left.
+            e.tabs.remove(i);
+            let heir = i.min(e.tabs.len() - 1);
+            self.unpark_tab(heir);
+        } else {
+            e.tabs.remove(i);
+            if i < e.active_tab {
+                e.active_tab -= 1;
+            }
+            self.save_tabs();
+            self.invalidate();
+        }
+    }
+
+    pub(super) fn close_other_tabs(&mut self, keep: usize) {
+        if keep >= self.explorer.tabs.len() {
+            return;
+        }
+        self.switch_tab(keep);
+        let e = &mut self.explorer;
+        let id = e.tabs[e.active_tab].id;
+        e.tabs.retain(|t| t.id == id);
+        e.active_tab = 0;
+        e.tab_pos.retain(|k, _| *k == id);
+        self.save_tabs();
+        self.invalidate();
+    }
+
+    /// Ctrl+Tab and Ctrl+Shift+Tab: the next tab, or the one before, round the strip.
+    pub(super) fn cycle_tab(&mut self, back: bool) {
+        let n = self.explorer.tabs.len();
+        if n > 1 {
+            let i = self.explorer.active_tab;
+            self.switch_tab(if back { (i + n - 1) % n } else { (i + 1) % n });
+        }
+    }
+
+    /// A folder renamed or moved: tabs in or under it follow.
+    pub(super) fn tabs_moved(&mut self, from: &Path, to: &Path) {
+        for t in &mut self.explorer.tabs {
+            if let Some(Place::Folder(f)) = &t.place {
+                if let Some(n) = explorer::rebase(f, from, to) {
+                    t.place = Some(Place::Folder(n));
+                }
+            }
+            t.history.moved(from, to);
+        }
+    }
+
+    /// A press on a tab brings it to the front (Transient's); moving on drags it.
+    pub(super) fn tab_press(&mut self, i: usize, x: f32) {
+        self.switch_tab(i);
+        let left = self.hits.rect_of(Hit::Tab(i as u8)).map_or(x, |r| r.left);
+        self.explorer.tab_drag = Some(TabDrag { idx: i, start_x: x, x, grab: x - left, active: false, insert: i });
+    }
+
+    pub(super) fn tab_drag_move(&mut self, x: f32) {
+        let Some(d) = self.explorer.tab_drag.as_mut() else { return };
+        d.x = x;
+        if !d.active && (x - d.start_x).abs() > DRAG_START {
+            d.active = true;
+        }
+        if d.active {
+            self.invalidate();
+        }
+    }
+
+    /// Let go: a dragged tab drops into its slot (the one in front stays in front). True when it was a drag.
+    pub(super) fn tab_release(&mut self) -> bool {
+        let Some(d) = self.explorer.tab_drag.take() else { return false };
+        if !d.active {
+            return false;
+        }
+        let e = &mut self.explorer;
+        if d.idx < e.tabs.len() {
+            let front = e.tabs[e.active_tab].id;
+            let t = e.tabs.remove(d.idx);
+            e.tabs.insert(d.insert.min(e.tabs.len()), t);
+            e.active_tab = e.tabs.iter().position(|t| t.id == front).unwrap_or(0);
+        }
+        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        self.save_tabs();
+        self.invalidate();
+        true
+    }
+
     // --- Sidebar sections, dragged by their headings ----------------------------------------------------
 
     /// A click on a heading folds its section away to the heading, or opens it again (Transient's).
@@ -2088,6 +2349,8 @@ impl App {
             Hit::ExplorerUp => Some("Up (Backspace)".into()),
             Hit::ExplorerHistory => Some("Recent folders".into()),
             Hit::ExplorerGroup => Some("Folders and files".into()),
+            Hit::TabNew => Some("New tab  (Ctrl+T)".into()),
+            Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
             Hit::ExplorerBookmark => Some(if self.explorer.folder().is_some_and(|f| self.settings.is_bookmarked(&f)) { "Remove bookmark".into() } else { "Bookmark this folder".into() }),
             Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
             Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (B)".into() } else { "Browse mode (B)".into() }),
@@ -2134,6 +2397,9 @@ impl App {
                     | Hit::ExplorerBookmark
                     | Hit::ExplorerSidebar
                     | Hit::ExplorerBrowse
+                    | Hit::Tab(_)
+                    | Hit::TabClose(_)
+                    | Hit::TabNew
                     | Hit::Crumb(_)
                     | Hit::CrumbChevron(_)
                     | Hit::CrumbMore
@@ -2191,6 +2457,19 @@ impl App {
             }
             VK_B if !ctrl && has => {
                 self.toggle_browse();
+                return Some(LRESULT(0));
+            }
+            VK_T if ctrl && self.explorer_shown() => {
+                self.new_tab(None);
+                return Some(LRESULT(0));
+            }
+            VK_W if ctrl && self.explorer_shown() && self.explorer.tabs.len() > 1 => {
+                let i = self.explorer.active_tab;
+                self.close_tab(i);
+                return Some(LRESULT(0));
+            }
+            VK_TAB if ctrl && self.explorer_shown() => {
+                self.cycle_tab(shift);
                 return Some(LRESULT(0));
             }
             _ => {}

@@ -205,6 +205,9 @@ impl App {
                     if self.explorer.section_drag.is_some() {
                         self.section_drag_move(y);
                     }
+                    if self.explorer.tab_drag.is_some() {
+                        self.tab_drag_move(x);
+                    }
                     if self.explorer.col_resize.is_some() {
                         self.col_edge_drag(x);
                     }
@@ -330,6 +333,7 @@ impl App {
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
                         Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
+                        Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
                         _ => {}
                     }
                     match h {
@@ -359,7 +363,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release();
+                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.tab_release();
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;
@@ -401,6 +405,8 @@ impl App {
                             }
                             Some(Hit::SideRow(i)) => self.sidebar_click(i),
                             Some(Hit::SideHeader(s)) => self.toggle_section(s),
+                            Some(Hit::TabClose(i)) => self.close_tab(i as usize),
+                            Some(Hit::TabNew) => self.new_tab(None),
                             Some(Hit::SideChevron(i)) => {
                                 if let Some(k) = self.sidebar_items().get(i).and_then(|it| it.node.clone()) {
                                     self.toggle_node(k);
@@ -453,8 +459,16 @@ impl App {
                 }
                 WM_MBUTTONUP if self.dialog.is_none() && self.menu.is_none() && !self.page_open() => {
                     let (x, y) = self.dip_from_lparam(lp);
-                    if let Some(Hit::ColHeader(i)) = self.hit(x, y) {
-                        self.col_close(i as usize);
+                    match self.hit(x, y) {
+                        Some(Hit::ColHeader(i)) => self.col_close(i as usize),
+                        // Middle-click: a tab closes; a folder opens in a new tab.
+                        Some(Hit::Tab(i) | Hit::TabClose(i)) => self.close_tab(i as usize),
+                        Some(Hit::ExplorerRow(i)) => {
+                            if let Some(r) = self.explorer.row(i).filter(|r| r.is_folder()).cloned() {
+                                self.new_tab(Some(crate::explorer::Place::Folder(r.path)));
+                            }
+                        }
+                        _ => {}
                     }
                     Some(LRESULT(0))
                 }
@@ -494,6 +508,10 @@ impl App {
                         Some(Hit::ColHeader(i) | Hit::ColEdge(i)) => {
                             self.close_menu();
                             self.column_menu(i as usize, x, y);
+                        }
+                        Some(Hit::Tab(i) | Hit::TabClose(i)) => {
+                            self.close_menu();
+                            self.tab_menu(i as usize, x, y);
                         }
                         Some(Hit::Crumb(i)) => {
                             self.close_menu();

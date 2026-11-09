@@ -808,6 +808,58 @@ impl Gfx {
         }
     }
 
+    /// Transient's (File Pilot's) tab: rounded top corners, the bottom corners flaring out in concave curves
+    /// into the line it sits on (`r`'s bottom), so the tab flows into the panel below.
+    fn tab_path(&self, r: D2D_RECT_F, top: f32, flare: f32, closed: bool) -> Option<ID2D1PathGeometry> {
+        unsafe {
+            let geo = self.dev.dc.GetFactory().ok()?.CreatePathGeometry().ok()?;
+            let sink = geo.Open().ok()?;
+            let p = |x: f32, y: f32| windows_numerics::Vector2 { X: x, Y: y };
+            let arc = |to, radius: f32, dir| D2D1_ARC_SEGMENT {
+                point: to,
+                size: D2D_SIZE_F { width: radius, height: radius },
+                rotationAngle: 0.0,
+                sweepDirection: dir,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            };
+            let (l, t, rt, b) = (r.left, r.top, r.right, r.bottom);
+            sink.BeginFigure(p(l - flare, b), if closed { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+            if flare > 0.0 {
+                sink.AddArc(&arc(p(l, b - flare), flare, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE));
+            }
+            sink.AddLine(p(l, t + top));
+            sink.AddArc(&arc(p(l + top, t), top, D2D1_SWEEP_DIRECTION_CLOCKWISE));
+            sink.AddLine(p(rt - top, t));
+            sink.AddArc(&arc(p(rt, t + top), top, D2D1_SWEEP_DIRECTION_CLOCKWISE));
+            sink.AddLine(p(rt, b - flare));
+            if flare > 0.0 {
+                sink.AddArc(&arc(p(rt + flare, b), flare, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE));
+            }
+            sink.EndFigure(if closed { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+            sink.Close().ok()?;
+            Some(geo)
+        }
+    }
+
+    pub fn fill_tab(&self, r: D2D_RECT_F, top: f32, flare: f32, color: D2D1_COLOR_F) {
+        let Some(geo) = self.tab_path(r, top, flare, true) else { return };
+        unsafe {
+            self.brush.SetColor(&color);
+            self.dev.dc.FillGeometry(&geo, &self.brush, None);
+        }
+    }
+
+    /// The tab's outline (sides, top and flares; open along the bottom), a hairline.
+    pub fn stroke_tab(&self, r: D2D_RECT_F, top: f32, flare: f32, color: D2D1_COLOR_F) {
+        let h = self.px() / 2.0;
+        let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
+        let Some(geo) = self.tab_path(r, top, flare, false) else { return };
+        unsafe {
+            self.brush.SetColor(&color);
+            self.dev.dc.DrawGeometry(&geo, &self.brush, self.px(), None);
+        }
+    }
+
     fn path(&self, points: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry> {
         let (&first, rest) = points.split_first()?;
         unsafe {

@@ -85,6 +85,7 @@ impl App {
             for (from, to) in &t.pairs {
                 self.explorer.tags.moved(from, to);
                 self.explorer.history.moved(from, to);
+                self.tabs_moved(from, to);
                 if self.settings.folder_moved(from, to) {
                     settings::save(&self.settings);
                 }
@@ -249,6 +250,7 @@ impl App {
             Ok(to) => {
                 self.explorer.tags.moved(&from, &to);
                 self.explorer.history.moved(&from, &to);
+                self.tabs_moved(&from, &to);
                 if self.settings.folder_moved(&from, &to) {
                     settings::save(&self.settings);
                 }
@@ -422,6 +424,7 @@ impl App {
                 Kind::Folder | Kind::Drive => {
                     e.push(item(Action::OpenItem, 0xE8B7, "Open", Some("Enter"), true));
                     e.push(item(Action::OpenInViewer, 0xE8A7, "Open in the viewer", None, r.kind == Kind::Folder));
+                    e.push(item(Action::OpenInNewTab, 0xE8A0, "Open in new tab", Some("Middle-click"), r.kind == Kind::Folder));
                 }
                 Kind::Image => e.push(item(Action::OpenItem, 0xE8A7, "Open", Some("Enter"), true)),
                 Kind::Other => e.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true)),
@@ -483,6 +486,7 @@ impl App {
         let mut e = vec![item(Action::OpenItem, 0xE8B7, "Open", None, true)];
         if let Place::Folder(f) = &p {
             e.push(item(Action::OpenInViewer, 0xE8A7, "Open in the viewer", None, true));
+            e.push(item(Action::OpenInNewTab, 0xE8A0, "Open in new tab", None, true));
             e.push(Entry::Separator);
             let marked = self.settings.is_bookmarked(f);
             e.push(item(Action::Bookmark, if marked { 0xE840 } else { 0xE718 }, if marked { "Remove bookmark" } else { "Bookmark" }, None, true));
@@ -554,6 +558,17 @@ impl App {
     pub(super) fn explorer_group_menu(&mut self, anchor: D2D_RECT_F) {
         let e = self.group_entries();
         self.show_menu_below(MenuKind::Group, e, anchor);
+    }
+
+    /// A tab's menu (right-click), as Transient's: a new tab, close it, close the others.
+    pub(super) fn tab_menu(&mut self, i: usize, x: f32, y: f32) {
+        let n = self.explorer.tabs.len();
+        let e = vec![
+            item(Action::NewTab, 0xE710, "New tab", Some("Ctrl+T"), true),
+            item(Action::CloseTab, 0xE711, "Close tab", Some("Ctrl+W"), n > 1),
+            item(Action::CloseOtherTabs, 0xE8BB, "Close other tabs", None, n > 1),
+        ];
+        self.show_menu(MenuKind::Tab(i), e, x, y);
     }
 
     /// A column header's menu (right-click), as Transient's: move it, size it, close it, then every column
@@ -661,6 +676,21 @@ impl App {
             (Action::Redo, _) => self.explorer_redo(),
             (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
             (Action::ToggleSubfolders, _) => self.toggle_subfolders(),
+            (Action::NewTab, MenuKind::Tab(i)) => {
+                let p = self.tab_place(i);
+                self.new_tab(p);
+            }
+            (Action::NewTab, _) => {
+                let p = self.explorer.place.clone();
+                self.new_tab(p);
+            }
+            (Action::CloseTab, MenuKind::Tab(i)) => self.close_tab(i),
+            (Action::CloseOtherTabs, MenuKind::Tab(i)) => self.close_other_tabs(i),
+            (Action::OpenInNewTab, _) => {
+                if let Some(f) = first.filter(|f| f.is_dir()) {
+                    self.new_tab(Some(Place::Folder(f)));
+                }
+            }
             (Action::RowHeight(h), _) => self.set_row_height(h),
             (Action::SavedView(s), _) => self.set_saved_view(s),
             (Action::SetDefaultView, _) => self.set_default_view(),
