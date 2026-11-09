@@ -548,15 +548,16 @@ impl App {
             let cursor = self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
             let hover = self.fades.hover(Hit::ExplorerRow(i), self.hover == Some(Hit::ExplorerRow(i)));
             let pressed = self.pressed == Some(Hit::ExplorerRow(i)) && self.hover == Some(Hit::ExplorerRow(i));
-            // As Snapper's lists: the picked row is the selection fill with an accent outline; hover is an ink
-            // wash; the keyboard's cursor (away from the picked row) a hairline.
+            // As Snapper's lists: the picked row is the selection fill with an accent outline; hover the grey hover
+            // fill; the keyboard's cursor (away from the picked row) a hairline.
             if selected {
                 g.fill_round(row, 2.5, rgb(th.row_select));
                 ui::stroke(g, row, 2.5, rgb(th.accent));
             } else {
-                let a = if pressed { 0.12 } else { 0.08 * hover };
-                if a > 0.0 {
-                    g.fill_round(row, 2.5, gfx::rgba(th.ink, a));
+                if pressed {
+                    g.fill_round(row, 2.5, rgb(th.row_select));
+                } else if hover > 0.0 {
+                    g.fill_round(row, 2.5, gfx::rgba(th.hover_fill, hover));
                 }
                 if cursor {
                     ui::stroke(g, row, 2.5, rgb(th.divider));

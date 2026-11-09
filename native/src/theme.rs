@@ -2,6 +2,10 @@
 //! lightness steps) but in Looker's red: Ember (the default: nearly black, a faint warm tint), Garnet (dark,
 //! on deep wine) and Blush (light). Each has a "raised" variant for popups, menus, dialogs and tooltips.
 //!
+//! The tint is the surfaces' only (the page, the cards, menus): the controls on them (buttons, chips, rows,
+//! tiles, fields, switches, their hairlines) are neutral greys, as the old Looker's were, so nothing but the
+//! accent itself reads red.
+//!
 //! The UI is drawn on one thread, so the theme in use is a global that the window sets from the settings
 //! (`set`) and every widget reads (`t`, `raised`).
 
@@ -58,8 +62,8 @@ impl ThemeId {
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub dark: bool,
-    /// A strong rose: faint overlays (hover washes, button boxes, the picked settings section) are this at a
-    /// low opacity, so they come out warm rather than grey.
+    /// Faint overlays (a subtle button's hover, a link's wash) are this at a low opacity: white in the dark
+    /// themes, black in the light one, so they stay grey.
     pub ink: u32,
     /// The lighter fill: the cards, the Settings card, the photo's surround where nothing else is.
     pub sidebar: u32,
@@ -92,19 +96,19 @@ pub struct Theme {
     pub close_hover: u32,
     pub popup: u32,
     pub field: u32,
-    /// Opacity of `ink` behind an idle button.
-    pub box_fill: f32,
+    /// An idle button's or chip's fill (opaque, so it's the same grey on any surface).
+    pub button: u32,
 }
 
 // Nearly black, warmed a touch.
 pub const EMBER: Theme = Theme {
     dark: true,
-    ink: 0xEC8585,
+    ink: 0xFFFFFF,
     sidebar: 0x130B0B,
     content: 0x060303,
     stripe: 0x171010,
-    divider: 0x312222,
-    track: 0x3A2929,
+    divider: 0x303030,
+    track: 0x3A3A3A,
     text: 0xF7EBEB,
     label: 0xC2A6A6,
     placeholder: 0x9B8181,
@@ -112,53 +116,53 @@ pub const EMBER: Theme = Theme {
     accent: 0xF52524,
     on_accent: 0xFFFFFF,
     accent_fill: 0x5A2626,
-    hover_fill: 0x452525,
-    row_select: 0x532C2C,
+    hover_fill: 0x333333,
+    row_select: 0x3D3D3D,
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
     popup: 0x2A1C1C,
-    field: 0x1C1313,
-    box_fill: 0.12,
+    field: 0x171717,
+    button: 0x222222,
 };
-pub const EMBER_RAISED: Theme = Theme { divider: 0x443131, track: 0x483636, ..EMBER };
+pub const EMBER_RAISED: Theme = Theme { divider: 0x444444, track: 0x4A4A4A, field: 0x1E1E1E, button: 0x333333, hover_fill: 0x434343, row_select: 0x4A4A4A, ..EMBER };
 
 // Dark, on deep wine.
 pub const GARNET: Theme = Theme {
     dark: true,
-    ink: 0xEC8585,
+    ink: 0xFFFFFF,
     sidebar: 0x221818,
     content: 0x1C1313,
     stripe: 0x221818,
-    divider: 0x3B2A2A,
-    track: 0x3F2E2E,
+    divider: 0x3A3A3A,
+    track: 0x444444,
     text: 0xF3E7E7,
     label: 0xC6A9A9,
-    placeholder: 0xA38989,
+    placeholder: 0xAA8F8F,
     icon: 0xBE9D9D,
     accent: 0xF52524,
     on_accent: 0xFFFFFF,
     accent_fill: 0x6A3030,
-    hover_fill: 0x542E2E,
-    row_select: 0x613333,
+    hover_fill: 0x404040,
+    row_select: 0x4A4A4A,
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
     popup: 0x322323,
-    field: 0x2A1D1D,
-    box_fill: 0.12,
+    field: 0x262626,
+    button: 0x2E2E2E,
 };
-pub const GARNET_RAISED: Theme = Theme { divider: 0x4E3939, track: 0x533D3D, ..GARNET };
+pub const GARNET_RAISED: Theme = Theme { divider: 0x4E4E4E, track: 0x555555, field: 0x2B2B2B, button: 0x3A3A3A, hover_fill: 0x4A4A4A, row_select: 0x555555, ..GARNET };
 
 // Light, on a pale blush: a deeper red for the accent, so white text reads on it.
 pub const BLUSH: Theme = Theme {
     dark: false,
-    ink: 0xBC4545,
+    ink: 0x000000,
     sidebar: 0xF5E5E5,
     content: 0xFBF4F4,
     stripe: 0xF6EAEA,
-    divider: 0xE8D2D2,
-    track: 0xE1C8C8,
+    divider: 0xD9D9D9,
+    track: 0xD4D4D4,
     text: 0x2F1B1B,
     label: 0x725151,
     placeholder: 0x7D6161,
@@ -166,16 +170,16 @@ pub const BLUSH: Theme = Theme {
     accent: 0xD21E1E,
     on_accent: 0xFFFFFF,
     accent_fill: 0xF2C9C9,
-    hover_fill: 0xF2D9D9,
-    row_select: 0xEBCBCB,
+    hover_fill: 0xE4E4E4,
+    row_select: 0xDCDCDC,
     warn: 0xB35C00,
     signal: 0xD21E1E,
     close_hover: 0xC42B1C,
     popup: 0xFFFAFA,
-    field: 0xFFFAFA,
-    box_fill: 0.09,
+    field: 0xFFFFFF,
+    button: 0xEEEEEE,
 };
-pub const BLUSH_RAISED: Theme = Theme { divider: 0xF0DDDD, track: 0xE8D2D2, field: 0xF7EBEB, ..BLUSH };
+pub const BLUSH_RAISED: Theme = Theme { divider: 0xE2E2E2, track: 0xD8D8D8, field: 0xF4F4F4, ..BLUSH };
 
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 

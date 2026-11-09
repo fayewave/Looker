@@ -4,8 +4,8 @@
 //! ([`Fades`]) and the tooltip timer.
 //!
 //! Looks and moves like Snapper (and VEIL Transient before it), in Looker's red (theme.rs):
-//! - Buttons are boxes: an `ink` wash with a divider hairline at rest; on hover the hover fill and the outline
-//!   warming to the accent; solid accent while pressed; a toggle that's on is the selection fill with an accent
+//! - Buttons are boxes: a neutral grey fill with a divider hairline at rest; on hover the hover fill and the
+//!   outline warming to the accent; solid accent while pressed; a toggle that's on is the selection fill with an accent
 //!   outline. Radii: 2.5 rows, 4 menu highlights, 5 buttons, fields and tooltips, 8 menus, 10 cards and dialogs.
 //! - One motion rule (motion.rs): hover washes come on at once and fade out; switches, panels, menus (fade and
 //!   grow from 94 % about the corner they hang from), dialogs and cards (from 96 %) ease over 190 ms.
@@ -206,10 +206,7 @@ pub fn frame(g: &Gfx, r: D2D_RECT_F, radius: f32, kind: Kind, s: &State) -> D2D1
                 stroke(g, r, radius, faded(rgb(t.accent), k));
                 return faded(rgb(t.text), k);
             }
-            g.fill_round(r, radius, rgba(t.ink, t.box_fill * (1.0 - h) * k));
-            if h > 0.0 {
-                g.fill_round(r, radius, rgba(t.hover_fill, h));
-            }
+            g.fill_round(r, radius, faded(mix(t.button, t.hover_fill, h), k));
             stroke(g, r, radius, faded(mix(t.divider, t.accent, h), k));
             faded(rgb(t.text), k)
         }
@@ -265,7 +262,7 @@ pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
 /// A scroll region's thumb (`r` is its full size): the buttons' fill, their hover fill while it's held.
 pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
     let t = theme::t();
-    let c = if held { rgb(t.hover_fill) } else { rgba(t.ink, t.box_fill * 1.5) };
+    let c = if held { rgb(t.hover_fill) } else { rgb(t.track) };
     g.fill_round(r, (r.right - r.left) / 2.0, c);
 }
 

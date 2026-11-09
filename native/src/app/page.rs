@@ -508,7 +508,13 @@ impl App {
             }
             let on = self.fades.get(Hit::PageNavOn(i as u8), current == Some(sec));
             let hov = self.state(id, open).hover;
-            g.fill_round(r, 5.0, gfx::rgba(t.ink, 0.16 * on + 0.06 * hov));
+            // Neutral tiles: the picked section's grey, a lighter one on hover.
+            if hov > 0.0 && on < 1.0 {
+                g.fill_round(r, 5.0, gfx::rgba(t.button, hov * (1.0 - on)));
+            }
+            if on > 0.0 {
+                g.fill_round(r, 5.0, gfx::rgba(t.row_select, on));
+            }
             let fg = theme::mix(t.label, t.text, on.max(hov));
             g.text(&[sec.icon()], &g.fonts.small_icons, rect(r.left + 6.0, r.top, 24.0, ITEM_H), fg, Align::Center);
             g.text(&wide(sec.label()), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, ITEM_H), fg, Align::Left);

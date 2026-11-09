@@ -224,12 +224,13 @@ impl App {
                 }
                 let id = Hit::RecentRow(i);
                 self.hits.add(id, row);
-                // A list row: an ink wash on hover, firmer while pressed.
+                // A list row: the grey hover fill, firmer while pressed.
                 let st = self.state(id, true);
                 let th = theme::t();
-                let a = if st.pressed { 0.12 } else { 0.08 * st.hover };
-                if a > 0.0 {
-                    g.fill_round(row, 5.0, gfx::rgba(th.ink, a));
+                if st.pressed {
+                    g.fill_round(row, 5.0, rgb(th.row_select));
+                } else if st.hover > 0.0 {
+                    g.fill_round(row, 5.0, gfx::rgba(th.hover_fill, st.hover));
                 }
                 let tb = rect(row.left + 6.0, row.top + 3.0, THUMB_W, THUMB_H);
                 g.fill_round(tb, 4.0, rgb(th.field));
