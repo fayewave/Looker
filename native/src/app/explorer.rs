@@ -133,6 +133,8 @@ pub(super) struct Meta {
     pub taken: Option<crate::metadata::ExifTime>,
     pub camera: Option<String>,
     pub lens: Option<String>,
+    /// A video's length (badges on its thumbnail).
+    pub duration_us: Option<i64>,
 }
 
 /// A tab that isn't in front: where it is and how it was left (the one in front lives in `Explorer` itself).
@@ -1650,12 +1652,20 @@ impl App {
                         let out: Vec<(PathBuf, Meta)> = batch
                             .into_iter()
                             .map(|(p, stamp)| {
+                                // A video: its size, length and recording date from one probe.
+                                if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video {
+                                    let info = crate::imaging::video::probe(&p).ok();
+                                    let dims = info.as_ref().filter(|i| i.width > 0 && i.height > 0).map(|i| (i.width as u32, i.height as u32));
+                                    let duration_us = info.as_ref().map(|i| i.duration_us).filter(|&d| d > 0);
+                                    let taken = info.as_ref().and_then(|i| crate::metadata::local_time(i.created));
+                                    return (p, Meta { stamp, dims, taken, camera: None, lens: None, duration_us });
+                                }
                                 let dims = f.as_ref().and_then(|f| explorer::dimensions(f, &p));
                                 let exif = crate::metadata::read(&p);
                                 let camera = exif.as_ref().and_then(|x| x.model.clone().or_else(|| x.make.clone()));
                                 let lens = exif.as_ref().and_then(|x| x.lens.clone());
                                 let taken = exif.as_ref().and_then(|x| x.taken);
-                                (p, Meta { stamp, dims, taken, camera, lens })
+                                (p, Meta { stamp, dims, taken, camera, lens, duration_us: None })
                             })
                             .collect();
                         let ptr = Box::into_raw(Box::new(out));

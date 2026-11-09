@@ -401,6 +401,7 @@ impl App {
         let rf = self.fades.get(Hit::StripFadeRight, content_w - view_w - scroll > 0.5);
         g.push_clip(r);
         g.push_hfade_layer(r, FADE_W, lf, rf);
+        let mut videos = Vec::new();
         for i in first..last {
             let Some((path, stamp, cloud, img)) = self.strip_item(i) else { break };
             let cell = rect(g.snap(SIDE + i as f32 * pitch - scroll), top, cw, ch);
@@ -424,6 +425,17 @@ impl App {
                 }
             } else if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);
+                // A video: its length in the corner (asked of the explorer's meta thread).
+                if format::from_extension(path.extension().and_then(|e| e.to_str())) == format::Format::Video && inner.bottom - inner.top >= video::BADGE_MIN_H {
+                    match self.explorer.meta.get(&crate::explorer::norm(&path)).filter(|m| m.stamp == stamp) {
+                        Some(m) => {
+                            if let Some(d) = m.duration_us {
+                                video::draw_duration_badge(g, inner, d);
+                            }
+                        }
+                        None => videos.push((path.clone(), stamp, cloud)),
+                    }
+                }
             }
             // As Snapper's strip: an ink wash and outline on hover, the accent round the current photo.
             if pressed {
@@ -450,6 +462,9 @@ impl App {
             }
         }
         g.pop_layer();
+        if !videos.is_empty() {
+            self.want_meta(&videos);
+        }
         // The selection frame, fixed in the middle: the cells glide under it to the current photo.
         if fixed_frame {
             let frame = rect(g.snap(r.left + view_w / 2.0 - cw / 2.0), top, cw, ch);

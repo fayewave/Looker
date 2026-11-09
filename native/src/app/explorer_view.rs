@@ -616,9 +616,12 @@ impl App {
             let faded = if r.kind == Kind::Other || self.explorer.is_cut(&r.path) { 0.45 } else { 1.0 };
             // On the solid accent everything is white.
             let ink = |c: u32| if lit { rgb(t.on_accent) } else { gfx::rgba(c, faded) };
+            // A video's length goes on its thumbnail when that's big enough (the meta thread probes it).
+            let is_video = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Video;
+            let badge = is_video && icon_h >= video::BADGE_MIN_H;
             if r.kind == Kind::Image {
                 self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
-                if lazy_shown {
+                if lazy_shown || badge {
                     lazy_wanted.push((r.path.clone(), r.stamp, r.cloud));
                 }
             }
@@ -647,6 +650,9 @@ impl App {
                         g.fill_round(ib, 2.0, rgb(t.field));
                         th.draw_fit(g, ib);
                         drew = true;
+                        if let Some(d) = meta.as_ref().and_then(|m| m.duration_us).filter(|_| badge) {
+                            video::draw_duration_badge(g, ib, d);
+                        }
                     }
                 }
                 if !drew {

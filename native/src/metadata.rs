@@ -180,7 +180,7 @@ fn parse_time(s: &str) -> Option<ExifTime> {
 }
 
 /// Unix seconds (UTC) as local wall-clock time, the way EXIF dates are written.
-fn local_time(unix: i64) -> Option<ExifTime> {
+pub fn local_time(unix: i64) -> Option<ExifTime> {
     use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
     use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     if unix <= 0 {

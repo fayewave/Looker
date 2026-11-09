@@ -1,6 +1,6 @@
 //! The slideshow (F5): fullscreen (when not already), a step every few seconds with a 300 ms dissolve from
 //! the outgoing image, Space to pause, Escape or F5 to end. A manual step restarts the dwell so it stays
-//! fair, and is an ordinary hard cut.
+//! fair, and is an ordinary hard cut. A video plays through (without looping) before the slideshow moves on.
 
 use std::time::Instant;
 
@@ -19,6 +19,8 @@ pub(super) struct Slideshow {
     pub(super) stepping: bool,
     /// The next image swap dissolves (set by the slideshow's step, consumed by the swap).
     fade_armed: bool,
+    /// The dwell ran out on a video still playing: the slideshow moves on when it ends.
+    pub(super) video_wait: bool,
 }
 
 /// The outgoing image, drawn over the incoming one at a falling opacity.
@@ -44,6 +46,7 @@ impl App {
         }
         self.slideshow.running = true;
         self.slideshow.paused = false;
+        self.video_play(); // a paused video on screen plays (the slideshow waits for its end)
         self.slide_panels(); // the cards and the strip step aside for the photos
         self.arm_slideshow();
         self.show_toast("Slideshow", false);
@@ -82,9 +85,28 @@ impl App {
         if !self.slideshow.running || self.slideshow.paused {
             return;
         }
+        // A video plays to its end first; its end calls back here (`video_ended_in_slideshow`).
+        if self.video_holds_slideshow() {
+            self.slideshow.video_wait = true;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_SLIDESHOW);
+            }
+            return;
+        }
+        self.slideshow.video_wait = false;
         self.slideshow.stepping = true;
         self.step(1);
         self.slideshow.stepping = false;
+        self.arm_slideshow(); // the dwell again (a video's end fired this early)
+    }
+
+    /// The video the slideshow waited on has ended: on to the next file.
+    pub(super) fn video_ended_in_slideshow(&mut self) {
+        if self.slideshow.running && std::mem::take(&mut self.slideshow.video_wait) {
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_SLIDESHOW, 1, None);
+            }
+        }
     }
 
     /// Space: pause or resume a running slideshow. False when none is running.

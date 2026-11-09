@@ -167,6 +167,7 @@ impl App {
         match to {
             Ok(to) if to != from => {
                 self.viewer.renamed(&from, &to);
+                self.video_renamed(&from, &to); // plays on under its new name, not from the start
                 // The covering file keeps covering under its new name.
                 if let Some(p) = self.placeholder.as_mut().filter(|p| p.path == from) {
                     p.path = to.clone();

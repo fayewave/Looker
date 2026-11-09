@@ -65,8 +65,8 @@ pub(super) struct VideoView {
     failed: bool,
     /// Where to reopen after a device change: the time, and whether it was playing.
     resume: Option<(i64, bool)>,
-    /// The settings (looping) were applied once the player opened.
-    configured: bool,
+    /// Whether the loop setting makes this one loop, once the player has opened (its length decides).
+    auto_loop: Option<bool>,
     scrub: Option<Scrub>,
     /// The seek bar's previews: made the first time the pointer is over it.
     preview: Option<Preview>,
@@ -74,6 +74,8 @@ pub(super) struct VideoView {
     still: Option<(i64, ID2D1Bitmap1, f32, f32)>,
     /// The loop button, once pressed; until then the setting decides.
     looping: Option<bool>,
+    /// M or the speaker turned the sound on in browse mode (which otherwise plays muted).
+    browse_sound: bool,
 }
 
 impl VideoView {
@@ -116,6 +118,22 @@ struct BarLayout {
 pub(super) fn clock_text(us: i64, hours: bool) -> String {
     let s = (us.max(0) / 1_000_000) as u64;
     if hours { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// Thumbnails at least this tall get a video's length on them.
+pub(super) const BADGE_MIN_H: f32 = 40.0;
+
+/// A video's length in the bottom-right corner of its thumbnail `r`: white on a dark pill, as file managers do.
+pub(super) fn draw_duration_badge(g: &Gfx, r: D2D_RECT_F, us: i64) {
+    let text = clock_text(us, us >= 3_600_000_000);
+    let w = g.measure_tabular(&wide(&text), &g.fonts.caption).ceil() + 8.0;
+    let h = 16.0;
+    if w + 8.0 > r.right - r.left {
+        return;
+    }
+    let b = rect(g.snap(r.right - 4.0 - w), g.snap(r.bottom - 4.0 - h), w, h);
+    g.fill_round(b, 3.0, gfx::rgba(0x000000, 0.72));
+    g.text_tabular(&wide(&text), &g.fonts.caption, b, gfx::rgba(0xFFFFFF, 0.95), Align::Center);
 }
 
 fn speed_text(s: f64) -> String {
@@ -183,11 +201,30 @@ impl App {
             bitmap: None,
             failed: false,
             resume: None,
-            configured: false,
+            auto_loop: None,
             scrub: None,
             preview: None,
             still: None,
             looping: None,
+            browse_sound: false,
+        });
+    }
+
+    /// A file was renamed or moved: the open video keeps playing under its new path (the decoder holds a handle,
+    /// not a name), and a resume point follows it.
+    pub(super) fn video_renamed(&mut self, from: &Path, to: &Path) {
+        if let Some(v) = self.video.as_mut().filter(|v| crate::explorer::same_path(&v.path, from)) {
+            v.path = to.to_path_buf();
+        }
+        with_resume(|l| {
+            let mut moved = false;
+            for (p, _) in l.iter_mut().filter(|(p, _)| crate::explorer::same_path(p, from)) {
+                *p = to.to_path_buf();
+                moved = true;
+            }
+            if moved {
+                save_resume(l);
+            }
         });
     }
 
@@ -222,6 +259,11 @@ impl App {
         self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed)
     }
 
+    /// The slideshow's dwell is up but this video is still opening or playing: it waits for the end.
+    pub(super) fn video_holds_slideshow(&self) -> bool {
+        self.video_shown() && self.video.as_ref().and_then(|v| v.player.as_ref()).is_none_or(|p| p.info.is_none() || !p.at_end())
+    }
+
     /// Frames are moving, the player is still coming up, or a preview is on its way: draw again next vsync.
     pub(super) fn video_animating(&self) -> bool {
         self.video.as_ref().is_some_and(|v| {
@@ -232,7 +274,9 @@ impl App {
     /// Before the frame begins (Direct2D isn't mid-draw): opens the player once the device is right, and turns
     /// the picture due now into the bitmap drawn this frame.
     pub(super) fn prepare_video(&mut self, g: &Gfx) {
-        let (volume, muted, autoplay) = (self.settings.video_volume, self.settings.video_muted, self.settings.video_autoplay);
+        let slideshow = self.slideshow.running;
+        // A slideshow plays every video (to its end, without looping).
+        let (volume, muted, autoplay) = (self.settings.video_volume, self.video_muted(), self.settings.video_autoplay || slideshow);
         let (loop_secs, resume_on) = (self.settings.video_loop_secs, self.settings.video_resume);
         let mut toast = None;
         let Some(v) = self.video.as_mut().filter(|v| !v.failed) else { return };
@@ -266,13 +310,17 @@ impl App {
                 return;
             }
             Some(Ok(())) => {
-                if !v.configured {
-                    v.configured = true;
-                    let dur = p.duration();
-                    let by_setting = loop_secs == u32::MAX || (dur > 0 && dur < loop_secs as i64 * 1_000_000);
-                    p.set_looping(v.looping.unwrap_or(by_setting));
+                let dur = p.duration();
+                let auto = *v.auto_loop.get_or_insert(loop_secs == u32::MAX || (dur > 0 && dur < loop_secs as i64 * 1_000_000));
+                let want = v.looping.unwrap_or(auto) && !slideshow;
+                if p.looping != want {
+                    p.set_looping(want);
                 }
             }
+        }
+        let ended = slideshow && self.slideshow.video_wait && v.player.as_ref().is_some_and(|p| p.at_end());
+        if ended {
+            self.video_ended_in_slideshow();
         }
         if let Some(t) = toast {
             self.show_toast(t, false);
@@ -282,6 +330,8 @@ impl App {
         if p.info.is_none() {
             return;
         }
+        // Browse mode mutes (until M or the speaker turns it on there): followed as it comes and goes.
+        p.set_volume(volume, muted);
         // Scrubbing: the next seek once the last one's picture is up.
         if let Some(s) = &mut v.scrub {
             if s.sent != Some(s.at) && (s.sent.is_none() || p.settled()) {
@@ -354,9 +404,17 @@ impl App {
         self.set_video_volume(self.settings.video_volume + delta, true);
     }
 
+    /// Whether the sound is off: muted, or in browse mode (where a preview plays muted until M turns it on).
+    pub(super) fn video_muted(&self) -> bool {
+        self.settings.video_muted || (self.browsing() && !self.video.as_ref().is_some_and(|v| v.browse_sound))
+    }
+
     fn set_video_volume(&mut self, v: f32, toast: bool) {
         self.settings.video_volume = (v.clamp(0.0, 1.0) * 100.0).round() / 100.0;
         self.settings.video_muted = false;
+        if let Some(v) = self.video.as_mut() {
+            v.browse_sound = true; // a volume change means sound, browse mode or not
+        }
         self.apply_volume();
         if toast {
             self.show_toast(format!("Volume {:.0}%", self.settings.video_volume * 100.0), true);
@@ -364,16 +422,32 @@ impl App {
     }
 
     fn apply_volume(&mut self) {
-        let (v, m) = (self.settings.video_volume, self.settings.video_muted);
+        let (v, m) = (self.settings.video_volume, self.video_muted());
         if let Some(p) = self.player() {
             p.set_volume(v, m);
         }
         settings::save(&self.settings);
     }
 
+    /// M, the speaker button: from what's heard now (browse mode's own muting included) to the opposite.
     fn toggle_mute(&mut self) {
-        self.settings.video_muted = !self.settings.video_muted;
+        if self.video_muted() {
+            self.settings.video_muted = false;
+            if let Some(v) = self.video.as_mut() {
+                v.browse_sound = true;
+            }
+        } else {
+            self.settings.video_muted = true;
+        }
         self.apply_volume();
+    }
+
+    /// Plays the video on screen if it's paused.
+    pub(super) fn video_play(&mut self) {
+        if let Some(p) = self.player().filter(|p| !p.playing()) {
+            p.set_playing(true);
+            self.invalidate();
+        }
     }
 
     /// Space, a click on the video, the play button.
@@ -414,7 +488,7 @@ impl App {
         match vk {
             VK_M => {
                 self.toggle_mute();
-                self.show_toast(if self.settings.video_muted { "Muted" } else { "Sound on" }, true);
+                self.show_toast(if self.video_muted() { "Muted" } else { "Sound on" }, true);
             }
             VK_UP if !explorer => self.video_volume_by(0.05),
             VK_DOWN if !explorer => self.video_volume_by(-0.05),
@@ -610,7 +684,7 @@ impl App {
         }
 
         let vol = self.settings.video_volume;
-        let muted = self.settings.video_muted;
+        let muted = self.video_muted();
         let glyph = if muted {
             0xE74F
         } else if vol <= 0.0 {
