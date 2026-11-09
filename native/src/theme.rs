@@ -3,8 +3,9 @@
 //! on deep wine) and Blush (light). Each has a "raised" variant for popups, menus, dialogs and tooltips.
 //!
 //! The tint is the page's and the popups' only (the page behind the photo and the landing page, menus,
-//! dialogs, tooltips): the cards, the Settings card and every control (buttons, chips, rows, tiles, fields,
-//! switches, their hairlines) are neutral greys, as the old Looker's were, so nothing but the accent reads red.
+//! dialogs, tooltips): the cards, the Settings card, every control (buttons, chips, rows, tiles, fields,
+//! switches, their hairlines) and all text and icons are neutral greys, as the old Looker's were, so nothing but
+//! the accent reads red.
 //!
 //! The UI is drawn on one thread, so the theme in use is a global that the window sets from the settings
 //! (`set`) and every widget reads (`t`, `raised`).
@@ -101,32 +102,32 @@ pub struct Theme {
     pub button: u32,
 }
 
-// Nearly black, warmed a touch.
+// Nearly black, warmed a touch; its greys darker than Garnet's, close to the old Looker's black theme.
 pub const EMBER: Theme = Theme {
     dark: true,
     ink: 0xFFFFFF,
-    sidebar: 0x141414,
+    sidebar: 0x0A0A0A,
     content: 0x060303,
     stripe: 0x171010,
-    divider: 0x303030,
-    track: 0x3A3A3A,
-    text: 0xF7EBEB,
-    label: 0xC2A6A6,
-    placeholder: 0x9B8181,
-    icon: 0xBD9D9D,
+    divider: 0x242424,
+    track: 0x2C2C2C,
+    text: 0xEEEEEE,
+    label: 0xACACAC,
+    placeholder: 0x878787,
+    icon: 0xA4A4A4,
     accent: 0xF52524,
     on_accent: 0xFFFFFF,
     accent_fill: 0x5A2626,
-    hover_fill: 0x333333,
-    row_select: 0x3D3D3D,
+    hover_fill: 0x242424,
+    row_select: 0x2C2C2C,
     warn: 0xF0A040,
     signal: 0xFF6B6A,
     close_hover: 0xC42B1C,
     popup: 0x2A1C1C,
-    field: 0x171717,
-    button: 0x222222,
+    field: 0x0F0F0F,
+    button: 0x161616,
 };
-pub const EMBER_RAISED: Theme = Theme { divider: 0x444444, track: 0x4A4A4A, field: 0x1E1E1E, button: 0x333333, hover_fill: 0x434343, row_select: 0x4A4A4A, ..EMBER };
+pub const EMBER_RAISED: Theme = Theme { divider: 0x333333, track: 0x383838, field: 0x121212, button: 0x1F1F1F, hover_fill: 0x2C2C2C, row_select: 0x363636, ..EMBER };
 
 // Dark, on deep wine.
 pub const GARNET: Theme = Theme {
@@ -137,10 +138,10 @@ pub const GARNET: Theme = Theme {
     stripe: 0x221818,
     divider: 0x3A3A3A,
     track: 0x444444,
-    text: 0xF3E7E7,
-    label: 0xC6A9A9,
-    placeholder: 0xAA8F8F,
-    icon: 0xBE9D9D,
+    text: 0xEAEAEA,
+    label: 0xB0B0B0,
+    placeholder: 0x959595,
+    icon: 0xA5A5A5,
     accent: 0xF52524,
     on_accent: 0xFFFFFF,
     accent_fill: 0x6A3030,
@@ -164,10 +165,10 @@ pub const BLUSH: Theme = Theme {
     stripe: 0xF6EAEA,
     divider: 0xD9D9D9,
     track: 0xD4D4D4,
-    text: 0x2F1B1B,
-    label: 0x725151,
-    placeholder: 0x7D6161,
-    icon: 0x785656,
+    text: 0x202020,
+    label: 0x595959,
+    placeholder: 0x686868,
+    icon: 0x5F5F5F,
     accent: 0xD21E1E,
     on_accent: 0xFFFFFF,
     accent_fill: 0xF2C9C9,
