@@ -480,12 +480,17 @@ fn compare(a: &Row, b: &Row, sort: Sort, group: Group) -> Ordering {
             Group::Mixed => {}
         }
     }
+    // Every key must order all rows alike, or the sort aborts ("does not implement a total order"): by size a
+    // folder counts as 0 against files too (it once compared by name against files and by size between files,
+    // which Mixed turned into a cycle and a crash, 2026-11-09). Ties go by name, then by the whole path.
+    let size = |r: &Row| if r.is_folder() { 0 } else { r.size };
     let c = match sort.field {
         SortField::Date => a.stamp.cmp(&b.stamp),
-        SortField::Size if !a.is_folder() && !b.is_folder() => a.size.cmp(&b.size),
-        _ => Ordering::Equal,
+        SortField::Size => size(a).cmp(&size(b)),
+        SortField::Name => Ordering::Equal,
     }
-    .then_with(|| unsafe { StrCmpLogicalW(&a.name_h, &b.name_h) }.cmp(&0));
+    .then_with(|| unsafe { StrCmpLogicalW(&a.name_h, &b.name_h) }.cmp(&0))
+    .then_with(|| a.path.cmp(&b.path));
     if sort.descending { c.reverse() } else { c }
 }
 
@@ -959,5 +964,35 @@ mod tests {
         assert_eq!(saved_for(&views, Path::new(r"C:\Photoshop")), None);
         let one = &views[3];
         assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(one));
+    }
+
+    #[test]
+    fn every_sort_is_a_total_order() {
+        // Mixed by size once ran in a circle: small "z" file < big "a" file (size) < folder "m" (name) < "z" (name).
+        let rows = [
+            Row::test("z.jpg", Kind::Image, 3, 1),
+            Row::test("m", Kind::Folder, 2, 0),
+            Row::test("a.jpg", Kind::Image, 1, 2),
+            Row::test("b", Kind::Folder, 5, 0),
+            Row::test("c.txt", Kind::Other, 4, 2),
+        ];
+        for field in [SortField::Name, SortField::Date, SortField::Size] {
+            for descending in [false, true] {
+                for group in Group::ALL {
+                    let sort = Sort { field, descending };
+                    let cmp = |x: &Row, y: &Row| compare(x, y, sort, group);
+                    for x in &rows {
+                        for y in &rows {
+                            assert_eq!(cmp(x, y), cmp(y, x).reverse(), "{field:?} {group:?}: antisymmetry");
+                            for z in &rows {
+                                if cmp(x, y) != Ordering::Greater && cmp(y, z) != Ordering::Greater {
+                                    assert_ne!(cmp(x, z), Ordering::Greater, "{field:?} {descending} {group:?}: {} {} {}", x.name, y.name, z.name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
