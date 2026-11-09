@@ -5,7 +5,7 @@
 //!
 //! Looks and moves like Snapper (and VEIL Transient before it), in Looker's red (theme.rs):
 //! - Buttons are boxes: a neutral grey fill with a divider hairline at rest; on hover the hover fill and the
-//!   outline warming to the accent; solid accent while pressed; a toggle that's on is the selection fill with an accent
+//!   outline warming to the accent; solid accent while pressed; a toggle that's on is an accent-tinted fill with an accent
 //!   outline. Radii: 2.5 rows, 4 menu highlights, 5 buttons, fields and tooltips, 8 menus, 10 cards and dialogs.
 //! - One motion rule (motion.rs): hover washes come on at once and fade out; switches, panels, menus (fade and
 //!   grow from 94 % about the corner they hang from), dialogs and cards (from 96 %) ease over 190 ms.
@@ -202,7 +202,7 @@ pub fn frame(g: &Gfx, r: D2D_RECT_F, radius: f32, kind: Kind, s: &State) -> D2D1
                 return rgb(t.on_accent);
             }
             if kind == Kind::Toggle(true) {
-                g.fill_round(r, radius, faded(rgb(t.row_select), k));
+                g.fill_round(r, radius, faded(rgb(t.selected), k));
                 stroke(g, r, radius, faded(rgb(t.accent), k));
                 return faded(rgb(t.text), k);
             }

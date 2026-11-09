@@ -100,6 +100,9 @@ pub struct Theme {
     pub field: u32,
     /// An idle button's or chip's fill (opaque, so it's the same grey on any surface).
     pub button: u32,
+    /// A button that's on (a panel's toggle, the picked theme chip): `button` tinted with the accent, under
+    /// an accent outline. The one control fill that's red.
+    pub selected: u32,
 }
 
 // Nearly black, warmed a touch; its greys darker than Garnet's, close to the old Looker's black theme.
@@ -126,6 +129,7 @@ pub const EMBER: Theme = Theme {
     popup: 0x2A1C1C,
     field: 0x0F0F0F,
     button: 0x161616,
+    selected: 0x4E1A1A,
 };
 pub const EMBER_RAISED: Theme = Theme { divider: 0x333333, track: 0x383838, field: 0x121212, button: 0x1F1F1F, hover_fill: 0x2C2C2C, row_select: 0x363636, ..EMBER };
 
@@ -153,6 +157,7 @@ pub const GARNET: Theme = Theme {
     popup: 0x322323,
     field: 0x262626,
     button: 0x2E2E2E,
+    selected: 0x602C2C,
 };
 pub const GARNET_RAISED: Theme = Theme { divider: 0x4E4E4E, track: 0x555555, field: 0x2B2B2B, button: 0x3A3A3A, hover_fill: 0x4A4A4A, row_select: 0x555555, ..GARNET };
 
@@ -180,6 +185,7 @@ pub const BLUSH: Theme = Theme {
     popup: 0xFFFAFA,
     field: 0xFFFFFF,
     button: 0xEEEEEE,
+    selected: 0xF2CACA,
 };
 pub const BLUSH_RAISED: Theme = Theme { divider: 0xE2E2E2, track: 0xD8D8D8, field: 0xF4F4F4, ..BLUSH };
 
