@@ -339,7 +339,7 @@ impl Group {
         match self {
             Group::FoldersFirst => "Folders first",
             Group::FilesFirst => "Files first",
-            Group::Mixed => "Mixed by the sort",
+            Group::Mixed => "Mixed, by the sort",
         }
     }
 
@@ -354,6 +354,108 @@ impl Group {
     pub fn parse(s: &str) -> Option<Group> {
         Group::ALL.into_iter().find(|g| g.key() == s)
     }
+}
+
+/// How the explorer shows a folder (Transient's Folders and files menu): where the folders go, whether the
+/// subfolders' files are listed too, whether files Looker can't open show, how tall the rows are, and the
+/// columns. The default is the settings'; a folder can keep its own (`SavedView`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct View {
+    pub group: Group,
+    pub subfolders: bool,
+    pub other_files: bool,
+    /// Row height in rows (1-4): taller rows, bigger thumbnails.
+    pub height: u8,
+    pub columns: Vec<(ColKind, f32)>,
+}
+
+pub const HEIGHT_MAX: u8 = 4;
+
+impl Default for View {
+    fn default() -> Self {
+        View { group: Group::default(), subfolders: false, other_files: true, height: 1, columns: ColKind::defaults() }
+    }
+}
+
+/// What a saved view covers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    /// The folder alone.
+    Folder,
+    /// The folder and every folder under it (unless one has its own).
+    Tree,
+    /// None here, though a parent's covers it: the default view.
+    Off,
+}
+
+impl Scope {
+    fn key(self) -> &'static str {
+        match self {
+            Scope::Folder => "folder",
+            Scope::Tree => "tree",
+            Scope::Off => "off",
+        }
+    }
+}
+
+/// A folder's own view (Transient's "Saved view").
+#[derive(Clone, PartialEq, Debug)]
+pub struct SavedView {
+    pub path: PathBuf,
+    pub scope: Scope,
+    pub view: View,
+}
+
+impl SavedView {
+    /// `scope;group;subfolders;other;height;columns;path` (the path last: it may hold anything but `|`).
+    pub fn format(&self) -> String {
+        let v = &self.view;
+        format!(
+            "{};{};{};{};{};{};{}",
+            self.scope.key(),
+            v.group.key(),
+            v.subfolders as i32,
+            v.other_files as i32,
+            v.height,
+            ColKind::format(&v.columns),
+            self.path.display()
+        )
+    }
+
+    pub fn parse(s: &str) -> Option<SavedView> {
+        let f: Vec<&str> = s.splitn(7, ';').collect();
+        if f.len() != 7 || f[6].is_empty() {
+            return None;
+        }
+        let scope = [Scope::Folder, Scope::Tree, Scope::Off].into_iter().find(|x| x.key() == f[0])?;
+        let view = View {
+            group: Group::parse(f[1]).unwrap_or_default(),
+            subfolders: f[2] == "1",
+            other_files: f[3] != "0",
+            height: f[4].parse::<u8>().map_or(1, |h| h.clamp(1, HEIGHT_MAX)),
+            columns: ColKind::parse_list(f[5]),
+        };
+        Some(SavedView { path: PathBuf::from(f[6]), scope, view })
+    }
+}
+
+/// The saved view that covers `folder`, by index: its own (unless it's `Off`), else the nearest parent's that
+/// covers its subfolders. None: the default view.
+pub fn saved_for(views: &[SavedView], folder: &Path) -> Option<usize> {
+    let key = norm(folder);
+    if let Some(i) = views.iter().position(|v| norm(&v.path) == key) {
+        return (views[i].scope != Scope::Off).then_some(i);
+    }
+    let mut best: Option<(usize, usize)> = None;
+    for (i, v) in views.iter().enumerate() {
+        if v.scope == Scope::Tree && within(folder, &v.path) {
+            let len = norm(&v.path).len();
+            if best.is_none_or(|(b, _)| len > b) {
+                best = Some((len, i));
+            }
+        }
+    }
+    best.map(|(_, i)| i)
 }
 
 /// Explorer's natural order ("img9" before "img10"), case-insensitive.
@@ -526,25 +628,47 @@ fn row_for(path: PathBuf, md: &std::fs::Metadata) -> Row {
 
 /// Lists a place, sorted. A folder that can't be read lists as empty; a collection lists the `tagged` paths
 /// that still exist.
-pub fn list(place: &Place, sort: Sort, group: Group, tagged: &[PathBuf]) -> Vec<Row> {
+/// A place's rows, sorted. `deep` (Include subfolders) adds the files of every folder under a folder, its
+/// own subfolders still listed but theirs not; links (junctions) aren't followed, and it stops at
+/// [`DEEP_CAP`] rows.
+pub fn list(place: &Place, sort: Sort, group: Group, tagged: &[PathBuf], deep: bool) -> Vec<Row> {
     let mut rows = match place {
         Place::Computer => drives(),
-        Place::Folder(dir) => {
-            let mut rows = Vec::new();
-            if let Ok(rd) = std::fs::read_dir(dir) {
-                for e in rd.flatten() {
-                    let Ok(md) = e.metadata() else { continue };
-                    if md.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
-                        continue; // desktop.ini, Thumbs.db, $RECYCLE.BIN: Explorer hides them too
-                    }
-                    rows.push(row_for(e.path(), &md));
-                }
-            }
-            rows
-        }
+        Place::Folder(dir) => list_folder(dir, deep),
         Place::Collection(_) => tagged.iter().filter_map(|p| std::fs::metadata(p).ok().map(|md| row_for(p.clone(), &md))).collect(),
     };
     sort_rows(&mut rows, sort, group);
+    rows
+}
+
+pub const DEEP_CAP: usize = 100_000;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+fn list_folder(dir: &Path, deep: bool) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), true)];
+    while let Some((d, top)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(md) = e.metadata() else { continue };
+            let attrs = md.file_attributes();
+            if attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
+                continue; // desktop.ini, Thumbs.db, $RECYCLE.BIN: Explorer hides them too
+            }
+            if md.is_dir() {
+                if deep && attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+                    stack.push((e.path(), false));
+                }
+                if !top {
+                    continue;
+                }
+            }
+            rows.push(row_for(e.path(), &md));
+            if rows.len() >= DEEP_CAP {
+                return rows;
+            }
+        }
+    }
     rows
 }
 
@@ -663,11 +787,12 @@ pub struct Watcher {
 unsafe impl Send for Watcher {}
 
 impl Watcher {
-    pub fn start(folder: &Path, hwnd: HWND, msg: u32) -> Option<Watcher> {
+    /// Watches `folder` (and everything under it with `subtree`), posting `msg` on each change.
+    pub fn start(folder: &Path, hwnd: HWND, msg: u32, subtree: bool) -> Option<Watcher> {
         let filter = FILE_NOTIFY_CHANGE(
             FILE_NOTIFY_CHANGE_FILE_NAME.0 | FILE_NOTIFY_CHANGE_DIR_NAME.0 | FILE_NOTIFY_CHANGE_LAST_WRITE.0 | FILE_NOTIFY_CHANGE_SIZE.0,
         );
-        let change = unsafe { FindFirstChangeNotificationW(&HSTRING::from(folder.as_os_str()), false, filter).ok()? };
+        let change = unsafe { FindFirstChangeNotificationW(&HSTRING::from(folder.as_os_str()), subtree, filter).ok()? };
         let Ok(stop) = (unsafe { CreateEventW(None, true, false, PCWSTR::null()) }) else {
             unsafe {
                 let _ = FindCloseChangeNotification(change);
@@ -818,5 +943,21 @@ mod tests {
         std::fs::create_dir(dir.join("New folder")).unwrap();
         assert_eq!(free_name(&dir, "New folder"), dir.join("New folder (2)"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_views_cover_their_folders() {
+        let sv = |p: &str, scope| SavedView { path: PathBuf::from(p), scope, view: View::default() };
+        let views = vec![sv(r"C:\Photos", Scope::Tree), sv(r"C:\Photos\2026", Scope::Folder), sv(r"C:\Photos\Raw", Scope::Off), sv(r"C:\Photos\2026\May", Scope::Tree)];
+        assert_eq!(saved_for(&views, Path::new(r"c:\photos")), Some(0));
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photos\Trips\Rome")), Some(0));
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photos\2026")), Some(1));
+        // "This folder" doesn't reach its subfolders: the nearest "and subfolders" above does.
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photos\2026\June")), Some(0));
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photos\2026\May\1")), Some(3));
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photos\Raw")), None);
+        assert_eq!(saved_for(&views, Path::new(r"C:\Photoshop")), None);
+        let one = &views[3];
+        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(one));
     }
 }

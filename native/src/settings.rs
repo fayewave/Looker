@@ -68,6 +68,12 @@ pub struct Settings {
     pub explorer_columns: Vec<(crate::explorer::ColKind, f32)>,
     /// The explorer's sidebar column's width, as its edge was last dragged.
     pub sidebar_width: f32,
+    /// The default view lists the subfolders' files too.
+    pub explorer_subfolders: bool,
+    /// The default view's row height, in rows (1-4).
+    pub explorer_height: u8,
+    /// Folders with a view of their own.
+    pub views: Vec<crate::explorer::SavedView>,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -88,7 +94,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new() }
     }
 }
 
@@ -139,10 +145,29 @@ impl Settings {
         }
     }
 
-    /// A folder was renamed or moved through Looker: bookmarks and History at or under it follow.
+    /// The explorer's default view (a folder without a saved view of its own shows it).
+    pub fn default_view(&self) -> crate::explorer::View {
+        crate::explorer::View {
+            group: self.explorer_group,
+            subfolders: self.explorer_subfolders,
+            other_files: self.explorer_other_files,
+            height: self.explorer_height,
+            columns: self.explorer_columns.clone(),
+        }
+    }
+
+    pub fn set_default_view(&mut self, v: &crate::explorer::View) {
+        self.explorer_group = v.group;
+        self.explorer_subfolders = v.subfolders;
+        self.explorer_other_files = v.other_files;
+        self.explorer_height = v.height;
+        self.explorer_columns = v.columns.clone();
+    }
+
+    /// A folder was renamed or moved through Looker: bookmarks, History and saved views at or under it follow.
     pub fn folder_moved(&mut self, from: &std::path::Path, to: &std::path::Path) -> bool {
         let mut changed = false;
-        for p in self.bookmarks.iter_mut().chain(self.visited.iter_mut()) {
+        for p in self.bookmarks.iter_mut().chain(self.visited.iter_mut()).chain(self.views.iter_mut().map(|v| &mut v.path)) {
             if let Some(n) = crate::explorer::rebase(p, from, to) {
                 *p = n;
                 changed = true;
@@ -207,6 +232,9 @@ pub fn parse(text: &str) -> Settings {
             "explorer_group" => s.explorer_group = crate::explorer::Group::parse(v).unwrap_or_default(),
             "sidebar_width" => s.sidebar_width = v.parse::<f32>().map_or(SIDEBAR_WIDTH, |w| w.clamp(150.0, 420.0)),
             "explorer_columns" => s.explorer_columns = crate::explorer::ColKind::parse_list(v),
+            "explorer_subfolders" => s.explorer_subfolders = v == "1",
+            "explorer_height" => s.explorer_height = v.parse::<u8>().map_or(1, |h| h.clamp(1, crate::explorer::HEIGHT_MAX)),
+            "view" => s.views.extend(crate::explorer::SavedView::parse(v)),
             "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
         }
@@ -250,6 +278,11 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("browse_share={:.3}\n", s.browse_share));
     out.push_str(&format!("explorer_columns={}\n", crate::explorer::ColKind::format(&s.explorer_columns)));
     out.push_str(&format!("sidebar_width={}\n", s.sidebar_width.round()));
+    out.push_str(&format!("explorer_subfolders={}\n", s.explorer_subfolders as i32));
+    out.push_str(&format!("explorer_height={}\n", s.explorer_height));
+    for v in &s.views {
+        out.push_str(&format!("view={}\n", v.format()));
+    }
     out
 }
 
@@ -399,6 +432,16 @@ mod tests {
             browse_share: 0.625,
             explorer_columns: vec![(crate::explorer::ColKind::Name, 0.0), (crate::explorer::ColKind::Taken, 150.0)],
             sidebar_width: 260.0,
+            explorer_subfolders: true,
+            explorer_height: 3,
+            views: vec![
+                crate::explorer::SavedView {
+                    path: PathBuf::from(r"C:\Users\me\Pictures; odd"),
+                    scope: crate::explorer::Scope::Tree,
+                    view: crate::explorer::View { group: crate::explorer::Group::FilesFirst, subfolders: true, other_files: false, height: 2, columns: crate::explorer::ColKind::defaults() },
+                },
+                crate::explorer::SavedView { path: PathBuf::from(r"D:\"), scope: crate::explorer::Scope::Off, view: crate::explorer::View::default() },
+            ],
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

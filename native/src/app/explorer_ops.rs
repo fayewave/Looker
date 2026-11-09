@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use super::explorer::{EField, SideTarget};
 use super::menus::{Action, MenuKind, check};
 use super::*;
-use crate::explorer::{self, ColKind, Group, Kind, Place};
+use crate::explorer::{self, ColKind, Group, Kind, Place, Scope};
 use crate::fileops::{self, Done, Origin, Transfer};
 use crate::textedit::TextEdit;
 use crate::ui::{Entry, Menu, MenuItem, TextField};
@@ -41,8 +41,17 @@ fn items(n: usize) -> String {
     if n == 1 { "1 item".into() } else { format!("{n} items") }
 }
 
+/// The Folders and files button's glyph for a grouping (the menu's items show it too).
+pub(super) fn group_glyph(g: Group) -> u16 {
+    match g {
+        Group::FoldersFirst => 0xE8B7,
+        Group::FilesFirst => 0xE7C3,
+        Group::Mixed => 0xE8FD,
+    }
+}
+
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled })
+    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
 fn clipboard_has_files() -> bool {
@@ -441,7 +450,7 @@ impl App {
         e.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
         e.push(item(Action::Properties, 0xE946, "Properties", None, single));
         e.push(Entry::Separator);
-        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
+        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.explorer.look.other_files));
         self.show_menu(MenuKind::Rows(paths), e, x, y);
     }
 
@@ -461,7 +470,7 @@ impl App {
             item(Action::SelectAll, 0xE8B3, "Select all", Some("Ctrl+A"), !self.explorer.view.is_empty()),
             item(Action::Refresh, 0xE72C, "Refresh", Some("F5"), true),
             Entry::Separator,
-            check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files),
+            check(Action::ToggleExplorerOther, "Show files Looker can't open", self.explorer.look.other_files),
         ];
         e.shrink_to_fit();
         self.show_menu(MenuKind::ExplorerBg, e, x, y);
@@ -486,29 +495,71 @@ impl App {
         self.show_menu(MenuKind::Side(p), e, x, y);
     }
 
-    /// The History drop-down: Back and Forward's places, oldest first, the current one ticked.
+    /// The History drop-down, as Transient's: Back and Forward's places, oldest first, each with its icon,
+    /// the current one outlined in the accent.
     pub(super) fn explorer_history_menu(&mut self, anchor: D2D_RECT_F) {
         let (places, at) = self.explorer.history.entries();
         if places.is_empty() {
             return;
         }
-        let e = places.iter().enumerate().map(|(i, p)| check(Action::HistoryJump(i), &p.name(), Some(i) == at)).collect();
+        let e = places
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let glyph = match p {
+                    Place::Computer => 0xE7F8u16,
+                    Place::Folder(_) => 0xE8B7,
+                    Place::Collection(crate::explorer::Collection::Favourites) => 0xE734,
+                    Place::Collection(_) => 0xE8EC,
+                };
+                Entry::Item(MenuItem { action: Action::HistoryJump(i), glyph: Some(glyph), label: p.name(), accel: None, check: None, enabled: true, current: Some(i) == at })
+            })
+            .collect();
         self.show_menu_below(MenuKind::History, e, anchor);
     }
 
-    /// The folders/files button's menu.
-    pub(super) fn explorer_group_menu(&mut self, anchor: D2D_RECT_F) {
-        let g = self.settings.explorer_group;
-        let mut e: Vec<Entry<Action>> = Group::ALL.iter().map(|&x| check(Action::Group(x), x.label(), x == g)).collect();
+    /// The Folders and files button's menu, after Transient's: where folders go, what's listed, the rows'
+    /// height, and the folder's saved view.
+    pub(super) fn group_entries(&self) -> Vec<Entry<Action>> {
+        let v = &self.explorer.look;
+        let folder = self.explorer.folder().is_some();
+        let ticked = |action, glyph, label: &str, on: bool, enabled: bool| {
+            Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled, current: false })
+        };
+        let mut e = vec![Entry::Heading("Folders and files".into())];
+        for g in Group::ALL {
+            e.push(ticked(Action::Group(g), group_glyph(g), g.label(), v.group == g, true));
+        }
         e.push(Entry::Separator);
-        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
+        e.push(ticked(Action::ToggleSubfolders, 0xE8B7, "Include subfolders", v.subfolders, folder));
+        e.push(ticked(Action::ToggleExplorerOther, 0xE7C3, "Unsupported files", v.other_files, true));
+        let h = v.height;
+        e.push(Entry::Stepper(crate::ui::Stepper {
+            label: "Height".into(),
+            value: if h == 1 { "1 row".into() } else { format!("{h} rows") },
+            dec: (h > 1).then_some(Action::RowHeight(h - 1)),
+            inc: (h < crate::explorer::HEIGHT_MAX).then_some(Action::RowHeight(h + 1)),
+        }));
+        e.push(Entry::Separator);
+        e.push(Entry::Heading("Saved view".into()));
+        let scope = self.view_entry().map(|i| self.settings.views[i].scope);
+        e.push(ticked(Action::SavedView(None), 0xE785, "None", scope.is_none(), folder));
+        e.push(ticked(Action::SavedView(Some(Scope::Folder)), 0xE72E, "This folder", scope == Some(Scope::Folder), folder));
+        e.push(ticked(Action::SavedView(Some(Scope::Tree)), 0xE72E, "This folder and subfolders", scope == Some(Scope::Tree), folder));
+        e.push(Entry::Separator);
+        e.push(item(Action::SetDefaultView, 0xE7F4, "Set as default", None, scope.is_some() && *v != self.settings.default_view()));
+        e
+    }
+
+    pub(super) fn explorer_group_menu(&mut self, anchor: D2D_RECT_F) {
+        let e = self.group_entries();
         self.show_menu_below(MenuKind::Group, e, anchor);
     }
 
     /// A column header's menu (right-click), as Transient's: move it, size it, close it, then every column
     /// by group, ticked while it shows.
     pub(super) fn column_menu(&mut self, idx: usize, x: f32, y: f32) {
-        let cols = self.settings.explorer_columns.clone();
+        let cols = self.explorer.look.columns.clone();
         let Some(&(c, _)) = cols.get(idx) else { return };
         let mut e = vec![
             item(Action::ColShift(false), 0xE76B, "Shift column left", None, idx > 0),
@@ -524,7 +575,7 @@ impl App {
             e.push(Entry::Heading(name.into()));
             for &k in kinds {
                 let shown = cols.iter().any(|(s, _)| *s == k);
-                e.push(Entry::Item(MenuItem { action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name }));
+                e.push(Entry::Item(MenuItem { action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
             }
         }
         self.show_menu(MenuKind::Columns(idx), e, x, y);
@@ -609,6 +660,10 @@ impl App {
             (Action::Undo, _) => self.explorer_undo(),
             (Action::Redo, _) => self.explorer_redo(),
             (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
+            (Action::ToggleSubfolders, _) => self.toggle_subfolders(),
+            (Action::RowHeight(h), _) => self.set_row_height(h),
+            (Action::SavedView(s), _) => self.set_saved_view(s),
+            (Action::SetDefaultView, _) => self.set_default_view(),
             _ => {}
         }
     }

@@ -213,6 +213,8 @@ pub(super) struct Explorer {
     pub(super) col_shown: Vec<(usize, ColKind, f32)>,
     /// The scrollbar being dragged: the pointer's offset from the thumb's top.
     pub(super) thumb_drag: Option<f32>,
+    /// How the place showing is shown: its saved view, else the default (`Settings::default_view`).
+    pub(super) look: explorer::View,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -271,6 +273,7 @@ impl Explorer {
             col_anim_until: Instant::now(),
             col_shown: Vec::new(),
             thumb_drag: None,
+            look: explorer::View::default(),
             side_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
@@ -517,6 +520,8 @@ impl App {
                 settings::save(&self.settings);
             }
         }
+        let v = self.view_for(&place);
+        self.adopt_view(v);
         self.explorer_list(place, false);
         self.invalidate();
     }
@@ -525,7 +530,8 @@ impl App {
         self.explorer.serial += 1;
         let serial = self.explorer.serial;
         let sort = self.settings.sort;
-        let group = self.settings.explorer_group;
+        let group = self.explorer.look.group;
+        let deep = self.explorer.look.subfolders && matches!(place, Place::Folder(_));
         let tagged = match &place {
             Place::Collection(c) => self.explorer.tags.in_collection(*c),
             _ => Vec::new(),
@@ -535,7 +541,7 @@ impl App {
         std::thread::Builder::new()
             .name("explorer".into())
             .spawn(move || {
-                let rows = explorer::list(&place, sort, group, &tagged);
+                let rows = explorer::list(&place, sort, group, &tagged, deep);
                 let ptr = Box::into_raw(Box::new(Listed { serial, place, rows, refresh }));
                 unsafe {
                     if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_EXPLORER_LISTED, WPARAM(0), LPARAM(ptr as isize)).is_err() {
@@ -556,7 +562,7 @@ impl App {
             self.current_changed();
         }
         let mut rows = l.rows;
-        if !self.settings.explorer_other_files {
+        if !self.explorer.look.other_files {
             rows.retain(|r| r.kind != Kind::Other);
         }
         let e = &mut self.explorer;
@@ -567,7 +573,7 @@ impl App {
         e.refilter();
         if e.watcher.is_none() {
             if let Place::Folder(f) = &l.place {
-                e.watcher = Watcher::start(f, self.hwnd, explorer::WM_EXPLORER_CHANGED);
+                e.watcher = Watcher::start(f, self.hwnd, explorer::WM_EXPLORER_CHANGED, e.look.subfolders);
             }
         }
         e.place = Some(l.place);
@@ -720,21 +726,145 @@ impl App {
         Some(parts.join("   ·   "))
     }
 
-    pub(super) fn toggle_explorer_other(&mut self) {
-        self.settings.explorer_other_files = !self.settings.explorer_other_files;
+    // --- The view (the Folders and files menu) -------------------------------------------------------
+
+    /// The saved view covering the folder showing (its own, or a parent's "and subfolders"), by index in
+    /// `Settings::views`.
+    pub(super) fn view_entry(&self) -> Option<usize> {
+        self.explorer.folder().and_then(|f| explorer::saved_for(&self.settings.views, &f))
+    }
+
+    fn view_for(&self, place: &Place) -> explorer::View {
+        match place.folder().and_then(|f| explorer::saved_for(&self.settings.views, f)) {
+            Some(i) => self.settings.views[i].view.clone(),
+            None => self.settings.default_view(),
+        }
+    }
+
+    /// Takes on a view for the place about to list (a column sort on a column it doesn't show goes).
+    fn adopt_view(&mut self, v: explorer::View) {
+        let e = &mut self.explorer;
+        if e.look.columns != v.columns {
+            if e.xsort.is_some_and(|(k, _)| v.columns.iter().all(|(c, _)| *c != k)) {
+                e.xsort = None;
+            }
+            e.col_pos.clear();
+        }
+        if e.look.subfolders != v.subfolders {
+            e.watcher = None;
+        }
+        e.look = v;
+    }
+
+    /// The view changed: it goes into the saved view covering the folder, else it's the new default.
+    pub(super) fn store_view(&mut self) {
+        let v = self.explorer.look.clone();
+        match self.view_entry() {
+            Some(i) => self.settings.views[i].view = v,
+            None => self.settings.set_default_view(&v),
+        }
         settings::save(&self.settings);
+    }
+
+    fn relist(&mut self) {
         if let Some(p) = self.explorer.place.clone() {
             self.explorer_list(p, true);
         }
     }
 
+    pub(super) fn toggle_explorer_other(&mut self) {
+        self.explorer.look.other_files = !self.explorer.look.other_files;
+        self.store_view();
+        self.relist();
+    }
+
+    /// Include subfolders: every file under the folder, listed flat.
+    pub(super) fn toggle_subfolders(&mut self) {
+        self.explorer.look.subfolders = !self.explorer.look.subfolders;
+        self.explorer.watcher = None;
+        self.store_view();
+        self.relist();
+    }
+
     pub(super) fn set_explorer_group(&mut self, g: Group) {
-        if self.settings.explorer_group != g {
-            self.settings.explorer_group = g;
-            settings::save(&self.settings);
+        if self.explorer.look.group != g {
+            self.explorer.look.group = g;
+            self.store_view();
             self.explorer.resort(self.settings.sort, g);
             self.invalidate();
         }
+    }
+
+    /// The rows' height, in rows (taller rows show bigger thumbnails); the cursor's row stays in view.
+    pub(super) fn set_row_height(&mut self, h: u8) {
+        let h = h.clamp(1, explorer::HEIGHT_MAX);
+        if self.explorer.look.height != h {
+            let old = self.explorer.look.height as f32;
+            self.explorer.look.height = h;
+            self.explorer.scroll = self.explorer.scroll * h as f32 / old;
+            self.explorer.anim = None;
+            self.explorer.reveal = self.explorer.cursor.as_deref().and_then(|c| self.explorer.index_of(c));
+            self.store_view();
+            self.invalidate();
+        }
+    }
+
+    /// Saved view: None, This folder, or This folder and subfolders. Saving keeps the view as it is; None
+    /// goes back to the default (or to a parent's, which an `Off` entry here then turns away).
+    pub(super) fn set_saved_view(&mut self, scope: Option<explorer::Scope>) {
+        let Some(f) = self.explorer.folder() else { return };
+        let key = explorer::norm(&f);
+        let v = self.explorer.look.clone();
+        let views = &mut self.settings.views;
+        let exact = views.iter().position(|s| explorer::norm(&s.path) == key);
+        match scope {
+            Some(sc) => match exact {
+                Some(i) => {
+                    views[i].scope = sc;
+                    views[i].view = v;
+                }
+                None => views.push(explorer::SavedView { path: f.clone(), scope: sc, view: v }),
+            },
+            None => {
+                if let Some(i) = exact {
+                    views.remove(i);
+                }
+                if explorer::saved_for(views, &f).is_some() {
+                    views.push(explorer::SavedView { path: f.clone(), scope: explorer::Scope::Off, view: explorer::View::default() });
+                }
+            }
+        }
+        settings::save(&self.settings);
+        let place = Place::Folder(f);
+        let nv = self.view_for(&place);
+        if nv != self.explorer.look {
+            let relist = nv.subfolders != self.explorer.look.subfolders || nv.other_files != self.explorer.look.other_files;
+            let resort = nv.group != self.explorer.look.group;
+            self.adopt_view(nv);
+            self.animate_columns();
+            if relist {
+                self.relist();
+            } else if resort {
+                self.explorer.resort(self.settings.sort, self.explorer.look.group);
+            }
+        }
+        self.show_toast(
+            match scope {
+                Some(explorer::Scope::Folder) => "View saved for this folder",
+                Some(_) => "View saved for this folder and its subfolders",
+                None => "Saved view removed",
+            },
+            false,
+        );
+        self.invalidate();
+    }
+
+    /// Set as default: the folder's saved view becomes the one every other folder shows.
+    pub(super) fn set_default_view(&mut self) {
+        let v = self.explorer.look.clone();
+        self.settings.set_default_view(&v);
+        settings::save(&self.settings);
+        self.show_toast("Set as the default view", false);
     }
 
     /// A column header: the same column flips the direction, another sorts by it, ascending. The sort is the
@@ -1459,7 +1589,7 @@ impl App {
         }
         // Sorted by one of these columns: the rows take their places as the values come in.
         if self.explorer.xsort.is_some_and(|(c, _)| c.lazy()) {
-            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+            self.explorer.resort(self.settings.sort, self.explorer.look.group);
         }
         self.invalidate();
     }
@@ -1467,27 +1597,27 @@ impl App {
     // --- Columns ------------------------------------------------------------------------------------
 
     fn save_columns(&mut self) {
-        settings::save(&self.settings);
+        self.store_view();
         self.invalidate();
     }
 
     /// A header was clicked: Name, Date modified and Size sort the toolbar's way (the viewer follows); the
     /// others sort the list alone. Again flips the direction.
     pub(super) fn header_click(&mut self, idx: usize) {
-        let Some(&(c, _)) = self.settings.explorer_columns.get(idx) else { return };
+        let Some(&(c, _)) = self.explorer.look.columns.get(idx) else { return };
         if let Some(f) = c.shared_sort() {
             let was_local = self.explorer.xsort.take().is_some();
             if was_local && self.settings.sort.field != f {
                 self.set_sort(crate::folder::Sort { field: f, descending: false });
             } else if was_local {
-                self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+                self.explorer.resort(self.settings.sort, self.explorer.look.group);
             } else {
                 self.sort_by_column(f);
             }
         } else {
             let desc = matches!(self.explorer.xsort, Some((k, d)) if k == c && !d);
             self.explorer.xsort = Some((c, desc));
-            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+            self.explorer.resort(self.settings.sort, self.explorer.look.group);
         }
         self.invalidate();
     }
@@ -1525,7 +1655,7 @@ impl App {
         }
         // The others, as shown, in order; the column goes before the one at `insert`, else after the last.
         let others: Vec<usize> = self.explorer.col_shown.iter().map(|&(i, _, _)| i).filter(|&i| i != d.idx).collect();
-        let cols = &mut self.settings.explorer_columns;
+        let cols = &mut self.explorer.look.columns;
         if d.idx < cols.len() {
             let before = others.get(d.insert).map(|&i| cols[i].0);
             let after = others.last().map(|&i| cols[i].0);
@@ -1584,7 +1714,7 @@ impl App {
         let updates: Vec<(usize, ColKind, f32)> = r.widths.iter().zip(&w).map(|(&(i, c, _), &nw)| (i, c, nw)).collect();
         for (i, c, nw) in updates {
             if c != ColKind::Name {
-                if let Some(col) = self.settings.explorer_columns.get_mut(i) {
+                if let Some(col) = self.explorer.look.columns.get_mut(i) {
                     col.1 = nw.round().clamp(40.0, 1200.0);
                 }
             }
@@ -1601,7 +1731,7 @@ impl App {
 
     /// Size a column to its widest value (and its header) across the folder.
     pub(super) fn col_fit(&mut self, idx: usize) {
-        let Some(&(c, _)) = self.settings.explorer_columns.get(idx) else { return };
+        let Some(&(c, _)) = self.explorer.look.columns.get(idx) else { return };
         if c == ColKind::Name {
             return;
         }
@@ -1612,7 +1742,7 @@ impl App {
             let t = super::explorer_view::cell_text(r, c, self.explorer.meta.get(&explorer::norm(&r.path)));
             w = w.max(g.measure(&wide(&t), &g.fonts.body) + 22.0);
         }
-        if let Some(col) = self.settings.explorer_columns.get_mut(idx) {
+        if let Some(col) = self.explorer.look.columns.get_mut(idx) {
             col.1 = w.ceil().clamp(40.0, 600.0);
         }
         self.animate_columns();
@@ -1620,27 +1750,27 @@ impl App {
     }
 
     pub(super) fn col_fit_all(&mut self) {
-        for i in 0..self.settings.explorer_columns.len() {
-            if self.settings.explorer_columns[i].0 != ColKind::Name {
+        for i in 0..self.explorer.look.columns.len() {
+            if self.explorer.look.columns[i].0 != ColKind::Name {
                 self.col_fit(i);
             }
         }
     }
 
     pub(super) fn col_close(&mut self, idx: usize) {
-        if self.settings.explorer_columns.get(idx).is_some_and(|(c, _)| *c != ColKind::Name) {
-            let (c, _) = self.settings.explorer_columns.remove(idx);
+        if self.explorer.look.columns.get(idx).is_some_and(|(c, _)| *c != ColKind::Name) {
+            let (c, _) = self.explorer.look.columns.remove(idx);
             self.animate_columns();
             if self.explorer.xsort.is_some_and(|(k, _)| k == c) {
                 self.explorer.xsort = None;
-                self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+                self.explorer.resort(self.settings.sort, self.explorer.look.group);
             }
             self.save_columns();
         }
     }
 
     pub(super) fn col_shift(&mut self, idx: usize, right: bool) {
-        let cols = &mut self.settings.explorer_columns;
+        let cols = &mut self.explorer.look.columns;
         let to = if right { idx + 1 } else { idx.wrapping_sub(1) };
         if idx < cols.len() && to < cols.len() {
             cols.swap(idx, to);
@@ -1650,20 +1780,20 @@ impl App {
     }
 
     pub(super) fn col_restore(&mut self) {
-        self.settings.explorer_columns = ColKind::defaults();
+        self.explorer.look.columns = ColKind::defaults();
         self.animate_columns();
         if self.explorer.xsort.take().is_some() {
-            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+            self.explorer.resort(self.settings.sort, self.explorer.look.group);
         }
         self.save_columns();
     }
 
     /// A column ticked in the header menu: shown at the end, or taken off.
     pub(super) fn col_toggle(&mut self, c: ColKind) {
-        match self.settings.explorer_columns.iter().position(|(k, _)| *k == c) {
+        match self.explorer.look.columns.iter().position(|(k, _)| *k == c) {
             Some(i) => self.col_close(i),
             None => {
-                self.settings.explorer_columns.push((c, c.default_width()));
+                self.explorer.look.columns.push((c, c.default_width()));
                 self.animate_columns();
                 self.save_columns();
             }

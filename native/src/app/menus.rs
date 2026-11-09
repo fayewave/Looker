@@ -48,6 +48,10 @@ pub(super) enum Action {
     SelectAll,
     HistoryJump(usize),
     Group(crate::explorer::Group),
+    ToggleSubfolders,
+    RowHeight(u8),
+    SavedView(Option<crate::explorer::Scope>),
+    SetDefaultView,
     Undo,
     Redo,
     // The column header menu's.
@@ -60,12 +64,12 @@ pub(super) enum Action {
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled })
+    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
 /// An item with a tickbox at the right: ticked when on (a setting, or the one picked of several).
 pub(super) fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true })
+    Entry::Item(MenuItem { action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
 }
 
 impl App {
@@ -207,6 +211,19 @@ impl App {
     /// A colour swatch in the open menu was picked.
     pub(super) fn activate_swatch(&mut self, i: usize, k: usize) {
         let Some(action) = self.menu.as_ref().and_then(|(_, m)| m.swatch_action(i, k)) else { return };
+        // A stepper's minus or plus: the menu stays, showing the new value.
+        if self.menu.as_ref().is_some_and(|(_, m)| m.is_stepper(i)) {
+            let Some(kind) = self.menu.as_ref().map(|(k, _)| k.clone()) else { return };
+            self.run_explorer_action(action, kind.clone());
+            if kind == MenuKind::Group {
+                let entries = self.group_entries();
+                if let Some((_, m)) = self.menu.as_mut() {
+                    m.entries = entries;
+                }
+            }
+            self.invalidate();
+            return;
+        }
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         if let Some(kind) = kind {
@@ -242,7 +259,7 @@ impl App {
         self.settings.sort = sort;
         settings::save(&self.settings);
         self.viewer.set_sort(sort);
-        self.explorer.resort(sort, self.settings.explorer_group);
+        self.explorer.resort(sort, self.explorer.look.group);
         let field = match sort.field {
             SortField::Name => "Name",
             SortField::Date => "Date modified",

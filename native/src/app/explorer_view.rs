@@ -68,7 +68,7 @@ impl App {
     /// Returns them (the dragged one last), its slot, and whether any is still moving.
     fn col_layout(&mut self, left: f32, avail: f32) -> (Vec<ColDraw>, Option<(f32, f32)>, bool) {
         const NAME_MIN: f32 = 160.0;
-        let cols = self.settings.explorer_columns.clone();
+        let cols = self.explorer.look.columns.clone();
         let mut shown: Vec<usize> = (0..cols.len()).collect();
         let others = |shown: &[usize]| shown.iter().filter(|&&i| cols[i].0 != ColKind::Name).map(|&i| cols[i].1).sum::<f32>();
         while others(&shown) > avail - NAME_MIN {
@@ -223,11 +223,7 @@ impl App {
             g.text(&[if marked { 0xE840 } else { 0xE718 }], &g.fonts.body_icons, r, if marked { rgb(t.accent) } else { fg }, Align::Center);
         }
         rx -= NAV + 2.0;
-        let group_glyph = match self.settings.explorer_group {
-            explorer::Group::FoldersFirst => 0xE8B7u16,
-            explorer::Group::FilesFirst => 0xE7C3,
-            explorer::Group::Mixed => 0xE8FD,
-        };
+        let group_glyph = super::explorer_ops::group_glyph(self.explorer.look.group);
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
         self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerGroup, group_glyph, true, group_open);
         if !column_sidebar {
@@ -378,15 +374,17 @@ impl App {
             }
         }
 
-        // Rows.
+        // Rows: `rh` tall (the view's Height, in rows), the thumbnail growing with it.
+        let rh = ROW * self.explorer.look.height as f32;
+        let (icon_w, icon_h) = if self.explorer.look.height == 1 { (ICON_W, ICON_H) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0) };
         let list = D2D_RECT_F { left: list_left, top: hy + HEADER + 2.0, right: list_right - 6.0, bottom: body.bottom - footer_h };
         self.hits.add(Hit::ExplorerList, D2D_RECT_F { left: body.left, right: body.right, ..list });
         let view_h = (list.bottom - list.top).max(1.0);
         let n = self.explorer.view.len();
-        let content_h = n as f32 * ROW;
+        let content_h = n as f32 * rh;
         self.explorer.max_scroll = (content_h - view_h).max(0.0);
         if let Some(i) = self.explorer.reveal.take() {
-            let (top, bottom) = (i as f32 * ROW, i as f32 * ROW + ROW);
+            let (top, bottom) = (i as f32 * rh, i as f32 * rh + rh);
             let (cur, _) = self.explorer.scroll_now();
             let to = if top < cur { top } else if bottom > cur + view_h { bottom - view_h } else { cur };
             self.explorer.anim = None;
@@ -394,9 +392,9 @@ impl App {
         }
         let (scroll, moving) = self.explorer.scroll_now();
         let scroll = scroll.clamp(0.0, self.explorer.max_scroll);
-        let first = (scroll / ROW).floor() as usize;
-        let last = (((scroll + view_h) / ROW).ceil() as usize + 1).min(n);
-        let want = ((ICON_W * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
+        let first = (scroll / rh).floor() as usize;
+        let last = (((scroll + view_h) / rh).ceil() as usize + 1).min(n);
+        let want = ((icon_w * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
         let focused = self.explorer.focused;
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let lazy_shown = cols.iter().any(|c| c.kind.lazy());
@@ -417,7 +415,7 @@ impl App {
         }
         for vi in first..last {
             let Some(r) = self.explorer.row(vi).cloned() else { break };
-            let row = rect(list.left, g.snap(list.top + vi as f32 * ROW - scroll), list.right - list.left, ROW);
+            let row = rect(list.left, g.snap(list.top + vi as f32 * rh - scroll), list.right - list.left, rh);
             let visible = D2D_RECT_F { top: row.top.max(list.top), bottom: row.bottom.min(list.bottom), ..row };
             if visible.bottom > visible.top {
                 self.hits.add(Hit::ExplorerRow(vi), visible);
@@ -427,7 +425,7 @@ impl App {
             let is_target = target.as_deref().is_some_and(|tg| r.is_folder() && explorer::same_path(tg, &r.path));
             let hover = self.fades.hover(Hit::ExplorerRow(vi), self.hover == Some(Hit::ExplorerRow(vi)) && target.is_none());
             if vi % 2 == 1 {
-                g.fill(row, gfx::rgba(t.ink, if t.dark { 0.022 } else { 0.03 }));
+                g.fill_round(row, 4.0, rgb(t.stripe));
             }
             if selected || is_target {
                 g.fill_round(row, 4.0, rgb(t.selected));
@@ -450,19 +448,19 @@ impl App {
                 let (x, w) = (c.x, c.w);
                 if c.dragged {
                     // Lifted over the others, as its header is.
-                    g.fill(rect(x, row.top, w, ROW), gfx::rgba(raised.popup, 0.92));
+                    g.fill(rect(x, row.top, w, rh), gfx::rgba(raised.popup, 0.92));
                 }
                 if c.kind != ColKind::Name {
                     let text = cell_text(&r, c.kind, meta.as_ref());
                     if !text.is_empty() {
                         let right = c.kind.right_aligned();
-                        let cr = if right { rect(x, row.top, w - 10.0, ROW) } else { rect(x + 8.0, row.top, w - 12.0, ROW) };
+                        let cr = if right { rect(x, row.top, w - 10.0, rh) } else { rect(x + 8.0, row.top, w - 12.0, rh) };
                         g.text_tabular(&wide(&text), &g.fonts.body, cr, gfx::rgba(t.placeholder, faded), if right { Align::Right } else { Align::Left });
                     }
                     continue;
                 }
                 // Name: the thumbnail or glyph, the name, its tags.
-                let ib = rect(x + 6.0, row.top + (ROW - ICON_H) / 2.0, ICON_W, ICON_H);
+                let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
                 let mut drew = false;
                 if r.kind == Kind::Image {
                     if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
@@ -480,20 +478,20 @@ impl App {
                     };
                     g.text(&[glyph], &g.fonts.body_icons, ib, gfx::rgba(tint, faded), Align::Center);
                 }
-                let tx = x + ICON_W + 14.0;
+                let tx = x + icon_w + 14.0;
                 let mut name_right = x + w - 6.0;
                 if tag.favourite {
-                    g.text(&[0xE735], &g.fonts.small_icons, rect(name_right - 14.0, row.top, 14.0, ROW), rgb(0xF2C94C), Align::Center);
+                    g.text(&[0xE735], &g.fonts.small_icons, rect(name_right - 14.0, row.top, 14.0, rh), rgb(0xF2C94C), Align::Center);
                     name_right -= 18.0;
                 }
                 if let Some(ci) = tag.colour {
                     let col = explorer::COLOURS[ci as usize].1;
-                    g.fill_round(rect(name_right - 9.0, row.top + (ROW - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(col));
+                    g.fill_round(rect(name_right - 9.0, row.top + (rh - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(col));
                     name_right -= 14.0;
                 }
                 let renaming = self.explorer.rename.as_ref().is_some_and(|(p, _)| explorer::same_path(p, &r.path));
                 if renaming {
-                    let fr = rect(tx - 4.0, row.top + 2.0, (x + w - 4.0 - (tx - 4.0)).max(40.0), ROW - 4.0);
+                    let fr = rect(tx - 4.0, row.top + (rh - 22.0) / 2.0, (x + w - 4.0 - (tx - 4.0)).max(40.0), 22.0);
                     self.hits.add(Hit::ExplorerRename, fr);
                     let focused_field = self.explorer.field == Some(EField::Rename);
                     if let Some((_, f)) = self.explorer.rename.as_mut() {
@@ -503,7 +501,7 @@ impl App {
                         }
                     }
                 } else {
-                    g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (name_right - tx).max(0.0), ROW), gfx::rgba(t.text, faded), Align::Left);
+                    g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (name_right - tx).max(0.0), rh), gfx::rgba(t.text, faded), Align::Left);
                 }
             }
         }
@@ -532,7 +530,7 @@ impl App {
     fn draw_footer(&mut self, g: &Gfx, body: D2D_RECT_F, top: f32, wide_footer: bool) {
         let t = theme::t();
         g.hline(body.left, g.snap(top), body.right - body.left, rgb(t.divider));
-        let (status, _) = self.explorer_status();
+        let status = self.explorer_status();
         let fy = body.bottom - 8.0 - FILTER_H;
         let fw = if wide_footer { (body.right - body.left - 16.0) * 0.5 } else { body.right - body.left - 16.0 };
         let fr = rect(body.left + 8.0, fy, fw.min(320.0).max(fw.min(180.0)), FILTER_H);
@@ -561,37 +559,52 @@ impl App {
             }
         }
         let sr = if wide_footer { rect(fr.right + 12.0, fy, body.right - 10.0 - fr.right - 12.0, FILTER_H) } else { rect(body.left + 10.0, fy - 22.0, body.right - body.left - 20.0, 20.0) };
-        g.text_tabular(&wide(&status), &g.fonts.body, sr, rgb(t.label), if wide_footer { Align::Right } else { Align::Left });
+        // Each part: an icon, then its text; right-aligned beside a wide footer's filter, else left.
+        let widths: Vec<f32> = status.iter().map(|(glyph, text)| if glyph.is_some() { 20.0 } else { 0.0 } + g.measure_tabular(&wide(text), &g.fonts.body).ceil() + 1.0).collect();
+        let total = widths.iter().sum::<f32>() + 16.0 * widths.len().saturating_sub(1) as f32;
+        let mut x = if wide_footer { (sr.right - total).max(sr.left) } else { sr.left };
+        g.push_clip(sr);
+        for ((glyph, text), w) in status.iter().zip(widths) {
+            let mut tx = x;
+            if let Some(gl) = glyph {
+                g.text(&[*gl], &g.fonts.small_icons, rect(x, sr.top, 14.0, sr.bottom - sr.top), rgb(t.placeholder), Align::Center);
+                tx += 20.0;
+            }
+            g.text_tabular(&wide(text), &g.fonts.body, rect(tx, sr.top, x + w - tx + 40.0, sr.bottom - sr.top), rgb(t.label), Align::Left);
+            x += w + 16.0;
+        }
+        g.pop_clip();
     }
 
-    /// The count under the list: "4 folders, 61 files, 120 MB", "3 selected, 12 MB", "12 of 61 shown".
-    pub(super) fn explorer_status(&self) -> (String, u64) {
+    /// The counts under the list, as Transient's: a file icon and the files, a folder icon and the folders,
+    /// then their size; with several selected, those; with a filter on, how many of the folder's show.
+    pub(super) fn explorer_status(&self) -> Vec<(Option<u16>, String)> {
         let e = &self.explorer;
         let rows: Vec<&explorer::Row> = e.view.iter().map(|&i| &e.rows[i]).collect();
         let sel: Vec<&&explorer::Row> = rows.iter().filter(|r| e.is_selected(&r.path)).collect();
-        let plural = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
-        if sel.len() > 1 {
-            let bytes: u64 = sel.iter().map(|r| r.size).sum();
-            return (format!("{} selected, {}", sel.len(), format_bytes(bytes)), bytes);
-        }
-        let folders = rows.iter().filter(|r| r.is_folder()).count();
-        let files = rows.len() - folders;
-        let bytes: u64 = rows.iter().map(|r| r.size).sum();
-        let mut parts = Vec::new();
-        if folders > 0 {
-            parts.push(plural(folders, "folder", "folders"));
-        }
+        let mut out = Vec::new();
+        let counted: Vec<&explorer::Row> = if sel.len() > 1 {
+            out.push((Some(0xE73Au16), format!("{} selected", sel.len())));
+            sel.into_iter().copied().collect()
+        } else {
+            if rows.len() < e.rows.len() {
+                out.push((Some(0xE71Cu16), format!("{} of {}", rows.len(), e.rows.len())));
+            }
+            rows
+        };
+        let folders = counted.iter().filter(|r| r.is_folder()).count();
+        let files = counted.len() - folders;
+        let bytes: u64 = counted.iter().map(|r| r.size).sum();
         if files > 0 || folders == 0 {
-            parts.push(plural(files, "file", "files"));
+            out.push((Some(0xE7C3), files.to_string()));
         }
-        let mut s = parts.join(", ");
+        if folders > 0 {
+            out.push((Some(0xE8B7), folders.to_string()));
+        }
         if bytes > 0 {
-            s.push_str(&format!(", {}", format_bytes(bytes)));
+            out.push((None, format_bytes(bytes)));
         }
-        if rows.len() < e.rows.len() {
-            s = format!("{} of {} shown", rows.len(), e.rows.len());
-        }
-        (s, bytes)
+        out
     }
 
     /// The sidebar in `r`: section headings and their places, scrolling.

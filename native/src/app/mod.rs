@@ -699,7 +699,7 @@ impl App {
                 }
             }
             if self.folder_watch.as_ref().is_none_or(|(f, _)| !crate::explorer::same_path(f, &folder)) {
-                self.folder_watch = crate::explorer::Watcher::start(&folder, self.hwnd, crate::explorer::WM_FOLDER_CHANGED).map(|w| (folder, w));
+                self.folder_watch = crate::explorer::Watcher::start(&folder, self.hwnd, crate::explorer::WM_FOLDER_CHANGED, false).map(|w| (folder, w));
             }
             self.invalidate();
         }
