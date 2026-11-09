@@ -227,6 +227,11 @@ impl App {
             Hit::PagePrevious => "Previous page (Page Up)",
             Hit::DefaultHintClose => "Don't show this again",
             Hit::PageNext => "Next page (Page Down)",
+            Hit::VideoPlay => "Play or pause (Space)",
+            Hit::VideoMute => "Mute (M)",
+            Hit::VideoVolume => "Volume (\u{2191} \u{2193}, wheel)",
+            Hit::VideoSpeed => "Speed (J, L)",
+            Hit::VideoLoop => "Loop",
             _ => return None,
         })
     }
@@ -347,6 +352,7 @@ impl App {
         let strip_moving = self.draw_strip(&g);
         if self.viewer.current.is_some() && self.placeholder.is_none() {
             self.draw_page_bar(&g);
+            self.draw_video_bar(&g);
         }
         if self.chrome() {
             self.draw_toolbar(&g);
@@ -622,7 +628,10 @@ impl App {
         }
         moving |= self.draw_drag_label(g);
         if let Some(t) = &self.toast {
-            let area = self.image_area();
+            let mut area = self.image_area();
+            if self.video_shown() {
+                area.bottom -= video::BAR_ROOM; // above the controls bar
+            }
             match t.phase() {
                 ui::ToastPhase::Fading(a) => {
                     t.draw(g, area, a);

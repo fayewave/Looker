@@ -220,6 +220,9 @@ impl App {
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
                     }
+                    if self.video.is_some() {
+                        self.video_pointer(x, y);
+                    }
                     if let Some((px, py, moved)) = self.pan_drag {
                         // A few DIPs of slack, so a right-click that wobbles still opens the menu.
                         if moved || (x - px).abs() + (y - py).abs() > 4.0 {
@@ -243,11 +246,18 @@ impl App {
                 }
                 WM_MOUSELEAVE => {
                     self.tracking = false;
+                    if self.video.is_some() {
+                        self.invalidate(); // a playing video's bar goes
+                    }
                     self.set_hover(None);
                     self.hide_tooltip();
                     Some(LRESULT(0))
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+                    if self.hover == Some(Hit::Viewport) && self.video_hides_cursor() {
+                        SetCursor(None);
+                        return Some(LRESULT(1));
+                    }
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
@@ -275,6 +285,12 @@ impl App {
                             | Hit::DefaultHintClose
                             | Hit::PagePrevious
                             | Hit::PageNext
+                            | Hit::VideoPlay
+                            | Hit::VideoSeek
+                            | Hit::VideoMute
+                            | Hit::VideoVolume
+                            | Hit::VideoSpeed
+                            | Hit::VideoLoop
                             | Hit::ExplorerBack
                             | Hit::ExplorerForward
                             | Hit::Crumb(_)
@@ -356,6 +372,12 @@ impl App {
                     if h == Some(Hit::PageThumb) {
                         self.page_thumb_press(y);
                     }
+                    match h {
+                        Some(Hit::VideoSeek) => self.scrub_start(x),
+                        Some(Hit::VideoVolume) => self.volume_at(x),
+                        _ => {}
+                    }
+                    self.press_at = (x, y);
                     if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
                         self.drag = Some((x, y));
                     }
@@ -376,7 +398,17 @@ impl App {
                     self.strip_grip_release();
                     self.explorer_grip_release();
                     self.page_thumb_release();
+                    if pressed == Some(Hit::VideoSeek) {
+                        self.scrub_end();
+                    }
+                    if pressed == Some(Hit::VideoVolume) {
+                        settings::save(&self.settings);
+                    }
                     let h = self.hit(x, y);
+                    // A click on the video (not a pan) plays or pauses it.
+                    if pressed == Some(Hit::Viewport) && h == pressed && self.video_shown() && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 {
+                        self.video_toggle_play();
+                    }
                     if pressed.is_some() && pressed == h && !dropped {
                         let r = h.and_then(|h| self.hits.rect_of(h));
                         match h {
@@ -439,6 +471,7 @@ impl App {
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
+                            Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSpeed | Hit::VideoLoop)) => self.video_bar_click(h),
                             _ => {}
                         }
                     }
@@ -563,6 +596,9 @@ impl App {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
+                    if self.hit(x, y) == Some(Hit::Viewport) && self.video_shown() {
+                        self.video_toggle_play();
+                    }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
                         self.model_reset();
                     } else if self.hit(x, y) == Some(Hit::Viewport) && self.photo_up() {
@@ -570,15 +606,19 @@ impl App {
                         self.view.toggle_fit_actual(ax, ay);
                         self.after_zoom();
                     } else {
-                        // A double-click on a button is two clicks.
+                        // A double-click on a button is two clicks (on the seek bar, a second press).
                         let h = self.hit(x, y);
                         self.pressed = h;
                         SetCapture(self.hwnd);
+                        if h == Some(Hit::VideoSeek) {
+                            self.scrub_start(x);
+                        }
                     }
                     Some(LRESULT(0))
                 }
                 WM_CAPTURECHANGED => {
                     self.drag = None;
+                    self.scrub_end();
                     if self.explorer.row_drag.take().is_some() {
                         self.invalidate();
                     }
@@ -634,6 +674,10 @@ impl App {
                         )
                     ) {
                         self.scroll_explorer(delta as f32);
+                        return Some(LRESULT(0));
+                    }
+                    if self.hit(x, y).is_some_and(video::is_bar_hit) {
+                        self.video_volume_by(delta as f32 / 120.0 * 0.05);
                         return Some(LRESULT(0));
                     }
                     if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
@@ -1016,7 +1060,7 @@ impl App {
                     None
                 }
                 WM_DESTROY => {
-                    self.video = None; // stops the sound now, and traces its counts
+                    self.leave_video(); // remembers where a long one was; stops the sound now, and traces its counts
                     crate::trace::flush("window closed");
                     PostQuitMessage(0);
                     Some(LRESULT(0))

@@ -221,6 +221,14 @@ enum Hit {
     /// The landing page's "Set Looker as your default photo viewer" and its X.
     DefaultHint,
     DefaultHintClose,
+    /// A video's controls bar: the pill, play/pause, the seek bar, mute, the volume slider, speed and loop.
+    VideoBar,
+    VideoPlay,
+    VideoSeek,
+    VideoMute,
+    VideoVolume,
+    VideoSpeed,
+    VideoLoop,
     /// A document's page bar: the pill, and its two buttons.
     PageBar,
     PagePrevious,
@@ -505,6 +513,8 @@ pub struct App {
     /// The 3D model on screen, while the current file is one.
     model: Option<model::ModelView>,
     video: Option<video::VideoView>,
+    /// When the pointer last moved: a playing video's bar fades a moment after.
+    video_moved: std::time::Instant,
     /// The slideshow's dissolve from the previous image, while it runs.
     fade: Option<slideshow::Fade>,
     /// What the viewport drew last (the bitmap, where, and whether it is SDR: `Gfx::draw_photo`), for the
@@ -519,6 +529,8 @@ pub struct App {
     icon: Option<ID2D1Bitmap1>,
     icon_pixels: Option<Decoded>,
     mouse: (f32, f32),
+    /// Where the left button went down (a click on a video plays it; a drag pans).
+    press_at: (f32, f32),
     tracking: bool,
     hover: Option<Hit>,
     pressed: Option<Hit>,
@@ -1200,6 +1212,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             placeholder: None,
             model: None,
             video: None,
+            video_moved: std::time::Instant::now(),
             fade: None,
             last_drawn: None,
             pdf_page: 0,
@@ -1209,6 +1222,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             icon: None,
             icon_pixels: None,
             mouse: (0.0, 0.0),
+            press_at: (0.0, 0.0),
             tracking: false,
             hover: None,
             pressed: None,

@@ -42,6 +42,10 @@ pub(super) enum Setting {
     Recents,
     Window,
     Checkerboard,
+    VideoAutoplay,
+    VideoLoop,
+    VideoMuted,
+    VideoResume,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -153,7 +157,11 @@ fn choices(s: &Settings, which: Setting) -> (Vec<&'static str>, usize) {
             vec!["128 MB", "256 MB", "512 MB", "1 GB", "2 GB"],
             CACHE_CHOICES.iter().position(|&m| m >= s.cache_mb).unwrap_or(2),
         ),
-        Setting::Recents | Setting::Window | Setting::Checkerboard => (Vec::new(), 0),
+        Setting::VideoLoop => (
+            vec!["Never", "5 seconds", "10 seconds", "30 seconds", "1 minute", "Always"],
+            settings::LOOP_CHOICES.iter().position(|&c| c == s.video_loop_secs).unwrap_or(2),
+        ),
+        _ => (Vec::new(), 0),
     }
 }
 
@@ -335,7 +343,8 @@ impl App {
                 s.cache_mb = CACHE_CHOICES[i.min(CACHE_CHOICES.len() - 1)];
                 self.viewer.set_budget((s.cache_mb as usize) << 20);
             }
-            Setting::Recents | Setting::Window | Setting::Checkerboard => {}
+            Setting::VideoLoop => s.video_loop_secs = settings::LOOP_CHOICES[i.min(settings::LOOP_CHOICES.len() - 1)],
+            _ => {}
         }
         settings::save(&self.settings);
         self.invalidate();
@@ -358,6 +367,9 @@ impl App {
                 }
             }
             Setting::Checkerboard => s.checkerboard = !s.checkerboard,
+            Setting::VideoAutoplay => s.video_autoplay = !s.video_autoplay,
+            Setting::VideoMuted => s.video_start_muted = !s.video_start_muted,
+            Setting::VideoResume => s.video_resume = !s.video_resume,
             _ => {}
         }
         settings::save(&self.settings);
@@ -583,6 +595,16 @@ impl App {
         let r = rows.row(g, "Zoom towards", "Where the wheel and a double-click zoom into");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Zoom, open);
         rows.note(g, "Ctrl + and Ctrl - always zoom into the middle of the view.");
+        rows.heading(g, "Video");
+        let r = rows.row(g, "Play videos when opened", "Off: a video waits on its first picture");
+        self.switch(g, r, Setting::VideoAutoplay, self.settings.video_autoplay, open);
+        let r = rows.row(g, "Loop videos shorter than", "Like an animated image; the loop button overrides it");
+        self.combo(g, right_part(r, 200.0, 30.0), Setting::VideoLoop, open);
+        let r = rows.row(g, "Start videos muted", "M or the speaker button turns the sound on");
+        self.switch(g, r, Setting::VideoMuted, self.settings.video_start_muted, open);
+        let r = rows.row(g, "Resume long videos", "Videos over 5 minutes open where you left them");
+        self.switch(g, r, Setting::VideoResume, self.settings.video_resume, open);
+        rows.note(g, "Over a video the mouse wheel changes the volume; Ctrl + wheel zooms.");
     }
 
     fn page_appearance(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {

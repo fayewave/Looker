@@ -198,6 +198,11 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::VideoSpeed) => {
+                if let Action::Choose(i) = action {
+                    self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]);
+                }
+            }
             Some(MenuKind::Combo(which)) => {
                 if let Action::Choose(i) = action {
                     self.choose(which, i);
@@ -296,4 +301,6 @@ pub(super) enum MenuKind {
     Recent(PathBuf),
     /// A Settings drop-down.
     Combo(page::Setting),
+    /// A video's speed menu.
+    VideoSpeed,
 }

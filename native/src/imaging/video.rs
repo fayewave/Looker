@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 2;
+const API: c_int = 4;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -224,12 +224,17 @@ struct Lib {
     still: StillFn,
     free: unsafe extern "C" fn(*mut c_void),
     error: unsafe extern "C" fn(c_int, *mut c_char, c_int),
-    open: unsafe extern "C" fn(*const u16, *mut c_void, *mut Info, *mut *mut c_void) -> c_int,
+    open: unsafe extern "C" fn(*const u16, *mut c_void, c_int, *mut Info, *mut *mut c_void) -> c_int,
     next: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
+    next_audio: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> c_int,
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
+    tempo_open: unsafe extern "C" fn(f64, *mut *mut c_void) -> c_int,
+    tempo_process: unsafe extern "C" fn(*mut c_void, *const f32, c_int, *mut *const f32) -> c_int,
+    tempo_close: unsafe extern "C" fn(*mut c_void),
+    frame_rgba: unsafe extern "C" fn(*const LvFrame, c_int, c_int, c_int, *mut c_int, *mut c_int, *mut *mut u8) -> c_int,
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -257,10 +262,15 @@ fn load() -> Result<Lib, String> {
             error: sym!("looker_video_error"),
             open: sym!("lv_open"),
             next: sym!("lv_next"),
+            next_audio: sym!("lv_next_audio"),
             seek: sym!("lv_seek"),
             hw: sym!("lv_hw"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
+            tempo_open: sym!("lv_tempo_open"),
+            tempo_process: sym!("lv_tempo_process"),
+            tempo_close: sym!("lv_tempo_close"),
+            frame_rgba: sym!("lv_frame_rgba"),
         })
     }
 }
@@ -341,6 +351,26 @@ impl std::ops::Deref for Picture {
     }
 }
 
+impl Picture {
+    /// A CPU picture (not a texture) fitted into `box_w × box_h`, square-pixelled and turned `rotation` degrees,
+    /// as straight RGBA: (width, height, pixels).
+    pub fn rgba(&self, rotation: i32, box_w: u32, box_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let l = lib()?;
+        let (mut w, mut h) = (0, 0);
+        let mut px: *mut u8 = std::ptr::null_mut();
+        let r = unsafe { (l.frame_rgba)(&self.0, rotation, box_w as c_int, box_h as c_int, &mut w, &mut h, &mut px) };
+        if r < 0 || px.is_null() || w <= 0 || h <= 0 {
+            if !px.is_null() {
+                unsafe { (l.free)(px as _) };
+            }
+            return Err(if r < 0 { error(l, r) } else { "no picture".into() });
+        }
+        let v = unsafe { std::slice::from_raw_parts(px, w as usize * h as usize * 4) }.to_vec();
+        unsafe { (l.free)(px as _) };
+        Ok((w as u32, h as u32, v))
+    }
+}
+
 impl Drop for Picture {
     fn drop(&mut self) {
         if let Ok(l) = lib() {
@@ -364,12 +394,12 @@ unsafe impl Send for Decoder {}
 
 impl Decoder {
     /// Opens `path`; `d3d11` is the window's ID3D11Device (made with video support) to decode on its GPU, or
-    /// null for the CPU.
-    pub fn open(path: &Path, d3d11: *mut c_void) -> Result<(Decoder, Info), String> {
+    /// null for the CPU. `pictures_only` leaves the sound out (the seek bar's previews).
+    pub fn open(path: &Path, d3d11: *mut c_void, pictures_only: bool) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
         let mut p = std::ptr::null_mut();
-        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, &mut info, &mut p) };
+        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, pictures_only as c_int, &mut info, &mut p) };
         if r < 0 || p.is_null() {
             return Err(error(l, r));
         }
@@ -403,6 +433,25 @@ impl Decoder {
         })
     }
 
+    /// The next block of sound alone, reading past pictures (kept, undecoded, for `next`) to reach it; None when
+    /// it may not read further ahead, or the sound is over.
+    pub fn next_audio(&mut self) -> Result<Option<Item>, String> {
+        let l = lib()?;
+        let mut f: LvFrame = unsafe { std::mem::zeroed() };
+        let r = unsafe { (l.next_audio)(self.0, &mut f) };
+        const EOF: c_int = -541478725;
+        const EAGAIN: c_int = -11;
+        if r == EOF || r == EAGAIN {
+            return Ok(None);
+        }
+        if r < 0 {
+            return Err(error(l, r));
+        }
+        let n = f.nb_samples.max(0) as usize * 2;
+        let samples = if f.samples.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(f.samples, n) }.to_vec() };
+        Ok(Some(Item::Audio(f.pts_us, samples)))
+    }
+
     /// Jumps to `us`: the keyframe at or before it, or with `exact` the picture showing at `us`.
     pub fn seek(&mut self, us: i64, exact: bool) -> Result<(), String> {
         let l = lib()?;
@@ -415,6 +464,47 @@ impl Drop for Decoder {
     fn drop(&mut self) {
         if let Ok(l) = lib() {
             unsafe { (l.close)(self.0) };
+        }
+    }
+}
+
+/// Playback speed with the same pitch (FFmpeg's atempo over 48 kHz float stereo). Output frame n stands for
+/// input frame n × tempo.
+pub struct Tempo(*mut c_void);
+// SAFETY: used by one thread at a time (the audio thread).
+unsafe impl Send for Tempo {}
+
+impl Tempo {
+    /// `tempo`: 0.25 to 4.
+    pub fn new(tempo: f64) -> Result<Tempo, String> {
+        let l = lib()?;
+        let mut p = std::ptr::null_mut();
+        let r = unsafe { (l.tempo_open)(tempo, &mut p) };
+        if r < 0 || p.is_null() {
+            return Err(error(l, r));
+        }
+        Ok(Tempo(p))
+    }
+
+    /// Pushes interleaved stereo frames in and appends what comes out to `out`.
+    pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
+        let l = lib()?;
+        let mut o: *const f32 = std::ptr::null();
+        let r = unsafe { (l.tempo_process)(self.0, input.as_ptr(), (input.len() / 2) as c_int, &mut o) };
+        if r < 0 {
+            return Err(error(l, r));
+        }
+        if r > 0 && !o.is_null() {
+            out.extend_from_slice(unsafe { std::slice::from_raw_parts(o, r as usize * 2) });
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Tempo {
+    fn drop(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.tempo_close)(self.0) };
         }
     }
 }
@@ -494,7 +584,7 @@ mod tests {
     fn seek_sequence() {
         let p = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
         let to: i64 = std::env::var("LOOKER_SEEK").ok().and_then(|v| v.parse().ok()).unwrap_or(25_000);
-        let (mut d, _) = Decoder::open(&p, std::ptr::null_mut()).unwrap();
+        let (mut d, _) = Decoder::open(&p, std::ptr::null_mut(), false).unwrap();
         let ahead: usize = std::env::var("LOOKER_AHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         for _ in 0..ahead {
             if let Ok(Item::Picture(f)) = d.next() {
@@ -599,6 +689,29 @@ mod tests {
                 }
                 Err(e) => println!("FAIL {name}: {e}"),
             }
+        }
+    }
+
+    /// atempo gives n / tempo frames for n in, at every speed the menu offers.
+    /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs cargo test --release -- --ignored tempo_lengths`
+    #[test]
+    #[ignore]
+    fn tempo_lengths() {
+        let input: Vec<f32> = (0..AUDIO_RATE as usize * 4).flat_map(|i| {
+            let v = (i as f32 * 440.0 * std::f32::consts::TAU / AUDIO_RATE as f32).sin() * 0.5;
+            [v, v]
+        }).collect();
+        for tempo in [0.25, 0.5, 0.75, 1.25, 1.5, 2.0] {
+            let mut t = Tempo::new(tempo).unwrap();
+            let mut out = Vec::new();
+            for chunk in input.chunks(4096 * 2) {
+                t.process(chunk, &mut out).unwrap();
+            }
+            let want = input.len() as f64 / 2.0 / tempo;
+            let got = out.len() as f64 / 2.0;
+            println!("{tempo}x: {got} frames out, {want} expected");
+            // Less what the filter still holds (a window a stage: up to ~0.2 s of input).
+            assert!(got <= want + 1.0 && got > want - AUDIO_RATE as f64 * 0.25 / tempo, "{tempo}x: {got} vs {want}");
         }
     }
 }

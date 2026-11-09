@@ -14,7 +14,11 @@
 #include <d3d11.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
+#include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/display.h>
 #include <libavutil/hwcontext.h>
@@ -33,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 2
+#define LOOKER_VIDEO_API 4
 
 typedef struct LvInfo
 {
@@ -413,6 +417,83 @@ EXPORT int looker_video_probe(const wchar_t *path, LvInfo *info)
     return r < 0 ? r : 0;
 }
 
+// A picture square-pixelled, fitted into box_w x box_h (0 x 0 = full size; never enlarged) and turned upright, as
+// straight RGBA in a buffer freed by looker_video_free.
+static int fit_rgba(const AVFrame *frame, AVRational sar, int rot, int box_w, int box_h, int sws_flags, int *out_w,
+                    int *out_h, unsigned char **out_rgba)
+{
+    *out_rgba = NULL;
+    *out_w = *out_h = 0;
+    int fw = frame->width, fh = frame->height;
+    double dw = fw, dh = fh;
+    if (sar.num > 0 && sar.den > 0 && sar.num != sar.den)
+        dw = dw * sar.num / sar.den;
+    double bw = box_w, bh = box_h;
+    if (rot == 90 || rot == 270)
+    {
+        double t = bw;
+        bw = bh;
+        bh = t;
+    }
+    double scale = 1.0;
+    if (box_w > 0 && box_h > 0)
+    {
+        scale = fmin(bw / dw, bh / dh);
+        if (scale > 1.0)
+            scale = 1.0;
+    }
+    int sw = (int)lround(dw * scale), sh = (int)lround(dh * scale);
+    if (sw < 1)
+        sw = 1;
+    if (sh < 1)
+        sh = 1;
+    struct SwsContext *sws =
+        sws_getContext(fw, fh, (enum AVPixelFormat)frame->format, sw, sh, AV_PIX_FMT_RGBA, sws_flags, NULL, NULL, NULL);
+    if (!sws)
+        return AVERROR(EINVAL);
+    const int *coeffs = sws_getCoefficients(sws_space(frame->colorspace, fh));
+    // Fails (harmlessly) for RGB sources.
+    sws_setColorspaceDetails(sws, coeffs, is_full_range(frame), sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+    unsigned char *rgba = malloc((size_t)sw * sh * 4);
+    int r = 0;
+    if (!rgba)
+        r = AVERROR(ENOMEM);
+    else
+    {
+        uint8_t *dst[4] = {rgba, NULL, NULL, NULL};
+        int dst_stride[4] = {sw * 4, 0, 0, 0};
+        r = sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, fh, dst, dst_stride);
+        r = r > 0 ? 0 : r < 0 ? r : AVERROR(EINVAL);
+    }
+    sws_freeContext(sws);
+    if (r == 0 && rot)
+    {
+        unsigned char *turned = rotate_rgba(rgba, sw, sh, rot);
+        if (!turned)
+            r = AVERROR(ENOMEM);
+        else
+        {
+            free(rgba);
+            rgba = turned;
+            if (rot != 180)
+            {
+                int t = sw;
+                sw = sh;
+                sh = t;
+            }
+        }
+    }
+    if (r < 0)
+    {
+        free(rgba);
+        return r;
+    }
+    *out_rgba = rgba;
+    *out_w = sw;
+    *out_h = sh;
+    return 0;
+}
+
 // The first picture, upright, square-pixelled and fitted into box_w x box_h (0 x 0 = full size; never enlarged), as
 // straight RGBA in a buffer freed by looker_video_free; plus the stream info.
 EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo *info, int *out_w, int *out_h,
@@ -423,8 +504,6 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
     Input in;
     AVCodecContext *dec = NULL;
     AVFrame *frame = NULL;
-    struct SwsContext *sws = NULL;
-    unsigned char *rgba = NULL;
     int vi = -1, ai = -1;
     int r = input_open(&in, path, 0);
     if (r < 0)
@@ -482,82 +561,10 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
     if (frame->colorspace != AVCOL_SPC_UNSPECIFIED)
         info->matrix = frame->colorspace;
 
-    // Square pixels, then fitted to the box in the stored orientation (the rotation comes after).
-    int fw = frame->width, fh = frame->height;
-    AVRational sar = frame->sample_aspect_ratio.num > 0 ? frame->sample_aspect_ratio : st->sample_aspect_ratio;
-    double dw = fw, dh = fh;
-    if (sar.num > 0 && sar.den > 0 && sar.num != sar.den)
-        dw = dw * sar.num / sar.den;
-    int rot = info->rotation;
-    double bw = box_w, bh = box_h;
-    if (rot == 90 || rot == 270)
-    {
-        double t = bw;
-        bw = bh;
-        bh = t;
-    }
-    double scale = 1.0;
-    if (box_w > 0 && box_h > 0)
-    {
-        scale = fmin(bw / dw, bh / dh);
-        if (scale > 1.0)
-            scale = 1.0;
-    }
-    int sw = (int)lround(dw * scale), sh = (int)lround(dh * scale);
-    if (sw < 1)
-        sw = 1;
-    if (sh < 1)
-        sh = 1;
-
-    sws = sws_getContext(fw, fh, (enum AVPixelFormat)frame->format, sw, sh, AV_PIX_FMT_RGBA,
-                         SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, NULL, NULL, NULL);
-    if (!sws)
-    {
-        r = AVERROR(EINVAL);
-        goto done;
-    }
-    const int *coeffs = sws_getCoefficients(sws_space(frame->colorspace, fh));
-    // Fails (harmlessly) for RGB sources.
-    sws_setColorspaceDetails(sws, coeffs, is_full_range(frame), sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
-    rgba = malloc((size_t)sw * sh * 4);
-    if (!rgba)
-    {
-        r = AVERROR(ENOMEM);
-        goto done;
-    }
-    uint8_t *dst[4] = {rgba, NULL, NULL, NULL};
-    int dst_stride[4] = {sw * 4, 0, 0, 0};
-    if ((r = sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, fh, dst, dst_stride)) <= 0)
-    {
-        r = r < 0 ? r : AVERROR(EINVAL);
-        goto done;
-    }
-    r = 0;
-    if (rot)
-    {
-        unsigned char *turned = rotate_rgba(rgba, sw, sh, rot);
-        if (!turned)
-        {
-            r = AVERROR(ENOMEM);
-            goto done;
-        }
-        free(rgba);
-        rgba = turned;
-        if (rot != 180)
-        {
-            int t = sw;
-            sw = sh;
-            sh = t;
-        }
-    }
-    *out_rgba = rgba;
-    *out_w = sw;
-    *out_h = sh;
-    rgba = NULL;
+    r = fit_rgba(frame, frame->sample_aspect_ratio.num > 0 ? frame->sample_aspect_ratio : st->sample_aspect_ratio,
+                 info->rotation, box_w, box_h, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, out_w, out_h, out_rgba);
 
 done:
-    free(rgba);
-    sws_freeContext(sws);
     av_frame_free(&frame);
     avcodec_free_context(&dec);
     input_close(&in);
@@ -587,6 +594,10 @@ enum
 {
     LV_VIDEO = 1,
     LV_AUDIO = 2,
+};
+enum
+{
+    LV_NO_AUDIO = 1, // lv_open: pictures only (the seek bar's previews)
 };
 enum
 {
@@ -634,7 +645,66 @@ typedef struct LvPlayer
     int seek_retries;     // landed past the target: sought further back this many times
     long long seek_target;
     int audio_skip;       // an exact seek: audio that ends before the target is dropped
+    // lv_next_audio read past video packets to reach the sound: they wait here, in order, for lv_next.
+    AVPacket **vq;
+    int vq_head, vq_n, vq_cap;
+    long long vq_bytes;
+    int v_flush; // the end was reached by lv_next_audio: the video decoder still needs its flush after vq
 } LvPlayer;
+
+// How far lv_next_audio may read ahead of the pictures: packets and bytes.
+#define VQ_MAX_PACKETS 2000
+#define VQ_MAX_BYTES (192LL << 20)
+
+static void vq_clear(LvPlayer *p)
+{
+    while (p->vq_n > 0)
+    {
+        av_packet_free(&p->vq[p->vq_head]);
+        p->vq_head = (p->vq_head + 1) % p->vq_cap;
+        p->vq_n--;
+    }
+    p->vq_head = 0;
+    p->vq_bytes = 0;
+    p->v_flush = 0;
+}
+
+// Takes `pkt`'s reference into the queue (lv_next_audio checks the limits before it reads).
+static int vq_push(LvPlayer *p, AVPacket *pkt)
+{
+    if (p->vq_n == p->vq_cap)
+    {
+        int cap = p->vq_cap ? p->vq_cap * 2 : 64;
+        AVPacket **q = malloc(sizeof *q * cap);
+        if (q == NULL)
+            return AVERROR(ENOMEM);
+        for (int i = 0; i < p->vq_n; i++)
+            q[i] = p->vq[(p->vq_head + i) % p->vq_cap];
+        free(p->vq);
+        p->vq = q;
+        p->vq_cap = cap;
+        p->vq_head = 0;
+    }
+    AVPacket *k = av_packet_alloc();
+    if (k == NULL)
+        return AVERROR(ENOMEM);
+    av_packet_move_ref(k, pkt);
+    p->vq[(p->vq_head + p->vq_n) % p->vq_cap] = k;
+    p->vq_n++;
+    p->vq_bytes += k->size;
+    return 0;
+}
+
+static AVPacket *vq_pop(LvPlayer *p)
+{
+    if (p->vq_n == 0)
+        return NULL;
+    AVPacket *k = p->vq[p->vq_head];
+    p->vq_head = (p->vq_head + 1) % p->vq_cap;
+    p->vq_n--;
+    p->vq_bytes -= k->size;
+    return k;
+}
 
 #define LV_RATE 48000
 
@@ -707,6 +777,8 @@ EXPORT void lv_close(LvPlayer *p)
         return;
     av_frame_free(&p->held);
     av_frame_free(&p->pending);
+    vq_clear(p);
+    free(p->vq);
     avcodec_free_context(&p->vdec);
     avcodec_free_context(&p->adec);
     swr_free(&p->swr);
@@ -718,8 +790,8 @@ EXPORT void lv_close(LvPlayer *p)
 }
 
 // Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
-// decodes on that GPU where it can.
-EXPORT int lv_open(const wchar_t *path, void *d3d11, LvInfo *info, LvPlayer **out)
+// decodes on that GPU where it can. `flags`: LV_NO_AUDIO.
+EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, LvPlayer **out)
 {
     *out = NULL;
     LvPlayer *p = calloc(1, sizeof *p);
@@ -784,6 +856,8 @@ EXPORT int lv_open(const wchar_t *path, void *d3d11, LvInfo *info, LvPlayer **ou
     if ((r = open_decoder(vs, vc, can_hw ? hw : NULL, &p->vdec)) < 0)
         goto fail;
     p->hw = can_hw;
+    if (p->ai >= 0 && (flags & LV_NO_AUDIO))
+        p->ai = -1;
     if (p->ai >= 0)
     {
         AVStream *as = fmt->streams[p->ai];
@@ -861,6 +935,7 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
                 if (p->adec)
                     avcodec_flush_buffers(p->adec);
                 swr_free(&p->swr);
+                vq_clear(p);
                 p->demux_eof = p->v_done = 0;
                 p->a_done = p->adec ? 0 : 1;
                 p->seek_first = 1;
@@ -1092,6 +1167,20 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
         }
         if (p->v_done && p->a_done)
             return AVERROR_EOF;
+        if (p->vq_n > 0)
+        {
+            AVPacket *k = vq_pop(p);
+            if (p->v_done == 0)
+                avcodec_send_packet(p->vdec, k);
+            av_packet_free(&k);
+            continue;
+        }
+        if (p->v_flush)
+        {
+            p->v_flush = 0;
+            avcodec_send_packet(p->vdec, NULL);
+            continue;
+        }
         if (p->demux_eof)
         {
             // Both decoders were flushed and neither gave a frame: a drained decoder saying EAGAIN has no more.
@@ -1134,6 +1223,7 @@ EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
     if (p->adec)
         avcodec_flush_buffers(p->adec);
     swr_free(&p->swr);
+    vq_clear(p);
     p->demux_eof = p->v_done = 0;
     p->a_done = p->adec ? 0 : 1;
     p->next_vpts = us;
@@ -1154,5 +1244,204 @@ EXPORT void lv_frame_free(LvFrame *f)
         AVFrame *a = f->opaque;
         av_frame_free(&a);
         f->opaque = NULL;
+    }
+}
+
+// ---- playback speed with sound ----------------------------------------------------------------------------------
+// The atempo filter over the player's own audio (48 kHz float stereo): the same pitch at another speed. Output
+// sample n stands for input sample n * tempo (atempo keeps them aligned), which is how Looker keeps its clock.
+
+typedef struct LvTempo
+{
+    AVFilterGraph *graph;
+    AVFilterContext *src, *sink;
+    AVFrame *frame;
+    float *out;
+    int out_cap;
+    long long pts;
+} LvTempo;
+
+EXPORT void lv_tempo_close(LvTempo *t)
+{
+    if (t == NULL)
+        return;
+    avfilter_graph_free(&t->graph);
+    av_frame_free(&t->frame);
+    av_free(t->out);
+    free(t);
+}
+
+// `tempo`: 0.25 to 4 (two atempo stages below 0.5).
+EXPORT int lv_tempo_open(double tempo, LvTempo **out)
+{
+    *out = NULL;
+    LvTempo *t = calloc(1, sizeof *t);
+    if (t == NULL)
+        return AVERROR(ENOMEM);
+    int r = AVERROR(ENOMEM);
+    t->graph = avfilter_graph_alloc();
+    t->frame = av_frame_alloc();
+    if (t->graph == NULL || t->frame == NULL)
+        goto fail;
+    char args[160];
+    snprintf(args, sizeof args, "time_base=1/%d:sample_rate=%d:sample_fmt=flt:channel_layout=stereo", LV_RATE, LV_RATE);
+    if ((r = avfilter_graph_create_filter(&t->src, avfilter_get_by_name("abuffer"), "in", args, NULL, t->graph)) < 0)
+        goto fail;
+    if ((r = avfilter_graph_create_filter(&t->sink, avfilter_get_by_name("abuffersink"), "out", NULL, NULL, t->graph)) < 0)
+        goto fail;
+    AVFilterContext *prev = t->src;
+    double left = tempo;
+    for (int i = 0; i < 3; i++)
+    {
+        double step = left < 0.5 ? 0.5 : left;
+        if (i == 2)
+            step = left;
+        AVFilterContext *f = NULL;
+        char name[16], a[32];
+        snprintf(name, sizeof name, "tempo%d", i);
+        snprintf(a, sizeof a, "tempo=%.6f", step);
+        if ((r = avfilter_graph_create_filter(&f, avfilter_get_by_name("atempo"), name, a, NULL, t->graph)) < 0)
+            goto fail;
+        if ((r = avfilter_link(prev, 0, f, 0)) < 0)
+            goto fail;
+        prev = f;
+        left /= step;
+        if (fabs(left - 1.0) < 1e-6)
+            break;
+    }
+    AVFilterContext *fmtc = NULL;
+    if ((r = avfilter_graph_create_filter(&fmtc, avfilter_get_by_name("aformat"), "fmt", "sample_fmts=flt:channel_layouts=stereo", NULL, t->graph)) < 0)
+        goto fail;
+    if ((r = avfilter_link(prev, 0, fmtc, 0)) < 0 || (r = avfilter_link(fmtc, 0, t->sink, 0)) < 0)
+        goto fail;
+    if ((r = avfilter_graph_config(t->graph, NULL)) < 0)
+        goto fail;
+    *out = t;
+    return 0;
+fail:
+    lv_tempo_close(t);
+    return r;
+}
+
+// Pushes `n` frames (interleaved stereo) and returns how many came out (or a negative error); `*out` points at
+// them until the next call.
+EXPORT int lv_tempo_process(LvTempo *t, const float *in, int n, const float **out)
+{
+    *out = NULL;
+    if (n > 0)
+    {
+        AVFrame *f = av_frame_alloc();
+        if (f == NULL)
+            return AVERROR(ENOMEM);
+        f->format = AV_SAMPLE_FMT_FLT;
+        f->sample_rate = LV_RATE;
+        f->nb_samples = n;
+        av_channel_layout_default(&f->ch_layout, 2);
+        f->pts = t->pts;
+        t->pts += n;
+        int r = av_frame_get_buffer(f, 0);
+        if (r >= 0)
+        {
+            memcpy(f->data[0], in, (size_t)n * 2 * sizeof(float));
+            r = av_buffersrc_add_frame_flags(t->src, f, AV_BUFFERSRC_FLAG_KEEP_REF);
+        }
+        av_frame_free(&f);
+        if (r < 0)
+            return r;
+    }
+    int got = 0;
+    for (;;)
+    {
+        int r = av_buffersink_get_frame(t->sink, t->frame);
+        if (r == AVERROR(EAGAIN) || r == AVERROR_EOF)
+            break;
+        if (r < 0)
+            return r;
+        int m = t->frame->nb_samples;
+        if (got + m > t->out_cap)
+        {
+            int cap = (got + m) * 2;
+            float *b = av_realloc(t->out, (size_t)cap * 2 * sizeof(float));
+            if (b == NULL)
+            {
+                av_frame_unref(t->frame);
+                return AVERROR(ENOMEM);
+            }
+            t->out = b;
+            t->out_cap = cap;
+        }
+        memcpy(t->out + (size_t)got * 2, t->frame->data[0], (size_t)m * 2 * sizeof(float));
+        got += m;
+        av_frame_unref(t->frame);
+    }
+    *out = t->out;
+    return got;
+}
+
+// A CPU picture from lv_next (not a texture) as straight RGBA fitted into box_w x box_h and turned `rotation`
+// degrees, in a buffer freed by looker_video_free: the seek bar's previews.
+EXPORT int lv_frame_rgba(const LvFrame *f, int rotation, int box_w, int box_h, int *w, int *h, unsigned char **rgba)
+{
+    *rgba = NULL;
+    *w = *h = 0;
+    const AVFrame *a = f ? (const AVFrame *)f->opaque : NULL;
+    if (a == NULL || f->layout == LV_TEXTURE)
+        return AVERROR(EINVAL);
+    return fit_rgba(a, a->sample_aspect_ratio, rotation, box_w, box_h, SWS_BILINEAR, w, h, rgba);
+}
+
+// The next block of audio only, reading past video packets (kept for lv_next, undecoded) to reach it: for when
+// the pictures queued are plenty but the sound is running dry (files that store their sound late). 0 with `out`
+// filled, AVERROR(EAGAIN) when it can't read further ahead, AVERROR_EOF when the sound has ended.
+EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
+{
+    for (;;)
+    {
+        if (p->a_done)
+            return AVERROR_EOF;
+        AVFrame *f = av_frame_alloc();
+        if (f == NULL)
+            return AVERROR(ENOMEM);
+        int r = avcodec_receive_frame(p->adec, f);
+        if (r == 0)
+        {
+            if (audio_out(p, f, out))
+                return 0;
+            continue;
+        }
+        av_frame_free(&f);
+        if (r != AVERROR(EAGAIN))
+        {
+            p->a_done = 1;
+            return AVERROR_EOF;
+        }
+        if (p->demux_eof)
+        {
+            p->a_done = 1; // flushed and drained
+            return AVERROR_EOF;
+        }
+        if (p->vq_n >= VQ_MAX_PACKETS || p->vq_bytes >= VQ_MAX_BYTES)
+            return AVERROR(EAGAIN);
+        r = av_read_frame(p->in.fmt, p->pkt);
+        if (r == AVERROR_EOF || r == AVERROR(EIO))
+        {
+            p->demux_eof = 1;
+            p->v_flush = 1;
+            avcodec_send_packet(p->adec, NULL);
+            continue;
+        }
+        if (r < 0)
+            return r;
+        if (p->pkt->stream_index == p->vi && p->v_done == 0)
+        {
+            if ((r = vq_push(p, p->pkt)) < 0)
+            {
+                av_packet_unref(p->pkt);
+                return r;
+            }
+        }
+        else if (p->pkt->stream_index == p->ai)
+            avcodec_send_packet(p->adec, p->pkt);
+        av_packet_unref(p->pkt);
     }
 }
