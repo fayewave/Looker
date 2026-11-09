@@ -1,0 +1,598 @@
+//! What the explorer does to files, as Transient does it: drag rows onto a folder to move them (Ctrl copies),
+//! Ctrl+C / Ctrl+X / Ctrl+V with Explorer's clipboard (files copied here paste in Explorer and the other way
+//! round), Delete (to the Recycle Bin), Ctrl+Shift+N for a new folder with its name ready to type, F2 to
+//! rename in the row, Ctrl+D and Alt+1..7 for favourites and colour tags. Moves, copies, renames and new
+//! folders go on an undo stack: Ctrl+Z puts a move back, sends a copy's copies to the Recycle Bin, renames
+//! back, or removes a new folder that's still empty; Ctrl+Y does it again. Disk work runs in `fileops` and
+//! comes back as `WM_FILE_OP`. Also the explorer's menus: a row's, the list's, the sidebar's, a crumb's
+//! folders, History and the folders/files grouping.
+
+use std::collections::HashSet;
+
+use super::explorer::{EField, SideTarget, SubFor};
+use super::menus::{Action, MenuKind, check};
+use super::*;
+use crate::explorer::{self, Group, Kind, Place};
+use crate::fileops::{self, Done, Origin, Transfer};
+use crate::textedit::TextEdit;
+use crate::ui::{Entry, Menu, MenuItem, TextField};
+
+/// One undoable file operation, as it was done: `(from, to)` for each item moved, copied or renamed.
+pub(super) enum Step {
+    Move(Vec<(PathBuf, PathBuf)>),
+    Copy(Vec<(PathBuf, PathBuf)>),
+    NewFolder(PathBuf),
+    Rename(PathBuf, PathBuf),
+}
+
+fn items(n: usize) -> String {
+    if n == 1 { "1 item".into() } else { format!("{n} items") }
+}
+
+fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
+    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled })
+}
+
+fn clipboard_has_files() -> bool {
+    unsafe { windows::Win32::System::DataExchange::IsClipboardFormatAvailable(windows::Win32::System::Ole::CF_HDROP.0 as u32).is_ok() }
+}
+
+impl App {
+    fn record(&mut self, step: Step, origin: Origin) {
+        let e = &mut self.explorer;
+        match origin {
+            Origin::User => {
+                e.undo.push(step);
+                e.redo.clear();
+            }
+            Origin::Undo => e.redo.push(step),
+            Origin::Redo => e.undo.push(step),
+        }
+    }
+
+    // --- Moves and copies ---------------------------------------------------------------------------
+
+    pub(super) fn explorer_transfer(&mut self, paths: Vec<PathBuf>, dest: PathBuf, copy: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        fileops::spawn(self.hwnd, false, move || Done::Transferred(fileops::transfer(&paths, &dest, copy, Origin::User)));
+    }
+
+    fn on_transferred(&mut self, t: Transfer) {
+        if !t.copy {
+            for (from, to) in &t.pairs {
+                self.explorer.tags.moved(from, to);
+                self.explorer.history.moved(from, to);
+                if self.settings.folder_moved(from, to) {
+                    settings::save(&self.settings);
+                }
+            }
+        }
+        let n = t.pairs.len();
+        let dest = t.pairs.first().and_then(|(_, to)| to.parent()).map(explorer::folder_name).unwrap_or_default();
+        let verb = if t.copy { "copy" } else { "move" };
+        let msg = match t.origin {
+            Origin::User if t.copy => format!("Copied {} to {dest}", items(n)),
+            Origin::User => format!("Moved {} to {dest}", items(n)),
+            Origin::Undo => format!("Undid the {verb}"),
+            Origin::Redo => format!("Redid the {verb}"),
+        };
+        // Cut files that have been pasted: the clipboard empties, as after Explorer's paste.
+        if !t.copy && t.origin == Origin::User {
+            let moved: HashSet<String> = t.pairs.iter().map(|(f, _)| explorer::norm(f)).collect();
+            if self.explorer.cut.as_ref().is_some_and(|(set, _)| set.iter().any(|k| moved.contains(k))) {
+                self.explorer.cut = None;
+                clipboard::clear(self.hwnd);
+            }
+        }
+        if n > 0 {
+            let step = if t.copy { Step::Copy(t.pairs) } else { Step::Move(t.pairs) };
+            self.record(step, t.origin);
+        }
+        match t.failed.first() {
+            Some((p, why)) if n == 0 => self.show_toast(format!("Couldn't {verb} {}: {why}", explorer::folder_name(p)), false),
+            Some(_) => self.show_toast(format!("{msg} ({} couldn't)", t.failed.len()), false),
+            None if n > 0 => self.show_toast(msg, false),
+            None => {}
+        }
+        self.explorer_refresh();
+        self.explorer_tags_changed();
+    }
+
+    // --- Clipboard ----------------------------------------------------------------------------------
+
+    /// Ctrl+C / Ctrl+X: the selection onto the clipboard as files. Cut rows show faded until they're pasted
+    /// or something else goes on the clipboard.
+    pub(super) fn explorer_clip(&mut self, cut: bool) {
+        let paths = self.explorer.targets();
+        if paths.is_empty() {
+            return;
+        }
+        match clipboard::set_files(self.hwnd, &paths, cut) {
+            Some(seq) => {
+                self.explorer.cut = cut.then(|| (paths.iter().map(|p| explorer::norm(p)).collect(), seq));
+                self.show_toast(format!("{} {}", if cut { "Cut" } else { "Copied" }, items(paths.len())), false);
+            }
+            None => self.show_toast("Couldn't use the clipboard", false),
+        }
+    }
+
+    /// Ctrl+V: the clipboard's files into the folder showing (or `into`): a copy copies, a cut moves.
+    pub(super) fn explorer_paste(&mut self, into: Option<PathBuf>) {
+        let Some(dest) = into.or_else(|| self.explorer.folder()) else {
+            self.show_toast("Open a folder to paste into", false);
+            return;
+        };
+        let Some((paths, cut)) = clipboard::get_files(self.hwnd) else {
+            self.show_toast("No files on the clipboard", false);
+            return;
+        };
+        self.explorer_transfer(paths, dest, !cut);
+    }
+
+    // --- Delete -------------------------------------------------------------------------------------
+
+    /// Del: the selection to the Recycle Bin, after asking (one item asks as the viewer's Delete does).
+    pub(super) fn explorer_delete(&mut self) {
+        let paths = self.explorer.targets();
+        match paths.len() {
+            0 => {}
+            1 => self.confirm_delete_path(paths[0].clone(), true),
+            n => {
+                let body = format!("Move these {n} items to the Recycle Bin?");
+                let buttons = vec![ui::DialogButton::new("Delete", actions::Choice::Confirm), ui::DialogButton::new("Cancel", actions::Choice::Cancel)];
+                self.open_dialog_ui(actions::DialogKind::DeleteMany(paths), ui::Dialog::new(format!("Delete {n} items"), body, buttons, 1, true));
+            }
+        }
+    }
+
+    pub(super) fn recycle_many(&mut self, paths: Vec<PathBuf>, undo_copy: Option<(Vec<(PathBuf, PathBuf)>, Origin)>) {
+        let owner = self.hwnd.0 as isize;
+        fileops::spawn(self.hwnd, true, move || {
+            let paths = paths.into_iter().map(|p| { let ok = fileops::recycle(&p, owner); (p, ok) }).collect();
+            Done::RecycledMany { paths, undo_copy }
+        });
+    }
+
+    fn on_recycled_many(&mut self, paths: Vec<(PathBuf, bool)>, undo_copy: Option<(Vec<(PathBuf, PathBuf)>, Origin)>) {
+        let gone = paths.iter().filter(|(_, ok)| *ok).count();
+        for (p, ok) in paths {
+            if ok {
+                self.on_recycled(p, true);
+            }
+        }
+        match undo_copy {
+            Some((pairs, origin)) => {
+                self.record(Step::Copy(pairs), origin);
+                self.show_toast("Undid the copy", false);
+            }
+            None if gone > 0 => self.show_toast(format!("Deleted {}", items(gone)), false),
+            None => self.show_toast("Couldn't delete", false),
+        }
+        self.explorer_refresh();
+    }
+
+    // --- New folder and rename ----------------------------------------------------------------------
+
+    /// Ctrl+Shift+N: "New folder" in the folder showing, its name ready to type once it's listed.
+    pub(super) fn explorer_new_folder(&mut self) {
+        let Some(dir) = self.explorer.folder() else {
+            self.show_toast("Open a folder to make one in", false);
+            return;
+        };
+        fileops::spawn(self.hwnd, false, move || Done::NewFolder { path: fileops::new_folder(&dir), origin: Origin::User });
+    }
+
+    /// F2: the row's name becomes a text box, the name without its extension selected (a folder: all of it).
+    pub(super) fn explorer_begin_rename(&mut self, path: PathBuf) {
+        let Some(vi) = self.explorer.index_of(&path) else { return };
+        let is_dir = self.explorer.row(vi).is_some_and(|r| r.is_folder());
+        let name = explorer::folder_name(&path);
+        let mut edit = TextEdit::new(&name);
+        let end = match name.rfind('.') {
+            Some(dot) if dot > 0 && !is_dir => name[..dot].encode_utf16().count(),
+            _ => edit.units().len(),
+        };
+        edit.select(0, end);
+        self.explorer.rename = Some((path, TextField::new(edit)));
+        self.explorer.reveal = Some(vi);
+        self.explorer_focus_field(EField::Rename);
+    }
+
+    pub(super) fn explorer_rename_cursor(&mut self) {
+        if let Some(p) = self.explorer.targets().first().cloned() {
+            self.explorer_begin_rename(p);
+        }
+    }
+
+    /// Enter (or a press elsewhere) commits the name; Escape drops it.
+    pub(super) fn explorer_finish_rename(&mut self, commit: bool) {
+        let Some((path, f)) = self.explorer.rename.take() else { return };
+        if self.explorer.field == Some(EField::Rename) {
+            self.explorer_blur_field();
+        }
+        let name = f.edit.text();
+        if !commit || name.trim().is_empty() || name == explorer::folder_name(&path) {
+            self.invalidate();
+            return;
+        }
+        fileops::spawn(self.hwnd, false, move || {
+            let to = fileops::rename_item(&path, &name);
+            Done::RenamedItem { from: path, to, origin: Origin::User }
+        });
+    }
+
+    fn on_renamed_item(&mut self, from: PathBuf, to: Result<PathBuf, String>, origin: Origin) {
+        match to {
+            Ok(to) => {
+                self.explorer.tags.moved(&from, &to);
+                self.explorer.history.moved(&from, &to);
+                if self.settings.folder_moved(&from, &to) {
+                    settings::save(&self.settings);
+                }
+                if self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &from)) {
+                    self.explorer.cursor = Some(to.clone());
+                    self.explorer.selected = [explorer::norm(&to)].into();
+                }
+                self.on_renamed(from.clone(), Ok(to.clone()));
+                self.record(Step::Rename(from, to), origin);
+                if origin != Origin::User {
+                    self.show_toast(if origin == Origin::Undo { "Undid the rename" } else { "Redid the rename" }, false);
+                }
+                self.explorer_refresh();
+                self.explorer_tags_changed();
+            }
+            Err(e) => self.show_toast(e, false),
+        }
+    }
+
+    // --- Favourites and colours ---------------------------------------------------------------------
+
+    /// Ctrl+D: stars the selection (or takes the star off, if they all have it).
+    pub(super) fn explorer_favourite(&mut self) {
+        let paths = self.explorer.targets();
+        if paths.is_empty() {
+            return;
+        }
+        let on = self.explorer.tags.toggle_favourite(&paths);
+        self.show_toast(if on { "Added to favourites" } else { "Removed from favourites" }, false);
+        self.explorer_tags_changed();
+    }
+
+    /// Alt+1..7 (Alt+0 clears): a colour tag on the selection; the colour they all have already comes off.
+    pub(super) fn explorer_colour(&mut self, c: Option<u8>) {
+        let paths = self.explorer.targets();
+        if paths.is_empty() {
+            return;
+        }
+        self.explorer.tags.set_colour(&paths, c);
+        self.explorer_tags_changed();
+    }
+
+    // --- Undo and redo ------------------------------------------------------------------------------
+
+    pub(super) fn explorer_undo(&mut self) {
+        match self.explorer.undo.pop() {
+            Some(s) => self.replay(s, Origin::Undo),
+            None => self.show_toast("Nothing to undo", false),
+        }
+    }
+
+    pub(super) fn explorer_redo(&mut self) {
+        match self.explorer.redo.pop() {
+            Some(s) => self.replay(s, Origin::Redo),
+            None => self.show_toast("Nothing to redo", false),
+        }
+    }
+
+    /// Does a step the other way: a move goes back, a copy's copies are recycled (or made again, redoing it),
+    /// a rename goes back, a new folder is removed while it's empty (or made again).
+    fn replay(&mut self, step: Step, origin: Origin) {
+        match step {
+            Step::Move(pairs) => fileops::spawn(self.hwnd, false, move || Done::Transferred(fileops::transfer_back(&pairs, origin))),
+            Step::Copy(pairs) if origin == Origin::Undo => {
+                let copies = pairs.iter().map(|(_, c)| c.clone()).collect();
+                self.recycle_many(copies, Some((pairs, origin)));
+            }
+            Step::Copy(pairs) => {
+                let Some(dest) = pairs.first().and_then(|(_, c)| c.parent()).map(Path::to_path_buf) else { return };
+                let srcs: Vec<PathBuf> = pairs.into_iter().map(|(s, _)| s).collect();
+                fileops::spawn(self.hwnd, false, move || Done::Transferred(fileops::transfer(&srcs, &dest, true, origin)));
+            }
+            Step::NewFolder(p) if origin == Origin::Undo => {
+                fileops::spawn(self.hwnd, false, move || {
+                    let ok = fileops::remove_empty_folder(&p);
+                    Done::FolderRemoved { path: p, ok, origin }
+                });
+            }
+            Step::NewFolder(p) => {
+                fileops::spawn(self.hwnd, false, move || {
+                    let path = std::fs::create_dir(&p).map(|_| p).map_err(|e| format!("Couldn't make the folder again: {e}"));
+                    Done::NewFolder { path, origin }
+                });
+            }
+            Step::Rename(from, to) => {
+                let name = explorer::folder_name(&from);
+                fileops::spawn(self.hwnd, false, move || {
+                    let back = fileops::rename_item(&to, &name);
+                    Done::RenamedItem { from: to, to: back, origin }
+                });
+            }
+        }
+    }
+
+    /// The explorer's file operations, back from their threads.
+    pub(super) fn on_explorer_file_op(&mut self, done: Done) {
+        match done {
+            Done::Transferred(t) => self.on_transferred(t),
+            Done::RenamedItem { from, to, origin } => self.on_renamed_item(from, to, origin),
+            Done::RecycledMany { paths, undo_copy } => self.on_recycled_many(paths, undo_copy),
+            Done::NewFolder { path: Ok(p), origin } => {
+                self.record(Step::NewFolder(p.clone()), origin);
+                match origin {
+                    Origin::User => self.explorer.pending_rename = Some(p),
+                    Origin::Redo => self.show_toast("Made the folder again", false),
+                    Origin::Undo => {}
+                }
+                self.explorer_refresh();
+            }
+            Done::NewFolder { path: Err(e), .. } => self.show_toast(e, false),
+            Done::FolderRemoved { path, ok, origin } => {
+                if ok {
+                    self.record(Step::NewFolder(path), origin);
+                    self.show_toast("Removed the new folder", false);
+                } else {
+                    self.show_toast("The folder isn't empty any more, so it stays", false);
+                }
+                self.explorer_refresh();
+            }
+            _ => {}
+        }
+    }
+
+    // --- Menus --------------------------------------------------------------------------------------
+
+    fn show_menu(&mut self, kind: MenuKind, entries: Vec<Entry<Action>>, x: f32, y: f32) {
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((kind, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    fn show_menu_below(&mut self, kind: MenuKind, entries: Vec<Entry<Action>>, anchor: D2D_RECT_F) {
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((kind, Menu::below(g, entries, anchor, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    /// The favourites row and the colour swatches, for a row's menu.
+    fn tag_entries(&self, paths: &[PathBuf]) -> Vec<Entry<Action>> {
+        let fav = !paths.is_empty() && paths.iter().all(|p| self.explorer.tags.get(p).favourite);
+        let colours: Vec<Option<u8>> = paths.iter().map(|p| self.explorer.tags.get(p).colour).collect();
+        let all = |c: u8| !colours.is_empty() && colours.iter().all(|&x| x == Some(c));
+        vec![
+            item(Action::Favourite, if fav { 0xE735 } else { 0xE734 }, if fav { "Remove from favourites" } else { "Add to favourites" }, Some("Ctrl+D"), true),
+            Entry::Swatches(explorer::COLOURS.iter().enumerate().map(|(i, &(_, rgb_))| (Action::Colour(Some(i as u8)), rgb_, all(i as u8))).collect()),
+        ]
+    }
+
+    /// A row's menu (right-click): what Explorer offers for it, on the selection when it's part of one.
+    pub(super) fn explorer_menu(&mut self, vi: usize, x: f32, y: f32) {
+        let Some(r) = self.explorer.row(vi).cloned() else { return };
+        self.explorer.focused = true;
+        self.explorer_commit_fields();
+        if !self.explorer.is_selected(&r.path) {
+            self.explorer.selected = [explorer::norm(&r.path)].into();
+            self.explorer.anchor = Some(r.path.clone());
+        }
+        self.explorer.cursor = Some(r.path.clone());
+        let paths = self.explorer.targets();
+        let n = paths.len();
+        let single = n == 1;
+        let folder = single && r.is_folder();
+        let can_paste = clipboard_has_files();
+        let mut e = Vec::new();
+        if single {
+            match r.kind {
+                Kind::Folder | Kind::Drive => {
+                    e.push(item(Action::OpenItem, 0xE8B7, "Open", Some("Enter"), true));
+                    e.push(item(Action::OpenInViewer, 0xE8A7, "Open in the viewer", None, r.kind == Kind::Folder));
+                }
+                Kind::Image => e.push(item(Action::OpenItem, 0xE8A7, "Open", Some("Enter"), true)),
+                Kind::Other => e.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true)),
+            }
+            e.push(Entry::Separator);
+        }
+        let drive = r.kind == Kind::Drive;
+        e.push(item(Action::Cut, 0xE8C6, "Cut", Some("Ctrl+X"), !drive));
+        e.push(item(Action::CopyFiles, 0xE8C8, "Copy", Some("Ctrl+C"), !drive));
+        if folder {
+            e.push(item(Action::PasteInto, 0xE77F, "Paste into this folder", None, can_paste));
+        } else {
+            e.push(item(Action::Paste, 0xE77F, "Paste", Some("Ctrl+V"), can_paste && self.explorer.folder().is_some()));
+        }
+        e.push(Entry::Separator);
+        e.push(item(Action::Rename, 0xE8AC, "Rename", Some("F2"), single && !drive));
+        e.push(item(Action::Delete, 0xE74D, &if single { "Delete".to_string() } else { format!("Delete {n} items") }, Some("Del"), !drive));
+        e.push(Entry::Separator);
+        e.extend(self.tag_entries(&paths));
+        e.push(Entry::Separator);
+        if folder {
+            let marked = self.settings.is_bookmarked(&r.path);
+            e.push(item(Action::Bookmark, if marked { 0xE840 } else { 0xE718 }, if marked { "Remove bookmark" } else { "Bookmark" }, None, true));
+        }
+        e.push(item(Action::CopyPath, 0xE71B, "Copy path", None, single));
+        e.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+        e.push(item(Action::Properties, 0xE946, "Properties", None, single));
+        e.push(Entry::Separator);
+        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
+        self.show_menu(MenuKind::Rows(paths), e, x, y);
+    }
+
+    /// The list's own menu, away from any row.
+    pub(super) fn explorer_bg_menu(&mut self, x: f32, y: f32) {
+        self.explorer.focused = true;
+        let folder = self.explorer.folder().is_some();
+        let e = vec![
+            item(Action::NewFolder, 0xE8F4, "New folder", Some("Ctrl+Shift+N"), folder),
+            item(Action::Paste, 0xE77F, "Paste", Some("Ctrl+V"), folder && clipboard_has_files()),
+            Entry::Separator,
+            item(Action::SelectAll, 0xE8B3, "Select all", Some("Ctrl+A"), !self.explorer.view.is_empty()),
+            item(Action::Refresh, 0xE72C, "Refresh", Some("F5"), true),
+            Entry::Separator,
+            check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files),
+        ];
+        self.show_menu(MenuKind::ExplorerBg, e, x, y);
+    }
+
+    /// A sidebar row's menu.
+    pub(super) fn sidebar_menu(&mut self, i: usize, x: f32, y: f32) {
+        let items_ = self.sidebar_items();
+        let Some(SideTarget::Place(p)) = items_.get(i).map(|it| it.target.clone()) else { return };
+        let mut e = vec![item(Action::OpenItem, 0xE8B7, "Open", None, true)];
+        if let Place::Folder(f) = &p {
+            e.push(item(Action::OpenInViewer, 0xE8A7, "Open in the viewer", None, true));
+            e.push(Entry::Separator);
+            let marked = self.settings.is_bookmarked(f);
+            e.push(item(Action::Bookmark, if marked { 0xE840 } else { 0xE718 }, if marked { "Remove bookmark" } else { "Bookmark" }, None, true));
+            e.push(item(Action::PasteInto, 0xE77F, "Paste into this folder", None, clipboard_has_files()));
+            e.push(Entry::Separator);
+            e.push(item(Action::CopyPath, 0xE71B, "Copy path", None, true));
+            e.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+            e.push(item(Action::Properties, 0xE946, "Properties", None, true));
+        }
+        self.show_menu(MenuKind::Side(p), e, x, y);
+    }
+
+    /// A crumb's folders (its chevron, or a right-click on it): listed, then shown under it.
+    pub(super) fn crumb_folders(&mut self, i: usize, anchor: D2D_RECT_F) {
+        let Some(place) = self.explorer.place.clone() else { return };
+        let Some(c) = explorer::crumbs(&place).get(i).cloned() else { return };
+        match c {
+            Place::Folder(f) => self.list_subfolders(f, SubFor::Crumb(anchor)),
+            Place::Computer => {
+                let drives = self.explorer.places.as_ref().map(|(_, d)| d.clone()).unwrap_or_else(explorer::drives);
+                self.open_crumb_folders(drives.into_iter().map(|d| d.path).collect(), anchor);
+            }
+            Place::Collection(_) => {}
+        }
+    }
+
+    pub(super) fn open_crumb_folders(&mut self, children: Vec<PathBuf>, anchor: D2D_RECT_F) {
+        if children.is_empty() {
+            self.show_toast("No folders in there", true);
+            return;
+        }
+        let (_, h) = self.size_dip();
+        let fit = (((h - anchor.bottom - 24.0) / 25.0).floor() as usize).clamp(4, 40);
+        let shown: Vec<PathBuf> = children.into_iter().take(fit).collect();
+        let e = shown.iter().enumerate().map(|(i, p)| {
+            let glyph = if p.parent().is_none() { 0xEDA2 } else { 0xE8B7 };
+            item(Action::GoFolder(i), glyph, &explorer::folder_name(p), None, true)
+        }).collect();
+        self.show_menu_below(MenuKind::CrumbFolders(shown), e, anchor);
+    }
+
+    /// The History drop-down: Back and Forward's places, oldest first, the current one ticked.
+    pub(super) fn explorer_history_menu(&mut self, anchor: D2D_RECT_F) {
+        let (places, at) = self.explorer.history.entries();
+        if places.is_empty() {
+            return;
+        }
+        let e = places.iter().enumerate().map(|(i, p)| check(Action::HistoryJump(i), &p.name(), Some(i) == at)).collect();
+        self.show_menu_below(MenuKind::History, e, anchor);
+    }
+
+    /// The folders/files button's menu.
+    pub(super) fn explorer_group_menu(&mut self, anchor: D2D_RECT_F) {
+        let g = self.settings.explorer_group;
+        let mut e: Vec<Entry<Action>> = Group::ALL.iter().map(|&x| check(Action::Group(x), x.label(), x == g)).collect();
+        e.push(Entry::Separator);
+        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
+        self.show_menu_below(MenuKind::Group, e, anchor);
+    }
+
+    /// Bookmarks the folder showing (or takes it off).
+    pub(super) fn explorer_toggle_bookmark(&mut self, folder: Option<PathBuf>) {
+        let Some(f) = folder.or_else(|| self.explorer.folder()) else { return };
+        let on = self.settings.toggle_bookmark(&f);
+        settings::save(&self.settings);
+        self.show_toast(if on { "Bookmarked" } else { "Bookmark removed" }, false);
+    }
+
+    /// Windows' own Properties window for a file or folder.
+    fn properties(&self, path: &Path) {
+        use windows::Win32::UI::Shell::{SHOP_FILEPATH, SHObjectProperties};
+        unsafe {
+            let _ = SHObjectProperties(Some(self.hwnd), SHOP_FILEPATH, &HSTRING::from(path.as_os_str()), PCWSTR::null());
+        }
+    }
+
+    /// A pick in one of the explorer's menus.
+    pub(super) fn run_explorer_action(&mut self, a: Action, kind: MenuKind) {
+        let paths: Vec<PathBuf> = match &kind {
+            MenuKind::Rows(p) => p.clone(),
+            MenuKind::Side(Place::Folder(f)) => vec![f.clone()],
+            _ => Vec::new(),
+        };
+        let first = paths.first().cloned();
+        match (a, kind) {
+            (Action::GoFolder(i), MenuKind::CrumbFolders(list)) => {
+                if let Some(p) = list.get(i) {
+                    self.explorer_crumb(Place::Folder(p.clone()));
+                }
+            }
+            (Action::HistoryJump(i), _) => self.explorer_history_jump(i),
+            (Action::Group(g), _) => self.set_explorer_group(g),
+            (Action::OpenItem, MenuKind::Side(p)) => self.explorer_crumb(p),
+            (Action::OpenItem, MenuKind::Rows(_)) => {
+                if let Some(vi) = first.as_deref().and_then(|p| self.explorer.index_of(p)) {
+                    self.explorer_double_click(vi);
+                }
+            }
+            (Action::OpenInViewer, _) => {
+                if let Some(f) = first {
+                    self.open_folder(f);
+                    self.leave_browse();
+                }
+            }
+            (Action::Cut, _) => self.explorer_clip(true),
+            (Action::CopyFiles, _) => self.explorer_clip(false),
+            (Action::Paste, _) => self.explorer_paste(None),
+            (Action::PasteInto, _) => self.explorer_paste(first),
+            (Action::Rename, _) => {
+                if let Some(p) = first {
+                    self.explorer_begin_rename(p);
+                }
+            }
+            (Action::Delete, _) => self.explorer_delete(),
+            (Action::Favourite, _) => self.explorer_favourite(),
+            (Action::Colour(c), _) => self.explorer_colour(c),
+            (Action::Bookmark, _) => self.explorer_toggle_bookmark(first),
+            (Action::CopyPath, _) => {
+                if let Some(p) = first {
+                    self.copy_path_of(&p);
+                }
+            }
+            (Action::Reveal, _) => {
+                if let Some(p) = first {
+                    self.reveal_path(&p);
+                }
+            }
+            (Action::Properties, _) => {
+                if let Some(p) = first {
+                    self.properties(&p);
+                }
+            }
+            (Action::NewFolder, _) => self.explorer_new_folder(),
+            (Action::SelectAll, _) => self.explorer_select_all(),
+            (Action::Refresh, _) => self.explorer_refresh(),
+            (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
+            _ => {}
+        }
+    }
+}

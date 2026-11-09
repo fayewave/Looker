@@ -1,32 +1,40 @@
-//! The file explorer card (Controls/FileExplorer): the info card's left-hand twin. A flat Explorer-style
-//! listing of one folder (the open photo's folder until the user navigates): folders first, then images with
-//! thumbnails, then other files greyed out, under the toolbar sort. A header with Back / Forward (browser-style
-//! history; mouse buttons 4 and 5 do the same) and breadcrumbs headed by "This PC".
+//! The file explorer, after VEIL Transient's file tabs: a card at the left of the viewer (the info card's
+//! twin), or, in browse mode, most of the window with the photo as a preview at its right.
 //!
-//! Click an image to open it; click a folder to put the cursor on it, double-click (or Enter) to list it; a
-//! crumb lists an ancestor and puts the cursor on the folder you came from. Up/Down walk the rows, opening
-//! files on the way. The listed folder is watched, so it stays live. An 8 px grip on the right border
+//! Its parts, top to bottom: the breadcrumb row (Back, Forward, Up, a History drop-down, the crumbs headed by
+//! "This PC", and buttons for the sidebar, the grouping, the bookmark and browse mode), column headers that
+//! sort (Name, Date modified, Size; Dimensions and Type as they fit), the list, and a filter box with the
+//! folder's count. Once the card is wide enough a sidebar runs down its left: Bookmarks (opening into trees),
+//! Collections (favourites and colour tags), History (folders listed lately) and Places (the user's folders
+//! and the drives, also trees); a narrower card shows it in place of the list behind a toggle.
+//!
+//! Click an image to open it; Ctrl-click and Shift-click select several; double-click (or Enter) a folder to
+//! list it. Up/Down walk the rows, opening files on the way. Dragging rows onto a folder (a row, a crumb, the
+//! sidebar) moves them (Ctrl copies), and Ctrl+C / Ctrl+X / Ctrl+V work with Explorer's clipboard; Ctrl+Z
+//! undoes (explorer_ops.rs). The listed folder is watched, so it stays live. An 8 px grip on the right border
 //! resizes the card (260–640, double-click resets).
 
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::*;
-use crate::explorer::{self, History, Kind, Place, Row, Watcher};
+use crate::explorer::{self, Collection, Group, History, Kind, Place, Row, Watcher};
+use crate::motion::Ease;
 use crate::settings::{EXPLORER_WIDTH, INFO_MAX, INFO_MIN};
+use crate::textedit::TextEdit;
+use crate::ui::TextField;
 
-const MARGIN: f32 = 12.0;
-const HEADER_H: f32 = 40.0;
-const NAV_W: f32 = 28.0;
-const ROW_H: f32 = 28.0;
-const ROW_PITCH: f32 = 29.0;
-const LIST_PAD: f32 = 8.0;
-const ICON_W: f32 = 28.0;
-const ICON_H: f32 = 21.0;
+pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
-const SCROLL_STEP: f32 = 48.0;
+const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
+/// Browse mode leaves the photo at least this much of the window (or 30 % of it).
+const PREVIEW_MIN: f32 = 360.0;
 /// Changes on disk often come in bursts (a copy writes, renames, sets times): re-list once they settle.
 pub(super) const REFRESH_MS: u32 = 150;
+/// Moving this far with a row pressed starts dragging it.
+const DRAG_START: f32 = 5.0;
 
 pub(super) struct Listed {
     pub serial: usize,
@@ -36,26 +44,116 @@ pub(super) struct Listed {
     pub refresh: bool,
 }
 
+/// What a folder's subfolders were listed for.
+pub(super) enum SubFor {
+    /// A node of the sidebar's trees, by its key.
+    Tree(String),
+    /// A crumb's menu, hanging under this rect.
+    Crumb(D2D_RECT_F),
+}
+
+pub(super) struct Subfolders {
+    pub of: SubFor,
+    pub children: Vec<PathBuf>,
+}
+
+/// A text box of the explorer's with the keyboard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum EField {
+    Filter,
+    Rename,
+    Path,
+}
+
+/// Rows being dragged with the mouse.
+pub(super) struct RowDrag {
+    pub start: (f32, f32),
+    pub paths: Vec<PathBuf>,
+    /// Past `DRAG_START`: it's a drag now, not a click.
+    pub active: bool,
+    /// The folder a release would drop into.
+    pub target: Option<PathBuf>,
+}
+
+/// What a sidebar row leads to.
+#[derive(Clone, PartialEq, Debug)]
+pub(super) enum SideTarget {
+    Header,
+    Hint,
+    Place(Place),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SideItem {
+    pub depth: u8,
+    pub glyph: u16,
+    pub tint: Option<u32>,
+    pub label: String,
+    pub target: SideTarget,
+    /// Its key in the trees (section and path), when it can open.
+    pub node: Option<String>,
+    pub expanded: bool,
+}
+
 pub(super) struct Explorer {
-    place: Option<Place>,
-    rows: Vec<Row>,
+    pub(super) place: Option<Place>,
+    pub(super) rows: Vec<Row>,
+    /// The rows the filter lets through, as indices into `rows`. Hits and the cursor work in these.
+    pub(super) view: Vec<usize>,
     serial: usize,
-    history: History,
+    pub(super) history: History,
     /// The open photo's folder the card last followed.
     photo_folder: Option<PathBuf>,
-    /// The keyboard cursor (rides along with the selection; reads like a hover).
-    cursor: Option<PathBuf>,
+    /// The keyboard cursor, and where a Shift-range starts.
+    pub(super) cursor: Option<PathBuf>,
+    pub(super) anchor: Option<PathBuf>,
+    /// The selection, by `explorer::norm` keys.
+    pub(super) selected: HashSet<String>,
     /// After going up, the cursor lands on the folder we came from.
     came_from: Option<PathBuf>,
-    /// Bring this row into view on the next frame.
-    reveal: Option<usize>,
-    scroll: f32,
-    anim: Option<(f32, f32, Instant)>,
-    max_scroll: f32,
+    /// Bring this view row into view on the next frame.
+    pub(super) reveal: Option<usize>,
+    pub(super) scroll: f32,
+    pub(super) anim: Option<(f32, f32, Instant)>,
+    pub(super) max_scroll: f32,
     watcher: Option<Watcher>,
+    /// The resize grip's drag.
     pub drag: Option<(f32, f32)>,
     /// The crumbs collapsed into "…" on the last frame.
-    hidden_crumbs: Vec<Place>,
+    pub(super) hidden_crumbs: Vec<Place>,
+    /// The last click went into the explorer: its keys (Ctrl+C, Del, F2…) act on the rows.
+    pub focused: bool,
+    pub(super) field: Option<EField>,
+    pub(super) filter: TextField,
+    pub(super) rename: Option<(PathBuf, TextField)>,
+    pub(super) path_edit: Option<TextField>,
+    /// A folder just made: its rename opens once it's listed.
+    pub(super) pending_rename: Option<PathBuf>,
+    pub row_drag: Option<RowDrag>,
+    /// Rows cut to the clipboard (shown faded while it still holds them), and its sequence number then.
+    pub(super) cut: Option<(HashSet<String>, u32)>,
+    /// A narrow card shows the sidebar in place of the list.
+    pub(super) sidebar_open: bool,
+    pub(super) side_scroll: f32,
+    pub(super) side_max: f32,
+    /// The trees: listed children by node key, open nodes, and nodes being listed.
+    pub(super) children: HashMap<String, Vec<PathBuf>>,
+    pub(super) expanded: HashSet<String>,
+    tree_pending: HashSet<String>,
+    /// Image sizes for the Dimensions column, by norm key: the write time read at, and the size.
+    pub(super) dims: HashMap<String, (u64, Option<(u32, u32)>)>,
+    dims_pending: HashSet<String>,
+    dims_tx: Option<Sender<Vec<(PathBuf, u64)>>>,
+    /// 0 the card, 1 browse mode, eased between.
+    pub(super) browse: Ease<1>,
+    pub(super) tags: crate::tags::Tags,
+    /// The tags' version the listed collection was listed at.
+    tags_listed: u64,
+    /// The sidebar's Places (the user's folders, the drives), read once and again on F5.
+    pub(super) places: Option<(Vec<(String, PathBuf, u16)>, Vec<Row>)>,
+    /// Undo and redo for file operations (explorer_ops.rs).
+    pub(super) undo: Vec<super::explorer_ops::Step>,
+    pub(super) redo: Vec<super::explorer_ops::Step>,
 }
 
 impl Explorer {
@@ -63,10 +161,13 @@ impl Explorer {
         Explorer {
             place: None,
             rows: Vec::new(),
+            view: Vec::new(),
             serial: 0,
             history: History::default(),
             photo_folder: None,
             cursor: None,
+            anchor: None,
+            selected: HashSet::new(),
             came_from: None,
             reveal: None,
             scroll: 0.0,
@@ -75,27 +176,86 @@ impl Explorer {
             watcher: None,
             drag: None,
             hidden_crumbs: Vec::new(),
+            focused: false,
+            field: None,
+            filter: TextField::new(TextEdit::new("")),
+            rename: None,
+            path_edit: None,
+            pending_rename: None,
+            row_drag: None,
+            cut: None,
+            sidebar_open: false,
+            side_scroll: 0.0,
+            side_max: 0.0,
+            children: HashMap::new(),
+            expanded: HashSet::new(),
+            tree_pending: HashSet::new(),
+            dims: HashMap::new(),
+            dims_pending: HashSet::new(),
+            dims_tx: None,
+            browse: Ease::at([0.0]),
+            tags: crate::tags::Tags::load(),
+            tags_listed: 0,
+            places: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
-    fn scroll_now(&mut self) -> (f32, bool) {
+    pub(super) fn scroll_now(&mut self) -> (f32, bool) {
         let Some((from, to, t0)) = self.anim else { return (self.scroll, false) };
         let t = (t0.elapsed().as_secs_f32() * 1000.0 / SCROLL_MS).min(1.0);
-        if t >= 1.0 {
+        if t >= 1.0 || !crate::motion::enabled() {
             self.anim = None;
             self.scroll = to;
             return (to, false);
         }
-        (from + (to - from) * (1.0 - (1.0 - t).powi(3)), true)
+        (from + (to - from) * crate::motion::ease_out(t), true)
     }
 
-    fn index_of(&self, path: &Path) -> Option<usize> {
-        self.rows.iter().position(|r| explorer::same_path(&r.path, path))
+    /// The view row of `path`.
+    pub(super) fn index_of(&self, path: &Path) -> Option<usize> {
+        self.view.iter().position(|&i| explorer::same_path(&self.rows[i].path, path))
     }
 
-    pub fn resort(&mut self, sort: crate::folder::Sort) {
-        explorer::sort_rows(&mut self.rows, sort);
+    /// The row at view index `vi`.
+    pub(super) fn row(&self, vi: usize) -> Option<&Row> {
+        self.view.get(vi).and_then(|&i| self.rows.get(i))
+    }
+
+    pub(super) fn is_selected(&self, path: &Path) -> bool {
+        self.selected.contains(&explorer::norm(path))
+    }
+
+    pub(super) fn is_cut(&self, path: &Path) -> bool {
+        self.cut.as_ref().is_some_and(|(set, seq)| !crate::clipboard::changed_since(*seq) && set.contains(&explorer::norm(path)))
+    }
+
+    /// What the file actions act on: the selection, else the cursor's row.
+    pub(super) fn targets(&self) -> Vec<PathBuf> {
+        let sel: Vec<PathBuf> = self.view.iter().map(|&i| &self.rows[i]).filter(|r| self.is_selected(&r.path)).map(|r| r.path.clone()).collect();
+        if !sel.is_empty() {
+            return sel;
+        }
+        self.cursor.iter().filter(|c| self.index_of(c).is_some()).cloned().collect()
+    }
+
+    /// The filter's words changed (or the rows did): which rows show.
+    pub(super) fn refilter(&mut self) {
+        let words = explorer::filter_words(&self.filter.edit.text());
+        self.view = (0..self.rows.len()).filter(|&i| explorer::matches(&self.rows[i], &words)).collect();
+        self.max_scroll = 0.0;
         self.reveal = self.cursor.as_deref().and_then(|c| self.index_of(c));
+    }
+
+    pub fn resort(&mut self, sort: crate::folder::Sort, group: Group) {
+        explorer::sort_rows(&mut self.rows, sort, group);
+        self.refilter();
+    }
+
+    /// The folder the explorer is listing, if it's a folder (not This PC or a collection).
+    pub(super) fn folder(&self) -> Option<PathBuf> {
+        self.place.as_ref().and_then(|p| p.folder()).map(Path::to_path_buf)
     }
 }
 
@@ -104,14 +264,35 @@ impl App {
         self.settings.explorer_visible && self.panels_allowed()
     }
 
+    /// The card's width now: its own, eased out to browse mode's while that's on.
+    pub(super) fn explorer_width(&self) -> f32 {
+        let k = self.explorer.browse.value(Instant::now())[0];
+        if k <= 0.0 {
+            return self.settings.explorer_width;
+        }
+        let (w, _) = self.size_dip();
+        let wide = (w - PREVIEW_MIN.max(w * 0.3)).max(self.settings.explorer_width);
+        self.settings.explorer_width + (wide - self.settings.explorer_width) * k
+    }
+
+    pub(super) fn browsing(&self) -> bool {
+        self.explorer.browse.target()[0] > 0.5
+    }
+
+    /// True while browse mode eases in or out (the layout follows each frame).
+    pub(super) fn browse_moving(&mut self) -> bool {
+        let now = Instant::now();
+        self.explorer.browse.moving(now) | self.explorer.browse.settle(now)
+    }
+
     pub(super) fn left_inset(&self) -> f32 {
-        self.settings.explorer_width * self.slides.explorer.value()
+        self.explorer_width() * self.slides.explorer.value()
     }
 
     /// Slid out to the left by however much of it is hidden.
-    fn explorer_rect(&self) -> D2D_RECT_F {
+    pub(super) fn explorer_rect(&self) -> D2D_RECT_F {
         let v = self.viewport();
-        let w = self.settings.explorer_width;
+        let w = self.explorer_width();
         let dx = w * (1.0 - self.slides.explorer.value());
         D2D_RECT_F { left: v.left + MARGIN - dx, top: v.top + MARGIN, right: v.left + w - MARGIN - dx, bottom: v.bottom - MARGIN }
     }
@@ -124,11 +305,36 @@ impl App {
         settings::save(&self.settings);
         if !self.settings.explorer_visible {
             self.explorer.watcher = None;
+            self.explorer.focused = false;
+            self.explorer_blur_field();
+            self.explorer.browse = Ease::at([0.0]);
         } else {
             self.explorer.photo_folder = None;
             self.explorer_follow();
         }
         self.slide_panels();
+    }
+
+    /// B: browse mode, the explorer across most of the window with the photo as a preview; B again (or
+    /// opening an image from it) goes back to the card.
+    pub(super) fn toggle_browse(&mut self) {
+        if self.viewer.current.is_none() {
+            return;
+        }
+        let on = !self.browsing();
+        if on && !self.settings.explorer_visible {
+            self.toggle_explorer();
+        }
+        self.explorer.browse.set([on as u8 as f32], Instant::now());
+        self.explorer.focused = on;
+        self.layout_changed();
+    }
+
+    pub(super) fn leave_browse(&mut self) {
+        if self.browsing() {
+            self.explorer.browse.set([0.0], Instant::now());
+            self.layout_changed();
+        }
     }
 
     /// After every navigation: moving into another folder lists it; within one folder the listing stays where
@@ -143,20 +349,28 @@ impl App {
         if moved {
             self.explorer.photo_folder = Some(folder.clone());
             let here = Place::Folder(folder);
-            if self.explorer.place.as_ref().is_none_or(|p| !p.same(&here)) {
+            // A collection being browsed isn't left for the photo's folder.
+            let in_collection = matches!(self.explorer.place, Some(Place::Collection(_)));
+            if !in_collection && self.explorer.place.as_ref().is_none_or(|p| !p.same(&here)) {
                 self.explorer_go(here, true);
                 return;
             }
         }
         if let Some(i) = self.explorer.index_of(&file) {
-            self.explorer.cursor = Some(file);
-            self.explorer.reveal = Some(i);
+            let e = &mut self.explorer;
+            if !e.is_selected(&file) {
+                e.selected.clear();
+                e.selected.insert(explorer::norm(&file));
+            }
+            e.cursor = Some(file.clone());
+            e.anchor = Some(file);
+            e.reveal = Some(i);
         }
         self.invalidate();
     }
 
     /// Lists a place (a new one goes into the history unless Back/Forward are walking it).
-    fn explorer_go(&mut self, place: Place, record: bool) {
+    pub(super) fn explorer_go(&mut self, place: Place, record: bool) {
         let e = &mut self.explorer;
         // Going up: the cursor will land on the folder we came out of.
         e.came_from = match (&e.place, &place) {
@@ -169,22 +383,42 @@ impl App {
         }
         e.watcher = None;
         e.rows.clear();
+        e.view.clear();
+        e.selected.clear();
         e.scroll = 0.0;
         e.anim = None;
+        e.rename = None;
+        e.path_edit = None;
+        if e.field != Some(EField::Filter) {
+            e.field = None;
+        }
+        // A new folder starts unfiltered (Transient clears the filter on opening a folder).
+        e.filter.edit.clear();
         e.place = Some(place.clone());
+        if let Place::Folder(f) = &place {
+            if self.settings.push_visited(f) {
+                settings::save(&self.settings);
+            }
+        }
         self.explorer_list(place, false);
         self.invalidate();
     }
 
-    fn explorer_list(&mut self, place: Place, refresh: bool) {
+    pub(super) fn explorer_list(&mut self, place: Place, refresh: bool) {
         self.explorer.serial += 1;
         let serial = self.explorer.serial;
         let sort = self.settings.sort;
+        let group = self.settings.explorer_group;
+        let tagged = match &place {
+            Place::Collection(c) => self.explorer.tags.in_collection(*c),
+            _ => Vec::new(),
+        };
+        self.explorer.tags_listed = self.explorer.tags.version;
         let hwnd = self.hwnd.0 as isize;
         std::thread::Builder::new()
             .name("explorer".into())
             .spawn(move || {
-                let rows = explorer::list(&place, sort);
+                let rows = explorer::list(&place, sort, group, &tagged);
                 let ptr = Box::into_raw(Box::new(Listed { serial, place, rows, refresh }));
                 unsafe {
                     if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_EXPLORER_LISTED, WPARAM(0), LPARAM(ptr as isize)).is_err() {
@@ -210,19 +444,42 @@ impl App {
         }
         let e = &mut self.explorer;
         e.rows = rows;
+        // Selected rows that went (deleted, moved away) drop out of the selection.
+        let present: HashSet<String> = e.rows.iter().map(|r| explorer::norm(&r.path)).collect();
+        e.selected.retain(|k| present.contains(k));
+        e.refilter();
         if e.watcher.is_none() {
             if let Place::Folder(f) = &l.place {
                 e.watcher = Watcher::start(f, self.hwnd, explorer::WM_EXPLORER_CHANGED);
             }
         }
         e.place = Some(l.place);
+        if let Some(p) = e.pending_rename.take() {
+            if let Some(i) = e.index_of(&p) {
+                e.cursor = Some(p.clone());
+                e.selected = [explorer::norm(&p)].into();
+                e.reveal = Some(i);
+                self.explorer_begin_rename(p);
+                return;
+            }
+            e.pending_rename = Some(p);
+        }
+        let e = &mut self.explorer;
         if !l.refresh {
             // The open photo when it is listed here, else (after going up) the folder we came from.
             let came_from = e.came_from.take();
             let current = self.viewer.current.as_ref().map(|(p, _)| p.clone());
             let target = [current, came_from].into_iter().flatten().find(|c| e.index_of(c).is_some());
             e.reveal = target.as_deref().and_then(|t| e.index_of(t));
+            if let Some(t) = &target {
+                e.selected = [explorer::norm(t)].into();
+            }
+            e.anchor = target.clone();
             e.cursor = target;
+        } else if let Some(c) = e.cursor.clone() {
+            if e.index_of(&c).is_none() {
+                e.cursor = None;
+            }
         }
         self.invalidate();
     }
@@ -244,6 +501,22 @@ impl App {
         if let Some(p) = self.explorer.place.clone() {
             self.explorer_list(p, true);
         }
+        // The open trees list their folders again too, and the drives are read again.
+        self.explorer.places = None;
+        let open: Vec<String> = self.explorer.expanded.iter().cloned().collect();
+        for k in open {
+            self.explorer.children.remove(&k);
+        }
+    }
+
+    /// A collection on show lists again when the tags change.
+    pub(super) fn explorer_tags_changed(&mut self) {
+        if matches!(self.explorer.place, Some(Place::Collection(_))) && self.explorer.tags_listed != self.explorer.tags.version {
+            if let Some(p) = self.explorer.place.clone() {
+                self.explorer_list(p, true);
+            }
+        }
+        self.invalidate();
     }
 
     pub(super) fn explorer_back(&mut self) {
@@ -254,6 +527,18 @@ impl App {
 
     pub(super) fn explorer_forward(&mut self) {
         if let Some(p) = self.explorer.history.forward() {
+            self.explorer_go(p, false);
+        }
+    }
+
+    pub(super) fn explorer_up(&mut self) {
+        if let Some(p) = self.explorer.place.as_ref().and_then(Place::parent) {
+            self.explorer_go(p, true);
+        }
+    }
+
+    pub(super) fn explorer_history_jump(&mut self, i: usize) {
+        if let Some(p) = self.explorer.history.jump(i) {
             self.explorer_go(p, false);
         }
     }
@@ -318,30 +603,6 @@ impl App {
         Some(parts.join("   ·   "))
     }
 
-    /// Covers the viewport in the window colour, with the glyph and name centred between the cards.
-    /// The cover for a file Looker can't open: Windows' own thumbnail of it when there is one (a video's frame,
-    /// a document's first page), else the file glyph, with its name under it.
-    pub(super) fn draw_placeholder(&mut self, g: &Gfx) {
-        let Some((path, stamp, cloud)) = self.placeholder.as_ref().map(|p| (p.path.clone(), p.stamp, p.cloud)) else { return };
-        let a = self.image_area();
-        let name = wide(&file_name(&path));
-        let w = (a.right - a.left - 32.0).clamp(1.0, 520.0);
-        let name_h = g.measure_height(&name, &g.fonts.subtitle_wrap, w);
-        let cx = (a.left + a.right) / 2.0;
-        // The preview box: up to 640 x 400, leaving room for the name.
-        let (bw, bh) = ((a.right - a.left - 64.0).clamp(1.0, 640.0), (a.bottom - a.top - name_h - 84.0).clamp(1.0, 400.0));
-        let px = ((bw.max(bh) * self.scale() / 64.0).ceil() as u32 * 64).clamp(128, 1024);
-        self.thumbs.want(&path, stamp, px, cloud, true);
-        let thumb = self.thumbs.get(&path, stamp);
-        let icon_h = if thumb.is_some() { bh } else { 120.0 };
-        let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
-        match thumb {
-            Some(t) => t.draw_fit(g, rect(cx - bw / 2.0, top, bw, bh)),
-            None => g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), rgb(theme::t().icon), Align::Center),
-        }
-        g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), rgb(theme::t().text), Align::Center);
-    }
-
     pub(super) fn toggle_explorer_other(&mut self) {
         self.settings.explorer_other_files = !self.settings.explorer_other_files;
         settings::save(&self.settings);
@@ -350,11 +611,33 @@ impl App {
         }
     }
 
-    /// A row was clicked (or reached with the arrow keys): images open, folders and other files take the cursor.
-    fn explorer_pick(&mut self, i: usize) {
-        let Some(r) = self.explorer.rows.get(i).cloned() else { return };
-        self.explorer.cursor = Some(r.path.clone());
-        self.explorer.reveal = Some(i);
+    pub(super) fn set_explorer_group(&mut self, g: Group) {
+        if self.settings.explorer_group != g {
+            self.settings.explorer_group = g;
+            settings::save(&self.settings);
+            self.explorer.resort(self.settings.sort, g);
+            self.invalidate();
+        }
+    }
+
+    /// A column header: the same column flips the direction, another sorts by it, ascending. The sort is the
+    /// toolbar's, so the viewer's order (←/→, the strip) follows.
+    pub(super) fn sort_by_column(&mut self, field: crate::folder::SortField) {
+        let s = self.settings.sort;
+        let to = if s.field == field { crate::folder::Sort { descending: !s.descending, ..s } } else { crate::folder::Sort { field, descending: false } };
+        self.set_sort(to);
+    }
+
+    // --- Selection and opening ----------------------------------------------------------------------
+
+    /// The cursor onto view row `vi`, selecting it alone; images open, other files cover the photo.
+    fn explorer_pick(&mut self, vi: usize) {
+        let Some(r) = self.explorer.row(vi).cloned() else { return };
+        let e = &mut self.explorer;
+        e.cursor = Some(r.path.clone());
+        e.anchor = Some(r.path.clone());
+        e.selected = [explorer::norm(&r.path)].into();
+        e.reveal = Some(vi);
         match r.kind {
             Kind::Image => self.open_file(r.path),
             Kind::Other => self.show_placeholder(r.path),
@@ -363,20 +646,69 @@ impl App {
         self.invalidate();
     }
 
-    pub(super) fn explorer_click(&mut self, i: usize) {
-        self.explorer_pick(i);
-    }
-
-    pub(super) fn explorer_double_click(&mut self, i: usize) {
-        if let Some(r) = self.explorer.rows.get(i).filter(|r| r.is_folder()) {
-            let p = Place::Folder(r.path.clone());
-            self.explorer_go(p, true);
+    /// A click on a row: alone it picks the row; Ctrl adds or removes it; Shift selects from the anchor to it.
+    pub(super) fn explorer_click(&mut self, vi: usize) {
+        let (ctrl, shift) = unsafe { (GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0) };
+        self.explorer.focused = true;
+        self.explorer_commit_fields();
+        let Some(path) = self.explorer.row(vi).map(|r| r.path.clone()) else { return };
+        if shift {
+            self.explorer_select_range(vi, ctrl);
+        } else if ctrl {
+            let e = &mut self.explorer;
+            let k = explorer::norm(&path);
+            if !e.selected.remove(&k) {
+                e.selected.insert(k);
+            }
+            e.cursor = Some(path.clone());
+            e.anchor = Some(path);
+            e.reveal = Some(vi);
+            self.invalidate();
+        } else {
+            self.explorer_pick(vi);
         }
     }
 
-    /// Up/Down: the cursor moves a row; a file under it opens.
+    /// Selects from the anchor to view row `vi` (keeping what else was selected when `add`).
+    fn explorer_select_range(&mut self, vi: usize, add: bool) {
+        let e = &mut self.explorer;
+        let a = e.anchor.as_deref().and_then(|a| e.index_of(a)).unwrap_or(vi);
+        if !add {
+            e.selected.clear();
+        }
+        for i in a.min(vi)..=a.max(vi) {
+            if let Some(r) = e.row(i) {
+                let k = explorer::norm(&r.path);
+                e.selected.insert(k);
+            }
+        }
+        e.cursor = e.row(vi).map(|r| r.path.clone());
+        e.reveal = Some(vi);
+        self.invalidate();
+    }
+
+    pub(super) fn explorer_select_all(&mut self) {
+        let e = &mut self.explorer;
+        e.selected = e.view.iter().map(|&i| explorer::norm(&e.rows[i].path)).collect();
+        self.invalidate();
+    }
+
+    /// Double-click (or Enter): a folder lists; an image opens and, from browse mode, the viewer comes back.
+    pub(super) fn explorer_double_click(&mut self, vi: usize) {
+        let Some(r) = self.explorer.row(vi).cloned() else { return };
+        if r.is_folder() {
+            self.explorer_go(Place::Folder(r.path), true);
+        } else if r.kind == Kind::Image {
+            self.explorer_pick(vi);
+            self.leave_browse();
+        } else {
+            self.explorer_pick(vi);
+        }
+    }
+
+    /// Up/Down: the cursor moves a row; a file under it opens. Shift extends the selection instead.
     pub(super) fn explorer_move(&mut self, delta: isize) {
-        let n = self.explorer.rows.len();
+        let n = self.explorer.view.len();
         if n == 0 {
             return;
         }
@@ -385,25 +717,47 @@ impl App {
             None => if delta > 0 { 0 } else { n - 1 },
             Some(i) => (i as isize + delta).clamp(0, n as isize - 1) as usize,
         };
-        self.explorer_pick(i);
+        if unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 } {
+            self.explorer_select_range(i, false);
+        } else {
+            self.explorer_pick(i);
+        }
     }
 
-    /// Page Up / Page Down: the cursor to the top or bottom of the list.
+    /// Page Up / Page Down (Home / End while the explorer has the keys): the top or bottom of the list.
     pub(super) fn explorer_jump(&mut self, last: bool) {
-        let n = self.explorer.rows.len();
+        let n = self.explorer.view.len();
         if n > 0 {
             self.explorer_pick(if last { n - 1 } else { 0 });
         }
     }
 
-    /// Enter: list the folder under the cursor. False when there's nothing to do.
+    /// Enter: list the folder under the cursor, or open its file. False when there's nothing to do.
     pub(super) fn explorer_enter(&mut self) -> bool {
         let Some(i) = self.explorer.cursor.as_deref().and_then(|c| self.explorer.index_of(c)) else { return false };
-        if self.explorer.rows[i].is_folder() {
-            self.explorer_double_click(i);
-        } else {
-            self.explorer_pick(i);
+        self.explorer_double_click(i);
+        true
+    }
+
+    /// Escape with the explorer's keys: a multiple selection goes first, then the explorer lets go of them.
+    pub(super) fn explorer_escape(&mut self) -> bool {
+        if self.explorer.row_drag.as_ref().is_some_and(|d| d.active) {
+            self.explorer.row_drag = None;
+            self.invalidate();
+            return true;
         }
+        if !self.explorer.focused {
+            return false;
+        }
+        if self.explorer.selected.len() > 1 {
+            let keep = self.explorer.cursor.clone();
+            self.explorer.selected = keep.iter().map(|p| explorer::norm(p)).collect();
+        } else if self.browsing() {
+            self.leave_browse();
+        } else {
+            self.explorer.focused = false;
+        }
+        self.invalidate();
         true
     }
 
@@ -412,13 +766,6 @@ impl App {
         self.pending_folder = Some(folder.clone());
         self.pending_cover = None;
         self.list_folder_async(folder);
-    }
-
-    /// The menu for a row (right-click).
-    pub(super) fn explorer_menu(&mut self, i: usize, x: f32, y: f32) {
-        let Some(r) = self.explorer.rows.get(i).cloned() else { return };
-        self.explorer.cursor = Some(r.path.clone());
-        self.open_item_menu(r.path, r.kind, x, y);
     }
 
     pub(super) fn scroll_explorer(&mut self, delta: f32) {
@@ -431,6 +778,355 @@ impl App {
         self.invalidate();
     }
 
+    pub(super) fn scroll_sidebar(&mut self, delta: f32) {
+        let e = &mut self.explorer;
+        e.side_scroll = (e.side_scroll - delta / 120.0 * SCROLL_STEP).clamp(0.0, e.side_max.max(0.0));
+        self.invalidate();
+    }
+
+    // --- Text boxes: the filter, an inline rename, the path ------------------------------------------
+
+    /// The explorer's focused text box.
+    pub(super) fn explorer_field_mut(&mut self) -> Option<&mut TextField> {
+        let e = &mut self.explorer;
+        match e.field? {
+            EField::Filter => Some(&mut e.filter),
+            EField::Rename => e.rename.as_mut().map(|(_, f)| f),
+            EField::Path => e.path_edit.as_mut(),
+        }
+    }
+
+    /// The hit rect of the focused text box.
+    pub(super) fn explorer_field_hit(&self) -> Option<Hit> {
+        Some(match self.explorer.field? {
+            EField::Filter => Hit::ExplorerFilter,
+            EField::Rename => Hit::ExplorerRename,
+            EField::Path => Hit::ExplorerPath,
+        })
+    }
+
+    pub(super) fn explorer_focus_field(&mut self, f: EField) {
+        if self.explorer.field != Some(f) {
+            self.explorer_commit_fields();
+        }
+        self.explorer.field = Some(f);
+        self.explorer.focused = true;
+        self.set_ime(true);
+        self.restart_caret();
+    }
+
+    /// Ctrl+F: the filter takes the keys (the explorer comes out if it's hidden), its text selected.
+    pub(super) fn explorer_find(&mut self) {
+        if self.viewer.current.is_none() {
+            return;
+        }
+        if !self.settings.explorer_visible {
+            self.toggle_explorer();
+        }
+        self.explorer.filter.edit.select_all();
+        self.explorer_focus_field(EField::Filter);
+    }
+
+    /// The text box lets go of the keys (a rename commits, the path edit closes).
+    pub(super) fn explorer_blur_field(&mut self) {
+        if self.explorer.field.take().is_some() {
+            self.set_ime(false);
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
+            }
+            self.invalidate();
+        }
+    }
+
+    /// A press anywhere else ends what's being typed: a rename commits, the path edit closes.
+    pub(super) fn explorer_commit_fields(&mut self) {
+        if self.explorer.rename.is_some() {
+            self.explorer_finish_rename(true);
+        }
+        if self.explorer.path_edit.take().is_some() {
+            self.invalidate();
+        }
+        if self.explorer.field.is_some() && self.explorer.field != Some(EField::Filter) {
+            self.explorer.field = None;
+        }
+    }
+
+    /// The filter's text changed: the rows it lets through.
+    pub(super) fn explorer_filter_changed(&mut self) {
+        self.explorer.refilter();
+        self.explorer.scroll = 0.0;
+        self.explorer.anim = None;
+        self.invalidate();
+    }
+
+    /// Keys while one of the explorer's boxes has them. True when used.
+    pub(super) fn explorer_field_key(&mut self, vk: VIRTUAL_KEY, shift: bool, ctrl: bool) -> bool {
+        let Some(f) = self.explorer.field else { return false };
+        match (f, vk) {
+            (EField::Filter, VK_ESCAPE) => {
+                if self.explorer.filter.edit.units().is_empty() {
+                    self.explorer_blur_field();
+                } else {
+                    self.explorer.filter.edit.clear();
+                    self.explorer_filter_changed();
+                }
+            }
+            (EField::Filter, VK_RETURN) => {
+                self.explorer_blur_field();
+                if !self.explorer_enter() {
+                    if let Some(vi) = (!self.explorer.view.is_empty()).then_some(0) {
+                        self.explorer_double_click(vi);
+                    }
+                }
+            }
+            (EField::Filter, VK_UP) => self.explorer_move(-1),
+            (EField::Filter, VK_DOWN) => self.explorer_move(1),
+            (EField::Rename, VK_ESCAPE) => self.explorer_finish_rename(false),
+            (EField::Rename, VK_RETURN) => self.explorer_finish_rename(true),
+            (EField::Path, VK_ESCAPE) => {
+                self.explorer.path_edit = None;
+                self.explorer_blur_field();
+            }
+            (EField::Path, VK_RETURN) => self.explorer_go_typed_path(),
+            _ => {
+                let before = self.explorer_field_mut().map(|t| t.edit.text());
+                let used = self.field_key(vk, shift, ctrl);
+                if f == EField::Filter && self.explorer_field_mut().map(|t| t.edit.text()) != before {
+                    self.explorer_filter_changed();
+                }
+                return used;
+            }
+        }
+        self.invalidate();
+        true
+    }
+
+    /// A typed character for the explorer's box.
+    pub(super) fn explorer_char(&mut self, unit: u16) {
+        let filter = self.explorer.field == Some(EField::Filter);
+        let Some(t) = self.explorer_field_mut() else { return };
+        t.edit.type_unit(unit);
+        if filter {
+            self.explorer_filter_changed();
+        }
+        self.restart_caret();
+    }
+
+    /// Clicking the last crumb (or the empty end of the crumbs): the path as text, selected, to type over.
+    pub(super) fn explorer_edit_path(&mut self) {
+        let text = match &self.explorer.place {
+            Some(Place::Folder(p)) => p.to_string_lossy().into_owned(),
+            _ => String::new(),
+        };
+        let mut edit = TextEdit::new(&text);
+        edit.select_all();
+        self.explorer.path_edit = Some(TextField::new(edit));
+        self.explorer_focus_field(EField::Path);
+    }
+
+    /// Enter in the path box: a folder lists; a file lists its folder with it selected; anything else stays.
+    fn explorer_go_typed_path(&mut self) {
+        let text = self.explorer.path_edit.as_ref().map(|f| f.edit.text()).unwrap_or_default();
+        let text = text.trim().trim_matches('"');
+        let expanded = if let Some(rest) = text.strip_prefix('~') {
+            std::env::var("USERPROFILE").map(|h| format!("{h}{rest}")).unwrap_or_else(|_| text.to_string())
+        } else {
+            text.to_string()
+        };
+        let p = PathBuf::from(&expanded);
+        if p.is_dir() {
+            self.explorer.path_edit = None;
+            self.explorer_blur_field();
+            self.explorer_go(Place::Folder(p), true);
+        } else if p.is_file() {
+            self.explorer.path_edit = None;
+            self.explorer_blur_field();
+            if let Some(dir) = p.parent() {
+                self.explorer.came_from = None;
+                self.explorer_go(Place::Folder(dir.to_path_buf()), true);
+                self.explorer.came_from = Some(p);
+            }
+        } else if text.eq_ignore_ascii_case(explorer::COMPUTER_NAME) || text.is_empty() {
+            self.explorer.path_edit = None;
+            self.explorer_blur_field();
+            self.explorer_go(Place::Computer, true);
+        } else {
+            self.show_toast("Couldn't find that folder", false);
+        }
+    }
+
+    // --- Sidebar ------------------------------------------------------------------------------------
+
+    /// The sidebar's rows this frame: section headings, then their places, open tree nodes' children
+    /// indented under them.
+    pub(super) fn sidebar_items(&mut self) -> Vec<SideItem> {
+        let mut out = Vec::new();
+        let heading = |label: &str, glyph: u16| SideItem { depth: 0, glyph, tint: None, label: label.into(), target: SideTarget::Header, node: None, expanded: false };
+        out.push(heading("Bookmarks", 0xE840));
+        if self.settings.bookmarks.is_empty() {
+            out.push(SideItem { depth: 1, glyph: 0, tint: None, label: "Pin folders with the bookmark button".into(), target: SideTarget::Hint, node: None, expanded: false });
+        }
+        let bookmarks = self.settings.bookmarks.clone();
+        for b in bookmarks {
+            self.push_tree(&mut out, "b", &b, explorer::folder_name(&b), 0xE8B7, 1);
+        }
+        out.push(heading("Collections", 0xE734));
+        out.push(SideItem { depth: 1, glyph: 0xE735, tint: Some(0xF2C94C), label: "Favourites".into(), target: SideTarget::Place(Place::Collection(Collection::Favourites)), node: None, expanded: false });
+        for c in self.explorer.tags.colours_in_use() {
+            let (name, rgb_) = explorer::COLOURS[c as usize];
+            out.push(SideItem { depth: 1, glyph: 0xEA3B, tint: Some(rgb_), label: name.into(), target: SideTarget::Place(Place::Collection(Collection::Colour(c))), node: None, expanded: false });
+        }
+        if !self.settings.visited.is_empty() {
+            out.push(heading("History", 0xE81C));
+            for v in self.settings.visited.clone() {
+                out.push(SideItem { depth: 1, glyph: 0xE8B7, tint: Some(FOLDER_TINT), label: explorer::folder_name(&v), target: SideTarget::Place(Place::Folder(v)), node: None, expanded: false });
+            }
+        }
+        out.push(heading("Places", 0xE8B7));
+        if self.explorer.places.is_none() {
+            self.explorer.places = Some((explorer::known_places(), explorer::drives()));
+        }
+        let (known, drives) = self.explorer.places.clone().unwrap_or_default();
+        for (name, path, glyph) in known {
+            self.push_tree(&mut out, "p", &path, name, glyph, 1);
+        }
+        out.push(SideItem { depth: 1, glyph: 0xE7F8, tint: None, label: explorer::COMPUTER_NAME.into(), target: SideTarget::Place(Place::Computer), node: None, expanded: false });
+        for d in drives {
+            self.push_tree(&mut out, "d", &d.path, d.name.clone(), 0xEDA2, 1);
+        }
+        out
+    }
+
+    /// A tree node and, while it's open, its listed children under it (listing them if they aren't).
+    fn push_tree(&mut self, out: &mut Vec<SideItem>, section: &str, path: &Path, label: String, glyph: u16, depth: u8) {
+        let key = format!("{section}:{}", explorer::norm(path));
+        let expanded = self.explorer.expanded.contains(&key);
+        let tint = (glyph == 0xE8B7).then_some(FOLDER_TINT);
+        out.push(SideItem { depth, glyph, tint, label, target: SideTarget::Place(Place::Folder(path.to_path_buf())), node: Some(key.clone()), expanded });
+        if !expanded || depth > 8 {
+            return;
+        }
+        match self.explorer.children.get(&key).cloned() {
+            Some(kids) => {
+                for k in kids {
+                    let name = explorer::folder_name(&k);
+                    self.push_tree(out, section, &k, name, 0xE8B7, depth + 1);
+                }
+            }
+            None => {
+                if self.explorer.tree_pending.insert(key.clone()) {
+                    self.list_subfolders(path.to_path_buf(), SubFor::Tree(key));
+                }
+            }
+        }
+    }
+
+    pub(super) fn toggle_node(&mut self, key: String) {
+        if !self.explorer.expanded.remove(&key) {
+            self.explorer.expanded.insert(key);
+        }
+        self.invalidate();
+    }
+
+    /// A folder's subfolders, listed off the UI thread (a tree node opening, a crumb's menu).
+    pub(super) fn list_subfolders(&self, dir: PathBuf, of: SubFor) {
+        let hwnd = self.hwnd.0 as isize;
+        std::thread::Builder::new()
+            .name("subfolders".into())
+            .spawn(move || {
+                let children = explorer::subfolders(&dir);
+                let ptr = Box::into_raw(Box::new(Subfolders { of, children }));
+                unsafe {
+                    if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_SUBFOLDERS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+                        drop(Box::from_raw(ptr));
+                    }
+                }
+            })
+            .ok();
+    }
+
+    pub(super) fn on_subfolders(&mut self, s: Subfolders) {
+        match s.of {
+            SubFor::Tree(key) => {
+                self.explorer.tree_pending.remove(&key);
+                self.explorer.children.insert(key, s.children);
+                self.invalidate();
+            }
+            SubFor::Crumb(anchor) => self.open_crumb_folders(s.children, anchor),
+        }
+    }
+
+    /// A sidebar row was clicked.
+    pub(super) fn sidebar_click(&mut self, i: usize) {
+        self.explorer.focused = true;
+        self.explorer_commit_fields();
+        let items = self.sidebar_items();
+        let Some(it) = items.get(i) else { return };
+        if let SideTarget::Place(p) = &it.target {
+            let p = p.clone();
+            self.explorer.sidebar_open = false;
+            self.explorer_crumb(p);
+        }
+    }
+
+    // --- Dimensions ---------------------------------------------------------------------------------
+
+    /// Asks for the sizes of the image rows on screen that aren't known yet (read off the UI thread, never
+    /// from online-only files).
+    pub(super) fn want_dims(&mut self, rows: &[(PathBuf, u64, bool)]) {
+        let e = &mut self.explorer;
+        let mut batch = Vec::new();
+        for (p, stamp, cloud) in rows {
+            let k = explorer::norm(p);
+            if *cloud || e.dims.get(&k).is_some_and(|(s, _)| s == stamp) || e.dims_pending.contains(&k) {
+                continue;
+            }
+            e.dims_pending.insert(k);
+            batch.push((p.clone(), *stamp));
+        }
+        if batch.is_empty() {
+            return;
+        }
+        if e.dims_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<(PathBuf, u64)>>();
+            let hwnd = self.hwnd.0 as isize;
+            std::thread::Builder::new()
+                .name("dimensions".into())
+                .spawn(move || {
+                    unsafe {
+                        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                    }
+                    let f: Option<windows::Win32::Graphics::Imaging::IWICImagingFactory> = unsafe {
+                        windows::Win32::System::Com::CoCreateInstance(&windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2, None, windows::Win32::System::Com::CLSCTX_INPROC_SERVER).ok()
+                    };
+                    while let Ok(batch) = rx.recv() {
+                        let out: Vec<(PathBuf, u64, Option<(u32, u32)>)> =
+                            batch.into_iter().map(|(p, s)| { let d = f.as_ref().and_then(|f| explorer::dimensions(f, &p)); (p, s, d) }).collect();
+                        let ptr = Box::into_raw(Box::new(out));
+                        unsafe {
+                            if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_DIMENSIONS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+                                drop(Box::from_raw(ptr));
+                            }
+                        }
+                    }
+                })
+                .ok();
+            e.dims_tx = Some(tx);
+        }
+        if let Some(tx) = &e.dims_tx {
+            let _ = tx.send(batch);
+        }
+    }
+
+    pub(super) fn on_dims(&mut self, got: Vec<(PathBuf, u64, Option<(u32, u32)>)>) {
+        for (p, s, d) in got {
+            let k = explorer::norm(&p);
+            self.explorer.dims_pending.remove(&k);
+            self.explorer.dims.insert(k, (s, d));
+        }
+        self.invalidate();
+    }
+
     // --- Resize grip (dragging right = wider) -------------------------------------------------------
 
     pub(super) fn explorer_grip_press(&mut self, x: f32) {
@@ -439,6 +1135,9 @@ impl App {
 
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
+        if self.browsing() {
+            return;
+        }
         let (ww, _) = self.size_dip();
         let cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
         let w = (w0 + (x - x0)).clamp(INFO_MIN, cap).round();
@@ -462,17 +1161,107 @@ impl App {
         self.layout_changed();
     }
 
-    pub(super) fn explorer_tooltip(&self, h: Hit) -> Option<String> {
+    // --- Dragging rows onto folders -----------------------------------------------------------------
+
+    /// A press on a row may become a drag of it (and the rest of the selection, if it's selected).
+    pub(super) fn explorer_row_press(&mut self, vi: usize, x: f32, y: f32) {
+        let Some(r) = self.explorer.row(vi).cloned() else { return };
+        let paths = if self.explorer.is_selected(&r.path) { self.explorer.targets() } else { vec![r.path] };
+        self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None });
+    }
+
+    /// The mouse moved with a row pressed: past a few DIPs it's a drag, and the folder under it the target.
+    pub(super) fn explorer_row_drag(&mut self, x: f32, y: f32) {
+        let Some(d) = &self.explorer.row_drag else { return };
+        let active = d.active || (x - d.start.0).abs() + (y - d.start.1).abs() > DRAG_START;
+        if !active {
+            return;
+        }
+        let target = self.drop_target_at(x, y);
+        let started = self.explorer.row_drag.as_ref().is_some_and(|d| !d.active);
+        if let Some(d) = &mut self.explorer.row_drag {
+            d.active = true;
+            d.target = target;
+        }
+        if started {
+            self.hide_tooltip();
+        }
+        self.invalidate();
+    }
+
+    /// The folder a drop at (x, y) would go into: a folder row (not one being dragged), a crumb, a sidebar
+    /// folder. Never the folder the items are already all in, nor one inside what's dragged.
+    pub(super) fn drop_target_at(&mut self, x: f32, y: f32) -> Option<PathBuf> {
+        let dragged = self.explorer.row_drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
+        let folder = match self.hit(x, y)? {
+            Hit::ExplorerRow(vi) => self.explorer.row(vi).filter(|r| r.is_folder()).map(|r| r.path.clone())?,
+            Hit::Crumb(i) => explorer::crumbs(self.explorer.place.as_ref()?).get(i)?.folder()?.to_path_buf(),
+            Hit::SideRow(i) => match &self.sidebar_items().get(i)?.target {
+                SideTarget::Place(Place::Folder(p)) => p.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if dragged.iter().any(|d| explorer::within(&folder, d)) {
+            return None;
+        }
+        if dragged.iter().all(|d| d.parent().is_some_and(|p| explorer::same_path(p, &folder))) {
+            return None;
+        }
+        Some(folder)
+    }
+
+    /// The button came up: a drag drops (moving, or copying with Ctrl or onto another drive); a press that
+    /// never became a drag was a click. True when it was a drag.
+    pub(super) fn explorer_row_release(&mut self) -> bool {
+        let Some(d) = self.explorer.row_drag.take() else { return false };
+        if !d.active {
+            return false;
+        }
+        if let Some(dest) = d.target {
+            let copy = self.drop_copies(&d.paths, &dest);
+            self.explorer_transfer(d.paths, dest, copy);
+        }
+        self.invalidate();
+        true
+    }
+
+    /// Explorer's rules: Ctrl copies, Shift moves, and across drives it copies.
+    pub(super) fn drop_copies(&self, paths: &[PathBuf], dest: &Path) -> bool {
+        let (ctrl, shift) = unsafe { (GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0) };
+        if ctrl {
+            return true;
+        }
+        if shift {
+            return false;
+        }
+        let drive = |p: &Path| p.components().next().map(|c| c.as_os_str().to_string_lossy().to_lowercase());
+        paths.first().is_some_and(|p| drive(p) != drive(dest))
+    }
+
+    // --- Tooltips -----------------------------------------------------------------------------------
+
+    pub(super) fn explorer_tooltip(&mut self, h: Hit) -> Option<String> {
         match h {
-            Hit::ExplorerRow(i) => self.explorer.rows.get(i).map(|r| {
+            Hit::ExplorerRow(i) => self.explorer.row(i).map(|r| {
                 if r.kind == Kind::Other { format!("{}: not an image Looker can open", r.name) } else { r.name.clone() }
             }),
             Hit::Crumb(_) | Hit::CrumbMore => self.explorer.place.as_ref().map(|p| match p {
-                Place::Computer => explorer::COMPUTER_NAME.to_string(),
                 Place::Folder(f) => f.to_string_lossy().into_owned(),
+                other => other.name(),
             }),
-            Hit::ExplorerBack => Some("Back".into()),
-            Hit::ExplorerForward => Some("Forward".into()),
+            Hit::ExplorerBack => Some("Back (Alt+Left)".into()),
+            Hit::ExplorerForward => Some("Forward (Alt+Right)".into()),
+            Hit::ExplorerUp => Some("Up (Backspace)".into()),
+            Hit::ExplorerHistory => Some("Recent folders".into()),
+            Hit::ExplorerGroup => Some("Folders and files".into()),
+            Hit::ExplorerBookmark => Some(if self.explorer.folder().is_some_and(|f| self.settings.is_bookmarked(&f)) { "Remove bookmark".into() } else { "Bookmark this folder".into() }),
+            Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
+            Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (B)".into() } else { "Browse mode (B)".into() }),
+            Hit::SideRow(i) => match self.sidebar_items().get(i).map(|it| it.target.clone()) {
+                Some(SideTarget::Place(Place::Folder(p))) => Some(p.to_string_lossy().into_owned()),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -482,198 +1271,115 @@ impl App {
         self.explorer.hidden_crumbs.clone()
     }
 
-    // --- Drawing ------------------------------------------------------------------------------------
-
-    pub(super) fn draw_explorer(&mut self, g: &Gfx) -> bool {
-        if self.slides.explorer.value() <= 0.0 {
-            return false;
-        }
-        let card = self.explorer_rect();
-        if card.bottom - card.top < 80.0 || card.right - card.left < 80.0 {
-            return false;
-        }
-        self.hits.add(Hit::ExplorerCard, card);
-        ui::card(g, card);
-        let th = theme::t();
-        let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
-
-        // Header: Back, Forward, crumbs.
-        let hy = inner.top + 6.0;
-        let back = rect(inner.left + 6.0, hy, NAV_W, NAV_W);
-        let fwd = rect(back.right + 2.0, hy, NAV_W, NAV_W);
-        for (id, r, glyph, enabled) in [
-            (Hit::ExplorerBack, back, 0xE72Bu16, self.explorer.history.can_back()),
-            (Hit::ExplorerForward, fwd, 0xE72A, self.explorer.history.can_forward()),
-        ] {
-            self.hits.add(id, r);
-            let st = self.state(id, enabled);
-            let fg = ui::button_frame(g, r, ui::Kind::Subtle, &st);
-            g.text(&[glyph], &g.fonts.small_icons, r, fg, Align::Center);
-        }
-        self.draw_crumbs(g, fwd.right + 6.0, inner.right - 8.0, hy, NAV_W);
-        let div_y = inner.top + HEADER_H;
-        g.hline(inner.left, g.snap(div_y), inner.right - inner.left, rgb(th.divider));
-
-        // Rows.
-        let list = D2D_RECT_F { left: inner.left + LIST_PAD, top: div_y + 1.0 + 6.0, right: inner.right - LIST_PAD, bottom: inner.bottom - LIST_PAD };
-        let view_h = (list.bottom - list.top).max(1.0);
-        let n = self.explorer.rows.len();
-        let content_h = if n == 0 { 0.0 } else { n as f32 * ROW_PITCH - (ROW_PITCH - ROW_H) };
-        self.explorer.max_scroll = (content_h - view_h).max(0.0);
-        if let Some(i) = self.explorer.reveal.take() {
-            // Instantly: after a listing lands, a glide from the top down to the photo reads as lag.
-            let (top, bottom) = (i as f32 * ROW_PITCH, i as f32 * ROW_PITCH + ROW_H);
-            let (cur, _) = self.explorer.scroll_now();
-            let to = if top < cur { top } else if bottom > cur + view_h { bottom - view_h } else { cur };
-            self.explorer.anim = None;
-            self.explorer.scroll = to.clamp(0.0, self.explorer.max_scroll);
-        }
-        let (scroll, moving) = self.explorer.scroll_now();
-        let scroll = scroll.clamp(0.0, self.explorer.max_scroll);
-        let first = (scroll / ROW_PITCH).floor() as usize;
-        let last = (((scroll + view_h) / ROW_PITCH).ceil() as usize + 1).min(n);
-        // The selected row is what's on screen: the photo, or the file Looker can't open covering it.
-        let current = self.target_path();
-        let want = ((ICON_W * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
-
-        g.push_clip(D2D_RECT_F { top: list.top, bottom: inner.bottom, ..inner });
-        for i in first..last {
-            let r = self.explorer.rows[i].clone();
-            let row = rect(list.left, g.snap(list.top + i as f32 * ROW_PITCH - scroll), list.right - list.left, ROW_H);
-            let visible = D2D_RECT_F { top: row.top.max(list.top), bottom: row.bottom.min(inner.bottom), ..row };
-            if visible.bottom > visible.top {
-                self.hits.add(Hit::ExplorerRow(i), visible);
-            }
-            let selected = current.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
-            let cursor = self.explorer.cursor.as_deref().is_some_and(|c| explorer::same_path(c, &r.path));
-            let hover = self.fades.hover(Hit::ExplorerRow(i), self.hover == Some(Hit::ExplorerRow(i)));
-            let pressed = self.pressed == Some(Hit::ExplorerRow(i)) && self.hover == Some(Hit::ExplorerRow(i));
-            // As Snapper's lists: the picked row is the accent-tinted fill with an accent outline; hover the grey hover
-            // fill; the keyboard's cursor (away from the picked row) a hairline.
-            if selected {
-                g.fill_round(row, 2.5, rgb(th.selected));
-                ui::stroke(g, row, 2.5, rgb(th.accent));
-            } else {
-                if pressed {
-                    g.fill_round(row, 2.5, rgb(th.row_select));
-                } else if hover > 0.0 {
-                    g.fill_round(row, 2.5, gfx::rgba(th.hover_fill, hover));
-                }
-                if cursor {
-                    ui::stroke(g, row, 2.5, rgb(th.divider));
-                }
-            }
-            let alpha = if r.kind == Kind::Other { 0.45 } else { 1.0 }; // for files Looker can't open
-            let ib = rect(row.left + 5.0, row.top + (ROW_H - ICON_H) / 2.0, ICON_W, ICON_H);
-            let mut drew = false;
-            if r.kind == Kind::Image {
-                g.fill_round(ib, 2.0, rgb(th.field));
-                if let Some(t) = self.thumbs.get(&r.path, r.stamp) {
-                    t.draw_fit(g, ib);
-                    drew = true;
-                }
-                self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
-            }
-            if !drew {
-                let glyph = match r.kind {
-                    Kind::Drive => 0xEDA2u16,
-                    Kind::Folder => 0xE8B7,
-                    Kind::Image => 0xE91B,
-                    Kind::Other => 0xE7C3,
-                };
-                g.text(&[glyph], &g.fonts.small_icons, ib, gfx::rgba(th.icon, alpha), Align::Center);
-            }
-            let tx = ib.right + 6.0;
-            g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (row.right - 5.0 - tx).max(0.0), ROW_H), gfx::rgba(th.text, alpha), Align::Left);
-        }
-        g.pop_clip();
-
-        let over = matches!(self.hover, Some(Hit::ExplorerCard | Hit::ExplorerRow(_)));
-        if self.explorer.max_scroll > 0.0 && (over || moving) {
-            let thumb_h = (view_h * view_h / content_h).max(28.0);
-            let ty = list.top + (view_h - thumb_h) * scroll / self.explorer.max_scroll;
-            ui::scroll_thumb(g, rect(inner.right - 8.0, ty, 6.0, thumb_h), false);
-        }
-
-        // The grip straddles the right border.
-        let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);
-        self.hits.add(Hit::ExplorerGrip, grip);
-        let dragging = self.explorer.drag.is_some();
-        let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
-        ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
-        moving
-    }
-
-    /// Crumbs from `x0` to `x1`: ancestors are links, the last one (where you are) is plain. When they don't
-    /// fit, the leading ones fold into "…", which opens a menu of them.
-    fn draw_crumbs(&mut self, g: &Gfx, x0: f32, x1: f32, y: f32, h: f32) {
-        let Some(place) = self.explorer.place.clone() else {
-            self.explorer.hidden_crumbs.clear();
-            return;
-        };
-        let all = explorer::crumbs(&place);
-        let names: Vec<String> = all.iter().map(Place::name).collect();
-        // Each link is padded for its rounded hover fill; the last crumb (where you are) is plain text, padded on
-        // its left only, so the chevron before it sits evenly between the two names.
-        const PAD: f32 = 6.0;
-        let widths: Vec<f32> = names.iter().enumerate().map(|(i, n)| g.measure(&wide(n), &g.fonts.body) + 2.0 + if i + 1 < names.len() { 2.0 * PAD } else { PAD }).collect();
-        const CHEVRON: f32 = 13.0;
-        let more_w = g.measure(&wide("\u{2026}"), &g.fonts.body) + 2.0 + 2.0 * PAD;
-        let avail = (x1 - x0).max(0.0);
-        let total = |from: usize, ellipsis: bool| -> f32 {
-            let mut t: f32 = widths[from..].iter().sum::<f32>() + CHEVRON * (all.len() - from - 1) as f32;
-            if ellipsis {
-                t += more_w + CHEVRON;
-            }
-            t
-        };
-        let mut from = 0;
-        while from + 1 < all.len() && total(from, from > 0) > avail {
-            from += 1;
-        }
-        self.explorer.hidden_crumbs = all[..from].to_vec();
-        let mut x = x0;
-        if from > 0 {
-            let r = rect(x, y, more_w, h);
-            self.hits.add(Hit::CrumbMore, r);
-            let st = self.state(Hit::CrumbMore, true);
-            ui::link_fill(g, crumb_fill(r), st.hover, st.pressed);
-            g.text(&wide("\u{2026}"), &g.fonts.body, r, ui::link_color(st.hover), Align::Center);
-            x += more_w;
-            g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), rgb(theme::t().label), Align::Center);
-            x += CHEVRON;
-        }
-        for i in from..all.len() {
-            let last = i + 1 == all.len();
-            let w = if last { widths[i].min((x1 - x).max(0.0)) } else { widths[i] };
-            let r = rect(x, y, w, h);
-            if last {
-                g.text(&wide(&names[i]), &g.fonts.body, D2D_RECT_F { left: r.left + PAD, ..r }, rgb(theme::t().text), Align::Left);
-                self.hits.add(Hit::Crumb(i), r);
-            } else {
-                self.hits.add(Hit::Crumb(i), r);
-                let id = Hit::Crumb(i);
-                let st = self.state(id, true);
-                ui::link_fill(g, crumb_fill(r), st.hover, st.pressed);
-                g.text(&wide(&names[i]), &g.fonts.body, r, ui::link_color(st.hover), Align::Center);
-                x += w;
-                g.text(&[0xE76C], &g.fonts.caption_icons, rect(x, y, CHEVRON, h), rgb(theme::t().label), Align::Center);
-                x += CHEVRON;
-            }
-        }
-    }
-
-    /// A crumb was clicked (not the last: that is where you are).
+    /// A crumb was clicked: an ancestor lists; the last one (where you are) turns into the path, to type over.
     pub(super) fn crumb_click(&mut self, i: usize) {
         let Some(place) = self.explorer.place.clone() else { return };
         let all = explorer::crumbs(&place);
-        if i + 1 < all.len() {
-            self.explorer_crumb(all[i].clone());
+        if i + 1 == all.len() {
+            if matches!(place, Place::Folder(_) | Place::Computer) {
+                self.explorer_edit_path();
+            }
+        } else if let Some(p) = all.get(i) {
+            self.explorer_crumb(p.clone());
         }
+    }
+
+    /// A press decides who has the keys: anywhere in the explorer, it does; on the photo or the toolbar, it
+    /// lets go (a rename commits, the filter and path boxes let go of the keys).
+    pub(super) fn explorer_press_focus(&mut self, h: Option<Hit>) {
+        let inside = matches!(
+            h,
+            Some(
+                Hit::ExplorerCard
+                    | Hit::ExplorerList
+                    | Hit::ExplorerRow(_)
+                    | Hit::ExplorerBack
+                    | Hit::ExplorerForward
+                    | Hit::ExplorerUp
+                    | Hit::ExplorerHistory
+                    | Hit::ExplorerGroup
+                    | Hit::ExplorerBookmark
+                    | Hit::ExplorerSidebar
+                    | Hit::ExplorerBrowse
+                    | Hit::Crumb(_)
+                    | Hit::CrumbChevron(_)
+                    | Hit::CrumbMore
+                    | Hit::CrumbArea
+                    | Hit::ExplorerPath
+                    | Hit::ColHeader(_)
+                    | Hit::ExplorerFilter
+                    | Hit::ExplorerFilterClear
+                    | Hit::ExplorerRename
+                    | Hit::Sidebar
+                    | Hit::SideRow(_)
+                    | Hit::SideChevron(_)
+            )
+        );
+        if matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface | Hit::MenuSwatch(..) | Hit::DialogSurface | Hit::DialogButton(_) | Hit::DialogField | Hit::DialogFieldClear)) {
+            return;
+        }
+        let keep = match self.explorer.field {
+            Some(EField::Filter) => matches!(h, Some(Hit::ExplorerFilter | Hit::ExplorerFilterClear)),
+            Some(EField::Rename) => h == Some(Hit::ExplorerRename),
+            Some(EField::Path) => h == Some(Hit::ExplorerPath),
+            None => true,
+        };
+        if !keep {
+            self.explorer_commit_fields();
+            self.explorer_blur_field();
+        }
+        self.explorer.focused = inside;
+    }
+
+    /// Keys for the explorer: Ctrl+F, Ctrl+Z / Ctrl+Y and B anywhere; the rest while it has the keys (a click
+    /// went into it). None for keys it doesn't use.
+    pub(super) fn explorer_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<LRESULT> {
+        let has = self.viewer.current.is_some();
+        match vk {
+            VK_F if ctrl && has => {
+                self.explorer_find();
+                return Some(LRESULT(0));
+            }
+            VK_Z if ctrl && !shift => {
+                self.explorer_undo();
+                return Some(LRESULT(0));
+            }
+            VK_Y if ctrl => {
+                self.explorer_redo();
+                return Some(LRESULT(0));
+            }
+            VK_B if !ctrl && has => {
+                self.toggle_browse();
+                return Some(LRESULT(0));
+            }
+            _ => {}
+        }
+        if !(self.explorer_shown() && self.explorer.focused) {
+            return None;
+        }
+        match vk {
+            VK_A if ctrl => self.explorer_select_all(),
+            VK_C if ctrl && !shift => self.explorer_clip(false),
+            VK_X if ctrl => self.explorer_clip(true),
+            VK_V if ctrl => self.explorer_paste(None),
+            VK_N if ctrl && shift => self.explorer_new_folder(),
+            VK_D if ctrl => self.explorer_favourite(),
+            VK_DELETE => self.explorer_delete(),
+            VK_F2 => self.explorer_rename_cursor(),
+            VK_F5 => self.explorer_refresh(),
+            VK_BACK => self.explorer_up(),
+            VK_HOME => self.explorer_jump(false),
+            VK_END => self.explorer_jump(true),
+            VK_ESCAPE => {
+                if !self.explorer_escape() {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+        Some(LRESULT(0))
     }
 }
 
-/// A crumb's hover fill: its padded width, a little inside the header row's height.
-fn crumb_fill(r: D2D_RECT_F) -> D2D_RECT_F {
-    D2D_RECT_F { top: r.top + 3.0, bottom: r.bottom - 3.0, ..r }
-}
+/// Folders in Transient's yellow.
+pub(super) const FOLDER_TINT: u32 = 0xE8B64C;

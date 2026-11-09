@@ -6,6 +6,8 @@ mod actions;
 mod chrome;
 mod document;
 mod explorer;
+mod explorer_ops;
+mod explorer_view;
 mod info;
 mod landing;
 mod strip;
@@ -161,15 +163,36 @@ enum Hit {
     StripGrip,
     StripFadeLeft,
     StripFadeRight,
-    /// The file explorer card: its surface, a row by index, the resize grip, Back / Forward, a crumb by
-    /// index, and the "…" that holds the crumbs that don't fit.
+    /// The file explorer: its card, the list's surface, a row by view index, the resize grip; the breadcrumb
+    /// row's buttons; a crumb by index, the chevron after one, the "…" holding the crumbs that don't fit, the
+    /// crumbs' empty end (click to type a path) and that path box; a column header (`explorer_view::Col`); the
+    /// filter box and its clear button; a row's rename box; the sidebar, a row of it and a row's chevron.
     ExplorerCard,
+    ExplorerList,
     ExplorerRow(usize),
     ExplorerGrip,
     ExplorerBack,
     ExplorerForward,
+    ExplorerUp,
+    ExplorerHistory,
+    ExplorerGroup,
+    ExplorerBookmark,
+    ExplorerSidebar,
+    ExplorerBrowse,
     Crumb(usize),
+    CrumbChevron(usize),
     CrumbMore,
+    CrumbArea,
+    ExplorerPath,
+    ColHeader(u8),
+    ExplorerFilter,
+    ExplorerFilterClear,
+    ExplorerRename,
+    Sidebar,
+    SideRow(usize),
+    SideChevron(usize),
+    /// A colour swatch in the open menu: (entry, swatch).
+    MenuSwatch(usize, usize),
     /// The info card's surface (scrolls under the wheel), its resize grip and its file-path link.
     InfoCard,
     InfoGrip,

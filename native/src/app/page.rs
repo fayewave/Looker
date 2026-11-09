@@ -445,7 +445,7 @@ impl App {
         self.viewer.set_budget((self.settings.cache_mb as usize) << 20);
         self.viewer.clear_cache();
         self.viewer.set_sort(self.settings.sort);
-        self.explorer.resort(self.settings.sort);
+        self.explorer.resort(self.settings.sort, self.settings.explorer_group);
         self.apply_theme();
         self.layout_changed();
         self.show_toast("Looker reset to defaults", false);

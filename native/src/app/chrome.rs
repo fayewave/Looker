@@ -55,6 +55,8 @@ impl App {
         }
         let moving = sl.info.moving() || sl.explorer.moving() || sl.strip.moving();
         let landed = sl.info.settle() | sl.explorer.settle() | sl.strip.settle();
+        let browse = self.browse_moving();
+        let (moving, landed) = (moving || browse, landed);
         // A snap moves the insets too: the layout done by whatever changed the state (a page closing) measured
         // the old ones.
         if moving || landed || snapped {
@@ -182,11 +184,22 @@ impl App {
     }
 
     /// A tooltip for anything: the static ones below, or a thumbnail's file name.
-    pub(super) fn tooltip_for(&self, h: Hit) -> Option<String> {
+    pub(super) fn tooltip_for(&mut self, h: Hit) -> Option<String> {
         match h {
             Hit::StripCell(i) => self.strip_tooltip(i),
             Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
-            Hit::ExplorerRow(_) | Hit::Crumb(_) | Hit::CrumbMore | Hit::ExplorerBack | Hit::ExplorerForward => self.explorer_tooltip(h),
+            Hit::ExplorerRow(_)
+            | Hit::Crumb(_)
+            | Hit::CrumbMore
+            | Hit::ExplorerBack
+            | Hit::ExplorerForward
+            | Hit::ExplorerUp
+            | Hit::ExplorerHistory
+            | Hit::ExplorerGroup
+            | Hit::ExplorerBookmark
+            | Hit::ExplorerSidebar
+            | Hit::ExplorerBrowse
+            | Hit::SideRow(_) => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }
     }
@@ -599,6 +612,7 @@ impl App {
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether any of them is moving.
     fn draw_overlays(&mut self, g: &Gfx) -> bool {
         let mut moving = false;
+        self.draw_drag_label(g);
         if let Some(t) = &self.toast {
             let area = self.image_area();
             match t.phase() {
@@ -620,11 +634,18 @@ impl App {
             for (i, r) in m.item_rects() {
                 self.hits.add(Hit::MenuItem(i), r);
             }
+            for (i, k, r) in m.swatch_rects() {
+                self.hits.add(Hit::MenuSwatch(i, k), r);
+            }
             let hover = match self.hover {
                 Some(Hit::MenuItem(i)) => Some(i),
                 _ => None,
             };
-            m.draw(g, hover);
+            let swatch = match self.hover {
+                Some(Hit::MenuSwatch(i, k)) => Some((i, k)),
+                _ => None,
+            };
+            m.draw(g, hover, swatch);
             moving |= m.moving();
         }
         if self.dialog.is_some() {

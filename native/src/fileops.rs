@@ -46,6 +46,16 @@ pub enum Done {
     /// The decode for "Copy image" (None when the file couldn't be decoded: the file still goes on the
     /// clipboard, just without a bitmap).
     Copied { path: PathBuf, image: Option<Image> },
+    /// The explorer's rename (inline), so it can be undone.
+    RenamedItem { from: PathBuf, to: Result<PathBuf, String>, origin: Origin },
+    /// The explorer's moves and copies (drag and drop, paste), and their undos.
+    Transferred(Transfer),
+    /// The explorer's delete of a selection: each path and whether it went. `undo_copy`: these were the copies
+    /// a copy made, recycled to undo it (their pairs, to redo).
+    RecycledMany { paths: Vec<(PathBuf, bool)>, undo_copy: Option<(Vec<(PathBuf, PathBuf)>, Origin)> },
+    /// "New folder", and its undo (`removed`).
+    NewFolder { path: Result<PathBuf, String>, origin: Origin },
+    FolderRemoved { path: PathBuf, ok: bool, origin: Origin },
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work
@@ -137,6 +147,129 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     }
     std::fs::rename(path, &to).map_err(|e| format!("Couldn't rename: {e}"))?;
     Ok(to)
+}
+
+/// Renames a file or folder. A folder's name is taken as typed (no extension carried over).
+pub fn rename_item(path: &Path, new_name: &str) -> Result<PathBuf, String> {
+    if !path.is_dir() {
+        return rename(path, new_name);
+    }
+    let name = new_name.trim().trim_end_matches('.');
+    let probe = path.with_file_name("x");
+    let to = rename_target(&probe, name).map(|_| path.with_file_name(name))?;
+    if to == path {
+        return Ok(to);
+    }
+    let same = to.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
+    if !same && std::fs::symlink_metadata(&to).is_ok() {
+        return Err(format!("There's already something called \u{201C}{name}\u{201D}"));
+    }
+    std::fs::rename(path, &to).map_err(|e| format!("Couldn't rename: {e}"))?;
+    Ok(to)
+}
+
+// --- Moves, copies, new folders (the explorer's) ------------------------------------------------------
+
+/// Who asked for a file operation: the user, or undo / redo replaying one (the result goes on the other
+/// stack).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    User,
+    Undo,
+    Redo,
+}
+
+/// What a move or copy did: every item that went, from where to where, and what didn't.
+pub struct Transfer {
+    pub copy: bool,
+    pub pairs: Vec<(PathBuf, PathBuf)>,
+    pub failed: Vec<(PathBuf, String)>,
+    pub origin: Origin,
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(from)?.is_dir() {
+        std::fs::create_dir(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_tree(&e.path(), &to.join(e.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Moves (or copies) each of `items` into `dest`, a taken name becoming "name (2)". A move to another drive
+/// copies and then deletes the original. A folder never goes into itself, and an item already in `dest`
+/// isn't moved onto itself.
+pub fn transfer(items: &[PathBuf], dest: &Path, copy: bool, origin: Origin) -> Transfer {
+    let mut out = Transfer { copy, pairs: Vec::new(), failed: Vec::new(), origin };
+    for from in items {
+        if crate::explorer::within(dest, from) {
+            out.failed.push((from.clone(), "A folder can't go into itself".into()));
+            continue;
+        }
+        if !copy && from.parent().is_some_and(|p| crate::explorer::same_path(p, dest)) {
+            continue;
+        }
+        let name = crate::explorer::folder_name(from);
+        let to = crate::explorer::free_name(dest, &name);
+        let r = if copy {
+            copy_tree(from, &to)
+        } else {
+            std::fs::rename(from, &to).or_else(|e| {
+                // ERROR_NOT_SAME_DEVICE: across drives a move is a copy, then the original goes.
+                if e.raw_os_error() == Some(17) {
+                    copy_tree(from, &to)?;
+                    if from.is_dir() { std::fs::remove_dir_all(from) } else { std::fs::remove_file(from) }
+                } else {
+                    Err(e)
+                }
+            })
+        };
+        match r {
+            Ok(()) => out.pairs.push((from.clone(), to)),
+            Err(e) => out.failed.push((from.clone(), e.to_string())),
+        }
+    }
+    out
+}
+
+/// Puts moved items back where they came from (undoing a move): each `to` goes back to its `from`, or a free
+/// name beside it should that be taken now.
+pub fn transfer_back(pairs: &[(PathBuf, PathBuf)], origin: Origin) -> Transfer {
+    let mut out = Transfer { copy: false, pairs: Vec::new(), failed: Vec::new(), origin };
+    for (from, to) in pairs {
+        let back = match from.parent() {
+            Some(dir) if std::fs::symlink_metadata(from).is_ok() => crate::explorer::free_name(dir, &crate::explorer::folder_name(from)),
+            _ => from.clone(),
+        };
+        let r = std::fs::rename(to, &back).or_else(|e| {
+            if e.raw_os_error() == Some(17) {
+                copy_tree(to, &back)?;
+                if to.is_dir() { std::fs::remove_dir_all(to) } else { std::fs::remove_file(to) }
+            } else {
+                Err(e)
+            }
+        });
+        match r {
+            Ok(()) => out.pairs.push((to.clone(), back)),
+            Err(e) => out.failed.push((to.clone(), e.to_string())),
+        }
+    }
+    out
+}
+
+/// Makes "New folder" (or "New folder (2)"…) in `dir`.
+pub fn new_folder(dir: &Path) -> Result<PathBuf, String> {
+    let p = crate::explorer::free_name(dir, "New folder");
+    std::fs::create_dir(&p).map(|_| p).map_err(|e| format!("Couldn't make a folder: {e}"))
+}
+
+/// Removes a folder only if it's still empty (undoing "New folder").
+pub fn remove_empty_folder(p: &Path) -> bool {
+    std::fs::read_dir(p).is_ok_and(|mut d| d.next().is_none()) && std::fs::remove_dir(p).is_ok()
 }
 
 // --- Rotate -----------------------------------------------------------------------------------------

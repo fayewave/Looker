@@ -196,6 +196,9 @@ impl App {
                     if self.explorer.drag.is_some() {
                         self.explorer_grip_drag(x);
                     }
+                    if self.explorer.row_drag.is_some() && matches!(self.pressed, Some(Hit::ExplorerRow(_))) {
+                        self.explorer_row_drag(x, y);
+                    }
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
                     }
@@ -231,7 +234,7 @@ impl App {
                     let cursor = match self.hover {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
-                        Some(Hit::DialogField) => IDC_IBEAM,
+                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
                             Hit::Reveal
@@ -257,7 +260,18 @@ impl App {
                             | Hit::ExplorerForward
                             | Hit::Crumb(_)
                             | Hit::CrumbMore
-                            | Hit::StripCell(_),
+                            | Hit::StripCell(_)
+                            | Hit::ExplorerUp
+                            | Hit::ExplorerHistory
+                            | Hit::ExplorerGroup
+                            | Hit::ExplorerBookmark
+                            | Hit::ExplorerSidebar
+                            | Hit::ExplorerBrowse
+                            | Hit::CrumbChevron(_)
+                            | Hit::ColHeader(_)
+                            | Hit::ExplorerFilterClear
+                            | Hit::SideRow(_)
+                            | Hit::SideChevron(_),
                         ) => IDC_HAND,
                         _ => IDC_ARROW,
                     };
@@ -269,7 +283,7 @@ impl App {
                     self.hide_tooltip();
                     let h = self.hit(x, y);
                     // Light dismiss: a press outside an open menu only closes it.
-                    if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface)) {
+                    if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface | Hit::MenuSwatch(..))) {
                         // On the card, a press elsewhere on it closes the menu and carries on (another drop-down).
                         let on_card = self.page_open() && h.is_some_and(|h| h != Hit::PageSurface);
                         let reopening_sort = h == Some(Hit::Tool(Tool::Sort));
@@ -285,8 +299,20 @@ impl App {
                     }
                     SetCapture(self.hwnd);
                     self.pressed = h;
+                    self.explorer_press_focus(h);
                     if h == Some(Hit::DialogField) {
                         self.field_press(x, false);
+                    }
+                    if let Some(Hit::ExplorerRow(i)) = h {
+                        self.explorer_row_press(i, x, y);
+                    }
+                    match h {
+                        Some(Hit::ExplorerFilter) => {
+                            self.explorer_focus_field(explorer::EField::Filter);
+                            self.field_press(x, false);
+                        }
+                        Some(Hit::ExplorerRename | Hit::ExplorerPath) => self.field_press(x, false),
+                        _ => {}
                     }
                     if h == Some(Hit::InfoGrip) {
                         self.info_grip_press(x);
@@ -307,6 +333,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
+                    let dropped = self.explorer_row_release();
                     let _ = ReleaseCapture();
                     let (x, y) = self.dip_from_lparam(lp);
                     let pressed = self.pressed.take();
@@ -317,8 +344,39 @@ impl App {
                     self.explorer_grip_release();
                     self.page_thumb_release();
                     let h = self.hit(x, y);
-                    if pressed.is_some() && pressed == h {
+                    if pressed.is_some() && pressed == h && !dropped {
+                        let r = h.and_then(|h| self.hits.rect_of(h));
                         match h {
+                            Some(Hit::ExplorerUp) => self.explorer_up(),
+                            Some(Hit::ExplorerHistory) => self.explorer_history_menu(r.unwrap_or_default()),
+                            Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
+                            Some(Hit::ExplorerBookmark) => self.explorer_toggle_bookmark(None),
+                            Some(Hit::ExplorerSidebar) => {
+                                self.explorer.sidebar_open = !self.explorer.sidebar_open;
+                            }
+                            Some(Hit::ExplorerBrowse) => self.toggle_browse(),
+                            Some(Hit::CrumbChevron(i)) => self.crumb_folders(i, r.unwrap_or_default()),
+                            Some(Hit::CrumbArea) => self.explorer_edit_path(),
+                            Some(Hit::ColHeader(c)) => {
+                                if let Some(f) = explorer_view::Col::index(c).and_then(|c| c.sort()) {
+                                    self.sort_by_column(f);
+                                }
+                            }
+                            Some(Hit::ExplorerFilterClear) => {
+                                self.explorer.filter.edit.clear();
+                                self.explorer_filter_changed();
+                            }
+                            Some(Hit::ExplorerList) => {
+                                self.explorer.selected.clear();
+                                self.explorer_commit_fields();
+                            }
+                            Some(Hit::SideRow(i)) => self.sidebar_click(i),
+                            Some(Hit::SideChevron(i)) => {
+                                if let Some(k) = self.sidebar_items().get(i).and_then(|it| it.node.clone()) {
+                                    self.toggle_node(k);
+                                }
+                            }
+                            Some(Hit::MenuSwatch(i, k)) => self.activate_swatch(i, k),
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
@@ -388,9 +446,18 @@ impl App {
                             self.close_menu();
                             self.open_strip_menu(x, y);
                         }
-                        Some(Hit::ExplorerCard) => {
+                        Some(Hit::ExplorerCard | Hit::ExplorerList) => {
                             self.close_menu();
-                            self.open_explorer_menu(x, y);
+                            self.explorer_bg_menu(x, y);
+                        }
+                        Some(Hit::SideRow(i)) => {
+                            self.close_menu();
+                            self.sidebar_menu(i, x, y);
+                        }
+                        Some(Hit::Crumb(i)) => {
+                            self.close_menu();
+                            let r = self.hits.rect_of(Hit::Crumb(i)).unwrap_or_default();
+                            self.crumb_folders(i, r);
                         }
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() || self.placeholder.is_some() => {
                             self.open_context_menu(x, y);
@@ -419,8 +486,8 @@ impl App {
                             return Some(LRESULT(0));
                         }
                     }
-                    if self.hit(x, y) == Some(Hit::DialogField) {
-                        self.pressed = Some(Hit::DialogField);
+                    if let Some(f @ (Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath)) = self.hit(x, y) {
+                        self.pressed = Some(f);
                         SetCapture(self.hwnd);
                         self.field_press(x, true);
                         return Some(LRESULT(0));
@@ -445,6 +512,9 @@ impl App {
                 }
                 WM_CAPTURECHANGED => {
                     self.drag = None;
+                    if self.explorer.row_drag.take().is_some() {
+                        self.invalidate();
+                    }
                     self.pan_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
@@ -472,9 +542,21 @@ impl App {
                         self.scroll_strip(delta as f32);
                         return Some(LRESULT(0));
                     }
+                    if matches!(self.hit(x, y), Some(Hit::Sidebar | Hit::SideRow(_) | Hit::SideChevron(_))) {
+                        self.scroll_sidebar(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if matches!(
                         self.hit(x, y),
-                        Some(Hit::ExplorerCard | Hit::ExplorerRow(_) | Hit::ExplorerGrip | Hit::ExplorerBack | Hit::ExplorerForward | Hit::Crumb(_) | Hit::CrumbMore)
+                        Some(
+                            Hit::ExplorerCard
+                                | Hit::ExplorerList
+                                | Hit::ExplorerRow(_)
+                                | Hit::ExplorerGrip
+                                | Hit::ColHeader(_)
+                                | Hit::ExplorerFilter
+                                | Hit::ExplorerRename
+                        )
                     ) {
                         self.scroll_explorer(delta as f32);
                         return Some(LRESULT(0));
@@ -521,6 +603,14 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     self.hide_tooltip();
+                    if !self.page_open() {
+                        if self.explorer.field.is_some() && self.explorer_field_key(vk, shift, ctrl) {
+                            return Some(LRESULT(0));
+                        }
+                        if let Some(r) = self.explorer_key(vk, ctrl, shift) {
+                            return Some(r);
+                        }
+                    }
                     // A page has the keyboard to itself: Escape closes it, nothing else reaches the viewer.
                     if self.page_open() {
                         if vk == VK_ESCAPE || (vk == VK_OEM_COMMA && ctrl) {
@@ -639,6 +729,23 @@ impl App {
                 WM_CHAR => {
                     if self.dialog.is_some() {
                         self.dialog_char(wp.0 as u16);
+                    } else if self.explorer.field.is_some() {
+                        let u = wp.0 as u16;
+                        if u >= 0x20 && u != 0x7F {
+                            self.explorer_char(u);
+                        }
+                    }
+                    Some(LRESULT(0))
+                }
+                WM_SYSKEYDOWN if self.dialog.is_none() && self.menu.is_none() && self.explorer_shown() && self.explorer.focused => {
+                    let vk = VIRTUAL_KEY(wp.0 as u16);
+                    match vk {
+                        VK_LEFT => self.explorer_back(),
+                        VK_RIGHT => self.explorer_forward(),
+                        VK_UP => self.explorer_up(),
+                        VK_0 => self.explorer_colour(None),
+                        _ if (VK_1.0..=VK_7.0).contains(&vk.0) => self.explorer_colour(Some((vk.0 - VK_1.0) as u8)),
+                        _ => return None,
                     }
                     Some(LRESULT(0))
                 }
@@ -655,6 +762,16 @@ impl App {
                     if self.folder_watch.is_some() {
                         SetTimer(Some(self.hwnd), TIMER_FOLDER, explorer::REFRESH_MS, None);
                     }
+                    Some(LRESULT(0))
+                }
+                crate::explorer::WM_SUBFOLDERS => {
+                    let s = Box::from_raw(lp.0 as *mut explorer::Subfolders);
+                    self.on_subfolders(*s);
+                    Some(LRESULT(0))
+                }
+                crate::explorer::WM_DIMENSIONS => {
+                    let d = Box::from_raw(lp.0 as *mut Vec<(PathBuf, u64, Option<(u32, u32)>)>);
+                    self.on_dims(*d);
                     Some(LRESULT(0))
                 }
                 crate::explorer::WM_EXPLORER_CHANGED => {

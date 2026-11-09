@@ -1,8 +1,9 @@
-//! The file explorer card's model (port of `Navigation/ExplorerTree.cs` as the C# control uses it: one folder,
-//! listed flat). A *place* is a folder or the virtual "This PC" above the drives. Rows are its sub-folders
-//! (always first), then its files under the toolbar sort, with Explorer's natural name order as the tiebreak;
-//! files Looker can't open are listed too (greyed out by the card). Browser-style history records every place
-//! listed. Disk access is confined to [`list`] and the [`Watcher`]; the rest is pure and unit tested.
+//! The file explorer's model, after VEIL Transient's file lists. A *place* is a folder, the virtual "This PC"
+//! above the drives, or a collection (the files tagged favourite or with a colour, `tags.rs`). Rows are its
+//! entries under the sort (name, date modified or size, Explorer's natural name order breaking ties) and the
+//! grouping (folders first, files first, or mixed in by the sort); files Looker can't open are listed too
+//! (greyed out by the card). Browser-style history records every place listed. Disk access is confined to
+//! [`list`], [`subfolders`], [`dimensions`] and the [`Watcher`]; the rest is pure and unit tested.
 
 use std::cmp::Ordering;
 use std::os::windows::fs::MetadataExt;
@@ -25,6 +26,10 @@ pub const WM_EXPLORER_LISTED: u32 = WM_APP + 7;
 pub const WM_EXPLORER_CHANGED: u32 = WM_APP + 8;
 /// The open photo's folder changed on disk (the viewer's own watcher).
 pub const WM_FOLDER_CHANGED: u32 = WM_APP + 9;
+/// A folder's subfolders, listed for a tree or a crumb's menu (boxed `app::explorer::Subfolders`).
+pub const WM_SUBFOLDERS: u32 = WM_APP + 20;
+/// Image sizes read for the Dimensions column (boxed `Vec<(PathBuf, u64, Option<(u32, u32)>)>`).
+pub const WM_DIMENSIONS: u32 = WM_APP + 21;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
@@ -35,10 +40,38 @@ const DRIVE_REMOVABLE: u32 = 2;
 
 pub const COMPUTER_NAME: &str = "This PC";
 
+/// A tag collection: the favourites, or one colour (an index into [`COLOURS`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Collection {
+    Favourites,
+    Colour(u8),
+}
+
+/// The colour tags, as Transient offers them: name and swatch.
+pub const COLOURS: [(&str, u32); 7] = [
+    ("Red", 0xE5484D),
+    ("Orange", 0xF08A24),
+    ("Yellow", 0xF2C94C),
+    ("Green", 0x46A758),
+    ("Blue", 0x3E8EED),
+    ("Purple", 0x9B59D0),
+    ("Grey", 0x8B8B8B),
+];
+
+impl Collection {
+    pub fn name(self) -> String {
+        match self {
+            Collection::Favourites => "Favourites".into(),
+            Collection::Colour(i) => COLOURS.get(i as usize).map_or("Colour", |c| c.0).into(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Place {
     Computer,
     Folder(PathBuf),
+    Collection(Collection),
 }
 
 impl Place {
@@ -46,14 +79,29 @@ impl Place {
         match self {
             Place::Computer => COMPUTER_NAME.into(),
             Place::Folder(p) => folder_name(p),
+            Place::Collection(c) => c.name(),
         }
     }
 
     pub fn same(&self, other: &Place) -> bool {
         match (self, other) {
-            (Place::Computer, Place::Computer) => true,
             (Place::Folder(a), Place::Folder(b)) => same_path(a, b),
-            _ => false,
+            (a, b) => a == b,
+        }
+    }
+
+    pub fn folder(&self) -> Option<&Path> {
+        match self {
+            Place::Folder(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// One level up: a folder's parent, a drive root's "This PC". Nothing above This PC or a collection.
+    pub fn parent(&self) -> Option<Place> {
+        match self {
+            Place::Folder(p) => Some(p.parent().map_or(Place::Computer, |q| Place::Folder(q.to_path_buf()))),
+            _ => None,
         }
     }
 }
@@ -65,8 +113,18 @@ pub fn folder_name(p: &Path) -> String {
 
 /// Case-insensitive and blind to a trailing separator, like Windows paths.
 pub fn same_path(a: &Path, b: &Path) -> bool {
-    let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
     norm(a) == norm(b)
+}
+
+/// A path as a case-folded key, without a trailing separator.
+pub fn norm(p: &Path) -> String {
+    p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// `inner` is `outer` or inside it.
+pub fn within(inner: &Path, outer: &Path) -> bool {
+    let (i, o) = (norm(inner), norm(outer));
+    i == o || i.starts_with(&format!("{o}\\"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,6 +143,7 @@ pub struct Row {
     pub name: String,
     name_h: HSTRING,
     pub kind: Kind,
+    /// Write time (FILETIME ticks).
     pub stamp: u64,
     pub size: u64,
     pub cloud: bool,
@@ -95,36 +154,113 @@ impl Row {
         matches!(self.kind, Kind::Drive | Kind::Folder)
     }
 
+    /// The Type column: "JPG file", "Folder", "Drive".
+    pub fn type_name(&self) -> String {
+        match self.kind {
+            Kind::Drive => "Drive".into(),
+            Kind::Folder => "Folder".into(),
+            _ => match self.path.extension() {
+                Some(e) => format!("{} file", e.to_string_lossy().to_uppercase()),
+                None => "File".into(),
+            },
+        }
+    }
+
     #[cfg(test)]
     fn test(name: &str, kind: Kind, stamp: u64, size: u64) -> Row {
         Row { path: PathBuf::from(name), name: name.into(), name_h: HSTRING::from(name), kind, stamp, size, cloud: false }
     }
 }
 
-/// Folders first in either direction; drives by letter; then the sort field (folders have no size, so they
-/// fall back to name), natural name order breaking ties; descending flips everything but the folders-first.
-fn compare(a: &Row, b: &Row, sort: Sort) -> Ordering {
-    if a.is_folder() != b.is_folder() {
-        return if a.is_folder() { Ordering::Less } else { Ordering::Greater };
+/// Where folders go among the files (Transient's folders/files toggle).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Group {
+    #[default]
+    FoldersFirst,
+    FilesFirst,
+    /// Folders sorted in among the files by the sort.
+    Mixed,
+}
+
+impl Group {
+    pub const ALL: [Group; 3] = [Group::FoldersFirst, Group::FilesFirst, Group::Mixed];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::FoldersFirst => "Folders first",
+            Group::FilesFirst => "Files first",
+            Group::Mixed => "Mixed by the sort",
+        }
     }
-    if a.kind == Kind::Drive && b.kind == Kind::Drive {
-        return a.path.cmp(&b.path);
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Group::FoldersFirst => "folders",
+            Group::FilesFirst => "files",
+            Group::Mixed => "mixed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Group> {
+        Group::ALL.into_iter().find(|g| g.key() == s)
+    }
+}
+
+/// Explorer's natural order ("img9" before "img10"), case-insensitive.
+pub fn natural(a: &str, b: &str) -> Ordering {
+    unsafe { StrCmpLogicalW(&HSTRING::from(a), &HSTRING::from(b)) }.cmp(&0)
+}
+
+/// Drives by letter, always first; folders grouped by `group`; then the sort field (folders have no size, so
+/// they fall back to name), natural name order breaking ties. Descending flips the sort, not the grouping.
+fn compare(a: &Row, b: &Row, sort: Sort, group: Group) -> Ordering {
+    if a.kind == Kind::Drive || b.kind == Kind::Drive {
+        return match (a.kind == Kind::Drive, b.kind == Kind::Drive) {
+            (true, true) => a.path.cmp(&b.path),
+            (true, false) => Ordering::Less,
+            _ => Ordering::Greater,
+        };
+    }
+    if a.is_folder() != b.is_folder() {
+        match group {
+            Group::FoldersFirst => return if a.is_folder() { Ordering::Less } else { Ordering::Greater },
+            Group::FilesFirst => return if a.is_folder() { Ordering::Greater } else { Ordering::Less },
+            Group::Mixed => {}
+        }
     }
     let c = match sort.field {
         SortField::Date => a.stamp.cmp(&b.stamp),
-        SortField::Size if !a.is_folder() => a.size.cmp(&b.size),
+        SortField::Size if !a.is_folder() && !b.is_folder() => a.size.cmp(&b.size),
         _ => Ordering::Equal,
     }
     .then_with(|| unsafe { StrCmpLogicalW(&a.name_h, &b.name_h) }.cmp(&0));
     if sort.descending { c.reverse() } else { c }
 }
 
-pub fn sort_rows(rows: &mut [Row], sort: Sort) {
-    rows.sort_by(|a, b| compare(a, b, sort));
+pub fn sort_rows(rows: &mut [Row], sort: Sort, group: Group) {
+    rows.sort_by(|a, b| compare(a, b, sort, group));
 }
 
-/// The breadcrumb trail: "This PC", then every ancestor from the drive root down to the place.
+/// The filter's words: lower-cased, split on spaces.
+pub fn filter_words(text: &str) -> Vec<String> {
+    text.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Every word appears in the row's name (Transient's filter: several words, all must match).
+pub fn matches(row: &Row, words: &[String]) -> bool {
+    if words.is_empty() {
+        return true;
+    }
+    let name = row.name.to_lowercase();
+    words.iter().all(|w| name.contains(w.as_str()))
+}
+
+/// The breadcrumb trail: "This PC", then every ancestor from the drive root down to the place. A collection
+/// is a trail of its own.
 pub fn crumbs(place: &Place) -> Vec<Place> {
+    if let Place::Collection(_) = place {
+        return vec![place.clone()];
+    }
     let mut out = vec![Place::Computer];
     if let Place::Folder(p) = place {
         let mut chain: Vec<PathBuf> = p.ancestors().map(Path::to_path_buf).filter(|a| !a.as_os_str().is_empty()).collect();
@@ -169,12 +305,77 @@ impl History {
         self.at = Some(i);
         Some(self.places[i].clone())
     }
+    /// The whole trail, oldest first, and where in it we are (the History drop-down).
+    pub fn entries(&self) -> (&[Place], Option<usize>) {
+        (&self.places, self.at)
+    }
+    /// Jumps to entry `i` (a pick in the History drop-down).
+    pub fn jump(&mut self, i: usize) -> Option<Place> {
+        let p = self.places.get(i)?.clone();
+        self.at = Some(i);
+        Some(p)
+    }
+    /// A place was renamed or moved: entries at or under `from` follow it.
+    pub fn moved(&mut self, from: &Path, to: &Path) {
+        for p in &mut self.places {
+            if let Place::Folder(f) = p {
+                if let Some(n) = rebase(f, from, to) {
+                    *f = n;
+                }
+            }
+        }
+    }
+}
+
+/// `p` with its `from` prefix swapped for `to`, when `p` is `from` or under it.
+pub fn rebase(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    if !within(p, from) {
+        return None;
+    }
+    let rest = &p.to_string_lossy()[from.to_string_lossy().trim_end_matches(['\\', '/']).len()..];
+    Some(PathBuf::from(format!("{}{}", to.to_string_lossy().trim_end_matches(['\\', '/']), rest)))
+}
+
+/// A free name for `name` in `folder`: `name`, else "name (2).ext", "name (3).ext"…
+pub fn free_name(folder: &Path, name: &str) -> PathBuf {
+    let first = folder.join(name);
+    if std::fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    let p = Path::new(name);
+    let (stem, ext) = match (p.file_stem(), p.extension()) {
+        (Some(s), Some(e)) if !s.is_empty() => (s.to_string_lossy().into_owned(), format!(".{}", e.to_string_lossy())),
+        _ => (name.to_string(), String::new()),
+    };
+    (2..10_000).map(|n| folder.join(format!("{stem} ({n}){ext}"))).find(|c| std::fs::symlink_metadata(c).is_err()).unwrap_or(first)
 }
 
 // --- Disk ----------------------------------------------------------------------------------------------
 
-/// Lists a place, sorted. A folder that can't be read lists as empty.
-pub fn list(place: &Place, sort: Sort) -> Vec<Row> {
+fn row_for(path: PathBuf, md: &std::fs::Metadata) -> Row {
+    let attrs = md.file_attributes();
+    let name = folder_name(&path);
+    let kind = if md.is_dir() {
+        Kind::Folder
+    } else if is_supported(&path) {
+        Kind::Image
+    } else {
+        Kind::Other
+    };
+    Row {
+        name_h: HSTRING::from(name.as_str()),
+        name,
+        kind,
+        stamp: md.last_write_time(),
+        size: if md.is_dir() { 0 } else { md.len() },
+        cloud: attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0,
+        path,
+    }
+}
+
+/// Lists a place, sorted. A folder that can't be read lists as empty; a collection lists the `tagged` paths
+/// that still exist.
+pub fn list(place: &Place, sort: Sort, group: Group, tagged: &[PathBuf]) -> Vec<Row> {
     let mut rows = match place {
         Place::Computer => drives(),
         Place::Folder(dir) => {
@@ -182,39 +383,36 @@ pub fn list(place: &Place, sort: Sort) -> Vec<Row> {
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for e in rd.flatten() {
                     let Ok(md) = e.metadata() else { continue };
-                    let attrs = md.file_attributes();
-                    if attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
+                    if md.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
                         continue; // desktop.ini, Thumbs.db, $RECYCLE.BIN: Explorer hides them too
                     }
-                    let path = e.path();
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    let kind = if md.is_dir() {
-                        Kind::Folder
-                    } else if is_supported(&path) {
-                        Kind::Image
-                    } else {
-                        Kind::Other
-                    };
-                    rows.push(Row {
-                        name_h: HSTRING::from(name.as_str()),
-                        name,
-                        kind,
-                        stamp: md.last_write_time(),
-                        size: if md.is_dir() { 0 } else { md.len() },
-                        cloud: attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0,
-                        path,
-                    });
+                    rows.push(row_for(e.path(), &md));
                 }
             }
             rows
         }
+        Place::Collection(_) => tagged.iter().filter_map(|p| std::fs::metadata(p).ok().map(|md| row_for(p.clone(), &md))).collect(),
     };
-    sort_rows(&mut rows, sort);
+    sort_rows(&mut rows, sort, group);
     rows
 }
 
+/// A folder's visible subfolders, in natural order (a tree's children, a crumb's menu).
+pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.metadata().is_ok_and(|m| m.is_dir() && m.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) == 0))
+            .map(|e| e.path())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    out.sort_by(|a, b| natural(&folder_name(a), &folder_name(b)));
+    out
+}
+
 /// "Local Disk (C:)" and friends, by letter. Not-ready drives (an empty card reader) keep the generic label.
-fn drives() -> Vec<Row> {
+pub fn drives() -> Vec<Row> {
     let mask = unsafe { GetLogicalDrives() };
     let mut rows = Vec::new();
     for i in 0..26u32 {
@@ -233,6 +431,44 @@ fn drives() -> Vec<Row> {
         rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, size: 0, cloud: false });
     }
     rows
+}
+
+/// The user's own folders for the sidebar's Places: name, path, glyph.
+pub fn known_places() -> Vec<(String, PathBuf, u16)> {
+    use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Videos, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    let mut out = Vec::new();
+    for (name, id, glyph) in [
+        ("Desktop", FOLDERID_Desktop, 0xE7F4u16),
+        ("Downloads", FOLDERID_Downloads, 0xE896),
+        ("Documents", FOLDERID_Documents, 0xE8A5),
+        ("Pictures", FOLDERID_Pictures, 0xE91B),
+        ("Videos", FOLDERID_Videos, 0xE714),
+    ] {
+        unsafe {
+            if let Ok(p) = SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None) {
+                let s = p.to_string().unwrap_or_default();
+                windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
+                if !s.is_empty() {
+                    out.push((name.to_string(), PathBuf::from(s), glyph));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// An image's pixel size from its header (WIC reads only that), for the Dimensions column. COM must be up
+/// on the calling thread.
+pub fn dimensions(f: &windows::Win32::Graphics::Imaging::IWICImagingFactory, path: &Path) -> Option<(u32, u32)> {
+    use windows::Win32::Graphics::Imaging::WICDecodeMetadataCacheOnDemand;
+    use windows::Win32::Foundation::GENERIC_READ;
+    unsafe {
+        let d = f.CreateDecoderFromFilename(&HSTRING::from(path.as_os_str()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand).ok()?;
+        let frame = d.GetFrame(0).ok()?;
+        let (mut w, mut h) = (0u32, 0u32);
+        frame.GetSize(&mut w, &mut h).ok()?;
+        (w > 0 && h > 0).then_some((w, h))
+    }
 }
 
 /// Posts `msg` whenever anything in one folder changes: files
@@ -300,20 +536,41 @@ mod tests {
         rows.iter().map(|r| r.name.as_str()).collect()
     }
 
-    #[test]
-    fn folders_come_first_in_either_direction() {
-        let mut rows = vec![
+    fn sample() -> Vec<Row> {
+        vec![
             Row::test("b.jpg", Kind::Image, 1, 30),
             Row::test("Zebra", Kind::Folder, 5, 0),
             Row::test("a10.jpg", Kind::Image, 3, 10),
             Row::test("a9.txt", Kind::Other, 2, 20),
             Row::test("Apple", Kind::Folder, 9, 0),
-        ];
-        sort_rows(&mut rows, Sort::default());
+        ]
+    }
+
+    #[test]
+    fn folders_first_in_either_direction() {
+        let mut rows = sample();
+        sort_rows(&mut rows, Sort::default(), Group::FoldersFirst);
         assert_eq!(names(&rows), ["Apple", "Zebra", "a9.txt", "a10.jpg", "b.jpg"]);
-        sort_rows(&mut rows, Sort { field: SortField::Size, descending: true });
+        sort_rows(&mut rows, Sort { field: SortField::Size, descending: true }, Group::FoldersFirst);
         // Folders have no size: they fall back to name (reversed with the direction), still first.
         assert_eq!(names(&rows), ["Zebra", "Apple", "b.jpg", "a9.txt", "a10.jpg"]);
+    }
+
+    #[test]
+    fn files_first_and_mixed() {
+        let mut rows = sample();
+        sort_rows(&mut rows, Sort::default(), Group::FilesFirst);
+        assert_eq!(names(&rows), ["a9.txt", "a10.jpg", "b.jpg", "Apple", "Zebra"]);
+        sort_rows(&mut rows, Sort { field: SortField::Date, descending: false }, Group::Mixed);
+        assert_eq!(names(&rows), ["b.jpg", "a9.txt", "a10.jpg", "Zebra", "Apple"]);
+    }
+
+    #[test]
+    fn the_filter_needs_every_word() {
+        let r = Row::test("Beach Sunset 04.jpg", Kind::Image, 0, 0);
+        assert!(matches(&r, &filter_words("sun beach")));
+        assert!(!matches(&r, &filter_words("sun dog")));
+        assert!(matches(&r, &[]));
     }
 
     #[test]
@@ -322,6 +579,7 @@ mod tests {
         let n: Vec<String> = c.iter().map(Place::name).collect();
         assert_eq!(n, ["This PC", r"C:\", "Users", "me", "Pictures"]);
         assert_eq!(crumbs(&Place::Computer), [Place::Computer]);
+        assert_eq!(crumbs(&Place::Collection(Collection::Favourites)).len(), 1);
     }
 
     #[test]
@@ -338,6 +596,30 @@ mod tests {
         assert!(h.can_forward());
         h.record(&c); // a new branch drops Forward
         assert!(!h.can_forward());
-        assert_eq!(h.back(), Some(a));
+        assert_eq!(h.back(), Some(a.clone()));
+        assert_eq!(h.jump(1), Some(c));
+        h.moved(Path::new(r"C:\a"), Path::new(r"C:\z"));
+        assert_eq!(h.entries().0[0], Place::Folder(PathBuf::from(r"C:\z")));
+    }
+
+    #[test]
+    fn paths_rebase_and_nest() {
+        assert!(within(Path::new(r"C:\a\b"), Path::new(r"c:\A")));
+        assert!(!within(Path::new(r"C:\ab"), Path::new(r"C:\a")));
+        assert_eq!(rebase(Path::new(r"C:\a\b\c.jpg"), Path::new(r"C:\a"), Path::new(r"D:\x")), Some(PathBuf::from(r"D:\x\b\c.jpg")));
+        assert_eq!(Place::Folder(PathBuf::from(r"C:\")).parent(), Some(Place::Computer));
+    }
+
+    #[test]
+    fn free_names_count_up() {
+        let dir = std::env::temp_dir().join(format!("looker-free-name-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("a.jpg"), b"x").unwrap();
+        std::fs::write(dir.join("a (2).jpg"), b"x").unwrap();
+        assert_eq!(free_name(&dir, "a.jpg"), dir.join("a (3).jpg"));
+        assert_eq!(free_name(&dir, "b.jpg"), dir.join("b.jpg"));
+        std::fs::create_dir(dir.join("New folder")).unwrap();
+        assert_eq!(free_name(&dir, "New folder"), dir.join("New folder (2)"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

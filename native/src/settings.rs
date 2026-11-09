@@ -55,10 +55,17 @@ pub struct Settings {
     pub slideshow_seconds: u32,
     /// The landing page's "Set Looker as your default photo viewer" was dismissed with its X, for good.
     pub default_hint_dismissed: bool,
+    /// The explorer's bookmarked folders, in the order they were added.
+    pub bookmarks: Vec<PathBuf>,
+    /// Folders the explorer listed, most recent first, at most [`VISITED_CAPACITY`] (its sidebar's History).
+    pub visited: Vec<PathBuf>,
+    /// Where the explorer puts folders among the files.
+    pub explorer_group: crate::explorer::Group,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
 pub const RECENT_CAPACITY: usize = 12;
+pub const VISITED_CAPACITY: usize = 10;
 pub const CACHE_MB: u32 = 512;
 /// The choices the Settings page offers for the decode cache.
 pub const CACHE_CHOICES: [u32; 5] = [128, 256, 512, 1024, 2048];
@@ -73,7 +80,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst }
     }
 }
 
@@ -96,6 +103,44 @@ impl Settings {
 
     pub fn remove_recent(&mut self, path: &std::path::Path) {
         self.recents.retain(|r| !same_file(r, path));
+    }
+
+    /// The explorer listed a folder: to the front of its History. False when it was already first.
+    pub fn push_visited(&mut self, path: &std::path::Path) -> bool {
+        if self.visited.first().is_some_and(|f| same_file(f, path)) {
+            return false;
+        }
+        self.visited.retain(|r| !same_file(r, path));
+        self.visited.insert(0, path.to_path_buf());
+        self.visited.truncate(VISITED_CAPACITY);
+        true
+    }
+
+    pub fn is_bookmarked(&self, path: &std::path::Path) -> bool {
+        self.bookmarks.iter().any(|b| same_file(b, path))
+    }
+
+    /// Adds or removes a bookmark; returns whether it's bookmarked now.
+    pub fn toggle_bookmark(&mut self, path: &std::path::Path) -> bool {
+        if self.is_bookmarked(path) {
+            self.bookmarks.retain(|b| !same_file(b, path));
+            false
+        } else {
+            self.bookmarks.push(path.to_path_buf());
+            true
+        }
+    }
+
+    /// A folder was renamed or moved through Looker: bookmarks and History at or under it follow.
+    pub fn folder_moved(&mut self, from: &std::path::Path, to: &std::path::Path) -> bool {
+        let mut changed = false;
+        for p in self.bookmarks.iter_mut().chain(self.visited.iter_mut()) {
+            if let Some(n) = crate::explorer::rebase(p, from, to) {
+                *p = n;
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
@@ -149,6 +194,9 @@ pub fn parse(text: &str) -> Settings {
             "explorer_other_files" => s.explorer_other_files = v != "0",
             "default_hint_dismissed" => s.default_hint_dismissed = v == "1",
             "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
+            "bookmark" if !v.is_empty() => s.bookmarks.push(PathBuf::from(v)),
+            "visited" if !v.is_empty() && s.visited.len() < VISITED_CAPACITY => s.visited.push(PathBuf::from(v)),
+            "explorer_group" => s.explorer_group = crate::explorer::Group::parse(v).unwrap_or_default(),
             _ => {}
         }
     }
@@ -181,6 +229,13 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("explorer_other_files={}\n", s.explorer_other_files as i32));
     out.push_str(&format!("slideshow_seconds={}\n", s.slideshow_seconds));
     out.push_str(&format!("default_hint_dismissed={}\n", s.default_hint_dismissed as i32));
+    for b in &s.bookmarks {
+        out.push_str(&format!("bookmark={}\n", b.display()));
+    }
+    for v in &s.visited {
+        out.push_str(&format!("visited={}\n", v.display()));
+    }
+    out.push_str(&format!("explorer_group={}\n", s.explorer_group.key()));
     out
 }
 
@@ -324,6 +379,9 @@ mod tests {
             explorer_other_files: false,
             slideshow_seconds: 9,
             default_hint_dismissed: true,
+            bookmarks: vec![PathBuf::from(r"S:\SFX Library"), PathBuf::from(r"C:\Users\me\Pictures")],
+            visited: vec![PathBuf::from(r"C:\Users\me\Pictures\2026")],
+            explorer_group: crate::explorer::Group::Mixed,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

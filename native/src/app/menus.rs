@@ -33,6 +33,23 @@ pub(super) enum Action {
     ToggleStripOther,
     /// The explorer card's: the same for its rows.
     ToggleExplorerOther,
+    // The explorer's (explorer_ops.rs).
+    OpenInViewer,
+    Cut,
+    CopyFiles,
+    Paste,
+    PasteInto,
+    Favourite,
+    Colour(Option<u8>),
+    Bookmark,
+    NewFolder,
+    Refresh,
+    Properties,
+    SelectAll,
+    HistoryJump(usize),
+    Group(crate::explorer::Group),
+    /// A folder in a crumb's menu, by index.
+    GoFolder(usize),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -109,39 +126,6 @@ impl App {
         }
     }
 
-    /// The menu for one explorer row: what Explorer offers for that kind of item.
-    pub(super) fn open_item_menu(&mut self, path: PathBuf, kind: crate::explorer::Kind, x: f32, y: f32) {
-        use crate::explorer::Kind;
-        let mut entries = Vec::new();
-        match kind {
-            Kind::Folder | Kind::Drive => {
-                entries.push(item(Action::OpenItem, 0xE8B7, "Open folder", None, true));
-                entries.push(Entry::Separator);
-            }
-            Kind::Image => {
-                entries.push(item(Action::OpenItem, 0xE8A7, "Open", None, true));
-                entries.push(item(Action::Rename, 0xE8AC, "Rename", None, true));
-                entries.push(item(Action::Delete, 0xE74D, "Delete", None, true));
-                entries.push(Entry::Separator);
-            }
-            Kind::Other => {
-                entries.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true));
-                entries.push(item(Action::Rename, 0xE8AC, "Rename", None, true));
-                entries.push(item(Action::Delete, 0xE74D, "Delete", None, true));
-                entries.push(Entry::Separator);
-            }
-        }
-        entries.push(item(Action::CopyPath, 0xE71B, "Copy path", None, true));
-        entries.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
-        entries.push(Entry::Separator);
-        entries.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
-        let Some(g) = &self.gfx else { return };
-        let (w, h) = self.size_dip();
-        self.menu = Some((MenuKind::Item(path), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
-        self.hide_tooltip();
-        self.invalidate();
-    }
-
     /// The thumbnail strip's menu.
     pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
         let other = self.settings.strip_other_files;
@@ -150,16 +134,6 @@ impl App {
             Entry::Separator,
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), true),
         ];
-        let Some(g) = &self.gfx else { return };
-        let (w, h) = self.size_dip();
-        self.menu = Some((MenuKind::Context, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
-        self.hide_tooltip();
-        self.invalidate();
-    }
-
-    /// The explorer card's menu, away from any row.
-    pub(super) fn open_explorer_menu(&mut self, x: f32, y: f32) {
-        let entries = vec![check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files)];
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((MenuKind::Context, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
@@ -203,7 +177,9 @@ impl App {
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         match kind {
-            Some(MenuKind::Item(path)) => self.run_item_action(action, path),
+            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::CrumbFolders(_) | MenuKind::History | MenuKind::Group)) => {
+                self.run_explorer_action(action, k)
+            }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
             Some(MenuKind::Combo(which)) => {
                 if let Action::Choose(i) = action {
@@ -221,18 +197,13 @@ impl App {
         }
     }
 
-    /// An explorer row's menu: the same actions, on that file.
-    fn run_item_action(&mut self, a: Action, path: PathBuf) {
-        match a {
-            Action::OpenItem if path.is_dir() => self.open_folder(path),
-            Action::OpenItem if !crate::format::is_supported(&path) => self.show_placeholder(path),
-            Action::OpenItem => self.open_file(path),
-            Action::ToggleExplorerOther => self.toggle_explorer_other(),
-            Action::Rename => self.begin_rename_path(path, false),
-            Action::Delete => self.confirm_delete_path(path, false),
-            Action::CopyPath => self.copy_path_of(&path),
-            Action::Reveal => self.reveal_path(&path),
-            _ => {}
+    /// A colour swatch in the open menu was picked.
+    pub(super) fn activate_swatch(&mut self, i: usize, k: usize) {
+        let Some(action) = self.menu.as_ref().and_then(|(_, m)| m.swatch_action(i, k)) else { return };
+        let kind = self.menu.take().map(|(k, _)| k);
+        self.invalidate();
+        if let Some(kind) = kind {
+            self.run_explorer_action(action, kind);
         }
     }
 
@@ -253,18 +224,18 @@ impl App {
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::ToggleStripOther => self.toggle_strip_other(),
             Action::ToggleExplorerOther => self.toggle_explorer_other(),
-            Action::OpenItem | Action::Crumb(_) | Action::RemoveRecent | Action::Choose(_) => {}
+            _ => {}
         }
     }
 
-    fn set_sort(&mut self, sort: Sort) {
+    pub(super) fn set_sort(&mut self, sort: Sort) {
         if sort == self.settings.sort {
             return;
         }
         self.settings.sort = sort;
         settings::save(&self.settings);
         self.viewer.set_sort(sort);
-        self.explorer.resort(sort);
+        self.explorer.resort(sort, self.settings.explorer_group);
         let field = match sort.field {
             SortField::Name => "Name",
             SortField::Date => "Date modified",
@@ -278,8 +249,14 @@ impl App {
 pub(super) enum MenuKind {
     Context,
     Sort,
-    /// An explorer row's menu, for this path.
-    Item(PathBuf),
+    /// The explorer's: a row's menu (on these paths), the list's, a sidebar row's, a crumb's folders, History,
+    /// and the folders/files grouping.
+    Rows(Vec<PathBuf>),
+    ExplorerBg,
+    Side(crate::explorer::Place),
+    CrumbFolders(Vec<PathBuf>),
+    History,
+    Group,
     /// The breadcrumb overflow, holding these places.
     Crumbs(Vec<crate::explorer::Place>),
     /// A recent file on the landing page.

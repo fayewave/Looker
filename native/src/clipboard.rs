@@ -111,11 +111,82 @@ pub fn set_image(hwnd: HWND, path: &Path, image: Option<&Image>) -> bool {
 
 /// DROPFILES followed by the wide path and a double NUL.
 fn hdrop(path: &Path) -> Vec<u8> {
+    hdrop_all(std::slice::from_ref(&path.to_path_buf()))
+}
+
+fn hdrop_all(paths: &[std::path::PathBuf]) -> Vec<u8> {
     let header = DROPFILES { pFiles: size_of::<DROPFILES>() as u32, fWide: true.into(), ..Default::default() };
     let mut out = unsafe { std::slice::from_raw_parts(&header as *const _ as *const u8, size_of::<DROPFILES>()) }.to_vec();
-    out.extend(utf16z(&path.to_string_lossy()));
+    for p in paths {
+        out.extend(utf16z(&p.to_string_lossy()));
+    }
     out.extend([0, 0]);
     out
+}
+
+const DROPEFFECT_MOVE: u32 = 2;
+const DROPEFFECT_LINK: u32 = 4;
+
+/// Files on the clipboard as Explorer puts them (the explorer's Ctrl+C / Ctrl+X): a file list plus
+/// "Preferred DropEffect", copy-or-link for a copy, move for a cut, so they paste in Explorer too. Returns the
+/// clipboard's sequence number after, to tell later whether it still holds them.
+pub fn set_files(hwnd: HWND, paths: &[std::path::PathBuf], cut: bool) -> Option<u32> {
+    let drop = hdrop_all(paths);
+    let ok = with_clipboard(hwnd, || {
+        let ok = put(CF_HDROP.0 as u32, &drop);
+        unsafe {
+            let effect = RegisterClipboardFormatW(w!("Preferred DropEffect"));
+            if effect != 0 {
+                let e = if cut { DROPEFFECT_MOVE } else { DROPEFFECT_COPY | DROPEFFECT_LINK };
+                put(effect, &e.to_le_bytes());
+            }
+        }
+        ok
+    });
+    ok.then(|| unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() })
+}
+
+/// The clipboard's file list, from Looker, Explorer or any app, and whether it was cut (a paste moves).
+pub fn get_files(hwnd: HWND) -> Option<(Vec<std::path::PathBuf>, bool)> {
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    unsafe {
+        OpenClipboard(Some(hwnd)).ok()?;
+        let r = (|| {
+            let h = GetClipboardData(CF_HDROP.0 as u32).ok()?;
+            let drop = HDROP(h.0);
+            let n = DragQueryFileW(drop, u32::MAX, None);
+            let mut paths = Vec::new();
+            for i in 0..n {
+                let len = DragQueryFileW(drop, i, None) as usize;
+                let mut buf = vec![0u16; len + 1];
+                DragQueryFileW(drop, i, Some(&mut buf));
+                buf.truncate(len);
+                paths.push(std::path::PathBuf::from(String::from_utf16_lossy(&buf)));
+            }
+            let effect = RegisterClipboardFormatW(w!("Preferred DropEffect"));
+            let cut = effect != 0
+                && GetClipboardData(effect).ok().is_some_and(|e| {
+                    let mem = HGLOBAL(e.0);
+                    let p = GlobalLock(mem) as *const u32;
+                    let v = if p.is_null() { 0 } else { *p };
+                    let _ = GlobalUnlock(mem);
+                    v & DROPEFFECT_MOVE != 0 && v & DROPEFFECT_COPY == 0
+                });
+            (!paths.is_empty()).then_some((paths, cut))
+        })();
+        let _ = CloseClipboard();
+        r
+    }
+}
+
+/// The clipboard has been written since `seq` (cut rows stop showing faded).
+pub fn changed_since(seq: u32) -> bool {
+    unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() != seq }
+}
+
+/// Empties the clipboard (after pasting cut files, as Explorer does).
+pub fn clear(hwnd: HWND) {
+    with_clipboard(hwnd, || true);
 }
 
 /// A bottom-up 32-bit DIB with straight alpha and explicit channel masks.

@@ -25,6 +25,7 @@ mod motion;
 mod pages;
 mod settings;
 mod store;
+mod tags;
 mod textedit;
 mod theme;
 mod thumbs;

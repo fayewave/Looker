@@ -20,6 +20,8 @@ pub(super) enum Choice {
 
 pub(super) enum DialogKind {
     Delete(PathBuf),
+    /// The explorer's Delete on a selection.
+    DeleteMany(Vec<PathBuf>),
     Rename(PathBuf),
     Reset,
 }
@@ -161,7 +163,7 @@ impl App {
         self.open_dialog_ui(DialogKind::Rename(path), d);
     }
 
-    fn on_renamed(&mut self, from: PathBuf, to: Result<PathBuf, String>) {
+    pub(super) fn on_renamed(&mut self, from: PathBuf, to: Result<PathBuf, String>) {
         match to {
             Ok(to) if to != from => {
                 self.viewer.renamed(&from, &to);
@@ -224,9 +226,28 @@ impl App {
         }
     }
 
+    /// The text box with the keys: the dialog's, else one of the explorer's.
+    fn active_field(&mut self) -> Option<&mut TextField> {
+        if self.dialog.is_some() {
+            return self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut());
+        }
+        self.explorer_field_mut()
+    }
+
+    /// Where the active text box's text is drawn, for placing the caret under the pointer.
+    fn active_field_rect(&self) -> Option<D2D_RECT_F> {
+        if self.dialog.is_some() {
+            return self.hits.rect_of(Hit::DialogField);
+        }
+        let h = self.explorer_field_hit()?;
+        let r = self.hits.rect_of(h)?;
+        // The filter's text starts after its search glyph.
+        Some(if h == Hit::ExplorerFilter { D2D_RECT_F { left: r.left + 18.0, ..r } } else { r })
+    }
+
     /// Shows the caret and restarts its blink (after any edit or move).
     pub(super) fn restart_caret(&mut self) {
-        if let Some(f) = self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut()) {
+        if let Some(f) = self.active_field() {
             f.caret_on = true;
         }
         let blink = unsafe { GetCaretBlinkTime() };
@@ -241,7 +262,12 @@ impl App {
     }
 
     pub(super) fn blink_caret(&mut self) {
-        match self.dialog.as_mut().filter(|(_, d)| d.field_focused()).and_then(|(_, d)| d.field.as_mut()) {
+        let field = if self.dialog.is_some() {
+            self.dialog.as_mut().filter(|(_, d)| d.field_focused()).and_then(|(_, d)| d.field.as_mut())
+        } else {
+            self.explorer_field_mut()
+        };
+        match field {
             Some(f) => {
                 f.caret_on = !f.caret_on;
                 self.invalidate();
@@ -269,9 +295,9 @@ impl App {
     }
 
     /// Text box keys: caret moves, deletes, clipboard, undo. Returns false for keys it doesn't use.
-    fn field_key(&mut self, vk: VIRTUAL_KEY, shift: bool, ctrl: bool) -> bool {
+    pub(super) fn field_key(&mut self, vk: VIRTUAL_KEY, shift: bool, ctrl: bool) -> bool {
         let hwnd = self.hwnd;
-        let Some(f) = self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut()) else { return false };
+        let Some(f) = self.active_field() else { return false };
         let e = &mut f.edit;
         let mut changed = false;
         match vk {
@@ -321,13 +347,21 @@ impl App {
     /// double-click selects the word.
     pub(super) fn field_press(&mut self, x: f32, double: bool) {
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 };
-        let Some(r) = self.hits.rect_of(Hit::DialogField) else { return };
-        let Some(g) = self.gfx.as_ref() else { return };
-        let Some((_, d)) = &mut self.dialog else { return };
-        let with_clear = d.field_focused() && d.field.as_ref().is_some_and(|f| !f.edit.units().is_empty());
-        d.focus = Focus::Field;
-        let Some(f) = &mut d.field else { return };
-        let pos = f.position_at(g, r, with_clear, x);
+        let Some(r) = self.active_field_rect() else { return };
+        let Some(g) = self.gfx.take() else { return };
+        let with_clear = match &mut self.dialog {
+            Some((_, d)) => {
+                let wc = d.field_focused() && d.field.as_ref().is_some_and(|f| !f.edit.units().is_empty());
+                d.focus = Focus::Field;
+                wc
+            }
+            None => self.explorer.field == Some(super::explorer::EField::Filter) && !self.explorer.filter.edit.units().is_empty(),
+        };
+        let Some(f) = self.active_field() else {
+            self.gfx = Some(g);
+            return;
+        };
+        let pos = f.position_at(&g, r, with_clear, x);
         if double {
             let (a, b) = f.edit.word_at(pos);
             f.edit.select(a, b);
@@ -339,18 +373,21 @@ impl App {
             f.edit.select(pos, pos);
             self.text_drag = Some(pos);
         }
+        self.gfx = Some(g);
         self.restart_caret();
     }
 
     /// Dragging across the text box selects from where the press was.
     pub(super) fn field_drag(&mut self, x: f32) {
         let Some(anchor) = self.text_drag else { return };
-        let Some(r) = self.hits.rect_of(Hit::DialogField) else { return };
-        let Some(g) = self.gfx.as_ref() else { return };
-        let Some(f) = self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut()) else { return };
-        let with_clear = !f.edit.units().is_empty();
-        let pos = f.position_at(g, r, with_clear, x);
-        f.edit.select(anchor, pos);
+        let Some(r) = self.active_field_rect() else { return };
+        let Some(g) = self.gfx.take() else { return };
+        if let Some(f) = self.active_field() {
+            let with_clear = !f.edit.units().is_empty();
+            let pos = f.position_at(&g, r, with_clear, x);
+            f.edit.select(anchor, pos);
+        }
+        self.gfx = Some(g);
         self.restart_caret();
     }
 
@@ -386,6 +423,7 @@ impl App {
                     Done::Renamed { from: path, to }
                 });
             }
+            DialogKind::DeleteMany(paths) => self.recycle_many(paths, None),
             DialogKind::Delete(path) => {
                 let owner = self.hwnd.0 as isize;
                 fileops::spawn(self.hwnd, true, move || {
@@ -435,7 +473,7 @@ impl App {
         self.dialog_choose(c);
     }
 
-    fn on_recycled(&mut self, path: PathBuf, ok: bool) {
+    pub(super) fn on_recycled(&mut self, path: PathBuf, ok: bool) {
         if !ok {
             self.show_toast("Couldn't delete", false);
             return;
@@ -480,6 +518,7 @@ impl App {
                     self.show_toast("Copied", false);
                 }
             }
+            other => self.on_explorer_file_op(other),
         }
     }
 }

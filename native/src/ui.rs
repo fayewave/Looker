@@ -511,7 +511,12 @@ impl TextField {
         g.fill_round(r, 5.0, rgb(t.field));
         let edge = if focused { 1.0 } else { hover * 0.5 };
         stroke(g, r, 5.0, mix(t.divider, t.accent, edge));
+        self.draw_text(g, r, t, focused, clear)
+    }
 
+    /// The text, selection, caret and clear button without the box (for a box drawn by the caller, with an
+    /// icon in it, say). Returns the caret rect when focused.
+    pub fn draw_text(&mut self, g: &Gfx, r: D2D_RECT_F, t: &Theme, focused: bool, clear: Option<(D2D_RECT_F, State)>) -> Option<D2D_RECT_F> {
         let tr = Self::text_rect(r, clear.is_some());
         let Some(layout) = g.layout(self.edit.units(), &g.fonts.body, r.bottom - r.top) else { return None };
         let width = tr.right - tr.left;
@@ -647,6 +652,19 @@ pub struct MenuItem<A> {
 pub enum Entry<A> {
     Item(MenuItem<A>),
     Separator,
+    /// A row of colour swatches (Transient's colour tags): each an action, its colour, and whether it's on.
+    Swatches(Vec<(A, u32, bool)>),
+}
+
+const MENU_SWATCHES: f32 = 30.0;
+const SWATCH_CELL: f32 = 24.0;
+
+fn entry_h<A>(e: &Entry<A>) -> f32 {
+    match e {
+        Entry::Item(_) => MENU_ROW,
+        Entry::Separator => MENU_SEP,
+        Entry::Swatches(_) => MENU_SWATCHES,
+    }
 }
 
 /// A menu, as Snapper draws its own: rows 25 tall, the hovered row a solid accent bar, a hairline border, radius
@@ -721,7 +739,7 @@ impl<A: Copy> Menu<A> {
     }
 
     fn height_of(entries: &[Entry<A>]) -> f32 {
-        MENU_PAD_TOP + MENU_PAD_BOTTOM + entries.iter().map(|e| if matches!(e, Entry::Item(_)) { MENU_ROW } else { MENU_SEP }).sum::<f32>()
+        MENU_PAD_TOP + MENU_PAD_BOTTOM + entries.iter().map(entry_h).sum::<f32>()
     }
 
     pub fn height(&self) -> f32 {
@@ -747,10 +765,32 @@ impl<A: Copy> Menu<A> {
                     out.push((i, rect(self.x + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW)));
                     y += MENU_ROW;
                 }
-                Entry::Separator => y += MENU_SEP,
+                e => y += entry_h(e),
             }
         }
         out
+    }
+
+    /// Each swatch's rect: (entry, swatch, rect).
+    pub fn swatch_rects(&self) -> Vec<(usize, usize, D2D_RECT_F)> {
+        let mut y = self.y + MENU_PAD_TOP;
+        let mut out = Vec::new();
+        for (i, e) in self.entries.iter().enumerate() {
+            if let Entry::Swatches(s) = e {
+                for k in 0..s.len() {
+                    out.push((i, k, rect(self.x + MENU_INSET + 4.0 + k as f32 * SWATCH_CELL, y + (MENU_SWATCHES - SWATCH_CELL) / 2.0, SWATCH_CELL, SWATCH_CELL)));
+                }
+            }
+            y += entry_h(e);
+        }
+        out
+    }
+
+    pub fn swatch_action(&self, i: usize, k: usize) -> Option<A> {
+        match self.entries.get(i) {
+            Some(Entry::Swatches(s)) => s.get(k).map(|(a, _, _)| *a),
+            _ => None,
+        }
     }
 
     pub fn action_at(&self, index: usize) -> Option<A> {
@@ -781,8 +821,8 @@ impl<A: Copy> Menu<A> {
         self.cursor = Some(items[next]);
     }
 
-    /// Draws the menu. `hover` is the entry under the pointer.
-    pub fn draw(&self, g: &Gfx, hover: Option<usize>) {
+    /// Draws the menu. `hover` is the entry under the pointer, `swatch` the swatch.
+    pub fn draw(&self, g: &Gfx, hover: Option<usize>, swatch: Option<(usize, usize)>) {
         let raised = theme::raised();
         let e = motion::progress(self.opened);
         g.push_fade(e, 0.94 + 0.06 * e, self.origin.0, self.origin.1);
@@ -799,6 +839,20 @@ impl<A: Copy> Menu<A> {
                 Entry::Separator => {
                     g.hline(panel.left + 1.0, g.snap((y + MENU_SEP / 2.0).floor()), self.width - 2.0, rgb(raised.divider));
                     y += MENU_SEP;
+                    continue;
+                }
+                Entry::Swatches(s) => {
+                    for (k, &(_, colour, on)) in s.iter().enumerate() {
+                        let cell = rect(panel.left + MENU_INSET + 4.0 + k as f32 * SWATCH_CELL, y + (MENU_SWATCHES - SWATCH_CELL) / 2.0, SWATCH_CELL, SWATCH_CELL);
+                        let (cx, cy) = ((cell.left + cell.right) / 2.0, (cell.top + cell.bottom) / 2.0);
+                        let hot = swatch == Some((i, k));
+                        let d = if hot { 16.0 } else { 14.0 };
+                        g.fill_round(rect(cx - d / 2.0, cy - d / 2.0, d, d), d / 2.0, rgb(colour));
+                        if on {
+                            g.outline_round(rect(cx - 10.0, cy - 10.0, 20.0, 20.0), 10.0, rgb(raised.text), 1.5);
+                        }
+                    }
+                    y += MENU_SWATCHES;
                     continue;
                 }
                 Entry::Item(it) => it,
