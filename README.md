@@ -16,7 +16,7 @@ it keeps itself up to date.
 
 ---
 
-<img src="brand/screenshots/readme-fit.jpg" alt="A photo in Looker" width="650">
+<img src="brand/screenshots/readme-fit.jpg" alt="A photo in Looker" width="700">
 
 ## File explorer
 
@@ -27,7 +27,7 @@ it keeps itself up to date.
 - Move, copy, rename, delete and new folder, with undo. Drag onto folders and tabs, or out to other apps.
 - Favourites and colour tags.
 
-<img src="brand/screenshots/readme-explorer.jpg" alt="Browse mode: tabs, the sidebar and the file list" width="650">
+<img src="brand/screenshots/readme-explorer.jpg" alt="Browse mode: tabs, the sidebar and the file list" width="700">
 
 ## Viewer
 
@@ -38,7 +38,7 @@ it keeps itself up to date.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 
-<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="650">
+<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
 
 ## Formats
 
