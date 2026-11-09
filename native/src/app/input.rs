@@ -199,6 +199,15 @@ impl App {
                     if self.explorer.row_drag.is_some() && matches!(self.pressed, Some(Hit::ExplorerRow(_))) {
                         self.explorer_row_drag(x, y);
                     }
+                    if self.explorer.header_drag.is_some() {
+                        self.header_drag_move(x);
+                    }
+                    if self.explorer.col_resize.is_some() {
+                        self.col_edge_drag(x);
+                    }
+                    if self.explorer.thumb_drag.is_some() {
+                        self.thumb_move(y);
+                    }
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
                     }
@@ -232,7 +241,7 @@ impl App {
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
-                        Some(Hit::InfoGrip | Hit::ExplorerGrip) => IDC_SIZEWE,
+                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_)) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
@@ -271,7 +280,11 @@ impl App {
                             | Hit::ColHeader(_)
                             | Hit::ExplorerFilterClear
                             | Hit::SideRow(_)
-                            | Hit::SideChevron(_),
+                            | Hit::SideChevron(_)
+                            | Hit::CrumbPopupRow(_)
+                            | Hit::CrumbPopupUp
+                            | Hit::CrumbPopupClose
+                            | Hit::PathClear,
                         ) => IDC_HAND,
                         _ => IDC_ARROW,
                     };
@@ -303,8 +316,12 @@ impl App {
                     if h == Some(Hit::DialogField) {
                         self.field_press(x, false);
                     }
-                    if let Some(Hit::ExplorerRow(i)) = h {
-                        self.explorer_row_press(i, x, y);
+                    match h {
+                        Some(Hit::ExplorerRow(i)) => self.explorer_row_press(i, x, y),
+                        Some(Hit::ColHeader(i)) => self.header_press(i as usize, x),
+                        Some(Hit::ColEdge(i)) => self.col_edge_press(i as usize, x),
+                        Some(Hit::ExplorerThumb) => self.thumb_press(y),
+                        _ => {}
                     }
                     match h {
                         Some(Hit::ExplorerFilter) => {
@@ -333,7 +350,9 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release();
+                    let dropped = self.explorer_row_release() | self.header_release();
+                    self.col_edge_release();
+                    self.explorer.thumb_drag = None;
                     let _ = ReleaseCapture();
                     let (x, y) = self.dip_from_lparam(lp);
                     let pressed = self.pressed.take();
@@ -355,13 +374,13 @@ impl App {
                                 self.explorer.sidebar_open = !self.explorer.sidebar_open;
                             }
                             Some(Hit::ExplorerBrowse) => self.toggle_browse(),
-                            Some(Hit::CrumbChevron(i)) => self.crumb_folders(i, r.unwrap_or_default()),
+                            Some(Hit::CrumbChevron(i)) => self.crumb_popup(i + 1, r.unwrap_or_default()),
+                            Some(Hit::CrumbPopupRow(i)) => self.popup_pick(i),
+                            Some(Hit::CrumbPopupUp) => self.popup_up(),
+                            Some(Hit::CrumbPopupClose) => self.close_popup(),
+                            Some(Hit::PathClear) => self.popup_clear(),
                             Some(Hit::CrumbArea) => self.explorer_edit_path(),
-                            Some(Hit::ColHeader(c)) => {
-                                if let Some(f) = explorer_view::Col::index(c).and_then(|c| c.sort()) {
-                                    self.sort_by_column(f);
-                                }
-                            }
+                            Some(Hit::ColHeader(c)) => self.header_click(c as usize),
                             Some(Hit::ExplorerFilterClear) => {
                                 self.explorer.filter.edit.clear();
                                 self.explorer_filter_changed();
@@ -421,6 +440,13 @@ impl App {
                     }
                     None
                 }
+                WM_MBUTTONUP if self.dialog.is_none() && self.menu.is_none() && !self.page_open() => {
+                    let (x, y) = self.dip_from_lparam(lp);
+                    if let Some(Hit::ColHeader(i)) = self.hit(x, y) {
+                        self.col_close(i as usize);
+                    }
+                    Some(LRESULT(0))
+                }
                 WM_RBUTTONUP => {
                     if self.dialog.is_some() || self.page_open() {
                         return Some(LRESULT(0));
@@ -454,10 +480,14 @@ impl App {
                             self.close_menu();
                             self.sidebar_menu(i, x, y);
                         }
+                        Some(Hit::ColHeader(i) | Hit::ColEdge(i)) => {
+                            self.close_menu();
+                            self.column_menu(i as usize, x, y);
+                        }
                         Some(Hit::Crumb(i)) => {
                             self.close_menu();
                             let r = self.hits.rect_of(Hit::Crumb(i)).unwrap_or_default();
-                            self.crumb_folders(i, r);
+                            self.crumb_popup(i, r);
                         }
                         Some(Hit::Viewport) | Some(Hit::MenuSurface) | Some(Hit::MenuItem(_)) if self.viewer.current.is_some() || self.placeholder.is_some() => {
                             self.open_context_menu(x, y);
@@ -478,6 +508,10 @@ impl App {
                     }
                     if self.hit(x, y) == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_reset();
+                        return Some(LRESULT(0));
+                    }
+                    if let Some(Hit::ColEdge(i)) = self.hit(x, y) {
+                        self.col_fit(i as usize);
                         return Some(LRESULT(0));
                     }
                     if let Some(Hit::ExplorerRow(i)) = self.hit(x, y) {
@@ -515,6 +549,9 @@ impl App {
                     if self.explorer.row_drag.take().is_some() {
                         self.invalidate();
                     }
+                    self.explorer.header_drag = None;
+                    self.explorer.thumb_drag = None;
+                    self.col_edge_release();
                     self.pan_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
@@ -540,6 +577,10 @@ impl App {
                     }
                     if matches!(self.hit(x, y), Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip)) {
                         self.scroll_strip(delta as f32);
+                        return Some(LRESULT(0));
+                    }
+                    if matches!(self.hit(x, y), Some(Hit::CrumbPopup | Hit::CrumbPopupRow(_) | Hit::ExplorerPath)) {
+                        self.scroll_popup(delta as f32);
                         return Some(LRESULT(0));
                     }
                     if matches!(self.hit(x, y), Some(Hit::Sidebar | Hit::SideRow(_) | Hit::SideChevron(_))) {
@@ -770,8 +811,8 @@ impl App {
                     Some(LRESULT(0))
                 }
                 crate::explorer::WM_DIMENSIONS => {
-                    let d = Box::from_raw(lp.0 as *mut Vec<(PathBuf, u64, Option<(u32, u32)>)>);
-                    self.on_dims(*d);
+                    let d = Box::from_raw(lp.0 as *mut Vec<(PathBuf, explorer::Meta)>);
+                    self.on_meta(*d);
                     Some(LRESULT(0))
                 }
                 crate::explorer::WM_EXPLORER_CHANGED => {

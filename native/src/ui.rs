@@ -654,6 +654,8 @@ pub enum Entry<A> {
     Separator,
     /// A row of colour swatches (Transient's colour tags): each an action, its colour, and whether it's on.
     Swatches(Vec<(A, u32, bool)>),
+    /// A group's heading, not clickable (the column menu's File, Date and time, Image).
+    Heading(String),
 }
 
 const MENU_SWATCHES: f32 = 30.0;
@@ -664,6 +666,7 @@ fn entry_h<A>(e: &Entry<A>) -> f32 {
         Entry::Item(_) => MENU_ROW,
         Entry::Separator => MENU_SEP,
         Entry::Swatches(_) => MENU_SWATCHES,
+        Entry::Heading(_) => MENU_ROW,
     }
 }
 
@@ -839,6 +842,11 @@ impl<A: Copy> Menu<A> {
                 Entry::Separator => {
                     g.hline(panel.left + 1.0, g.snap((y + MENU_SEP / 2.0).floor()), self.width - 2.0, rgb(raised.divider));
                     y += MENU_SEP;
+                    continue;
+                }
+                Entry::Heading(text) => {
+                    label(g, &text.to_uppercase(), &g.fonts.overline, rect(panel.left + MENU_LABEL_X, y + 2.0, self.width - MENU_LABEL_X - 14.0, MENU_ROW), rgb(raised.label), Align::Left);
+                    y += MENU_ROW;
                     continue;
                 }
                 Entry::Swatches(s) => {

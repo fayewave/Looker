@@ -9,10 +9,10 @@
 
 use std::collections::HashSet;
 
-use super::explorer::{EField, SideTarget, SubFor};
+use super::explorer::{EField, SideTarget};
 use super::menus::{Action, MenuKind, check};
 use super::*;
-use crate::explorer::{self, Group, Kind, Place};
+use crate::explorer::{self, ColKind, Group, Kind, Place};
 use crate::fileops::{self, Done, Origin, Transfer};
 use crate::textedit::TextEdit;
 use crate::ui::{Entry, Menu, MenuItem, TextField};
@@ -486,35 +486,6 @@ impl App {
         self.show_menu(MenuKind::Side(p), e, x, y);
     }
 
-    /// A crumb's folders (its chevron, or a right-click on it): listed, then shown under it.
-    pub(super) fn crumb_folders(&mut self, i: usize, anchor: D2D_RECT_F) {
-        let Some(place) = self.explorer.place.clone() else { return };
-        let Some(c) = explorer::crumbs(&place).get(i).cloned() else { return };
-        match c {
-            Place::Folder(f) => self.list_subfolders(f, SubFor::Crumb(anchor)),
-            Place::Computer => {
-                let drives = self.explorer.places.as_ref().map(|(_, d)| d.clone()).unwrap_or_else(explorer::drives);
-                self.open_crumb_folders(drives.into_iter().map(|d| d.path).collect(), anchor);
-            }
-            Place::Collection(_) => {}
-        }
-    }
-
-    pub(super) fn open_crumb_folders(&mut self, children: Vec<PathBuf>, anchor: D2D_RECT_F) {
-        if children.is_empty() {
-            self.show_toast("No folders in there", true);
-            return;
-        }
-        let (_, h) = self.size_dip();
-        let fit = (((h - anchor.bottom - 24.0) / 25.0).floor() as usize).clamp(4, 40);
-        let shown: Vec<PathBuf> = children.into_iter().take(fit).collect();
-        let e = shown.iter().enumerate().map(|(i, p)| {
-            let glyph = if p.parent().is_none() { 0xEDA2 } else { 0xE8B7 };
-            item(Action::GoFolder(i), glyph, &explorer::folder_name(p), None, true)
-        }).collect();
-        self.show_menu_below(MenuKind::CrumbFolders(shown), e, anchor);
-    }
-
     /// The History drop-down: Back and Forward's places, oldest first, the current one ticked.
     pub(super) fn explorer_history_menu(&mut self, anchor: D2D_RECT_F) {
         let (places, at) = self.explorer.history.entries();
@@ -532,6 +503,31 @@ impl App {
         e.push(Entry::Separator);
         e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.settings.explorer_other_files));
         self.show_menu_below(MenuKind::Group, e, anchor);
+    }
+
+    /// A column header's menu (right-click), as Transient's: move it, size it, close it, then every column
+    /// by group, ticked while it shows.
+    pub(super) fn column_menu(&mut self, idx: usize, x: f32, y: f32) {
+        let cols = self.settings.explorer_columns.clone();
+        let Some(&(c, _)) = cols.get(idx) else { return };
+        let mut e = vec![
+            item(Action::ColShift(false), 0xE76B, "Shift column left", None, idx > 0),
+            item(Action::ColShift(true), 0xE76C, "Shift column right", None, idx + 1 < cols.len()),
+            item(Action::ColFit, 0xE9A6, "Size column to fit", Some("Double-click edge"), c != ColKind::Name),
+            item(Action::ColClose, 0xE711, "Close column", Some("Middle-click"), c != ColKind::Name),
+            Entry::Separator,
+            item(Action::ColFitAll, 0xE9A6, "Size all columns to fit", None, true),
+            item(Action::ColRestore, 0xE7A7, "Restore default columns", None, true),
+        ];
+        for (name, kinds) in ColKind::GROUPS {
+            e.push(Entry::Separator);
+            e.push(Entry::Heading(name.into()));
+            for &k in kinds {
+                let shown = cols.iter().any(|(s, _)| *s == k);
+                e.push(Entry::Item(MenuItem { action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name }));
+            }
+        }
+        self.show_menu(MenuKind::Columns(idx), e, x, y);
     }
 
     /// Bookmarks the folder showing (or takes it off).
@@ -559,11 +555,6 @@ impl App {
         };
         let first = paths.first().cloned();
         match (a, kind) {
-            (Action::GoFolder(i), MenuKind::CrumbFolders(list)) => {
-                if let Some(p) = list.get(i) {
-                    self.explorer_crumb(Place::Folder(p.clone()));
-                }
-            }
             (Action::HistoryJump(i), _) => self.explorer_history_jump(i),
             (Action::Group(g), _) => self.set_explorer_group(g),
             (Action::OpenItem, MenuKind::Side(p)) => self.explorer_crumb(p),
@@ -609,6 +600,12 @@ impl App {
             (Action::NewFolder, _) => self.explorer_new_folder(),
             (Action::SelectAll, _) => self.explorer_select_all(),
             (Action::Refresh, _) => self.explorer_refresh(),
+            (Action::ColShift(right), MenuKind::Columns(i)) => self.col_shift(i, right),
+            (Action::ColFit, MenuKind::Columns(i)) => self.col_fit(i),
+            (Action::ColClose, MenuKind::Columns(i)) => self.col_close(i),
+            (Action::ColFitAll, _) => self.col_fit_all(),
+            (Action::ColRestore, _) => self.col_restore(),
+            (Action::ColToggle(k), _) => self.col_toggle(k),
             (Action::Undo, _) => self.explorer_undo(),
             (Action::Redo, _) => self.explorer_redo(),
             (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),

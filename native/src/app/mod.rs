@@ -184,7 +184,16 @@ enum Hit {
     CrumbMore,
     CrumbArea,
     ExplorerPath,
+    /// Transient's crumb popup: its panel, a row, Up, close, the path box's clear button.
+    CrumbPopup,
+    CrumbPopupRow(usize),
+    CrumbPopupUp,
+    CrumbPopupClose,
+    PathClear,
+    /// A column's header and its right edge, by index in `Settings::explorer_columns`; the list's scrollbar.
     ColHeader(u8),
+    ColEdge(u8),
+    ExplorerThumb,
     ExplorerFilter,
     ExplorerFilterClear,
     ExplorerRename,

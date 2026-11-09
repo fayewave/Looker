@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::*;
-use crate::explorer::{self, Collection, Group, History, Kind, Place, Row, Watcher};
+use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, Watcher};
 use crate::motion::Ease;
 use crate::settings::{EXPLORER_WIDTH, INFO_MAX, INFO_MIN};
 use crate::textedit::TextEdit;
@@ -29,8 +29,10 @@ pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
 const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
-/// Browse mode leaves the photo at least this much of the window (or 30 % of it).
+/// Browse mode leaves the photo at least this much of the window (or 30 % of it), by default.
 const PREVIEW_MIN: f32 = 360.0;
+/// Dragging browse mode's edge leaves the photo at least this much.
+const PREVIEW_DRAGGED_MIN: f32 = 200.0;
 /// Changes on disk often come in bursts (a copy writes, renames, sets times): re-list once they settle.
 pub(super) const REFRESH_MS: u32 = 150;
 /// Moving this far with a row pressed starts dragging it.
@@ -48,13 +50,34 @@ pub(super) struct Listed {
 pub(super) enum SubFor {
     /// A node of the sidebar's trees, by its key.
     Tree(String),
-    /// A crumb's menu, hanging under this rect.
-    Crumb(D2D_RECT_F),
+    /// The crumb popup's listing, by its serial and the folder.
+    Popup(usize, PathBuf),
 }
 
 pub(super) struct Subfolders {
     pub of: SubFor,
     pub children: Vec<PathBuf>,
+    /// The files Looker can open (the popup lists those after the folders).
+    pub files: Vec<PathBuf>,
+}
+
+/// Transient's crumb popup: under a crumb, the folder's path in a box (selected, to type over), and its
+/// folders and photos below. Typing a path lists the folder it names, what's typed after its last separator
+/// filtering it; Up / Down move, Enter goes, Tab steps into the folder, Escape closes.
+pub(super) struct CrumbPopup {
+    pub field: TextField,
+    /// The crumb it hangs from.
+    pub anchor: D2D_RECT_F,
+    /// The folder listed in `entries` (None: This PC, the drives), and the listing on its way.
+    pub listed: Option<PathBuf>,
+    pub serial: usize,
+    /// Each entry and whether it's a folder.
+    pub entries: Vec<(PathBuf, bool)>,
+    /// The entries the typed text lets through.
+    pub shown: Vec<usize>,
+    pub cursor: Option<usize>,
+    pub scroll: f32,
+    pub max_scroll: f32,
 }
 
 /// A text box of the explorer's with the keyboard.
@@ -95,6 +118,26 @@ pub(super) struct SideItem {
     pub expanded: bool,
 }
 
+/// What a lazy column knows about a file, as of its write time `stamp`.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Meta {
+    pub stamp: u64,
+    pub dims: Option<(u32, u32)>,
+    pub taken: Option<crate::metadata::ExifTime>,
+    pub camera: Option<String>,
+    pub lens: Option<String>,
+}
+
+/// A column header dragged along the headers.
+pub(super) struct HeaderDrag {
+    pub idx: usize,
+    pub start_x: f32,
+    pub x: f32,
+    pub active: bool,
+    /// Where it would go: before the shown column at this position.
+    pub insert: usize,
+}
+
 pub(super) struct Explorer {
     pub(super) place: Option<Place>,
     pub(super) rows: Vec<Row>,
@@ -126,7 +169,7 @@ pub(super) struct Explorer {
     pub(super) field: Option<EField>,
     pub(super) filter: TextField,
     pub(super) rename: Option<(PathBuf, TextField)>,
-    pub(super) path_edit: Option<TextField>,
+    pub(super) path_edit: Option<CrumbPopup>,
     /// A folder just made: its rename opens once it's listed.
     pub(super) pending_rename: Option<PathBuf>,
     pub row_drag: Option<RowDrag>,
@@ -140,10 +183,18 @@ pub(super) struct Explorer {
     pub(super) children: HashMap<String, Vec<PathBuf>>,
     pub(super) expanded: HashSet<String>,
     tree_pending: HashSet<String>,
-    /// Image sizes for the Dimensions column, by norm key: the write time read at, and the size.
-    pub(super) dims: HashMap<String, (u64, Option<(u32, u32)>)>,
-    dims_pending: HashSet<String>,
-    dims_tx: Option<Sender<Vec<(PathBuf, u64)>>>,
+    /// What the lazy columns show, read from the files themselves (size, EXIF), by norm key.
+    pub(super) meta: HashMap<String, Meta>,
+    meta_pending: HashSet<String>,
+    meta_tx: Option<Sender<Vec<(PathBuf, u64)>>>,
+    /// The list sorted by a column the toolbar's sort doesn't have (Type, Date taken…), and descending.
+    pub(super) xsort: Option<(ColKind, bool)>,
+    /// A column header being dragged to a new place.
+    pub(super) header_drag: Option<HeaderDrag>,
+    /// A column's right edge being dragged: the column, where the press was, its width then.
+    pub(super) col_resize: Option<(usize, f32, f32)>,
+    /// The scrollbar being dragged: the pointer's offset from the thumb's top.
+    pub(super) thumb_drag: Option<f32>,
     /// 0 the card, 1 browse mode, eased between.
     pub(super) browse: Ease<1>,
     pub(super) tags: crate::tags::Tags,
@@ -190,9 +241,13 @@ impl Explorer {
             children: HashMap::new(),
             expanded: HashSet::new(),
             tree_pending: HashSet::new(),
-            dims: HashMap::new(),
-            dims_pending: HashSet::new(),
-            dims_tx: None,
+            meta: HashMap::new(),
+            meta_pending: HashSet::new(),
+            meta_tx: None,
+            xsort: None,
+            header_drag: None,
+            col_resize: None,
+            thumb_drag: None,
             browse: Ease::at([0.0]),
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
@@ -250,7 +305,39 @@ impl Explorer {
 
     pub fn resort(&mut self, sort: crate::folder::Sort, group: Group) {
         explorer::sort_rows(&mut self.rows, sort, group);
+        self.sort_local(group);
         self.refilter();
+    }
+
+    /// The column sort the toolbar's doesn't have, over the toolbar's order (which breaks its ties): rows
+    /// whose value isn't known (yet) go last either way; folders stay grouped.
+    fn sort_local(&mut self, group: Group) {
+        let Some((c, desc)) = self.xsort else { return };
+        let keys: Vec<SortKey> = self.rows.iter().map(|r| sort_key(r, c, self.meta.get(&explorer::norm(&r.path)))).collect();
+        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        let folder_rank = |r: &Row| match (group, r.is_folder()) {
+            (Group::FoldersFirst, true) | (Group::FilesFirst, false) => 0,
+            (Group::Mixed, _) => 0,
+            _ => 1,
+        };
+        order.sort_by(|&a, &b| {
+            let (ra, rb) = (&self.rows[a], &self.rows[b]);
+            folder_rank(ra).cmp(&folder_rank(rb)).then_with(|| {
+                let (ka, kb) = (&keys[a], &keys[b]);
+                match (ka, kb) {
+                    (SortKey::None, SortKey::None) => std::cmp::Ordering::Equal,
+                    (SortKey::None, _) => std::cmp::Ordering::Greater,
+                    (_, SortKey::None) => std::cmp::Ordering::Less,
+                    _ => {
+                        let o = ka.cmp(kb);
+                        if desc { o.reverse() } else { o }
+                    }
+                }
+            })
+        });
+        let rows = std::mem::take(&mut self.rows);
+        let mut slots: Vec<Option<Row>> = rows.into_iter().map(Some).collect();
+        self.rows = order.into_iter().filter_map(|i| slots[i].take()).collect();
     }
 
     /// The folder the explorer is listing, if it's a folder (not This PC or a collection).
@@ -270,9 +357,15 @@ impl App {
         if k <= 0.0 {
             return self.settings.explorer_width;
         }
-        let (w, _) = self.size_dip();
-        let wide = (w - PREVIEW_MIN.max(w * 0.3)).max(self.settings.explorer_width);
+        let wide = self.browse_width();
         self.settings.explorer_width + (wide - self.settings.explorer_width) * k
+    }
+
+    /// Browse mode's width: as its edge was last dragged, else all but a preview of 360 DIPs (or 30 %).
+    fn browse_width(&self) -> f32 {
+        let (w, _) = self.size_dip();
+        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { w - PREVIEW_MIN.max(w * 0.3) };
+        wide.min(w - PREVIEW_DRAGGED_MIN).max(self.settings.explorer_width)
     }
 
     pub(super) fn browsing(&self) -> bool {
@@ -792,7 +885,7 @@ impl App {
         match e.field? {
             EField::Filter => Some(&mut e.filter),
             EField::Rename => e.rename.as_mut().map(|(_, f)| f),
-            EField::Path => e.path_edit.as_mut(),
+            EField::Path => e.path_edit.as_mut().map(|p| &mut p.field),
         }
     }
 
@@ -888,16 +981,20 @@ impl App {
             (EField::Filter, VK_DOWN) => self.explorer_move(1),
             (EField::Rename, VK_ESCAPE) => self.explorer_finish_rename(false),
             (EField::Rename, VK_RETURN) => self.explorer_finish_rename(true),
-            (EField::Path, VK_ESCAPE) => {
-                self.explorer.path_edit = None;
-                self.explorer_blur_field();
-            }
-            (EField::Path, VK_RETURN) => self.explorer_go_typed_path(),
+            (EField::Path, VK_ESCAPE) => self.close_popup(),
+            (EField::Path, VK_RETURN) => self.popup_go(),
+            (EField::Path, VK_UP) => self.popup_move(-1),
+            (EField::Path, VK_DOWN) => self.popup_move(1),
+            (EField::Path, VK_TAB) => self.popup_step_in(),
             _ => {
                 let before = self.explorer_field_mut().map(|t| t.edit.text());
                 let used = self.field_key(vk, shift, ctrl);
-                if f == EField::Filter && self.explorer_field_mut().map(|t| t.edit.text()) != before {
-                    self.explorer_filter_changed();
+                if self.explorer_field_mut().map(|t| t.edit.text()) != before {
+                    match f {
+                        EField::Filter => self.explorer_filter_changed(),
+                        EField::Path => self.popup_typed(),
+                        EField::Rename => {}
+                    }
                 }
                 return used;
             }
@@ -908,30 +1005,226 @@ impl App {
 
     /// A typed character for the explorer's box.
     pub(super) fn explorer_char(&mut self, unit: u16) {
-        let filter = self.explorer.field == Some(EField::Filter);
+        let field = self.explorer.field;
         let Some(t) = self.explorer_field_mut() else { return };
         t.edit.type_unit(unit);
-        if filter {
-            self.explorer_filter_changed();
+        match field {
+            Some(EField::Filter) => self.explorer_filter_changed(),
+            Some(EField::Path) => self.popup_typed(),
+            _ => {}
         }
         self.restart_caret();
     }
 
-    /// Clicking the last crumb (or the empty end of the crumbs): the path as text, selected, to type over.
+    /// Clicking the last crumb (or the empty end of the crumbs): the popup for the folder showing.
     pub(super) fn explorer_edit_path(&mut self) {
-        let text = match &self.explorer.place {
-            Some(Place::Folder(p)) => p.to_string_lossy().into_owned(),
-            _ => String::new(),
-        };
+        let Some(anchor) = self.hits.rect_of(Hit::CrumbArea) else { return };
+        let all = self.explorer.place.as_ref().map(explorer::crumbs).unwrap_or_default();
+        let last = all.len().saturating_sub(1);
+        let anchor = self.hits.rect_of(Hit::Crumb(last)).unwrap_or(anchor);
+        let dir = self.explorer.folder();
+        self.open_popup(dir, anchor);
+    }
+
+    /// The popup for crumb `i` (its chevron, a right-click on it): peeks into that folder without leaving
+    /// the one showing.
+    pub(super) fn crumb_popup(&mut self, i: usize, anchor: D2D_RECT_F) {
+        let Some(place) = self.explorer.place.clone() else { return };
+        match explorer::crumbs(&place).get(i) {
+            Some(Place::Folder(f)) => self.open_popup(Some(f.clone()), anchor),
+            Some(Place::Computer) => self.open_popup(None, anchor),
+            _ => {}
+        }
+    }
+
+    fn open_popup(&mut self, dir: Option<PathBuf>, anchor: D2D_RECT_F) {
+        self.close_menu();
+        let text = dir.as_ref().map(|d| format!("{}\\", d.to_string_lossy().trim_end_matches('\\'))).unwrap_or_default();
         let mut edit = TextEdit::new(&text);
         edit.select_all();
-        self.explorer.path_edit = Some(TextField::new(edit));
+        self.explorer.path_edit =
+            Some(CrumbPopup { field: TextField::new(edit), anchor, listed: None, serial: 0, entries: Vec::new(), shown: Vec::new(), cursor: None, scroll: 0.0, max_scroll: 0.0 });
+        self.popup_list(dir);
         self.explorer_focus_field(EField::Path);
     }
 
-    /// Enter in the path box: a folder lists; a file lists its folder with it selected; anything else stays.
+    pub(super) fn close_popup(&mut self) {
+        if self.explorer.path_edit.take().is_some() {
+            self.explorer_blur_field();
+            self.invalidate();
+        }
+    }
+
+    /// Lists a folder for the popup (This PC: the drives, at once).
+    fn popup_list(&mut self, dir: Option<PathBuf>) {
+        let Some(pp) = &mut self.explorer.path_edit else { return };
+        pp.serial += 1;
+        pp.listed = dir.clone();
+        pp.entries.clear();
+        pp.shown.clear();
+        pp.cursor = None;
+        pp.scroll = 0.0;
+        match dir {
+            None => {
+                let drives = self.explorer.places.as_ref().map(|(_, d)| d.clone()).unwrap_or_else(explorer::drives);
+                if let Some(pp) = &mut self.explorer.path_edit {
+                    pp.entries = drives.into_iter().map(|d| (d.path, true)).collect();
+                }
+                self.popup_filter();
+            }
+            Some(d) => {
+                let serial = pp.serial;
+                let hwnd = self.hwnd.0 as isize;
+                std::thread::Builder::new()
+                    .name("popup".into())
+                    .spawn(move || {
+                        let (children, files) = explorer::entries(&d);
+                        let ptr = Box::into_raw(Box::new(Subfolders { of: SubFor::Popup(serial, d), children, files }));
+                        unsafe {
+                            if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_SUBFOLDERS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+                                drop(Box::from_raw(ptr));
+                            }
+                        }
+                    })
+                    .ok();
+            }
+        }
+        self.invalidate();
+    }
+
+    /// The typed text changed: the folder it names lists (if it isn't already), the rest filters it.
+    fn popup_typed(&mut self) {
+        let Some(pp) = &self.explorer.path_edit else { return };
+        let (dir, _) = explorer::split_typed(&pp.field.edit.text());
+        let want = (!dir.is_empty()).then(|| PathBuf::from(&dir));
+        let same = match (&want, &pp.listed) {
+            (Some(a), Some(b)) => explorer::same_path(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same && want.as_ref().is_none_or(|d| d.is_dir()) {
+            self.popup_list(want);
+        } else {
+            self.popup_filter();
+        }
+    }
+
+    /// Which entries the text after the last separator lets through (all of them when nothing's typed); the
+    /// cursor goes to the first match.
+    fn popup_filter(&mut self) {
+        let Some(pp) = &mut self.explorer.path_edit else { return };
+        let (_, rest) = explorer::split_typed(&pp.field.edit.text());
+        let rest = rest.to_lowercase();
+        pp.shown = (0..pp.entries.len()).filter(|&i| rest.is_empty() || explorer::folder_name(&pp.entries[i].0).to_lowercase().contains(&rest)).collect();
+        // Names that start with it first.
+        if !rest.is_empty() {
+            let entries = &pp.entries;
+            pp.shown.sort_by_key(|&i| !explorer::folder_name(&entries[i].0).to_lowercase().starts_with(&rest));
+        }
+        pp.cursor = (!rest.is_empty() && !pp.shown.is_empty()).then_some(0);
+        pp.scroll = 0.0;
+        self.invalidate();
+    }
+
+    pub(super) fn popup_move(&mut self, d: isize) {
+        let Some(pp) = &mut self.explorer.path_edit else { return };
+        let n = pp.shown.len();
+        if n == 0 {
+            return;
+        }
+        let i = match pp.cursor {
+            None => if d > 0 { 0 } else { n - 1 },
+            Some(c) => (c as isize + d).clamp(0, n as isize - 1) as usize,
+        };
+        pp.cursor = Some(i);
+        // Kept in view.
+        let row = super::explorer_view::POPUP_ROW;
+        let view = super::explorer_view::POPUP_ROWS as f32 * row;
+        let (top, bottom) = (i as f32 * row, i as f32 * row + row);
+        if top < pp.scroll {
+            pp.scroll = top;
+        } else if bottom > pp.scroll + view {
+            pp.scroll = bottom - view;
+        }
+        self.invalidate();
+    }
+
+    /// Enter: the row under the cursor (a folder lists, a photo lists its folder with it picked), else the
+    /// typed path.
+    pub(super) fn popup_go(&mut self) {
+        let pick = self.explorer.path_edit.as_ref().and_then(|pp| pp.cursor.and_then(|c| pp.shown.get(c)).map(|&i| pp.entries[i].clone()));
+        match pick {
+            Some((p, _)) => self.popup_open(p),
+            None => self.explorer_go_typed_path(),
+        }
+    }
+
+    /// A row of the popup was clicked.
+    pub(super) fn popup_pick(&mut self, row: usize) {
+        let pick = self.explorer.path_edit.as_ref().and_then(|pp| pp.shown.get(row).map(|&i| pp.entries[i].0.clone()));
+        if let Some(p) = pick {
+            self.popup_open(p);
+        }
+    }
+
+    fn popup_open(&mut self, p: PathBuf) {
+        self.close_popup();
+        if p.is_dir() {
+            self.explorer_go(Place::Folder(p), true);
+        } else if let Some(dir) = p.parent().map(Path::to_path_buf) {
+            self.explorer_go(Place::Folder(dir), true);
+            self.explorer.came_from = Some(p.clone());
+            if crate::format::is_supported(&p) {
+                self.open_file(p);
+            }
+        }
+    }
+
+    /// Tab: into the folder under the cursor (its path typed in, listed).
+    pub(super) fn popup_step_in(&mut self) {
+        let pick = self.explorer.path_edit.as_ref().and_then(|pp| pp.cursor.and_then(|c| pp.shown.get(c)).map(|&i| pp.entries[i].clone()));
+        if let Some((p, true)) = pick {
+            self.popup_set_text(&format!("{}\\", p.to_string_lossy().trim_end_matches('\\')));
+        }
+    }
+
+    /// The popup's Up: the listed folder's parent (from a drive, This PC).
+    pub(super) fn popup_up(&mut self) {
+        let Some(pp) = &self.explorer.path_edit else { return };
+        let text = match pp.listed.as_ref().and_then(|d| d.parent()) {
+            Some(parent) => format!("{}\\", parent.to_string_lossy().trim_end_matches('\\')),
+            None => String::new(),
+        };
+        self.popup_set_text(&text);
+    }
+
+    fn popup_set_text(&mut self, text: &str) {
+        if let Some(pp) = &mut self.explorer.path_edit {
+            let mut edit = TextEdit::new(text);
+            let n = edit.units().len();
+            edit.select(n, n);
+            pp.field = TextField::new(edit);
+        }
+        self.popup_typed();
+        self.explorer.field = Some(EField::Path);
+        self.restart_caret();
+    }
+
+    pub(super) fn popup_clear(&mut self) {
+        self.popup_set_text("");
+    }
+
+    pub(super) fn scroll_popup(&mut self, delta: f32) {
+        if let Some(pp) = &mut self.explorer.path_edit {
+            pp.scroll = (pp.scroll - delta / 120.0 * 75.0).clamp(0.0, pp.max_scroll);
+            self.invalidate();
+        }
+    }
+
+    /// Enter with no row under the cursor: a folder lists; a file lists its folder with it selected;
+    /// "This PC" (or nothing) the drives.
     fn explorer_go_typed_path(&mut self) {
-        let text = self.explorer.path_edit.as_ref().map(|f| f.edit.text()).unwrap_or_default();
+        let text = self.explorer.path_edit.as_ref().map(|p| p.field.edit.text()).unwrap_or_default();
         let text = text.trim().trim_matches('"');
         let expanded = if let Some(rest) = text.strip_prefix('~') {
             std::env::var("USERPROFILE").map(|h| format!("{h}{rest}")).unwrap_or_else(|_| text.to_string())
@@ -939,21 +1232,10 @@ impl App {
             text.to_string()
         };
         let p = PathBuf::from(&expanded);
-        if p.is_dir() {
-            self.explorer.path_edit = None;
-            self.explorer_blur_field();
-            self.explorer_go(Place::Folder(p), true);
-        } else if p.is_file() {
-            self.explorer.path_edit = None;
-            self.explorer_blur_field();
-            if let Some(dir) = p.parent() {
-                self.explorer.came_from = None;
-                self.explorer_go(Place::Folder(dir.to_path_buf()), true);
-                self.explorer.came_from = Some(p);
-            }
+        if p.exists() {
+            self.popup_open(p);
         } else if text.eq_ignore_ascii_case(explorer::COMPUTER_NAME) || text.is_empty() {
-            self.explorer.path_edit = None;
-            self.explorer_blur_field();
+            self.close_popup();
             self.explorer_go(Place::Computer, true);
         } else {
             self.show_toast("Couldn't find that folder", false);
@@ -1040,7 +1322,7 @@ impl App {
             .name("subfolders".into())
             .spawn(move || {
                 let children = explorer::subfolders(&dir);
-                let ptr = Box::into_raw(Box::new(Subfolders { of, children }));
+                let ptr = Box::into_raw(Box::new(Subfolders { of, children, files: Vec::new() }));
                 unsafe {
                     if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_SUBFOLDERS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
                         drop(Box::from_raw(ptr));
@@ -1057,7 +1339,14 @@ impl App {
                 self.explorer.children.insert(key, s.children);
                 self.invalidate();
             }
-            SubFor::Crumb(anchor) => self.open_crumb_folders(s.children, anchor),
+            SubFor::Popup(serial, dir) => {
+                let Some(pp) = &mut self.explorer.path_edit else { return };
+                if pp.serial != serial || pp.listed.as_ref().is_none_or(|l| !explorer::same_path(l, &dir)) {
+                    return;
+                }
+                pp.entries = s.children.into_iter().map(|p| (p, true)).chain(s.files.into_iter().map(|p| (p, false))).collect();
+                self.popup_filter();
+            }
         }
     }
 
@@ -1074,29 +1363,29 @@ impl App {
         }
     }
 
-    // --- Dimensions ---------------------------------------------------------------------------------
+    // --- Lazy columns -------------------------------------------------------------------------------
 
-    /// Asks for the sizes of the image rows on screen that aren't known yet (read off the UI thread, never
-    /// from online-only files).
-    pub(super) fn want_dims(&mut self, rows: &[(PathBuf, u64, bool)]) {
+    /// Asks for what the lazy columns show (the size from the image header, camera and date from EXIF) for
+    /// the rows on screen that aren't known yet: read off the UI thread, never from online-only files.
+    pub(super) fn want_meta(&mut self, rows: &[(PathBuf, u64, bool)]) {
         let e = &mut self.explorer;
         let mut batch = Vec::new();
         for (p, stamp, cloud) in rows {
             let k = explorer::norm(p);
-            if *cloud || e.dims.get(&k).is_some_and(|(s, _)| s == stamp) || e.dims_pending.contains(&k) {
+            if *cloud || e.meta.get(&k).is_some_and(|m| m.stamp == *stamp) || e.meta_pending.contains(&k) {
                 continue;
             }
-            e.dims_pending.insert(k);
+            e.meta_pending.insert(k);
             batch.push((p.clone(), *stamp));
         }
         if batch.is_empty() {
             return;
         }
-        if e.dims_tx.is_none() {
+        if e.meta_tx.is_none() {
             let (tx, rx) = std::sync::mpsc::channel::<Vec<(PathBuf, u64)>>();
             let hwnd = self.hwnd.0 as isize;
             std::thread::Builder::new()
-                .name("dimensions".into())
+                .name("explorer-meta".into())
                 .spawn(move || {
                     unsafe {
                         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
@@ -1105,8 +1394,17 @@ impl App {
                         windows::Win32::System::Com::CoCreateInstance(&windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2, None, windows::Win32::System::Com::CLSCTX_INPROC_SERVER).ok()
                     };
                     while let Ok(batch) = rx.recv() {
-                        let out: Vec<(PathBuf, u64, Option<(u32, u32)>)> =
-                            batch.into_iter().map(|(p, s)| { let d = f.as_ref().and_then(|f| explorer::dimensions(f, &p)); (p, s, d) }).collect();
+                        let out: Vec<(PathBuf, Meta)> = batch
+                            .into_iter()
+                            .map(|(p, stamp)| {
+                                let dims = f.as_ref().and_then(|f| explorer::dimensions(f, &p));
+                                let exif = crate::metadata::read(&p);
+                                let camera = exif.as_ref().and_then(|x| x.model.clone().or_else(|| x.make.clone()));
+                                let lens = exif.as_ref().and_then(|x| x.lens.clone());
+                                let taken = exif.as_ref().and_then(|x| x.taken);
+                                (p, Meta { stamp, dims, taken, camera, lens })
+                            })
+                            .collect();
                         let ptr = Box::into_raw(Box::new(out));
                         unsafe {
                             if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_DIMENSIONS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
@@ -1116,40 +1414,235 @@ impl App {
                     }
                 })
                 .ok();
-            e.dims_tx = Some(tx);
+            e.meta_tx = Some(tx);
         }
-        if let Some(tx) = &e.dims_tx {
+        if let Some(tx) = &e.meta_tx {
             let _ = tx.send(batch);
         }
     }
 
-    pub(super) fn on_dims(&mut self, got: Vec<(PathBuf, u64, Option<(u32, u32)>)>) {
-        for (p, s, d) in got {
+    pub(super) fn on_meta(&mut self, got: Vec<(PathBuf, Meta)>) {
+        for (p, m) in got {
             let k = explorer::norm(&p);
-            self.explorer.dims_pending.remove(&k);
-            self.explorer.dims.insert(k, (s, d));
+            self.explorer.meta_pending.remove(&k);
+            self.explorer.meta.insert(k, m);
+        }
+        // Sorted by one of these columns: the rows take their places as the values come in.
+        if self.explorer.xsort.is_some_and(|(c, _)| c.lazy()) {
+            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
         }
         self.invalidate();
     }
 
-    // --- Resize grip (dragging right = wider) -------------------------------------------------------
+    // --- Columns ------------------------------------------------------------------------------------
 
-    pub(super) fn explorer_grip_press(&mut self, x: f32) {
-        self.explorer.drag = Some((x, self.settings.explorer_width));
+    fn save_columns(&mut self) {
+        settings::save(&self.settings);
+        self.invalidate();
     }
 
-    pub(super) fn explorer_grip_drag(&mut self, x: f32) {
-        let Some((x0, w0)) = self.explorer.drag else { return };
-        if self.browsing() {
+    /// A header was clicked: Name, Date modified and Size sort the toolbar's way (the viewer follows); the
+    /// others sort the list alone. Again flips the direction.
+    pub(super) fn header_click(&mut self, idx: usize) {
+        let Some(&(c, _)) = self.settings.explorer_columns.get(idx) else { return };
+        if let Some(f) = c.shared_sort() {
+            let was_local = self.explorer.xsort.take().is_some();
+            if was_local && self.settings.sort.field != f {
+                self.set_sort(crate::folder::Sort { field: f, descending: false });
+            } else if was_local {
+                self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+            } else {
+                self.sort_by_column(f);
+            }
+        } else {
+            let desc = matches!(self.explorer.xsort, Some((k, d)) if k == c && !d);
+            self.explorer.xsort = Some((c, desc));
+            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+        }
+        self.invalidate();
+    }
+
+    pub(super) fn header_press(&mut self, idx: usize, x: f32) {
+        self.explorer.header_drag = Some(HeaderDrag { idx, start_x: x, x, active: false, insert: idx });
+    }
+
+    /// Dragging a header: past a few DIPs it lifts, and the gap it would go into follows the pointer.
+    pub(super) fn header_drag_move(&mut self, x: f32) {
+        let shown: Vec<(usize, D2D_RECT_F)> =
+            (0..self.settings.explorer_columns.len()).filter_map(|i| self.hits.rect_of(Hit::ColHeader(i as u8)).map(|r| (i, r))).collect();
+        let Some(d) = &mut self.explorer.header_drag else { return };
+        d.x = x;
+        if !d.active && (x - d.start_x).abs() > DRAG_START {
+            d.active = true;
+        }
+        if d.active {
+            d.insert = shown.iter().filter(|(_, r)| (r.left + r.right) / 2.0 < x).map(|(i, _)| i + 1).max().unwrap_or(0);
+        }
+        self.invalidate();
+    }
+
+    /// The button came up on a header: a drag moves the column. True when it was a drag (not a click).
+    pub(super) fn header_release(&mut self) -> bool {
+        let Some(d) = self.explorer.header_drag.take() else { return false };
+        if !d.active {
+            return false;
+        }
+        let cols = &mut self.settings.explorer_columns;
+        if d.idx < cols.len() {
+            let c = cols.remove(d.idx);
+            let at = if d.insert > d.idx { d.insert - 1 } else { d.insert };
+            cols.insert(at.min(cols.len()), c);
+        }
+        self.save_columns();
+        true
+    }
+
+    pub(super) fn col_edge_press(&mut self, idx: usize, x: f32) {
+        if let Some(&(_, w)) = self.settings.explorer_columns.get(idx) {
+            self.explorer.col_resize = Some((idx, x, w));
+        }
+    }
+
+    pub(super) fn col_edge_drag(&mut self, x: f32) {
+        let Some((idx, x0, w0)) = self.explorer.col_resize else { return };
+        if let Some(c) = self.settings.explorer_columns.get_mut(idx) {
+            c.1 = (w0 + x - x0).round().clamp(40.0, 800.0);
+        }
+        self.invalidate();
+    }
+
+    pub(super) fn col_edge_release(&mut self) {
+        if self.explorer.col_resize.take().is_some() {
+            self.save_columns();
+        }
+    }
+
+    /// Size a column to its widest value (and its header) across the folder.
+    pub(super) fn col_fit(&mut self, idx: usize) {
+        let Some(&(c, _)) = self.settings.explorer_columns.get(idx) else { return };
+        if c == ColKind::Name {
             return;
         }
-        let (ww, _) = self.size_dip();
-        let cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
-        let w = (w0 + (x - x0)).clamp(INFO_MIN, cap).round();
-        if w != self.settings.explorer_width {
-            self.settings.explorer_width = w;
-            self.layout_changed();
+        let Some(g) = self.gfx.as_ref() else { return };
+        let mut w = g.measure(&wide(c.label()), &g.fonts.body) + 34.0;
+        for &i in &self.explorer.view {
+            let r = &self.explorer.rows[i];
+            let t = super::explorer_view::cell_text(r, c, self.explorer.meta.get(&explorer::norm(&r.path)));
+            w = w.max(g.measure(&wide(&t), &g.fonts.body) + 22.0);
         }
+        if let Some(col) = self.settings.explorer_columns.get_mut(idx) {
+            col.1 = w.ceil().clamp(40.0, 600.0);
+        }
+        self.save_columns();
+    }
+
+    pub(super) fn col_fit_all(&mut self) {
+        for i in 0..self.settings.explorer_columns.len() {
+            if self.settings.explorer_columns[i].0 != ColKind::Name {
+                self.col_fit(i);
+            }
+        }
+    }
+
+    pub(super) fn col_close(&mut self, idx: usize) {
+        if self.settings.explorer_columns.get(idx).is_some_and(|(c, _)| *c != ColKind::Name) {
+            let (c, _) = self.settings.explorer_columns.remove(idx);
+            if self.explorer.xsort.is_some_and(|(k, _)| k == c) {
+                self.explorer.xsort = None;
+                self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+            }
+            self.save_columns();
+        }
+    }
+
+    pub(super) fn col_shift(&mut self, idx: usize, right: bool) {
+        let cols = &mut self.settings.explorer_columns;
+        let to = if right { idx + 1 } else { idx.wrapping_sub(1) };
+        if idx < cols.len() && to < cols.len() {
+            cols.swap(idx, to);
+            self.save_columns();
+        }
+    }
+
+    pub(super) fn col_restore(&mut self) {
+        self.settings.explorer_columns = ColKind::defaults();
+        if self.explorer.xsort.take().is_some() {
+            self.explorer.resort(self.settings.sort, self.settings.explorer_group);
+        }
+        self.save_columns();
+    }
+
+    /// A column ticked in the header menu: shown at the end, or taken off.
+    pub(super) fn col_toggle(&mut self, c: ColKind) {
+        match self.settings.explorer_columns.iter().position(|(k, _)| *k == c) {
+            Some(i) => self.col_close(i),
+            None => {
+                self.settings.explorer_columns.push((c, c.default_width()));
+                self.save_columns();
+            }
+        }
+    }
+
+    // --- Scrollbar ----------------------------------------------------------------------------------
+
+    /// The list's thumb, as last drawn: its top, its height and the track it runs in.
+    fn thumb_geometry(&self) -> Option<(f32, f32, D2D_RECT_F)> {
+        let track = self.hits.rect_of(Hit::ExplorerThumb)?;
+        let view_h = track.bottom - track.top;
+        let content_h = view_h + self.explorer.max_scroll;
+        let thumb_h = (view_h * view_h / content_h.max(1.0)).max(28.0);
+        let top = track.top + (view_h - thumb_h) * self.explorer.scroll / self.explorer.max_scroll.max(1.0);
+        Some((top, thumb_h, track))
+    }
+
+    /// A press on the scrollbar: on the thumb it grabs it where it was pressed; elsewhere on the track the
+    /// thumb jumps to centre on the pointer first.
+    pub(super) fn thumb_press(&mut self, y: f32) {
+        let _ = self.explorer.scroll_now();
+        self.explorer.anim = None;
+        let Some((top, h, _)) = self.thumb_geometry() else { return };
+        let offset = if y >= top && y < top + h { y - top } else { h / 2.0 };
+        self.explorer.thumb_drag = Some(offset);
+        self.thumb_move(y);
+    }
+
+    pub(super) fn thumb_move(&mut self, y: f32) {
+        let Some(offset) = self.explorer.thumb_drag else { return };
+        let Some((_, h, track)) = self.thumb_geometry() else { return };
+        let travel = (track.bottom - track.top - h).max(1.0);
+        let k = ((y - offset - track.top) / travel).clamp(0.0, 1.0);
+        self.explorer.scroll = k * self.explorer.max_scroll;
+        self.explorer.anim = None;
+        self.invalidate();
+    }
+
+    // --- Resize grip    // --- Resize grip (dragging right = wider) -------------------------------------------------------
+
+    pub(super) fn explorer_grip_press(&mut self, x: f32) {
+        self.explorer.drag = Some((x, self.explorer_width()));
+    }
+
+    /// One drag covers both widths: the card up to its widest, then past that it becomes browse mode and goes
+    /// on widening (leaving the photo at least 200 DIPs); dragged back, it's the card again.
+    pub(super) fn explorer_grip_drag(&mut self, x: f32) {
+        let Some((x0, w0)) = self.explorer.drag else { return };
+        let (ww, _) = self.size_dip();
+        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
+        let w = (w0 + (x - x0)).round().clamp(INFO_MIN, (ww - PREVIEW_DRAGGED_MIN).max(INFO_MIN));
+        if w <= card_cap {
+            if self.browsing() {
+                self.explorer.browse = Ease::at([0.0]);
+            }
+            self.settings.explorer_width = w;
+        } else {
+            if !self.browsing() {
+                self.settings.explorer_width = card_cap;
+                self.explorer.browse = Ease::at([1.0]);
+                self.explorer.focused = true;
+            }
+            self.settings.browse_share = w / ww;
+        }
+        self.layout_changed();
     }
 
     pub(super) fn explorer_grip_release(&mut self) {
@@ -1159,8 +1652,15 @@ impl App {
         }
     }
 
+    /// Double-click: browse mode back to its default width, the card to its own.
     pub(super) fn explorer_grip_reset(&mut self) {
         self.explorer.drag = None;
+        if self.browsing() {
+            self.settings.browse_share = 0.0;
+            settings::save(&self.settings);
+            self.layout_changed();
+            return;
+        }
         self.settings.explorer_width = EXPLORER_WIDTH;
         settings::save(&self.settings);
         self.layout_changed();
@@ -1311,7 +1811,14 @@ impl App {
                     | Hit::CrumbMore
                     | Hit::CrumbArea
                     | Hit::ExplorerPath
+                    | Hit::CrumbPopup
+                    | Hit::CrumbPopupRow(_)
+                    | Hit::CrumbPopupUp
+                    | Hit::CrumbPopupClose
+                    | Hit::PathClear
                     | Hit::ColHeader(_)
+                    | Hit::ColEdge(_)
+                    | Hit::ExplorerThumb
                     | Hit::ExplorerFilter
                     | Hit::ExplorerFilterClear
                     | Hit::ExplorerRename
@@ -1326,7 +1833,7 @@ impl App {
         let keep = match self.explorer.field {
             Some(EField::Filter) => matches!(h, Some(Hit::ExplorerFilter | Hit::ExplorerFilterClear)),
             Some(EField::Rename) => h == Some(Hit::ExplorerRename),
-            Some(EField::Path) => h == Some(Hit::ExplorerPath),
+            Some(EField::Path) => matches!(h, Some(Hit::ExplorerPath | Hit::CrumbPopup | Hit::CrumbPopupRow(_) | Hit::CrumbPopupUp | Hit::CrumbPopupClose | Hit::PathClear)),
             None => true,
         };
         if !keep {
@@ -1383,6 +1890,46 @@ impl App {
             _ => return None,
         }
         Some(LRESULT(0))
+    }
+}
+
+/// A column's value for sorting.
+#[derive(PartialEq, PartialOrd)]
+enum SortKey {
+    None,
+    Num(f64),
+    Text(String),
+}
+
+impl Eq for SortKey {}
+
+impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (SortKey::Num(a), SortKey::Num(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+            (SortKey::Text(a), SortKey::Text(b)) => explorer::natural(a, b),
+            _ => self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal),
+        }
+    }
+}
+
+fn sort_key(r: &Row, c: ColKind, m: Option<&Meta>) -> SortKey {
+    let text = |s: Option<String>| s.filter(|s| !s.is_empty()).map_or(SortKey::None, SortKey::Text);
+    match c {
+        ColKind::Name => SortKey::Text(r.name.clone()),
+        ColKind::Extension => text(r.path.extension().map(|e| e.to_string_lossy().to_lowercase()).filter(|_| !r.is_folder())),
+        ColKind::Type => SortKey::Text(r.type_name()),
+        ColKind::Size => if r.is_folder() { SortKey::None } else { SortKey::Num(r.size as f64) },
+        ColKind::Parent => text(r.path.parent().map(explorer::folder_name)),
+        ColKind::Path => text(r.path.parent().map(|p| p.to_string_lossy().into_owned())),
+        ColKind::Modified => SortKey::Num(r.stamp as f64),
+        ColKind::Created => SortKey::Num(r.created as f64),
+        ColKind::Taken => m.and_then(|m| m.taken).map_or(SortKey::None, |t| {
+            SortKey::Num(((((t.year as u64 * 13 + t.month as u64) * 32 + t.day as u64) * 24 + t.hour as u64) * 60 + t.minute as u64) as f64 * 60.0 + t.second as f64)
+        }),
+        ColKind::Dimensions | ColKind::Megapixels => m.and_then(|m| m.dims).map_or(SortKey::None, |(w, h)| SortKey::Num(w as f64 * h as f64)),
+        ColKind::Camera => text(m.and_then(|m| m.camera.clone())),
+        ColKind::Lens => text(m.and_then(|m| m.lens.clone())),
     }
 }
 

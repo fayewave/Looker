@@ -612,6 +612,9 @@ impl App {
     /// The toast, menus, dialogs and tooltips, above everything. Returns whether any of them is moving.
     fn draw_overlays(&mut self, g: &Gfx) -> bool {
         let mut moving = false;
+        if self.explorer_shown() {
+            self.draw_crumb_popup(g);
+        }
         self.draw_drag_label(g);
         if let Some(t) = &self.toast {
             let area = self.image_area();

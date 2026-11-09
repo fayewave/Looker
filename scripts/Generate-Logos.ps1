@@ -111,6 +111,27 @@ function ConvertTo-GraphicsPath([string]$d) {
 $markPath = ConvertTo-GraphicsPath $pathData
 $markPath.Transform($ctm)
 $markBounds = $markPath.GetBounds()
+
+# The plate: the mark's largest figure (its rounded square, without the eye cut-outs), filled black under the
+# mark so the eyes are black wherever the icon shows, not whatever is behind it (Faye, 2026-11-09). Pulled in a
+# hair so no black fringe shows round the plate's anti-aliased edge.
+$platePath = $null
+$plateArea = 0.0
+$iter = New-Object System.Drawing.Drawing2D.GraphicsPathIterator($markPath)
+for ($k = 0; $k -lt $iter.SubpathCount; $k++) {
+    $sub = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $closed = $false
+    [void]$iter.NextSubpath($sub, [ref]$closed)
+    $b = $sub.GetBounds()
+    if ($b.Width * $b.Height -gt $plateArea) { $plateArea = $b.Width * $b.Height; $platePath = $sub } else { $sub.Dispose() }
+}
+$iter.Dispose()
+$pb = $platePath.GetBounds()
+$inset = New-Object System.Drawing.Drawing2D.Matrix
+$inset.Translate([float]($pb.X + $pb.Width / 2), [float]($pb.Y + $pb.Height / 2))
+$inset.Scale(0.985, 0.985)
+$inset.Translate([float](-($pb.X + $pb.Width / 2)), [float](-($pb.Y + $pb.Height / 2)))
+$platePath.Transform($inset)
 Write-Host ("Mark: {0}  viewBox {1}x{2}  path bounds {3:0.#},{4:0.#} {5:0.#}x{6:0.#}  fill #{7:X2}{8:X2}{9:X2}" -f `
     (Split-Path -Leaf $MarkSvg), $vbW, $vbH, $markBounds.X, $markBounds.Y, $markBounds.Width, $markBounds.Height, $fillColor.R, $fillColor.G, $fillColor.B)
 
@@ -125,6 +146,9 @@ function Draw-Icon([System.Drawing.Graphics]$g, [double]$x, [double]$y, [double]
     $s = $size / [Math]::Max($vbW, $vbH)
     $g.ScaleTransform([float]$s, [float]$s)
     $g.TranslateTransform([float](-$vbX), [float](-$vbY))
+    $plate = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Black)
+    $g.FillPath($plate, $platePath)
+    $plate.Dispose()
     $brush = New-Object System.Drawing.SolidBrush($fillColor)
     $g.FillPath($brush, $markPath)
     $brush.Dispose()

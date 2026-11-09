@@ -61,6 +61,11 @@ pub struct Settings {
     pub visited: Vec<PathBuf>,
     /// Where the explorer puts folders among the files.
     pub explorer_group: crate::explorer::Group,
+    /// Browse mode's width as a share of the window's, as its edge was last dragged (0: the default, all but
+    /// a preview of 360 DIPs or 30 %).
+    pub browse_share: f32,
+    /// The explorer's columns, in order, with their widths (Name's is 0: it takes what's left).
+    pub explorer_columns: Vec<(crate::explorer::ColKind, f32)>,
 }
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
@@ -80,7 +85,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults() }
     }
 }
 
@@ -197,6 +202,8 @@ pub fn parse(text: &str) -> Settings {
             "bookmark" if !v.is_empty() => s.bookmarks.push(PathBuf::from(v)),
             "visited" if !v.is_empty() && s.visited.len() < VISITED_CAPACITY => s.visited.push(PathBuf::from(v)),
             "explorer_group" => s.explorer_group = crate::explorer::Group::parse(v).unwrap_or_default(),
+            "explorer_columns" => s.explorer_columns = crate::explorer::ColKind::parse_list(v),
+            "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
         }
     }
@@ -236,6 +243,8 @@ pub fn format(s: &Settings) -> String {
         out.push_str(&format!("visited={}\n", v.display()));
     }
     out.push_str(&format!("explorer_group={}\n", s.explorer_group.key()));
+    out.push_str(&format!("browse_share={:.3}\n", s.browse_share));
+    out.push_str(&format!("explorer_columns={}\n", crate::explorer::ColKind::format(&s.explorer_columns)));
     out
 }
 
@@ -382,6 +391,8 @@ mod tests {
             bookmarks: vec![PathBuf::from(r"S:\SFX Library"), PathBuf::from(r"C:\Users\me\Pictures")],
             visited: vec![PathBuf::from(r"C:\Users\me\Pictures\2026")],
             explorer_group: crate::explorer::Group::Mixed,
+            browse_share: 0.625,
+            explorer_columns: vec![(crate::explorer::ColKind::Name, 0.0), (crate::explorer::ColKind::Taken, 150.0)],
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

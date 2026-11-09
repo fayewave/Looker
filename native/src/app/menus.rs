@@ -48,10 +48,15 @@ pub(super) enum Action {
     SelectAll,
     HistoryJump(usize),
     Group(crate::explorer::Group),
-    /// A folder in a crumb's menu, by index.
-    GoFolder(usize),
     Undo,
     Redo,
+    // The column header menu's.
+    ColShift(bool),
+    ColFit,
+    ColClose,
+    ColFitAll,
+    ColRestore,
+    ColToggle(crate::explorer::ColKind),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -179,7 +184,7 @@ impl App {
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         match kind {
-            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::CrumbFolders(_) | MenuKind::History | MenuKind::Group)) => {
+            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_))) => {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
@@ -256,9 +261,10 @@ pub(super) enum MenuKind {
     Rows(Vec<PathBuf>),
     ExplorerBg,
     Side(crate::explorer::Place),
-    CrumbFolders(Vec<PathBuf>),
     History,
     Group,
+    /// A column header's menu, for the column at this index.
+    Columns(usize),
     /// The breadcrumb overflow, holding these places.
     Crumbs(Vec<crate::explorer::Place>),
     /// A recent file on the landing page.

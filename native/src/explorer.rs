@@ -145,6 +145,8 @@ pub struct Row {
     pub kind: Kind,
     /// Write time (FILETIME ticks).
     pub stamp: u64,
+    /// Creation time (FILETIME ticks).
+    pub created: u64,
     pub size: u64,
     pub cloud: bool,
 }
@@ -168,7 +170,155 @@ impl Row {
 
     #[cfg(test)]
     fn test(name: &str, kind: Kind, stamp: u64, size: u64) -> Row {
-        Row { path: PathBuf::from(name), name: name.into(), name_h: HSTRING::from(name), kind, stamp, size, cloud: false }
+        Row { path: PathBuf::from(name), name: name.into(), name_h: HSTRING::from(name), kind, stamp, created: 0, size, cloud: false }
+    }
+}
+
+/// The list's columns, as Transient's file lists offer theirs: which show, in what order and how wide is the
+/// user's (`Settings::explorer_columns`). Name is always there and takes the width the others leave.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum ColKind {
+    Name,
+    Extension,
+    Type,
+    Size,
+    Parent,
+    Path,
+    Modified,
+    Created,
+    Taken,
+    Dimensions,
+    Megapixels,
+    Camera,
+    Lens,
+}
+
+impl ColKind {
+    pub const ALL: [ColKind; 13] = [
+        ColKind::Name,
+        ColKind::Extension,
+        ColKind::Type,
+        ColKind::Size,
+        ColKind::Parent,
+        ColKind::Path,
+        ColKind::Modified,
+        ColKind::Created,
+        ColKind::Taken,
+        ColKind::Dimensions,
+        ColKind::Megapixels,
+        ColKind::Camera,
+        ColKind::Lens,
+    ];
+
+    /// The header menu's groups, each with its columns.
+    pub const GROUPS: [(&'static str, &'static [ColKind]); 3] = [
+        ("File", &[ColKind::Name, ColKind::Extension, ColKind::Type, ColKind::Size, ColKind::Parent, ColKind::Path]),
+        ("Date and time", &[ColKind::Modified, ColKind::Created, ColKind::Taken]),
+        ("Image", &[ColKind::Dimensions, ColKind::Megapixels, ColKind::Camera, ColKind::Lens]),
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ColKind::Name => "Name",
+            ColKind::Extension => "Extension",
+            ColKind::Type => "Type",
+            ColKind::Size => "Size",
+            ColKind::Parent => "Parent folder",
+            ColKind::Path => "Path",
+            ColKind::Modified => "Date modified",
+            ColKind::Created => "Date created",
+            ColKind::Taken => "Date taken",
+            ColKind::Dimensions => "Dimensions",
+            ColKind::Megapixels => "Megapixels",
+            ColKind::Camera => "Camera",
+            ColKind::Lens => "Lens",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ColKind::Name => "name",
+            ColKind::Extension => "ext",
+            ColKind::Type => "type",
+            ColKind::Size => "size",
+            ColKind::Parent => "parent",
+            ColKind::Path => "path",
+            ColKind::Modified => "modified",
+            ColKind::Created => "created",
+            ColKind::Taken => "taken",
+            ColKind::Dimensions => "dims",
+            ColKind::Megapixels => "mp",
+            ColKind::Camera => "camera",
+            ColKind::Lens => "lens",
+        }
+    }
+
+    pub fn default_width(self) -> f32 {
+        match self {
+            ColKind::Name => 0.0,
+            ColKind::Extension => 70.0,
+            ColKind::Type => 84.0,
+            ColKind::Size => 76.0,
+            ColKind::Parent => 140.0,
+            ColKind::Path => 220.0,
+            ColKind::Modified | ColKind::Created | ColKind::Taken => 156.0,
+            ColKind::Dimensions => 96.0,
+            ColKind::Megapixels => 80.0,
+            ColKind::Camera => 140.0,
+            ColKind::Lens => 160.0,
+        }
+    }
+
+    /// Numbers sit at the right of their column.
+    pub fn right_aligned(self) -> bool {
+        matches!(self, ColKind::Size | ColKind::Megapixels)
+    }
+
+    /// Read from the file itself, off the UI thread, as rows come on screen.
+    pub fn lazy(self) -> bool {
+        matches!(self, ColKind::Taken | ColKind::Dimensions | ColKind::Megapixels | ColKind::Camera | ColKind::Lens)
+    }
+
+    /// The toolbar's sort this column drives (the viewer's ←/→ order follows); the others sort the list alone.
+    pub fn shared_sort(self) -> Option<SortField> {
+        match self {
+            ColKind::Name => Some(SortField::Name),
+            ColKind::Modified => Some(SortField::Date),
+            ColKind::Size => Some(SortField::Size),
+            _ => None,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ColKind> {
+        ColKind::ALL.into_iter().find(|c| c.key() == s)
+    }
+
+    /// The columns Looker starts with.
+    pub fn defaults() -> Vec<(ColKind, f32)> {
+        [ColKind::Name, ColKind::Modified, ColKind::Size, ColKind::Dimensions, ColKind::Type].into_iter().map(|c| (c, c.default_width())).collect()
+    }
+
+    /// "name:0,modified:132,…" for the settings file.
+    pub fn format(cols: &[(ColKind, f32)]) -> String {
+        cols.iter().map(|(c, w)| format!("{}:{}", c.key(), w.round())).collect::<Vec<_>>().join(",")
+    }
+
+    /// The settings' column list; Name is put back at the front if it went missing.
+    pub fn parse_list(s: &str) -> Vec<(ColKind, f32)> {
+        let mut out: Vec<(ColKind, f32)> = Vec::new();
+        for part in s.split(',') {
+            let (k, w) = part.split_once(':').unwrap_or((part, ""));
+            if let Some(c) = ColKind::parse(k.trim()) {
+                if out.iter().all(|(o, _)| *o != c) {
+                    let w = w.trim().parse::<f32>().ok().filter(|w| (30.0..=800.0).contains(w)).unwrap_or(c.default_width());
+                    out.push((c, if c == ColKind::Name { 0.0 } else { w }));
+                }
+            }
+        }
+        if out.iter().all(|(c, _)| *c != ColKind::Name) {
+            out.insert(0, (ColKind::Name, 0.0));
+        }
+        out
     }
 }
 
@@ -367,6 +517,7 @@ fn row_for(path: PathBuf, md: &std::fs::Metadata) -> Row {
         name,
         kind,
         stamp: md.last_write_time(),
+        created: md.creation_time(),
         size: if md.is_dir() { 0 } else { md.len() },
         cloud: attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0,
         path,
@@ -411,6 +562,37 @@ pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// A folder's visible subfolders, then the files Looker can open, each in natural order (the crumb popup).
+pub fn entries(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut folders, mut files) = (Vec::new(), Vec::new());
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let Ok(md) = e.metadata() else { continue };
+            if md.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0 {
+                continue;
+            }
+            let p = e.path();
+            if md.is_dir() {
+                folders.push(p);
+            } else if is_supported(&p) {
+                files.push(p);
+            }
+        }
+    }
+    folders.sort_by(|a, b| natural(&folder_name(a), &folder_name(b)));
+    files.sort_by(|a, b| natural(&folder_name(a), &folder_name(b)));
+    (folders, files)
+}
+
+/// The popup's typed text split into the folder to list (up to and with the last separator) and what's
+/// typed after it, which filters that folder's entries.
+pub fn split_typed(text: &str) -> (String, String) {
+    match text.rfind(['\\', '/']) {
+        Some(i) => (text[..=i].to_string(), text[i + 1..].to_string()),
+        None => (String::new(), text.to_string()),
+    }
+}
+
 /// "Local Disk (C:)" and friends, by letter. Not-ready drives (an empty card reader) keep the generic label.
 pub fn drives() -> Vec<Row> {
     let mask = unsafe { GetLogicalDrives() };
@@ -428,7 +610,7 @@ pub fn drives() -> Vec<Row> {
         let label = if ok { String::from_utf16_lossy(&label[..label.iter().position(|&c| c == 0).unwrap_or(0)]) } else { String::new() };
         let label = if label.is_empty() { if kind == DRIVE_REMOVABLE { "Removable Disk".into() } else { "Local Disk".into() } } else { label };
         let name = format!("{label} ({letter}:)");
-        rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, size: 0, cloud: false });
+        rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, created: 0, size: 0, cloud: false });
     }
     rows
 }
@@ -563,6 +745,21 @@ mod tests {
         assert_eq!(names(&rows), ["a9.txt", "a10.jpg", "b.jpg", "Apple", "Zebra"]);
         sort_rows(&mut rows, Sort { field: SortField::Date, descending: false }, Group::Mixed);
         assert_eq!(names(&rows), ["b.jpg", "a9.txt", "a10.jpg", "Zebra", "Apple"]);
+    }
+
+    #[test]
+    fn typed_paths_split_at_the_last_separator() {
+        assert_eq!(split_typed(r"F:\TMC Dropbox\fa"), (r"F:\TMC Dropbox\".to_string(), "fa".to_string()));
+        assert_eq!(split_typed(r"F:\"), (r"F:\".to_string(), String::new()));
+        assert_eq!(split_typed("loo"), (String::new(), "loo".to_string()));
+    }
+
+    #[test]
+    fn columns_round_trip() {
+        let cols = vec![(ColKind::Size, 90.0), (ColKind::Name, 0.0), (ColKind::Taken, 140.0)];
+        assert_eq!(ColKind::parse_list(&ColKind::format(&cols)), cols);
+        assert_eq!(ColKind::parse_list("size:90,bogus:5,size:4"), vec![(ColKind::Name, 0.0), (ColKind::Size, 90.0)]);
+        assert_eq!(ColKind::parse_list(&ColKind::format(&ColKind::defaults())), ColKind::defaults());
     }
 
     #[test]

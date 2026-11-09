@@ -186,8 +186,9 @@ pub enum Align {
 
 /// The checkerboard's two squares, in a dark theme and in the light one. Neutral greys, not the theme's
 /// tint: they sit right around the photo.
-const CHECKER_ON_DARK: (u32, u32) = (0x0F0F0F, 0x161616);
-const CHECKER_ON_LIGHT: (u32, u32) = (0xE9E9E9, 0xF2F2F2);
+/// A hair apart: they read as texture, not a pattern (Faye, 2026-11-09: less visible than the 7-step squares).
+const CHECKER_ON_DARK: (u32, u32) = (0x0F0F0F, 0x131313);
+const CHECKER_ON_LIGHT: (u32, u32) = (0xECECEC, 0xF1F1F1);
 
 /// The checkerboard's darker square for the theme in use: also the plain viewport fill when the checkerboard is
 /// off.
