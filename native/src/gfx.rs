@@ -114,7 +114,7 @@ impl Text {
 }
 
 pub struct Fonts {
-    /// 11 px: the status row, hints, menu shortcuts, tooltips.
+    /// 12 px: the status row, hints, menu shortcuts, tooltips (the same size as `body`, kept apart for its uses).
     pub caption: IDWriteTextFormat,
     /// 12 px: labels, buttons, menu rows, the title bar.
     pub body: IDWriteTextFormat,
@@ -122,9 +122,9 @@ pub struct Fonts {
     pub body_wrap: IDWriteTextFormat,
     /// 16 px semibold: dialog titles.
     pub title: IDWriteTextFormat,
-    /// 11 px, wrapping, top-aligned, 16 px lines: info card rows, setting notes.
+    /// 12 px, wrapping, top-aligned, 17 px lines: info card rows, setting notes.
     pub caption_wrap: IDWriteTextFormat,
-    /// 11 px semibold: UPPERCASE section headings.
+    /// 12 px semibold: UPPERCASE section headings.
     pub overline: IDWriteTextFormat,
     /// 14 px semibold: the Settings card's headings.
     pub page_title: IDWriteTextFormat,
@@ -1032,19 +1032,20 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
             ellipsis.push(sign);
             Ok(f)
         };
-        // Snapper's ramp (VEIL Transient's): 12 body, 11 small and section headings, 14 titles, 16 headers.
-        let caption = inter(11.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        // Snapper's ramp (VEIL Transient's), but nothing under 12 (Faye, 2026-11-09): its 11 px small text and
+        // section headings are 12 here, beside 12 body, 14 titles and 16 headers.
+        let caption = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let body = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let title = inter(16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let body_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         body_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         body_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
         body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 18.0, 13.5)?;
-        let caption_wrap = inter(11.0, DWRITE_FONT_WEIGHT_NORMAL)?;
+        let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         caption_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 16.0, 12.0)?;
-        let overline = inter(11.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 17.0, 13.0)?;
+        let overline = inter(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let page_title = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
