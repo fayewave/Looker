@@ -76,12 +76,12 @@ pub(super) enum Action {
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
+    Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
 /// An item with a tickbox at the right: ticked when on (a setting, or the one picked of several).
 pub(super) fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
+    Entry::Item(MenuItem { tint: None, action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
 }
 
 impl App {
@@ -112,7 +112,7 @@ impl App {
         if self.video_shown() && self.player_ref().is_some() {
             let tracks = self.video_audio_tracks();
             let rows: Vec<Entry<Action>> = if tracks.is_empty() {
-                vec![Entry::Item(MenuItem { action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
+                vec![Entry::Item(MenuItem { tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
             } else {
                 tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
             };
@@ -260,7 +260,7 @@ impl App {
                     self.choose(which, i);
                 }
             }
-            Some(MenuKind::Crumbs(places)) => {
+            Some(MenuKind::Crumbs(places) | MenuKind::Jump(_, places)) => {
                 if let Action::Crumb(i) = action {
                     if let Some(p) = places.get(i) {
                         self.explorer_crumb(p.clone());
@@ -350,6 +350,8 @@ pub(super) enum MenuKind {
     Tab(usize),
     /// The breadcrumb overflow, holding these places.
     Crumbs(Vec<crate::explorer::Place>),
+    /// The card's Bookmarks (false) or Collections (true) drop-down, holding these places.
+    Jump(bool, Vec<crate::explorer::Place>),
     /// A recent file on the landing page.
     Recent(PathBuf),
     /// A Settings drop-down.

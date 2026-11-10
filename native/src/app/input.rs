@@ -350,6 +350,8 @@ impl App {
                             | Hit::StripCell(_)
                             | Hit::ExplorerUp
                             | Hit::ExplorerHistory
+                            | Hit::ExplorerBookmarks
+                            | Hit::ExplorerCollections
                             | Hit::ExplorerGroup
                             | Hit::ExplorerBookmark
                             | Hit::ExplorerSidebar
@@ -477,6 +479,8 @@ impl App {
                             Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
                             Some(Hit::ExplorerUp) => self.explorer_up(),
                             Some(Hit::ExplorerHistory) => self.explorer_history_menu(r.unwrap_or_default()),
+                            Some(Hit::ExplorerBookmarks) => self.explorer_jump_menu(false, r.unwrap_or_default()),
+                            Some(Hit::ExplorerCollections) => self.explorer_jump_menu(true, r.unwrap_or_default()),
                             Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerBookmark) => self.explorer_toggle_bookmark(None),
                             Some(Hit::ExplorerSidebar) => {

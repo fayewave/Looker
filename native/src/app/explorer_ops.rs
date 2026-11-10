@@ -51,7 +51,7 @@ pub(super) fn group_glyph(g: Group) -> u16 {
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
+    Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
 fn clipboard_has_files() -> bool {
@@ -516,10 +516,45 @@ impl App {
                     Place::Collection(crate::explorer::Collection::Favourites) => 0xE734,
                     Place::Collection(_) => 0xE8EC,
                 };
-                Entry::Item(MenuItem { action: Action::HistoryJump(i), glyph: Some(glyph), label: p.name(), accel: None, check: None, enabled: true, current: Some(i) == at })
+                Entry::Item(MenuItem { tint: None, action: Action::HistoryJump(i), glyph: Some(glyph), label: p.name(), accel: None, check: None, enabled: true, current: Some(i) == at })
             })
             .collect();
         self.show_menu_below(MenuKind::History, e, anchor);
+    }
+
+    /// The card's Bookmarks or Collections drop-down: browse mode's sidebar section as a menu, its rows in the order
+    /// they're in there (Faye, 2026-11-10), where you are outlined in the accent.
+    pub(super) fn explorer_jump_menu(&mut self, collections: bool, anchor: D2D_RECT_F) {
+        let section = if collections { explorer::SideSection::Collections } else { explorer::SideSection::Bookmarks };
+        let mut places = Vec::new();
+        let mut e = Vec::new();
+        for it in self.sidebar_items() {
+            match &it.target {
+                SideTarget::Header(s) => {
+                    if *s == section {
+                        places.clear();
+                        e.clear();
+                        e.push(Entry::Heading(it.label.clone()));
+                    } else if !e.is_empty() {
+                        break;
+                    }
+                }
+                SideTarget::Place(p) if !e.is_empty() && it.depth == 1 => {
+                    let current = self.explorer.place.as_ref().is_some_and(|q| q.same(p));
+                    let (glyph, tint) = if it.glyph == 0xE8B7 { (0xE8D5, Some(super::explorer::FOLDER_TINT)) } else { (it.glyph, it.tint) };
+                    e.push(Entry::Item(MenuItem { tint, action: Action::Crumb(places.len()), glyph: Some(glyph), label: it.label.clone(), accel: None, check: None, enabled: true, current }));
+                    places.push(p.clone());
+                }
+                SideTarget::Hint if !e.is_empty() => {
+                    e.push(Entry::Item(MenuItem { tint: None, action: Action::Crumb(usize::MAX), glyph: None, label: it.label.clone(), accel: None, check: None, enabled: false, current: false }));
+                }
+                _ => {}
+            }
+        }
+        if e.is_empty() {
+            return;
+        }
+        self.show_menu_below(MenuKind::Jump(collections, places), e, anchor);
     }
 
     /// The Folders and files button's menu, after Transient's: where folders go, what's listed, the rows'
@@ -528,7 +563,7 @@ impl App {
         let v = &self.explorer.look;
         let folder = self.explorer.folder().is_some();
         let ticked = |action, glyph, label: &str, on: bool, enabled: bool| {
-            Entry::Item(MenuItem { action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled, current: false })
+            Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled, current: false })
         };
         let mut e = vec![Entry::Heading("Folders and files".into())];
         for g in Group::ALL {
@@ -590,7 +625,7 @@ impl App {
             e.push(Entry::Heading(name.into()));
             for &k in kinds {
                 let shown = cols.iter().any(|(s, _)| *s == k);
-                e.push(Entry::Item(MenuItem { action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
+                e.push(Entry::Item(MenuItem { tint: None, action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
             }
             // Transient's Date and Time options, under its columns: how the dates read.
             if kinds.contains(&ColKind::Modified) {
@@ -604,7 +639,7 @@ impl App {
                         4 => s.date_show_time,
                         _ => s.date_show_date,
                     };
-                    e.push(Entry::Item(MenuItem { action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
+                    e.push(Entry::Item(MenuItem { tint: None, action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
                 }
             }
         }

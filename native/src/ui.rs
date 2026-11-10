@@ -723,6 +723,8 @@ pub struct MenuItem<A> {
     pub enabled: bool,
     /// Where you are now (the History drop-down's current place): the selected fill, outlined in the accent.
     pub current: bool,
+    /// The glyph's own colour (a folder's yellow); with the colour-tag glyph, a dot in it (a colour collection).
+    pub tint: Option<u32>,
 }
 
 /// A value with a minus and a plus (Transient's "Height  [-  1 row  +]"): each button an action, None when
@@ -1071,8 +1073,13 @@ impl<A: Copy> Menu<A> {
                 rgb(raised.placeholder)
             };
             if let Some(glyph) = it.glyph {
-                let ic = if hot || !it.enabled { fg } else { rgb(raised.icon) };
-                g.text(&[glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), ic, Align::Center);
+                let ic = if hot || !it.enabled { fg } else { it.tint.map_or(rgb(raised.icon), rgb) };
+                if glyph == 0xEA3B && it.tint.is_some() {
+                    let c = it.tint.map_or(fg, rgb);
+                    g.fill_round(rect(panel.left + MENU_ICON_X + 3.0, y + (MENU_ROW - 10.0) / 2.0, 10.0, 10.0), 5.0, c);
+                } else {
+                    g.text(&[glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), ic, Align::Center);
+                }
             }
             label(g, &it.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 14.0, MENU_ROW), fg, Align::Left);
             let mut right = panel.right - 13.0;

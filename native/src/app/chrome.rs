@@ -209,6 +209,8 @@ impl App {
             | Hit::ExplorerForward
             | Hit::ExplorerUp
             | Hit::ExplorerHistory
+            | Hit::ExplorerBookmarks
+            | Hit::ExplorerCollections
             | Hit::ExplorerGroup
             | Hit::ExplorerBookmark
             | Hit::ExplorerSidebar

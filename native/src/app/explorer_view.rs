@@ -225,17 +225,6 @@ impl App {
         let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);
         self.hits.add(Hit::ExplorerGrip, grip);
         let dragging = self.explorer.drag.is_some();
-        // While the edge is dragged near the sticky line, a ghost of it shows where the line is, over the explorer
-        // in browse mode, over the photo beside the card (Faye, 2026-11-10): faint 160 DIPs off, clearer closer in.
-        let line_x = self.viewport().left + self.sticky_line() - super::explorer::MARGIN;
-        let near = (1.0 - (card.right - line_x).abs() / 160.0).clamp(0.0, 1.0);
-        let near = near * near * (3.0 - 2.0 * near);
-        let ghost = self.fades.get(Hit::StickyGhost, dragging) * near;
-        moving |= self.fades.moving;
-        if ghost > 0.0 {
-            let x = g.snap(line_x) - 1.0;
-            g.fill_round(rect(x, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), 1.0, gfx::rgba(theme::t().accent, 0.4 * ghost));
-        }
         let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
         ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving
@@ -481,6 +470,27 @@ impl App {
         rx -= NAV + 2.0;
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
         self.folder_settings_button(g, rect(rx, y, NAV, NAV), group_open);
+        // The card's Bookmarks and Collections drop-downs, beside it (Faye, 2026-11-10): browse mode has them in its
+        // sidebar, so they fade out as that slides in.
+        if slide < 1.0 {
+            for (id, glyph, collections) in [(Hit::ExplorerCollections, 0xE734u16, true), (Hit::ExplorerBookmarks, 0xE8A4, false)] {
+                // A very narrow card keeps History and the sidebar button clear of them.
+                if rx - 2.0 * (NAV + 2.0) < left_end {
+                    break;
+                }
+                rx -= NAV + 2.0;
+                let r = rect(rx, y, NAV, NAV);
+                let open = matches!(&self.menu, Some((menus::MenuKind::Jump(c, _), _)) if *c == collections);
+                g.push_fade(1.0 - slide, 1.0, (r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+                if slide < 0.5 {
+                    self.nav_button(g, r, id, glyph, true, open);
+                } else {
+                    let fg = ui::button_frame(g, r, if open { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &ui::State::IDLE);
+                    g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+                }
+                g.pop_fade();
+            }
+        }
         // Bookmarks and places: fading out as the sidebar column slides in, back as it goes (Faye, 2026-11-10).
         if slide < 1.0 {
             rx -= NAV + 2.0;

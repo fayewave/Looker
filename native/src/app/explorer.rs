@@ -2847,6 +2847,8 @@ impl App {
             Hit::ExplorerForward => Some("Forward (Alt+Right)".into()),
             Hit::ExplorerUp => Some("Up (Backspace)".into()),
             Hit::ExplorerHistory => Some("Recent folders".into()),
+            Hit::ExplorerBookmarks => Some("Bookmarks".into()),
+            Hit::ExplorerCollections => Some("Collections".into()),
             Hit::ExplorerGroup => Some("Folders and files".into()),
             Hit::TabNew => Some("New tab  (Ctrl+T)".into()),
             Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
@@ -2921,6 +2923,8 @@ impl App {
                     | Hit::ExplorerForward
                     | Hit::ExplorerUp
                     | Hit::ExplorerHistory
+                    | Hit::ExplorerBookmarks
+                    | Hit::ExplorerCollections
                     | Hit::ExplorerGroup
                     | Hit::ExplorerBookmark
                     | Hit::ExplorerSidebar

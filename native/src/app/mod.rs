@@ -187,12 +187,13 @@ enum Hit {
     ExplorerList,
     ExplorerRow(usize),
     ExplorerGrip,
-    /// Not a target: the ghost of the sticky line, fading in while the edge is dragged near it.
-    StickyGhost,
     ExplorerBack,
     ExplorerForward,
     ExplorerUp,
     ExplorerHistory,
+    /// The card's Bookmarks and Collections drop-downs (browse mode has them in its sidebar).
+    ExplorerBookmarks,
+    ExplorerCollections,
     ExplorerGroup,
     ExplorerBookmark,
     ExplorerSidebar,
