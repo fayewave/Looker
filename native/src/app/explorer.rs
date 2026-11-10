@@ -21,7 +21,7 @@ use std::time::Instant;
 use super::*;
 use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, SideSection, Watcher};
 use crate::motion::Ease;
-use crate::settings::{EXPLORER_WIDTH, INFO_MAX, INFO_MIN};
+use crate::settings::{EXPLORER_MIN, EXPLORER_WIDTH, INFO_MAX};
 use crate::textedit::TextEdit;
 use crate::ui::TextField;
 
@@ -29,6 +29,8 @@ pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
 const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
+/// Browse mode leaves the photo at least this much of the window (or 30 % of it), by default.
+const PREVIEW_MIN: f32 = 360.0;
 /// Dragging browse mode's edge leaves the photo at least this much.
 const PREVIEW_DRAGGED_MIN: f32 = 200.0;
 /// Changes on disk often come in bursts (a copy writes, renames, sets times): re-list once they settle.
@@ -175,6 +177,21 @@ pub(super) struct SectionDrag {
     pub insert: usize,
 }
 
+/// A bookmark or a collection dragged up or down its section (Faye, 2026-11-10), as a section is by its heading:
+/// the row (with its open tree) follows the pointer, the others ease aside round an outlined slot.
+pub(super) struct EntryDrag {
+    pub sec: SideSection,
+    /// Its place among the section's entries when pressed.
+    pub from: usize,
+    pub start_y: f32,
+    pub y: f32,
+    /// The pointer's offset from the row's top when pressed.
+    pub grab: f32,
+    pub active: bool,
+    /// Where it would land among the others (worked out as the sidebar draws).
+    pub insert: usize,
+}
+
 /// A column header dragged along the headers (its cells come with it).
 pub(super) struct HeaderDrag {
     pub idx: usize,
@@ -263,6 +280,11 @@ pub(super) struct Explorer {
     pub(super) section_drag: Option<SectionDrag>,
     pub(super) section_pos: HashMap<SideSection, Ease<1>>,
     pub(super) section_anim_until: Instant,
+    /// A bookmark or collection being dragged into another place, the entries' eased tops in their section (by
+    /// key), and until when they ease after a drop.
+    pub(super) side_row_drag: Option<EntryDrag>,
+    pub(super) row_pos: HashMap<String, Ease<1>>,
+    pub(super) row_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
     pub(super) section_open: HashMap<SideSection, Ease<1>>,
     /// The box over the folder a drag would drop into: eased from one target to the next, its opacity, and the
@@ -287,6 +309,8 @@ pub(super) struct Explorer {
     pub(super) browse: Ease<1>,
     /// Browse mode was on when the explorer was closed: it opens in it again.
     pub(super) reopen_browse: bool,
+    /// What's been typed to jump to a row, and when the last character came (`explorer_type_ahead`).
+    pub(super) ahead: (String, Option<Instant>),
     pub(super) tags: crate::tags::Tags,
     /// The tags' version the listed collection was listed at.
     tags_listed: u64,
@@ -345,6 +369,9 @@ impl Explorer {
             section_drag: None,
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
+            side_row_drag: None,
+            row_pos: HashMap::new(),
+            row_anim_until: Instant::now(),
             section_open: HashMap::new(),
             drop_box: None,
             drop_shade: Ease::at([0.0]),
@@ -360,6 +387,7 @@ impl Explorer {
             side_drag: None,
             browse: Ease::at([0.0]),
             reopen_browse: false,
+            ahead: (String::new(), None),
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
             places: None,
@@ -473,13 +501,14 @@ impl App {
         card + (wide - card) * k
     }
 
-    /// Browse mode's width: the card's and the sidebar's as it's set, side by side, so the list keeps its width
-    /// and the sidebar comes in beside it (Faye, 2026-11-10: always that, not a width remembered from before);
-    /// while its edge is dragged in browse mode, where it's dragged. The photo keeps at least 200 DIPs.
+    /// Browse mode's width: all but a preview of 360 DIPs (or 30 %), and never less than the card and the sidebar
+    /// side by side, so the list keeps at least its width beside the sidebar (Faye, 2026-11-10); while its edge
+    /// is dragged in browse mode, where it's dragged. The photo keeps at least 200 DIPs.
     fn browse_width(&self) -> f32 {
         let (w, _) = self.size_dip();
         let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
-        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { self.settings.explorer_width + side + 1.0 };
+        let least = self.settings.explorer_width + side + 1.0;
+        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { (w - PREVIEW_MIN.max(w * 0.3)).max(least) };
         wide.min(w - PREVIEW_DRAGGED_MIN).max(self.settings.explorer_width)
     }
 
@@ -1086,6 +1115,30 @@ impl App {
         }
     }
 
+    /// A character typed while the explorer has the keys, as Windows' File Explorer takes them (Faye, 2026-11-10):
+    /// the first row whose name starts with what's been typed in the last second; the same letter again steps to
+    /// the next one starting with it. (The app's own keys all take Ctrl, so every letter is free for this.)
+    pub(super) fn explorer_type_ahead(&mut self, c: char) {
+        let now = Instant::now();
+        let fresh = self.explorer.ahead.1.is_none_or(|t| now.duration_since(t) > std::time::Duration::from_millis(1000));
+        let c = c.to_lowercase().collect::<String>();
+        let prefix = if fresh { c.clone() } else { format!("{}{c}", self.explorer.ahead.0) };
+        self.explorer.ahead = (prefix.clone(), Some(now));
+        let n = self.explorer.view.len();
+        if n == 0 {
+            return;
+        }
+        // One letter over and over cycles through that letter; a longer prefix narrows from where the cursor is.
+        let repeat = prefix.chars().count() > 1 && prefix.chars().all(|x| prefix.starts_with(x));
+        let (find, step) = if repeat || fresh { (c, 1) } else { (prefix, 0) };
+        let at = self.explorer.cursor.as_deref().and_then(|p| self.explorer.index_of(p));
+        let start = at.map_or(0, |i| (i + step) % n);
+        let hit = (0..n).map(|k| (start + k) % n).find(|&i| self.explorer.rows[self.explorer.view[i]].name.to_lowercase().starts_with(&find));
+        if let Some(i) = hit {
+            self.explorer_pick(i);
+        }
+    }
+
     /// Enter: list the folder under the cursor, or open its file. False when there's nothing to do.
     pub(super) fn explorer_enter(&mut self) -> bool {
         let Some(i) = self.explorer.cursor.as_deref().and_then(|c| self.explorer.index_of(c)) else { return false };
@@ -1530,10 +1583,15 @@ impl App {
                 }
                 SideSection::Collections => {
                     out.push(heading(sec, "Collections", 0xE734));
-                    out.push(SideItem { depth: 1, glyph: 0xE735, tint: Some(0xF2C94C), label: "Favourites".into(), target: SideTarget::Place(Place::Collection(Collection::Favourites)), node: None, expanded: false });
-                    for c in self.explorer.tags.colours_in_use() {
-                        let (name, rgb_) = explorer::COLOURS[c as usize];
-                        out.push(SideItem { depth: 1, glyph: 0xEA3B, tint: Some(rgb_), label: name.into(), target: SideTarget::Place(Place::Collection(Collection::Colour(c))), node: None, expanded: false });
+                    // In the order they were dragged into (Faye, 2026-11-10).
+                    for k in self.collection_order() {
+                        if k == 0 {
+                            out.push(SideItem { depth: 1, glyph: 0xE735, tint: Some(0xF2C94C), label: "Favourites".into(), target: SideTarget::Place(Place::Collection(Collection::Favourites)), node: None, expanded: false });
+                        } else {
+                            let c = k - 1;
+                            let (name, rgb_) = explorer::COLOURS[c as usize];
+                            out.push(SideItem { depth: 1, glyph: 0xEA3B, tint: Some(rgb_), label: name.into(), target: SideTarget::Place(Place::Collection(Collection::Colour(c))), node: None, expanded: false });
+                        }
                     }
                 }
                 SideSection::History => {
@@ -1818,24 +1876,25 @@ impl App {
         if p + 1 >= w.len() {
             return;
         }
+        // The width comes from, or goes to, the nearest column on the right first (the next ones only once it's at
+        // its narrowest): shared out in proportion, narrowing one column swelled the last, Type, to twice its
+        // width over a few drags (Faye, 2026-11-10).
         let d = x - r.x0;
         if d > 0.0 {
-            let room: f32 = (p + 1..w.len()).map(|k| (w[k] - min(r.widths[k].1)).max(0.0)).sum();
-            let d = d.min(room);
-            if room > 0.0 {
-                w[p] += d;
-                for k in p + 1..w.len() {
-                    let spare = (w[k] - min(r.widths[k].1)).max(0.0);
-                    w[k] -= spare / room * d;
+            let mut left = d;
+            for k in p + 1..w.len() {
+                let take = left.min((w[k] - min(r.widths[k].1)).max(0.0));
+                w[k] -= take;
+                w[p] += take;
+                left -= take;
+                if left <= 0.0 {
+                    break;
                 }
             }
         } else {
             let d = (-d).min((w[p] - min(r.widths[p].1)).max(0.0));
-            let total: f32 = (p + 1..w.len()).map(|k| w[k]).sum();
             w[p] -= d;
-            for k in p + 1..w.len() {
-                w[k] += if total > 0.0 { w[k] / total * d } else { d / (w.len() - p - 1) as f32 };
-            }
+            w[p + 1] += d;
         }
         // Name's own width is what the others leave, so only theirs are kept.
         let updates: Vec<(usize, ColKind, f32)> = r.widths.iter().zip(&w).map(|(&(i, c, _), &nw)| (i, c, nw)).collect();
@@ -2203,6 +2262,86 @@ impl App {
         true
     }
 
+    /// The sidebar row `i`'s section and its place among the section's entries, when it's a bookmark or a collection
+    /// (what can be dragged into another order).
+    fn side_entry(&mut self, i: usize) -> Option<(SideSection, usize)> {
+        let items = self.sidebar_items();
+        let it = items.get(i)?;
+        if it.depth != 1 || !matches!(it.target, SideTarget::Place(_)) {
+            return None;
+        }
+        let head = items[..i].iter().rposition(|x| matches!(x.target, SideTarget::Header(_)))?;
+        let SideTarget::Header(sec) = items[head].target else { return None };
+        if !matches!(sec, SideSection::Bookmarks | SideSection::Collections) {
+            return None;
+        }
+        let n = items[head + 1..i].iter().filter(|x| x.depth == 1 && matches!(x.target, SideTarget::Place(_))).count();
+        Some((sec, n))
+    }
+
+    /// A press on a sidebar row: a bookmark or collection may become a drag of it.
+    pub(super) fn side_row_press(&mut self, i: usize, y: f32) {
+        let Some((sec, from)) = self.side_entry(i) else { return };
+        let top = self.hits.rect_of(Hit::SideRow(i)).map_or(y, |r| r.top);
+        self.explorer.side_row_drag = Some(EntryDrag { sec, from, start_y: y, y, grab: y - top, active: false, insert: from });
+    }
+
+    pub(super) fn side_row_drag_move(&mut self, y: f32) {
+        let Some(d) = self.explorer.side_row_drag.as_mut() else { return };
+        d.y = y;
+        let started = !d.active && (y - d.start_y).abs() > DRAG_START;
+        if started {
+            d.active = true;
+        }
+        let active = d.active;
+        if started {
+            self.hide_tooltip();
+        }
+        if active {
+            self.invalidate();
+        }
+    }
+
+    /// Let go: the entry moves to its slot and the order is saved. True when it was a drag (not a click).
+    pub(super) fn side_row_release(&mut self) -> bool {
+        let Some(d) = self.explorer.side_row_drag.take() else { return false };
+        if !d.active {
+            return false;
+        }
+        if d.insert != d.from {
+            match d.sec {
+                SideSection::Bookmarks => {
+                    let b = &mut self.settings.bookmarks;
+                    if d.from < b.len() {
+                        let it = b.remove(d.from);
+                        b.insert(d.insert.min(b.len()), it);
+                    }
+                }
+                _ => {
+                    let mut order = self.collection_order();
+                    if d.from < order.len() {
+                        let it = order.remove(d.from);
+                        order.insert(d.insert.min(order.len()), it);
+                    }
+                    self.settings.collection_order = order;
+                }
+            }
+            settings::save(&self.settings);
+        }
+        self.explorer.row_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        self.invalidate();
+        true
+    }
+
+    /// The Collections section's entries in order, as `settings::collection_order` keys (0 Favourites, 1 + a colour):
+    /// the order they were dragged into, then any that aren't in it yet, in the colours' own order.
+    pub(super) fn collection_order(&self) -> Vec<u8> {
+        let present: Vec<u8> = std::iter::once(0).chain(self.explorer.tags.colours_in_use().into_iter().map(|c| c + 1)).collect();
+        let mut out: Vec<u8> = self.settings.collection_order.iter().copied().filter(|k| present.contains(k)).collect();
+        out.extend(present.into_iter().filter(|k| !self.settings.collection_order.contains(k)));
+        out
+    }
+
     // --- Sidebar width --------------------------------------------------------------------------------
 
     pub(super) fn sidebar_grip_press(&mut self, x: f32) {
@@ -2274,8 +2413,8 @@ impl App {
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
-        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
-        let w = (w0 + (x - x0)).round().clamp(INFO_MIN, (ww - PREVIEW_DRAGGED_MIN).max(INFO_MIN));
+        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
+        let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
         if w <= card_cap {
             if self.browsing() {
                 self.explorer.browse = Ease::at([0.0]);
@@ -2432,7 +2571,7 @@ impl App {
             Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
             Hit::ExplorerBookmark => Some(if self.explorer.folder().is_some_and(|f| self.settings.is_bookmarked(&f)) { "Remove bookmark".into() } else { "Bookmark this folder".into() }),
             Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
-            Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (B)".into() } else { "Browse mode (B)".into() }),
+            Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (Ctrl+B)".into() } else { "Browse mode (Ctrl+B)".into() }),
             Hit::SideRow(i) => match self.sidebar_items().get(i).map(|it| it.target.clone()) {
                 Some(SideTarget::Place(Place::Folder(p))) => Some(p.to_string_lossy().into_owned()),
                 _ => None,
@@ -2534,11 +2673,11 @@ impl App {
                 self.explorer_redo();
                 return Some(LRESULT(0));
             }
-            VK_B if !ctrl && has => {
+            VK_B if ctrl && has => {
                 self.toggle_browse();
                 return Some(LRESULT(0));
             }
-            VK_T if ctrl && self.explorer_shown() => {
+            VK_T if ctrl && !shift && self.explorer_shown() => {
                 self.new_tab(None);
                 return Some(LRESULT(0));
             }
@@ -2574,6 +2713,9 @@ impl App {
                     return None;
                 }
             }
+            // Letters and digits jump to a row (their character comes as WM_CHAR: `explorer_type_ahead`), not
+            // the viewer's single-key commands.
+            _ if !ctrl && unsafe { GetKeyState(VK_MENU.0 as i32) } >= 0 && ((0x30..=0x39).contains(&vk.0) || (0x41..=0x5A).contains(&vk.0)) => {}
             _ => return None,
         }
         Some(LRESULT(0))

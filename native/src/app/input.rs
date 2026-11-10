@@ -202,6 +202,9 @@ impl App {
                     if self.explorer.header_drag.is_some() {
                         self.header_drag_move(x);
                     }
+                    if self.explorer.side_row_drag.is_some() {
+                        self.side_row_drag_move(y);
+                    }
                     if self.explorer.section_drag.is_some() {
                         self.section_drag_move(y);
                     }
@@ -372,6 +375,7 @@ impl App {
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
                         Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
+                        Some(Hit::SideRow(i)) => self.side_row_press(i, y),
                         Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
                         _ => {}
                     }
@@ -409,7 +413,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.tab_release();
+                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.tab_release();
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;
@@ -774,7 +778,7 @@ impl App {
                     self.hide_tooltip();
                     if !self.page_open() {
                         // A text box with the keys keeps them all: what it doesn't use (a letter, whose character
-                        // follows as WM_CHAR) mustn't reach the viewer's shortcuts (I, T, E, B…).
+                        // follows as WM_CHAR) mustn't reach the viewer's keys.
                         if self.explorer.field.is_some() {
                             self.explorer_field_key(vk, shift, ctrl);
                             return Some(LRESULT(0));
@@ -820,9 +824,10 @@ impl App {
                                 self.invalidate();
                             }
                         }
-                        VK_F if !ctrl => self.act(Tool::Fit),
+                        // The view, panel and browse keys all take Ctrl, so a bare letter is free for jumping
+                        // to a row in the explorer (Faye, 2026-11-10; they were F, 1, E, T, I and B).
                         VK_0 if ctrl => self.act(Tool::Fit),
-                        VK_1 if self.photo_up() && !self.model_active() => {
+                        VK_1 if ctrl && self.photo_up() && !self.model_active() => {
                             let a = self.image_area();
                             self.view.actual_size_at(((a.right - a.left) / 2.0) as f64, ((a.bottom - a.top) / 2.0) as f64);
                             self.after_zoom();
@@ -832,16 +837,16 @@ impl App {
                         VK_OEM_COMMA if ctrl => self.open_page(),
                         VK_O if ctrl && shift => self.open_folder_dialog(),
                         VK_O if ctrl => self.open_dialog(),
-                        VK_E if ctrl => self.reveal(),
+                        VK_E if ctrl && shift => self.reveal(),
+                        VK_E if ctrl => self.toggle_explorer(),
+                        VK_I if ctrl => self.toggle_info(),
+                        VK_T if ctrl && shift => self.toggle_strip(),
                         VK_C if ctrl && shift => self.copy_path(),
                         VK_C if ctrl => self.copy_image(),
                         VK_R if ctrl => self.rotate_preview(!shift),
                         VK_S if ctrl => self.save_rotation(),
                         VK_DELETE => self.confirm_delete(true),
                         VK_F2 => self.begin_rename(true),
-                        VK_I if !ctrl => self.toggle_info(),
-                        VK_T if !ctrl => self.toggle_strip(),
-                        VK_E if !ctrl => self.toggle_explorer(),
                         VK_UP if self.explorer_shown() => self.explorer_move(-1),
                         VK_DOWN if self.explorer_shown() => self.explorer_move(1),
                         VK_RETURN if self.explorer_shown() => {
@@ -910,6 +915,11 @@ impl App {
                         let u = wp.0 as u16;
                         if u >= 0x20 && u != 0x7F {
                             self.explorer_char(u);
+                        }
+                    } else if self.menu.is_none() && self.explorer_shown() && self.explorer.focused {
+                        // Typing jumps to a row whose name starts with it.
+                        if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| c.is_alphanumeric()) {
+                            self.explorer_type_ahead(c);
                         }
                     }
                     Some(LRESULT(0))

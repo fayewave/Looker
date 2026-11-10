@@ -179,9 +179,6 @@ impl App {
         self.landing.scroll = self.landing.scroll.min(self.landing.max_scroll);
         let mut y = v.top + ((height - content).max(0.0) * 2.0 / 5.0).round() + 16.0 - self.landing.scroll;
         let cx = (v.left + v.right) / 2.0;
-        if hint {
-            self.draw_default_hint(g, cx, v.bottom - 28.0 - 32.0);
-        }
         g.push_clip(D2D_RECT_F { bottom: v.bottom - hint_h, ..v });
 
         if let Some(bmp) = self.landing_wordmark(g) {
@@ -245,5 +242,10 @@ impl App {
             }
         }
         g.pop_clip();
+        // Last, so its buttons are on top of the rows scrolled under it (Faye, 2026-11-10: a click went through
+        // to the recent file beneath).
+        if hint {
+            self.draw_default_hint(g, cx, v.bottom - 28.0 - 32.0);
+        }
     }
 }

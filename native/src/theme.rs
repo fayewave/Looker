@@ -595,6 +595,12 @@ pub fn raised() -> &'static Theme {
     id().raised()
 }
 
+/// `c` with no tint: the grey of its luminance (the home screen's page: Faye, 2026-11-10, untinted by the accent
+/// in Dark, Paper and Light).
+pub fn plain(c: u32) -> u32 {
+    retint(c, 0.0, 0.0)
+}
+
 /// `a` to `b` by `k` (0..1), opaque.
 pub fn mix(a: u32, b: u32, k: f32) -> D2D1_COLOR_F {
     let (a, b) = (rgb(a), rgb(b));

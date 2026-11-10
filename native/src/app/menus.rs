@@ -99,11 +99,11 @@ impl App {
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
             Entry::Separator,
             item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, image),
-            item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+E"), file),
+            item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+Shift+E"), file),
             Entry::Separator,
-            item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("E"), has),
-            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), has),
-            item(Action::ToggleInfo, 0xE946, "Info panel", Some("I"), has),
+            item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("Ctrl+E"), has),
+            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), has),
+            item(Action::ToggleInfo, 0xE946, "Info panel", Some("Ctrl+I"), has),
         ]
     }
 
@@ -153,7 +153,7 @@ impl App {
         let entries = vec![
             check(Action::ToggleStripOther, "Show files Looker can't open", other),
             Entry::Separator,
-            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("T"), true),
+            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), true),
         ];
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();

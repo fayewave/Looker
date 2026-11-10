@@ -224,7 +224,7 @@ impl App {
             Hit::Tool(Tool::Previous) => "Previous (←)",
             Hit::Tool(Tool::Next) => "Next (→)",
             Hit::Tool(Tool::ZoomOut) => "Zoom out (Ctrl+-)",
-            Hit::Tool(Tool::Fit) => "Fit to window (F)",
+            Hit::Tool(Tool::Fit) => "Fit to window (Ctrl+0)",
             Hit::Tool(Tool::ZoomIn) => "Zoom in (Ctrl++)",
             Hit::Tool(Tool::Fullscreen) => "Fullscreen (F11)",
             Hit::Tool(Tool::Rotate) => "Rotate right (Ctrl+R)",
@@ -232,9 +232,9 @@ impl App {
             Hit::Tool(Tool::Sort) => "Sort",
             Hit::Tool(Tool::SaveRotation) => "Save the rotation to the file (Ctrl+S)",
             Hit::Tool(Tool::Home) => "Home",
-            Hit::Tool(Tool::Explorer) => "File explorer (E)",
-            Hit::Tool(Tool::Strip) => "Thumbnails (T)",
-            Hit::Tool(Tool::Info) => "Info panel (I)",
+            Hit::Tool(Tool::Explorer) => "File explorer (Ctrl+E)",
+            Hit::Tool(Tool::Strip) => "Thumbnails (Ctrl+Shift+T)",
+            Hit::Tool(Tool::Info) => "Info panel (Ctrl+I)",
             Hit::Tool(Tool::Settings) => "Settings (Ctrl+,)",
             Hit::Reveal => "Show this file in File Explorer",
             Hit::InfoPath => "Show in File Explorer",
@@ -455,7 +455,7 @@ impl App {
         for (tool, glyph, r) in self.tool_rects() {
             // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
             // looking the same whatever is behind.
-            g.fill_round(r, 5.0, rgb(t.content));
+            g.fill_round(r, 5.0, rgb(if self.viewer.current.is_none() { theme::plain(t.content) } else { t.content }));
             let enabled = self.tool_enabled(tool);
             let id = Hit::Tool(tool);
             self.hits.add(id, r);
@@ -524,7 +524,8 @@ impl App {
         let v = self.viewport();
         self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
-            g.begin_ui(Some(self.theme().content));
+            // The home screen's page carries no tint (Faye, 2026-11-10): the theme's page colour as a grey.
+            g.begin_ui(Some(theme::plain(self.theme().content)));
             self.draw_landing(g);
             return;
         }

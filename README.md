@@ -55,14 +55,15 @@ it keeps itself up to date.
 |---|---|
 | `←` `→`, `Home` `End` | Previous / next, first / last |
 | Wheel, `Ctrl` `+` `-` | Zoom at the pointer |
-| `F`, `1`, double-click | Fit, 100 %, toggle |
-| `E`, `B`, `T`, `I` | File explorer, browse mode, thumbnail strip, info panel |
+| `Ctrl+0`, `Ctrl+1`, double-click | Fit, 100 %, toggle |
+| `Ctrl+E`, `Ctrl+B`, `Ctrl+Shift+T`, `Ctrl+I` | File explorer, browse mode, thumbnail strip, info panel |
+| A letter (in the file explorer) | Jump to the next name starting with it |
 | `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` | New tab, close tab, next tab |
 | `Ctrl+F`, `Ctrl+Z` | Filter the folder, undo |
 | `F11`, `F5`, `Space` | Fullscreen, slideshow, pause |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |
-| `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+E` | Copy image, copy path, show in File Explorer |
+| `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+Shift+E` | Copy image, copy path, show in File Explorer |
 | `Ctrl+,` | Settings |
 
 ## Build

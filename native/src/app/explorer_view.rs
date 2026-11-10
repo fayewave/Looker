@@ -943,6 +943,8 @@ impl App {
         let mut moving = drag.is_some() || folding;
         let mut ys: Vec<Option<f32>> = vec![None; items.len()];
         let mut bottoms: Vec<f32> = vec![f32::MAX; items.len()];
+        // Where a dragged bookmark or collection would land: its slot's top and height.
+        let mut row_slots: Vec<(f32, f32)> = Vec::new();
         for (k, b) in blocks.iter().enumerate() {
             if Some(k) == dragged {
                 if let Some((_, head_y)) = drag {
@@ -957,12 +959,86 @@ impl App {
                 *e = crate::motion::Ease::at([tops[k]]);
             }
             moving |= e.moving(now);
-            let mut y = origin + e.value(now)[0];
-            let bottom = y + b.3;
+            let top = origin + e.value(now)[0];
+            let bottom = top + b.3;
+            // Its entries (a top-level row and its open tree beneath it), each at its eased place in the section;
+            // a bookmark or collection being dragged follows the pointer and the others make room (Faye,
+            // 2026-11-10), as the sections do.
+            let mut groups: Vec<(usize, usize, f32, String)> = Vec::new(); // first item, end, height, key
+            let mut head_h = 0.0;
             for i in b.1..b.2 {
-                ys[i] = Some(y);
-                bottoms[i] = bottom;
-                y += item_h(&items[i]);
+                let it = &items[i];
+                if it.depth == 1 && matches!(it.target, SideTarget::Place(_)) {
+                    groups.push((i, i + 1, item_h(it), format!("{:?}|{}", b.0, it.node.clone().unwrap_or_else(|| it.label.clone()))));
+                } else if let Some(gr) = groups.last_mut().filter(|_| it.depth > 1) {
+                    gr.1 = i + 1;
+                    gr.2 += item_h(it);
+                } else {
+                    ys[i] = Some(top + head_h);
+                    bottoms[i] = bottom;
+                    head_h += item_h(it);
+                }
+            }
+            let row_drag = self.explorer.side_row_drag.as_ref().filter(|d| d.active && d.sec == b.0).map(|d| (d.from, d.y - d.grab));
+            let mut offs: Vec<f32> = vec![0.0; groups.len()];
+            let mut row_slot = None;
+            match row_drag.filter(|&(from, _)| from < groups.len()) {
+                Some((from, row_y)) => {
+                    let others: Vec<usize> = (0..groups.len()).filter(|&k| k != from).collect();
+                    let mid = row_y + groups[from].2 / 2.0 - (top + head_h);
+                    let mut y = 0.0;
+                    let mut insert = 0;
+                    for &k in &others {
+                        if y + groups[k].2 / 2.0 < mid {
+                            insert += 1;
+                        }
+                        y += groups[k].2;
+                    }
+                    if let Some(d) = self.explorer.side_row_drag.as_mut() {
+                        d.insert = insert;
+                    }
+                    let mut y = 0.0;
+                    for (n, &k) in others.iter().enumerate() {
+                        if n == insert {
+                            row_slot = Some(y);
+                            y += groups[from].2;
+                        }
+                        offs[k] = y;
+                        y += groups[k].2;
+                    }
+                    if row_slot.is_none() {
+                        row_slot = Some(y);
+                    }
+                    offs[from] = row_y - (top + head_h);
+                }
+                None => {
+                    let mut y = 0.0;
+                    for (k, gr) in groups.iter().enumerate() {
+                        offs[k] = y;
+                        y += gr.2;
+                    }
+                }
+            }
+            let row_animate = row_drag.is_some() || now < self.explorer.row_anim_until;
+            for (k, gr) in groups.iter().enumerate() {
+                let dragged_row = row_drag.is_some_and(|(from, _)| from == k);
+                let e = self.explorer.row_pos.entry(gr.3.clone()).or_insert_with(|| crate::motion::Ease::at([offs[k]]));
+                if dragged_row || !row_animate {
+                    *e = crate::motion::Ease::at([offs[k]]);
+                } else {
+                    e.set([offs[k]], now);
+                }
+                moving |= e.moving(now) || dragged_row;
+                let mut y = top + head_h + e.value(now)[0];
+                for i in gr.0..gr.1 {
+                    ys[i] = Some(y);
+                    // The dragged row isn't cut off by its section's bottom while it's held.
+                    bottoms[i] = if dragged_row { f32::MAX } else { bottom };
+                    y += item_h(&items[i]);
+                }
+            }
+            if let (Some(sy), Some((from, _))) = (row_slot, row_drag) {
+                row_slots.push((top + head_h + sy, groups[from].2));
             }
         }
 
@@ -970,6 +1046,11 @@ impl App {
         g.push_clip(r);
         if let (Some(di), Some(sy)) = (dragged, slot) {
             let sr = rect(r.left + 6.0, origin + sy + 4.0, r.right - r.left - 12.0, blocks[di].3 - 6.0);
+            g.fill_round(sr, 4.0, gfx::rgba(t.accent, 0.10));
+            ui::stroke(g, sr, 4.0, rgb(t.accent));
+        }
+        for &(sy, sh) in &row_slots {
+            let sr = rect(r.left + 6.0, sy, r.right - r.left - 12.0, sh);
             g.fill_round(sr, 4.0, gfx::rgba(t.accent, 0.10));
             ui::stroke(g, sr, 4.0, rgb(t.accent));
         }
