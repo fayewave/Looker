@@ -438,6 +438,14 @@ impl TextView {
         self.reveal = true;
     }
 
+    pub(super) fn has_focus(&self) -> bool {
+        self.focus != Focus::None
+    }
+
+    pub(super) fn drop_focus(&mut self) {
+        self.focus = Focus::None;
+    }
+
     pub(super) fn take_focus(&mut self) {
         self.focus = Focus::Text;
         self.caret_on = true;

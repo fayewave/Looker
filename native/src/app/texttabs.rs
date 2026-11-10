@@ -121,8 +121,12 @@ impl App {
         if want != self.text.viewer {
             self.text.viewer = want.clone();
             if let Some(p) = want {
+                let from = self.text.active;
                 match self.text.docs.iter().position(|d| d.path == p) {
-                    Some(i) => self.text.active = i,
+                    Some(i) => {
+                        self.text.active = i;
+                        self.text_carry_focus(from);
+                    }
                     None => {
                         let id = self.text.id();
                         let doc = TextView::open(p, id, &self.font_spec());
@@ -139,6 +143,7 @@ impl App {
                         }
                     }
                 }
+                self.text_carry_focus(from);
                 self.text_check_disk();
             }
         }
@@ -283,7 +288,31 @@ impl App {
     /// A press on a tab: to the front, and moving on drags it.
     pub(super) fn text_tab_press(&mut self, i: usize, x: f32) {
         self.text_select_tab(i);
+        // A press on a tab gives the editor the keyboard, as one on an explorer tab gives it the explorer's: the
+        // tab in front is outlined in the accent (Faye, 2026-11-11).
+        self.explorer.focused = false;
+        if let Some(tv) = self.text.cur_mut() {
+            tv.take_focus();
+        }
+        self.set_ime(true);
+        self.restart_caret();
         self.strip_press(super::tabstrip::StripKind::Text, i, x);
+    }
+
+    /// The document in front changed: the keyboard goes with it (it belongs to the editor, not to a tab).
+    fn text_carry_focus(&mut self, from: usize) {
+        let had = self.text.docs.get(from).is_some_and(|d| d.has_focus());
+        if from == self.text.active {
+            return;
+        }
+        if let Some(d) = self.text.docs.get_mut(from) {
+            d.drop_focus();
+        }
+        if had {
+            if let Some(tv) = self.text.cur_mut() {
+                tv.take_focus();
+            }
+        }
     }
 
     /// Let go of a dragged tab: it drops into its slot (the one in front stays in front). True when it was a drag.
@@ -305,7 +334,9 @@ impl App {
         if i >= self.text.docs.len() || i == self.text.active {
             return;
         }
+        let from = self.text.active;
         self.text.active = i;
+        self.text_carry_focus(from);
         let path = self.text.docs[i].path.clone();
         if self.text.docs[i].untitled == 0 && Some(&path) != self.text.viewer.as_ref() {
             self.text.viewer = Some(path.clone());
