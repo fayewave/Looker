@@ -1040,6 +1040,48 @@ impl Gfx {
         }
     }
 
+    /// A filled polygon with its corners rounded: each corner starts and ends `radius` along its edges, curved
+    /// through the corner (a quadratic Bézier): the play triangle as Segoe draws it, filled.
+    pub fn fill_rounded_polygon(&self, points: &[(f32, f32)], radius: f32, color: D2D1_COLOR_F) {
+        let n = points.len();
+        if n < 3 {
+            return;
+        }
+        let pt = |(x, y): (f32, f32)| windows_numerics::Vector2 { X: x, Y: y };
+        // The point `d` along from a towards b.
+        let along = |a: (f32, f32), b: (f32, f32), d: f32| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+            let d = d.min(len / 2.0);
+            (a.0 + dx / len * d, a.1 + dy / len * d)
+        };
+        let geo = unsafe {
+            (|| -> Option<ID2D1PathGeometry> {
+                let geo = self.dev.dc.GetFactory().ok()?.CreatePathGeometry().ok()?;
+                let sink = geo.Open().ok()?;
+                for i in 0..n {
+                    let (prev, cur, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
+                    let (a, b) = (along(cur, prev, radius), along(cur, next, radius));
+                    if i == 0 {
+                        sink.BeginFigure(pt(a), D2D1_FIGURE_BEGIN_FILLED);
+                    } else {
+                        sink.AddLine(pt(a));
+                    }
+                    sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT { point1: pt(cur), point2: pt(b) });
+                }
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink.Close().ok()?;
+                Some(geo)
+            })()
+        };
+        if let Some(geo) = geo {
+            unsafe {
+                self.brush.SetColor(&color);
+                self.dev.dc.FillGeometry(&geo, &self.brush, None);
+            }
+        }
+    }
+
     pub fn fill_polygon(&self, points: &[(f32, f32)], color: D2D1_COLOR_F) {
         if let Some(geo) = self.path(points, true) {
             unsafe {

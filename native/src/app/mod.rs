@@ -554,12 +554,10 @@ impl App {
         self.viewer.current.as_ref().map(|(p, _)| p.as_path())
     }
 
-    /// A drag on the photo's area moves the window (Faye, 2026-11-10) when there's nothing to pan: the picture at
-    /// fit, or a file Looker can't show. Not in fullscreen, nor for a document (its pages pan at fit) or a 3D model.
+    /// A drag on a video moves the window (Faye, 2026-11-10: videos only) when there's nothing to pan: at fit,
+    /// not in fullscreen.
     pub(super) fn drag_moves_window(&self) -> bool {
-        self.fullscreen.is_none()
-            && !self.model_active()
-            && (self.placeholder.is_some() || (self.current_doc().is_none() && self.view.at_fit_position()))
+        self.fullscreen.is_none() && self.video_shown() && self.view.at_fit_position()
     }
 
     /// The photo is on screen to zoom and pan: there is one, and no file Looker can't open covers it.

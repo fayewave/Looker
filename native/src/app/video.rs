@@ -50,9 +50,10 @@ const PREVIEW_H: f32 = 108.0;
 /// Where a video counts as finished (no resume) or barely started.
 const RESUME_MARGIN_US: i64 = 10_000_000;
 const RESUME_CAP: usize = 200;
-/// The play/pause flashed over a clicked video: how long it fades, and its circle.
+/// The play/pause flashed over a clicked video: how long it fades, and its rounded square.
 const FLASH: Duration = Duration::from_millis(350);
-const FLASH_D: f32 = 88.0;
+const FLASH_D: f32 = 84.0;
+const FLASH_R: f32 = 18.0;
 /// Which the flash shows (Segoe's play and pause code points, though it draws them as shapes).
 const PLAY_GLYPH: u16 = 0xE768;
 const PAUSE_GLYPH: u16 = 0xE769;
@@ -653,7 +654,7 @@ impl App {
         self.invalidate();
     }
 
-    /// The click's play/pause: a dark disc with the glyph, fading out (and growing a little) over half a second.
+    /// The click's play/pause: a dark rounded square with a solid play (rounded, as Segoe's) or pause, fading out.
     pub(super) fn draw_video_flash(&mut self, g: &Gfx) {
         let area = self.image_area();
         // The middle of where the video fits (above the bar's band).
@@ -670,16 +671,16 @@ impl App {
         // Held, then gone: most of the fade comes at the end. Only the opacity changes (it used to grow too, and
         // the disc and glyph re-snapped to the pixels every frame: it shook).
         g.push_fade(1.0 - t * t, 1.0, cx, cy);
-        g.fill_round(disc, FLASH_D / 2.0, gfx::rgba(0x000000, 0.55));
-        let ink = gfx::rgba(0xFFFFFF, 0.95);
+        g.fill_round(disc, FLASH_R, gfx::rgba(0x000000, 0.72));
+        let ink = gfx::rgba(0xFFFFFF, 1.0);
         if glyph == PLAY_GLYPH {
-            // Solid, its centroid on the centre (a third of its width left of it, two thirds right).
-            let (w, h) = (30.0, 34.0);
-            g.fill_polygon(&[(cx - w / 3.0, cy - h / 2.0), (cx - w / 3.0, cy + h / 2.0), (cx + w * 2.0 / 3.0, cy)], ink);
+            // Its centroid on the centre (a third of its width left of it, two thirds right), corners rounded.
+            let (w, h) = (32.0, 36.0);
+            g.fill_rounded_polygon(&[(cx - w / 3.0, cy - h / 2.0), (cx + w * 2.0 / 3.0, cy), (cx - w / 3.0, cy + h / 2.0)], 5.0, ink);
         } else {
-            let (w, h, gap) = (9.0, 32.0, 8.0);
-            g.fill_round(rect(cx - gap / 2.0 - w, cy - h / 2.0, w, h), 2.0, ink);
-            g.fill_round(rect(cx + gap / 2.0, cy - h / 2.0, w, h), 2.0, ink);
+            let (w, h, gap) = (10.0, 34.0, 8.0);
+            g.fill_round(rect(cx - gap / 2.0 - w, cy - h / 2.0, w, h), 3.0, ink);
+            g.fill_round(rect(cx + gap / 2.0, cy - h / 2.0, w, h), 3.0, ink);
         }
         g.pop_fade();
     }
@@ -927,16 +928,17 @@ impl App {
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
         let rad = (line.bottom - line.top) / 2.0;
         g.fill_round(line, rad, rgb(raised.track));
+        let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        let px = line.left + (line.right - line.left) * frac;
+        if px > line.left + 0.5 {
+            g.fill_round(D2D_RECT_F { right: px, ..line }, rad, rgb(t.accent));
+        }
+        // Over the red too (Faye: the whole way to the pointer).
         if k > 0.0 && !scrubbing {
             let mx = self.mouse.0.clamp(line.left, line.right);
             if mx > line.left + 0.5 {
                 g.fill_round(D2D_RECT_F { right: mx, ..line }, rad, gfx::rgba(raised.text, 0.28 * k));
             }
-        }
-        let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
-        let px = line.left + (line.right - line.left) * frac;
-        if px > line.left + 0.5 {
-            g.fill_round(D2D_RECT_F { right: px, ..line }, rad, rgb(t.accent));
         }
 
         let vol = self.settings.video_volume;

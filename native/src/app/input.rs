@@ -392,7 +392,7 @@ impl App {
                         _ => {}
                     }
                     self.press_at = (x, y);
-                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active() || self.placeholder.is_some()) {
+                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
                         self.drag = Some((x, y));
                     }
                     self.invalidate();
