@@ -957,7 +957,7 @@ impl App {
             FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 }
         });
         unsafe {
-            let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&path)));
+            let _ = SetWindowTextW(self.hwnd, &HSTRING::from(format!("{} - Looker", file_name(&path))));
         }
         // The explorer's cursor follows it, as it follows the photo (`explorer_follow`).
         if let Some(i) = self.explorer.index_of(&path) {

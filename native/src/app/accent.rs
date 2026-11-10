@@ -55,7 +55,7 @@ impl App {
 
     /// An accent chip was clicked: Custom opens its picker (picked already or not), the rest are put in use.
     pub(super) fn pick_accent(&mut self, i: usize) {
-        let Some(a) = Accent::ALL.get(i).copied() else { return };
+        let Some(a) = Accent::PICKER.get(i).copied() else { return };
         if a == Accent::Custom {
             self.open_accent_picker();
             return;

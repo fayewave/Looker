@@ -1127,14 +1127,19 @@ pub fn toggle_switch(g: &Gfx, r: D2D_RECT_F, on: f32, s: &State) {
 /// A theme to pick: a square of its page colour with its accent as a dot in the middle, then its name. Picked
 /// like a toggle when `on`.
 /// A chip with a swatch of `colour` before its name: a theme (its page colour) or an accent (its colour), as
-/// Snapper's.
-pub fn theme_chip(g: &Gfx, r: D2D_RECT_F, name: &str, on: bool, s: &State, colour: u32) {
+/// Snapper's; None, an empty outline (Custom).
+pub fn theme_chip(g: &Gfx, r: D2D_RECT_F, name: &str, on: bool, s: &State, colour: Option<u32>) {
     let t = theme::t();
     let fg = frame(g, r, 6.0, Kind::Toggle(on), s);
     let sw = rect(r.left + 9.0, g.snap(r.top + (r.bottom - r.top - 22.0) / 2.0), 22.0, 22.0);
     // The colour alone, as Snapper's swatches (Faye, 2026-11-10: no accent dot).
-    g.fill_round(sw, 5.0, rgb(colour));
-    stroke(g, sw, 5.0, rgba(t.ink, 0.22));
+    match colour {
+        Some(c) => {
+            g.fill_round(sw, 5.0, rgb(c));
+            stroke(g, sw, 5.0, rgba(t.ink, 0.22));
+        }
+        None => g.outline_round(sw, 5.0, rgba(t.ink, 0.55), 1.5),
+    }
     label(g, name, &g.fonts.body, rect(sw.right + 10.0, r.top, (r.right - sw.right - 14.0).max(0.0), r.bottom - r.top), fg, Align::Left);
 }
 

@@ -417,7 +417,8 @@ impl App {
             let y = g.snap((TITLE_H - 16.0) / 2.0);
             g.draw_bitmap(icon, rect(x, y, 16.0, 16.0), 1.0);
         }
-        let title = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()).map(file_name).unwrap_or_else(|| "Looker".into());
+        // "photo.jpg - Looker" with a file up (Faye, 2026-11-10), as the window's own title is.
+        let title = self.placeholder.as_ref().map(|p| p.path.as_path()).or(self.current_path()).map(|p| format!("{} - Looker", file_name(p))).unwrap_or_else(|| "Looker".into());
         let fg = if self.active { rgb(t.text) } else { rgb(t.placeholder) };
         g.text(&wide(&title), &g.fonts.body, rect(44.0, 0.0, (w - 44.0 - CAPTION_W * 3.0 - 16.0).max(0.0), TITLE_H), fg, Align::Left);
 

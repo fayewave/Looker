@@ -212,7 +212,7 @@ impl App {
         let (strip_bottom, strip_moving) = self.draw_tabs(g, main);
         moving |= strip_moving;
         let main = D2D_RECT_F { top: strip_bottom, ..main };
-        let top = self.draw_nav(g, main, column_sidebar);
+        let top = self.draw_nav(g, main, slide);
         let body = D2D_RECT_F { top, ..main };
         if !column_sidebar && self.explorer.sidebar_open {
             moving |= self.draw_sidebar(g, body);
@@ -417,7 +417,9 @@ impl App {
         (strip.bottom, moving)
     }
 
-    fn draw_nav(&mut self, g: &Gfx, main: D2D_RECT_F, column_sidebar: bool) -> f32 {
+    /// The buttons above the list, and the crumbs. `slide`: how far the sidebar column is in (its button fades out
+    /// as it comes).
+    fn draw_nav(&mut self, g: &Gfx, main: D2D_RECT_F, slide: f32) -> f32 {
         let t = theme::t();
         let y = main.top + 6.0;
         let can_up = self.explorer.place.as_ref().and_then(Place::parent).is_some();
@@ -451,10 +453,21 @@ impl App {
         rx -= NAV + 2.0;
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
         self.folder_settings_button(g, rect(rx, y, NAV, NAV), group_open);
-        if !column_sidebar {
+        // Bookmarks and places: fading out as the sidebar column slides in, back as it goes (Faye, 2026-11-10).
+        if slide < 1.0 {
             rx -= NAV + 2.0;
             let open = self.explorer.sidebar_open;
-            self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerSidebar, 0xE8A0, true, open);
+            let r = rect(rx, y, NAV, NAV);
+            g.push_fade(1.0 - slide, 1.0, (r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+            if slide < 0.5 {
+                self.nav_button(g, r, Hit::ExplorerSidebar, 0xE8A0, true, open);
+            } else {
+                // Mostly gone: drawn, not clickable.
+                let st = ui::State::IDLE;
+                let fg = ui::button_frame(g, r, if open { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
+                g.text(&[0xE8A0], &g.fonts.body_icons, r, fg, Align::Center);
+            }
+            g.pop_fade();
         }
 
         // The crumbs always have a row of their own under the buttons (Faye, 2026-11-09).

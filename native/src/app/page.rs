@@ -675,7 +675,7 @@ impl App {
                 self.hits.add(hit, c);
             }
             let st = self.state(hit, open);
-            ui::theme_chip(g, c, id.name(), chosen == id, &st, id.theme().content);
+            ui::theme_chip(g, c, id.name(), chosen == id, &st, Some(id.theme().content));
             cx += CHIP_W + 6.0;
         }
     }
@@ -686,12 +686,12 @@ impl App {
         const CHIP_W: f32 = 116.0;
         const CHIP_H: f32 = 34.0;
         const GAP: f32 = 6.0;
-        let n = theme::Accent::ALL.len();
+        let n = theme::Accent::PICKER.len();
         let per_line = (((rows.w + GAP) / (CHIP_W + GAP)).floor() as usize).max(1);
         let lines = n.div_ceil(per_line);
         let r = rows.row_with(g, "Accent", "", lines as f32 * (CHIP_H + GAP) + 8.0);
         let id = self.settings.theme;
-        for (i, a) in theme::Accent::ALL.into_iter().enumerate() {
+        for (i, a) in theme::Accent::PICKER.into_iter().enumerate() {
             let (col, line) = ((i % per_line) as f32, (i / per_line) as f32);
             let c = rect(r.left + col * (CHIP_W + GAP), r.bottom + line * (CHIP_H + GAP), CHIP_W, CHIP_H);
             let hit = Hit::AccentChip(i as u8);
@@ -699,7 +699,9 @@ impl App {
                 self.hits.add(hit, c);
             }
             let st = self.state(hit, open);
-            ui::theme_chip(g, c, a.name(), self.settings.accent == a, &st, a.colour(id));
+            // Custom shows as an empty outline (Faye, 2026-11-10): its colour is what you pick.
+            let swatch = (a != theme::Accent::Custom).then(|| a.colour(id));
+            ui::theme_chip(g, c, a.name(), self.settings.accent == a, &st, swatch);
         }
     }
 

@@ -93,6 +93,8 @@ impl Accent {
     pub const ALL: [Accent; 7] = [Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Amber, Accent::Crimson, Accent::White, Accent::Custom];
     /// Looker's red.
     pub const DEFAULT: Accent = Accent::Crimson;
+    /// The order the Appearance page shows them in: Looker's red first (Faye, 2026-11-10). `ALL` keeps `HUES`'s.
+    pub const PICKER: [Accent; 7] = [Accent::Crimson, Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Amber, Accent::White, Accent::Custom];
 
     pub fn name(self) -> &'static str {
         match self {

@@ -179,7 +179,7 @@ impl App {
                 if let Some(p) = self.placeholder.as_mut().filter(|p| p.path == from) {
                     p.path = to.clone();
                     unsafe {
-                        let _ = SetWindowTextW(self.hwnd, &HSTRING::from(file_name(&to)));
+                        let _ = SetWindowTextW(self.hwnd, &HSTRING::from(format!("{} - Looker", file_name(&to))));
                     }
                 }
                 if self.current_path() == Some(to.as_path()) {
