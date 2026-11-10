@@ -15,7 +15,7 @@
   <Identity
     Name="fayewave.Looker-PhotoViewer"
     Publisher="CN=75645224-1CB5-47AA-A845-256EA45E9908"
-    Version="2.1.44.0"
+    Version="2.1.45.0"
     ProcessorArchitecture="x64" />
 
 
@@ -669,6 +669,14 @@
             <uap:Logo>Assets\FileIcons\vmt.png</uap:Logo>
             <uap:InfoTip>Open with Looker</uap:InfoTip>
             <uap:SupportedFileTypes><uap:FileType>.vmt</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vtf">
+            <uap:DisplayName>VTF image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\vtf.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.vtf</uap:FileType></uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">

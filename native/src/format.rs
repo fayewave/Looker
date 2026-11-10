@@ -35,8 +35,10 @@ pub enum Format {
     Pdf,
     /// Wavefront material library (text; drawn as a sheet of material cards).
     Mtl,
-    /// Plain text, laid out on pages (`imaging/text.rs`).
+    /// Plain text (and Source materials): the editor on screen (`app/textview.rs`).
     Text,
+    /// Valve Texture Format, Source engine textures (`imaging/vtf.rs`).
+    Vtf,
     /// A 3D model: OBJ, STL, PLY, 3MF, glTF/GLB (rendered with Direct3D, see model/).
     Model,
     /// A video (FFmpeg through looker_video.dll, see imaging/video.rs).
@@ -72,6 +74,7 @@ pub const ALL: &[Format] = &[
     Format::Pdf,
     Format::Mtl,
     Format::Text,
+    Format::Vtf,
     Format::Model,
     Format::Video,
     Format::Audio,
@@ -88,7 +91,7 @@ pub const EXTENSIONS: &[&str] = &[
     // 3D models and material libraries.
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
     // Source engine: Hammer maps and materials.
-    "vmf", "vmt",
+    "vmf", "vmt", "vtf",
     // Text.
     "txt",
     // Video.
@@ -130,8 +133,10 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "pnm" | "ppm" | "pgm" | "pbm" => Format::Pnm,
         "xcf" => Format::Xcf,
         "qoi" => Format::Qoi,
-        "mtl" | "vmt" => Format::Mtl,
-        "txt" => Format::Text,
+        "mtl" => Format::Mtl,
+        // Source materials are KeyValues text: read and edited as text (Faye, 2026-11-11).
+        "txt" | "vmt" => Format::Text,
+        "vtf" => Format::Vtf,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
@@ -268,6 +273,9 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     if h.len() >= 3 && h[0] == b'P' && (b'1'..=b'6').contains(&h[1]) && matches!(h[2], b' ' | b'\n' | b'\r' | b'\t') {
         return Format::Pnm;
     }
+    if starts(h, b"VTF ") {
+        return Format::Vtf;
+    }
     if ascii(h, 0, "%PDF-") {
         return Format::Pdf;
     }
@@ -325,8 +333,9 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         Format::Qoi => "QOI",
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
-        Format::Text => "Text",
-        Format::Mtl => if ext == "VMT" { "VMT" } else { "MTL" },
+        Format::Text => if ext == "VMT" { "VMT" } else { "Text" },
+        Format::Vtf => "VTF",
+        Format::Mtl => "MTL",
         Format::Model => match ext.as_str() {
             "GLTF" => "glTF",
             "" => "3D model",

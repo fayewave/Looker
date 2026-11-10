@@ -35,7 +35,7 @@ pub struct Material {
     pub pm: Option<f32>,
     /// (statement, file name as written), in file order.
     pub maps: Vec<(String, String)>,
-    /// More rows as (label, value): a Source material's shader and parameters (`vmt.rs`).
+    /// More rows as (label, value), after the standard ones.
     pub extra: Vec<(String, String)>,
 }
 
@@ -427,17 +427,11 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let src = String::from_utf8_lossy(&bytes);
     let dir = path.parent().unwrap_or(Path::new("."));
-    let source = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vmt"));
-    let mats = if source {
-        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        super::vmt::parse(&src, &name).into_iter().collect()
-    } else {
-        parse(&src)
-    };
+    let mats = parse(&src);
     if mats.is_empty() {
-        return Err(if source { "the material has no shader".into() } else { "the library defines no materials".into() });
+        return Err("the library defines no materials".into());
     }
-    let resolve = |name: &str| if source { super::vmt::resolve(path, name) } else { resolve(dir, name) };
+    let resolve = |name: &str| resolve(dir, name);
     let (cards, sw, sh) = layout(&mats);
     let (box_w, box_h) = if box_w == 0 || box_h == 0 { (VECTOR_MAX_EDGE, VECTOR_MAX_EDGE) } else { (box_w, box_h) };
     let scale = (box_w as f32 / sw).min(box_h as f32 / sh).min(VECTOR_MAX_EDGE as f32 / sw.max(sh));
@@ -522,8 +516,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
             let vw = cx + CARD_W - PAD - vx;
             let name = if m.name.is_empty() { "(unnamed)" } else { &m.name };
             label(name, &name_font, rect(vx, y, vw, NAME_H - 6.0), 0xF2F2F2);
-            // Source parameters ($envmaptint, ...) are longer than an .mtl's labels.
-            let lw = if source { 128.0 } else { 92.0 };
+            let lw = 92.0;
             for (i, (what, value)) in rows(m).iter().enumerate() {
                 let ry = y + NAME_H + i as f32 * ROW_H;
                 label(what, &body, rect(vx, ry, lw - 6.0, ROW_H), 0x9A9A9A);

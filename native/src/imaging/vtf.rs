@@ -1,11 +1,37 @@
-//! Valve Texture Format (.vtf), read only for the textures a Source material (.vmt) card shows: the first frame
-//! and face of the smallest mip at least `edge` across (or the largest), in the common formats (8-bit RGBA
-//! orders, RGB565, greyscale, DXT1/3/5). Hands back premultiplied BGRA, as the other decoders.
+//! Valve Texture Format (.vtf), Source engine textures: opened as images (Faye, 2026-11-11), and read for an
+//! .mtl's maps should one name a .vtf. The first frame and face of the smallest mip at least `edge` across (or
+//! the largest), so a fit decode reads a small mip and zooming in asks for a bigger one. The common formats:
+//! 8-bit RGBA orders, RGB565, greyscale, DXT1/3/5, and 16-bit integer or half-float RGBA (HDR, clipped to SDR).
+//! Hands back premultiplied BGRA, as the other decoders.
+
+use std::path::Path;
 
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    /// The texture's full size (mip 0).
+    pub full: (u32, u32),
+}
+
+/// The file as an image fitted into the box (0 x 0: full size).
+pub fn decode_file(path: &Path, box_w: u32, box_h: u32) -> Result<super::Decoded, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let edge = if box_w == 0 || box_h == 0 { u32::MAX } else { box_w.max(box_h) };
+    let img = decode(&bytes, edge)?;
+    Ok(super::Decoded::still(img.width, img.height, img.pixels, img.full.0, img.full.1, None))
+}
+
+/// IEEE half to f32.
+fn half(h: u16) -> f32 {
+    let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let e = ((h >> 10) & 0x1F) as i32;
+    let m = (h & 0x3FF) as f32;
+    s * match e {
+        0 => m * 2f32.powi(-24),
+        31 => f32::INFINITY,
+        _ => (1.0 + m / 1024.0) * 2f32.powi(e - 15),
+    }
 }
 
 fn u16_at(b: &[u8], o: usize) -> Option<u16> {
@@ -22,6 +48,7 @@ fn size(format: u32, w: u32, h: u32) -> Option<usize> {
     let blocks = w.div_ceil(4) * h.div_ceil(4);
     Some(match format {
         0 | 1 | 11 | 12 | 16 => w * h * 4,
+        24 | 25 => w * h * 8,
         2 | 3 | 9 | 10 => w * h * 3,
         4 | 17 | 18 | 19 | 6 | 7 => w * h * 2,
         5 | 8 => w * h,
@@ -131,6 +158,20 @@ fn rgba(data: &[u8], w: usize, h: usize, format: u32) -> Option<Vec<[u8; 4]>> {
         5 => data.iter().take(n).map(|&v| [v, v, v, 255]).collect(),
         6 => data.chunks_exact(2).take(n).map(|p| [p[0], p[0], p[0], p[1]]).collect(),
         8 => data.iter().take(n).map(|&v| [255, 255, 255, v]).collect(),
+        // Half-float RGBA (HDR): linear light, clipped and turned to sRGB.
+        24 => data
+            .chunks_exact(8)
+            .take(n)
+            .map(|p| {
+                let c = |i: usize| half(u16::from_le_bytes([p[i], p[i + 1]]));
+                let srgb = |v: f32| {
+                    let v = v.clamp(0.0, 1.0);
+                    ((if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }) * 255.0 + 0.5) as u8
+                };
+                [srgb(c(0)), srgb(c(2)), srgb(c(4)), (c(6).clamp(0.0, 1.0) * 255.0 + 0.5) as u8]
+            })
+            .collect(),
+        25 => data.chunks_exact(8).take(n).map(|p| [p[1], p[3], p[5], p[7]]).collect(),
         _ => return None,
     };
     (px.len() == n).then_some(px)
@@ -194,7 +235,7 @@ pub fn decode(bytes: &[u8], edge: u32) -> Result<Image, String> {
             [pm(b), pm(g), pm(r), a]
         })
         .collect();
-    Ok(Image { width: w, height: h, pixels })
+    Ok(Image { width: w, height: h, pixels, full: (width, height) })
 }
 
 #[cfg(test)]

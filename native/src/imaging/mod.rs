@@ -10,8 +10,7 @@ mod gainmap;
 pub(crate) mod hdr;
 pub mod heif;
 pub mod mtl;
-mod vmt;
-mod vtf;
+pub mod vtf;
 pub mod pdf;
 mod raster;
 pub mod raw;
@@ -133,6 +132,8 @@ enum Step {
     Pdf,
     /// A text file's first page (its thumbnail; on screen it's the editor).
     Text,
+    /// A Source engine texture (vtf.rs).
+    Vtf,
     /// A material library drawn as a sheet of swatches.
     Mtl,
     /// A 3D model's still (model/render.rs).
@@ -180,6 +181,7 @@ fn plan(f: Format) -> &'static [Step] {
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
         Format::Pdf => &[Pdf],
         Format::Text => &[Text],
+        Format::Vtf => &[Vtf],
         Format::Mtl => &[Mtl],
         Format::Model => &[Model],
         Format::Video => &[Video],
@@ -213,6 +215,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
         Step::Text => text::decode(f, path, box_w, box_h).map(Some),
+        Step::Vtf => vtf::decode_file(path, box_w, box_h).map(Some),
         Step::Mtl => mtl::decode(f, path, box_w, box_h).map(Some),
         Step::Model => crate::model::render::still(f, path, box_w, box_h).map(Some),
         Step::Heif => fallback::heif(f, path, box_w, box_h).map(Some),

@@ -1,4 +1,4 @@
-//! A text file on screen (.txt): one scrolling view to read and edit it, in the photo's place (Faye, 2026-11-11:
+//! A text file on screen (.txt, and Source materials, .vmt, which are text): one scrolling view to read and edit it, in the photo's place (Faye, 2026-11-11:
 //! "a typical text viewer and editor in one view"). The theme's card with line numbers down the left, the text
 //! wrapped at the view's width in Consolas, a status line at the foot (line and column, encoding, line endings,
 //! whether it's edited). A click puts the caret in and gives it the keyboard (Escape or a click elsewhere hands it

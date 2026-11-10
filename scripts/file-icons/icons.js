@@ -9,23 +9,23 @@ const MARK = "M7348.97,461.776L7348.97,1039.201C7348.97,1080.513 7315.431,1114.0
 
 // Every extension (must equal format::EXTENSIONS; New-FileIcons.ps1 checks), its kind and its Explorer type name.
 const KIND_OF = {
-  photo: "jpg jpeg jpe jfif png bmp dib tif tiff webp jxr wdp hdp heic heif hif avif jxl jp2 j2k jpf jpx j2c tga icb vda vst dds pcx pnm ppm pgm pbm qoi",
+  photo: "jpg jpeg jpe jfif png bmp dib tif tiff webp jxr wdp hdp heic heif hif avif jxl jp2 j2k jpf jpx j2c tga icb vda vst dds pcx pnm ppm pgm pbm qoi vtf",
   anim: "gif apng heics avifs",
   icon: "ico cur",
   vector: "svg",
-  doc: "pdf txt",
+  doc: "pdf txt vmt",
   layers: "psd psb xcf",
   raw: "cr2 cr3 crw nef nrw arw sr2 srf dng orf raf rw2 pef srw 3fr fff rwl iiq mrw dcr kdc erf mef",
   model: "obj stl ply 3mf gltf glb vmf",
-  material: "mtl vmt",
+  material: "mtl",
   video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp",
   audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf",
 };
 const TYPE_NAME = {
   photo: e => `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
-  vector: () => "SVG image", doc: e => e === "TXT" ? "Text document" : "PDF document", layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
+  vector: () => "SVG image", doc: e => e === "TXT" ? "Text document" : e === "VMT" ? "VMT Source material" : "PDF document", layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => e === "VMF" ? "VMF Hammer map" : `${e} 3D model`,
-  material: e => e === "VMT" ? "VMT Source material" : "MTL material library", video: e => `${e} video`,
+  material: () => "MTL material library", video: e => `${e} video`,
   audio: e => `${e} audio`,
 };
 
