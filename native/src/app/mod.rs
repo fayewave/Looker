@@ -202,6 +202,8 @@ enum Hit {
     ExplorerRename,
     Sidebar,
     SidebarGrip,
+    /// Not hit: the key the sidebar column's slide in and out is eased under.
+    SidebarColumn,
     SideRow(usize),
     /// Not a hit: the key a row's multi-selection fill eases under.
     RowSolid(usize),

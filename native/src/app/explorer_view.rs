@@ -145,12 +145,16 @@ impl App {
         ui::card(g, card);
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
         let w = inner.right - inner.left;
-        let column_sidebar = w >= SIDEBAR_AT;
+        // The sidebar slides in from the left as the card gets wide enough (browse mode), and back out, on the
+        // app's one curve and length (Faye, 2026-11-10: it popped in).
+        let slide = self.fades.get(Hit::SidebarColumn, w >= SIDEBAR_AT);
+        let column_sidebar = slide > 0.0;
         g.push_clip(inner);
-        let mut moving = false;
+        let mut moving = slide > 0.0 && slide < 1.0;
         let main = if column_sidebar {
             let side_w = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
-            let side = D2D_RECT_F { right: inner.left + side_w, ..inner };
+            let shown = g.snap(side_w * slide);
+            let side = D2D_RECT_F { left: inner.left + shown - side_w, right: inner.left + shown, ..inner };
             moving |= self.draw_sidebar(g, side);
             g.fill(rect(side.right, inner.top, g.px(), inner.bottom - inner.top), rgb(theme::t().divider));
             // Its edge resizes it: a line in the accent while held, the ink on hover.
