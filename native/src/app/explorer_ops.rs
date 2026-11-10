@@ -612,6 +612,17 @@ impl App {
         self.show_menu(MenuKind::Tab(i), e, x, y);
     }
 
+    /// A text tab's menu (right-click): the explorer tab's entries, for documents.
+    pub(super) fn text_tab_menu(&mut self, i: usize, x: f32, y: f32) {
+        let n = self.text.docs.len();
+        let e = vec![
+            item(Action::NewTab, 0xE710, "New tab", Some("Ctrl+T"), true),
+            item(Action::CloseTab, 0xE711, "Close tab", Some("Ctrl+W"), true),
+            item(Action::CloseOtherTabs, 0xE8BB, "Close other tabs", None, n > 1),
+        ];
+        self.show_menu(MenuKind::TextTab(i), e, x, y);
+    }
+
     /// A column header's menu (right-click), as Transient's: move it, size it, close it, then every column
     /// by group, ticked while it shows.
     pub(super) fn column_menu(&mut self, idx: usize, x: f32, y: f32) {

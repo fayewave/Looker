@@ -313,6 +313,7 @@ impl App {
                     self.mouse = (x, y);
                     let h = self.hit(x, y);
                     self.set_hover(h);
+                    self.text_menubar_hover();
                     // The waveform's pointer line follows the pointer: playing, the vsync redraws it anyway;
                     // stopped, only this does (it froze and jumped otherwise).
                     if matches!(self.hover, Some(Hit::AudioWave)) {
@@ -700,6 +701,10 @@ impl App {
                         Some(Hit::Tab(i) | Hit::TabClose(i)) => {
                             self.close_menu();
                             self.tab_menu(i as usize, x, y);
+                        }
+                        Some(Hit::TextTab(i) | Hit::TextTabClose(i)) => {
+                            self.close_menu();
+                            self.text_tab_menu(i as usize, x, y);
                         }
                         Some(Hit::Crumb(i)) => {
                             self.close_menu();

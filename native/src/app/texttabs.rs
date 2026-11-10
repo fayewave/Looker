@@ -63,11 +63,13 @@ pub(super) struct TextDocs {
     pub(super) spell: Option<Option<crate::spell::Spell>>,
     /// The tab strip's motion, drag and tooltips: the explorer's own (tabstrip.rs).
     pub(super) strip: super::tabstrip::TabStrip,
+    /// Tabs still to close after "Close other tabs" (ids), one Save / Don't save / Cancel at a time.
+    close_queue: Vec<u64>,
 }
 
 impl TextDocs {
     pub(super) fn new() -> TextDocs {
-        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None, strip: Default::default() }
+        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None, strip: Default::default(), close_queue: Vec::new() }
     }
 
     pub(super) fn cur(&self) -> Option<&TextView> {
@@ -364,11 +366,31 @@ impl App {
         self.text_remove_tab(i);
     }
 
+    /// "Close other tabs": every tab but this one, asking about each edited one in turn (Cancel stops).
+    pub(super) fn text_close_others(&mut self, i: usize) {
+        let Some(keep) = self.text.docs.get(i).map(|d| d.id) else { return };
+        self.text.close_queue = self.text.docs.iter().map(|d| d.id).filter(|&id| id != keep).collect();
+        self.text_close_next();
+    }
+
+    /// The next tab of the queue: closed when it has nothing to save, otherwise asked about (and the rest wait).
+    fn text_close_next(&mut self) {
+        while let Some(id) = self.text.close_queue.first().copied() {
+            self.text.close_queue.remove(0);
+            let Some(i) = self.text.docs.iter().position(|d| d.id == id) else { continue };
+            let asks = self.text.docs[i].dirty() && !self.text.docs[i].read_only;
+            self.text_close_tab(i);
+            if asks {
+                return;
+            }
+        }
+    }
+
     /// The Save / Don't save / Cancel answer for the tab with this id.
     pub(super) fn text_close_answer(&mut self, id: u64, choice: Choice) {
         let Some(i) = self.text.docs.iter().position(|d| d.id == id) else { return };
         match choice {
-            Choice::Cancel => {}
+            Choice::Cancel => self.text.close_queue.clear(),
             Choice::Discard => self.text_remove_tab(i),
             Choice::Confirm => {
                 self.text.active = i;
@@ -376,9 +398,12 @@ impl App {
                     if let Some(i) = self.text.docs.iter().position(|d| d.id == id) {
                         self.text_remove_tab(i);
                     }
+                } else {
+                    self.text.close_queue.clear();
                 }
             }
         }
+        self.text_close_next();
     }
 
     fn text_remove_tab(&mut self, i: usize) {
@@ -502,12 +527,19 @@ impl App {
             let fg = ui::quiet_frame(g, r, ui::Kind::Toggle(open == Some(k as u8)), &st);
             g.text(&wide(label), &g.fonts.body, r, fg, Align::Center);
             x += w + 2.0;
-            // Another menu of the bar open: moving onto this one opens it instead, as menu bars do.
-            if open.is_some_and(|o| o != k as u8) && self.hover == Some(hit) {
-                self.text_open_bar_menu(k as u8, r);
-            }
         }
         moving
+    }
+
+    /// The pointer onto File, Edit or View while another of them is open: that one opens instead, as menu bars do.
+    /// (Here, not while drawing: the menu is measured with the Gfx, which drawing has out.)
+    pub(super) fn text_menubar_hover(&mut self) {
+        let (Some(Hit::TextMenuBar(k)), Some((menus::MenuKind::TextBar(o), _))) = (self.hover, &self.menu) else { return };
+        if *o == k {
+            return;
+        }
+        let Some(r) = self.hits.rect_of(Hit::TextMenuBar(k)) else { return };
+        self.text_open_bar_menu(k, r);
     }
 
     pub(super) fn text_menubar_click(&mut self, k: u8) {

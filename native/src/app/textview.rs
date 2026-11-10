@@ -29,6 +29,8 @@ use windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush;
 
 const PAD: f32 = 16.0;
 const FOOT_H: f32 = 28.0;
+/// The foot's whole height: the explorer's footer (its 28 row with 8 above and below; Faye, 2026-11-11).
+const FOOT_BOX: f32 = FOOT_H + 16.0;
 const BAR_ROW: f32 = 40.0;
 const SIZE_MIN: f32 = 8.0;
 const SIZE_MAX: f32 = 48.0;
@@ -212,6 +214,8 @@ pub(super) struct TextView {
     meta_dirty: bool,
     scroll: f32,
     scroll_x: f32,
+    /// Where on a scrollbar thumb the pointer took it (DIPs from its start), while it's dragged.
+    thumb_grab: Option<f32>,
     size: f32,
     focus: Focus,
     pub(super) caret_on: bool,
@@ -355,6 +359,7 @@ impl TextView {
             meta_dirty: false,
             scroll: 0.0,
             scroll_x: 0.0,
+            thumb_grab: None,
             size: font.px,
             focus: Focus::None,
             caret_on: true,
@@ -947,7 +952,7 @@ impl App {
         let rows = App::text_rows_height();
         let bar = (bar_h > 0.0).then(|| rect(card.left, card.top + rows, card.right - card.left, bar_h));
         let top = card.top + rows + bar_h + PAD / 2.0;
-        let body_bottom = card.bottom - if self.settings.text_status { FOOT_H } else { 4.0 };
+        let body_bottom = card.bottom - if self.settings.text_status { FOOT_BOX } else { 4.0 };
         let lines = tv.starts.len().max(1);
         let digits = lines.to_string().len().max(3) as f32;
         let gutter_w = if self.settings.text_numbers { digits * tv.size * 0.55 + 22.0 } else { 6.0 };
@@ -1099,7 +1104,9 @@ impl App {
             }
             if sa < sb && sb > a && sa <= b {
                 let (la, lb) = (sa.max(a) - a, sb.min(b) - a);
-                let sel = gfx::rgba(t.accent, if focused_any { 0.45 } else { 0.24 });
+                // White, not the accent (Faye, 2026-11-11): the text colour, so white on the dark themes and still
+                // visible on the light ones.
+                let sel = gfx::rgba(t.text, if focused_any { 0.30 } else { 0.16 });
                 if la < lb {
                     for m in ranges(la, lb) {
                         g.fill(rect(ox + m.left, y + m.top, m.width, m.height), sel);
@@ -1329,7 +1336,8 @@ impl App {
             let chars = String::from_utf16_lossy(&tv.edit.units()[a..b]).chars().count();
             left.push_str(&format!("   {chars} selected"));
         }
-        let fr = D2D_RECT_F { left: r.foot.left + 12.0, right: r.foot.right - 8.0, ..r.foot };
+        let ft = r.foot.top + 8.0;
+        let fr = D2D_RECT_F { left: r.foot.left + 12.0, right: r.foot.right - 8.0, top: ft, bottom: ft + FOOT_H };
         g.text_tabular(&wide(&left), &g.fonts.caption, fr, rgb(t.label), Align::Left);
         let note = if let Some(e) = &tv.error {
             Some(e.clone())
@@ -1347,11 +1355,11 @@ impl App {
         let mut x = fr.right;
         let sw = g.measure_tabular(&wide(&size), &g.fonts.caption).ceil() + 12.0;
         x -= sw;
-        g.text_tabular(&wide(&size), &g.fonts.caption, rect(x, r.foot.top, sw, FOOT_H), rgb(t.label), Align::Center);
+        g.text_tabular(&wide(&size), &g.fonts.caption, rect(x, ft, sw, FOOT_H), rgb(t.label), Align::Center);
         for (id, label) in chips {
             let w = g.measure(&wide(&label), &g.fonts.caption).ceil() + 16.0;
             x -= w + 2.0;
-            let cr = rect(x, r.foot.top + 3.0, w, FOOT_H - 6.0);
+            let cr = rect(x, ft + 3.0, w, FOOT_H - 6.0);
             let hit = Hit::TextFoot(id);
             self.hits.add(hit, cr);
             let st = self.state(hit, true);
@@ -1360,7 +1368,7 @@ impl App {
         }
         if let Some(note) = note {
             let w = g.measure(&wide(&note), &g.fonts.caption).ceil() + 12.0;
-            g.text(&wide(&note), &g.fonts.caption, rect(x - w - 4.0, r.foot.top, w, FOOT_H), rgb(if self.text.cur().is_some_and(|tv| tv.disk_changed) { t.warn } else { t.label }), Align::Center);
+            g.text(&wide(&note), &g.fonts.caption, rect(x - w - 4.0, ft, w, FOOT_H), rgb(if self.text.cur().is_some_and(|tv| tv.disk_changed) { t.warn } else { t.label }), Align::Center);
         }
     }
 
@@ -1449,6 +1457,7 @@ impl App {
     pub(super) fn text_scroll_press(&mut self, x: f32, y: f32, horizontal: bool) {
         if let Some(tv) = self.text.cur_mut() {
             tv.drag = Some(if horizontal { Drag::HThumb } else { Drag::Thumb });
+            tv.thumb_grab = None;
         }
         self.text_scroll_drag(x, y);
     }
@@ -1457,17 +1466,29 @@ impl App {
         let horizontal = self.text.cur().is_some_and(|tv| tv.drag == Some(Drag::HThumb));
         self.with_text(false, |tv, _, r, tops, _, _| {
             let view_h = r.text.bottom - r.text.top;
-            if horizontal {
+            // The thumb follows the pointer, held where it was taken (a press off it centres it there first), as
+            // the drawing places it: the track less the thumb maps onto the scroll range.
+            let (p, start, len, thumb, max, cur) = if horizontal {
                 let vw = r.text.right - r.text.left;
                 let max_x = (tv.max_w + 40.0 - vw).max(0.0);
-                let f = ((x - r.htrack.left) / (r.htrack.right - r.htrack.left).max(1.0)).clamp(0.0, 1.0);
-                tv.scroll_x = f * max_x;
+                let len = r.htrack.right - r.htrack.left;
+                (x, r.htrack.left, len, (len * vw / (vw + max_x).max(1.0)).max(28.0), max_x, tv.scroll_x)
             } else {
                 let total_h = tops.last().copied().unwrap_or(0.0) + view_h * 0.5;
-                let track_h = r.track.bottom - r.track.top;
-                let thumb_h = (track_h * view_h / total_h.max(1.0)).max(28.0);
-                let f = ((y - r.track.top - thumb_h / 2.0) / (track_h - thumb_h).max(1.0)).clamp(0.0, 1.0);
-                tv.scroll = f * (total_h - view_h).max(0.0);
+                let len = r.track.bottom - r.track.top;
+                let max = (total_h - view_h).max(0.0);
+                (y, r.track.top, len, (len * view_h / total_h.max(1.0)).max(28.0), max, tv.scroll)
+            };
+            let room = (len - thumb).max(1.0);
+            let grab = *tv.thumb_grab.get_or_insert_with(|| {
+                let at = start + room * if max > 0.0 { cur / max } else { 0.0 };
+                if p >= at && p <= at + thumb { p - at } else { thumb / 2.0 }
+            });
+            let v = ((p - grab - start) / room).clamp(0.0, 1.0) * max;
+            if horizontal {
+                tv.scroll_x = v;
+            } else {
+                tv.scroll = v;
             }
         });
         self.invalidate();
@@ -2132,7 +2153,7 @@ impl App {
         let alt = unsafe { GetKeyState(VK_MENU.0 as i32) < 0 };
         // Everywhere in the view.
         match vk {
-            VK_N if ctrl => return self.with_key(|a| a.text_new_tab()),
+            VK_N | VK_T if ctrl => return self.with_key(|a| a.text_new_tab()),
             VK_O if ctrl => return self.with_key(|a| a.text_open_dialog()),
             VK_W if ctrl => return self.with_key(|a| a.text_close_tab(a.text.active)),
             VK_P if ctrl => return self.with_key(|a| a.text_print()),

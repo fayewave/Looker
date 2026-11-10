@@ -15,6 +15,7 @@ mod decode;
 mod dvd;
 mod engine;
 mod explorer;
+mod file_icons;
 mod fileops;
 mod folder;
 mod format;

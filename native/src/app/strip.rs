@@ -413,14 +413,17 @@ impl App {
                 let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
                 let mid = (inner.top + inner.bottom) / 2.0;
                 let side = ((inner.bottom - inner.top) - 32.0).clamp(16.0, 48.0).floor();
-                let icon_r = rect(inner.left, mid - 4.0 - side, inner.right - inner.left, side);
+                // The icon and the extension under it, centred together in the cell (they sat high; Faye, 2026-11-11).
+                let group_top = g.snap(mid - (side + 6.0 + 16.0) / 2.0);
+                let label_top = group_top + side + 6.0;
+                let icon_r = rect(inner.left, group_top, inner.right - inner.left, side);
                 let shown = !ext.is_empty() && super::explorer_view::shell_icon_at(g, &crate::shell_icons::Kind::Extension(ext.to_lowercase()), icon_r, side, 1.0, None);
                 if !shown {
-                    let glyph_y = if ext.is_empty() { mid - 10.0 } else { mid - 18.0 };
+                    let glyph_y = if ext.is_empty() { mid - 10.0 } else { group_top + side / 2.0 - 10.0 };
                     g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), gfx::rgba(th.icon, 0.45), Align::Center);
                 }
                 if !ext.is_empty() {
-                    g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, mid + 4.0, (inner.right - inner.left - 8.0).max(0.0), 16.0), gfx::rgba(th.label, 0.7), Align::Center);
+                    g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, label_top, (inner.right - inner.left - 8.0).max(0.0), 16.0), gfx::rgba(th.label, 0.7), Align::Center);
                 }
             } else if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);

@@ -321,6 +321,12 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::TextTab(i)) => match action {
+                Action::NewTab => self.text_new_tab(),
+                Action::CloseTab => self.text_close_tab(i),
+                Action::CloseOtherTabs => self.text_close_others(i),
+                _ => {}
+            },
             Some(MenuKind::Text | MenuKind::TextBar(_)) => {
                 if let Action::Text(a) = action {
                     self.text_action(a);
@@ -450,4 +456,6 @@ pub(super) enum MenuKind {
     Text,
     /// The text editor's menu bar: File, Edit or View.
     TextBar(u8),
+    /// A text tab's menu (right-click), for the tab at this index: the explorer tab menu's entries.
+    TextTab(usize),
 }
