@@ -115,13 +115,19 @@ impl App {
                 tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
             };
             e.push(Entry::Separator);
+            // Loop, ticked as the player is now (Faye, 2026-11-10), as in the bar's Settings.
+            let looping = self.player_ref().is_some_and(|p| p.looping());
+            e.push(Entry::Item(MenuItem { tint: None, action: Action::ToggleVideoLoop, glyph: Some(0xE8EE), label: "Loop".into(), accel: None, check: Some(looping), enabled: true, current: false }));
             // And which picture stream shows, as the audio (Faye, 2026-11-10), there even with one.
             let pictures: Vec<Entry<Action>> =
                 self.video_picture_tracks().into_iter().map(|(stream, label, showing)| check(Action::VideoTrack(stream), &label, showing)).collect();
             if !pictures.is_empty() {
                 e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
             }
-            e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
+            // An audio file plays its one stream: no menu of them.
+            if !self.player_ref().is_some_and(video::Engine::is_audio) {
+                e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
+            }
         }
         e.extend([
             Entry::Separator,
@@ -312,6 +318,7 @@ impl App {
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::AudioTrack(s) => self.set_audio_track(s),
             Action::VideoTrack(s) => self.set_video_track(s),
+            Action::ToggleVideoLoop => self.toggle_video_loop(),
             _ => {}
         }
     }
