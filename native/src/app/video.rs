@@ -237,7 +237,14 @@ pub(super) fn timecode(us: i64, fps: f64, hours: bool) -> String {
     let us = us.max(0);
     let s = (us / 1_000_000) as u64;
     let f = if fps > 0.0 { ((us % 1_000_000) as f64 * fps / 1e6 + 1e-3).floor() as u64 } else { 0 };
-    if hours { format!("{}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, f) } else { format!("{:02}:{:02}:{:02}", s / 60, s % 60, f) }
+    // Always as many picture digits as the rate needs: "00:00:091" at 120 fps, never "91" then "100" (Faye).
+    let d = frame_digits(fps);
+    if hours { format!("{}:{:02}:{:02}:{:0d$}", s / 3600, s / 60 % 60, s % 60, f) } else { format!("{:02}:{:02}:{:0d$}", s / 60, s % 60, f) }
+}
+
+/// The picture number's digits at `fps`: two, three past 100 fps.
+fn frame_digits(fps: f64) -> usize {
+    if fps > 0.0 { ((fps.ceil() as u64).saturating_sub(1)).max(1).to_string().len().max(2) } else { 2 }
 }
 
 /// "1:05", "12:40", "1:02:03" (hours when the video is that long).
@@ -252,8 +259,7 @@ pub(super) const BADGE_MIN_H: f32 = 40.0;
 /// The widest `timecode` can be for a video at `fps`: all zeros, with as many picture digits as the rate needs
 /// (three past 100 fps: Faye, 2026-11-10, a 120 fps video's times were cut off).
 fn timecode_template(fps: f64, hours: bool) -> String {
-    let digits = if fps > 0.0 { ((fps.ceil() as u64).saturating_sub(1)).max(1).to_string().len().max(2) } else { 2 };
-    format!("{}:{}", if hours { "0:00:00" } else { "00:00" }, "0".repeat(digits))
+    format!("{}:{}", if hours { "0:00:00" } else { "00:00" }, "0".repeat(frame_digits(fps)))
 }
 
 /// Fills a slider's rounded track from its left end to `x`: the track's corners, a square end at `x`.
@@ -713,12 +719,13 @@ impl App {
         ui::stroke(g, disc, FLASH_R, gfx::rgba(0xFFFFFF, 0.22));
         let ink = gfx::rgba(0xFFFFFF, 1.0);
         if glyph == PLAY_GLYPH {
-            // What shows centred in the square (Faye, 2026-11-10: by its centroid it sat ~4 px right). The rounded
-            // tip ends short of the point: the curve's middle is half the corner's run back along the axis.
-            // A tad larger in the square (Faye, 2026-11-10; was 32 x 36).
+            // Optically centred: halfway between its ink box centred (which looked left: Faye, 2026-11-10) and its
+            // centroid centred (which looked right). The rounded tip ends short of the point: the curve's middle is
+            // half the corner's run back along the axis. A tad larger in the square (was 32 x 36).
             let (w, h, r) = (38.0f32, 43.0f32, 6.0f32);
             let tip_cut = r / 2.0 * (w / (w * w + h * h / 4.0).sqrt());
-            let left = cx - (w - tip_cut) / 2.0;
+            let (by_box, by_centroid) = (cx - (w - tip_cut) / 2.0, cx - w / 3.0);
+            let left = g.snap((by_box + by_centroid) / 2.0);
             g.fill_rounded_polygon(&[(left, cy - h / 2.0), (left + w, cy), (left, cy + h / 2.0)], r, ink);
         } else {
             let (w, h, gap) = (12.0, 40.0, 9.0);
@@ -1212,6 +1219,9 @@ mod tests {
         assert_eq!(timecode(65_983_000, 60.0, false), "01:05:58");
         assert_eq!(timecode(3_723_040_000, 25.0, true), "1:02:03:01");
         assert_eq!(timecode(5_000_000, 0.0, false), "00:05:00");
+        assert_eq!(timecode(760_000, 120.0, false), "00:00:091");
+        assert_eq!(timecode(1_840_000, 120.0, false), "00:01:100");
+        assert_eq!(timecode(1_000_000, 119.88, false), "00:01:000");
         assert_eq!(timecode_template(30.0, false), "00:00:00");
         assert_eq!(timecode_template(100.0, false), "00:00:00");
         assert_eq!(timecode_template(120.0, true), "0:00:00:000");
