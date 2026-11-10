@@ -354,10 +354,10 @@ impl App {
             }
         }
         e.push(ui::Entry::Separator);
-        e.push(ui::Entry::Item(ui::MenuItem { tint: None, action: Action::SubAdd, glyph: Some(0xE8E5), label: "Add subtitle file\u{2026}".into(), accel: None, check: None, enabled: true, current: false }));
+        e.push(ui::Entry::Item(ui::MenuItem { icon: None, tint: None, action: Action::SubAdd, glyph: Some(0xE8E5), label: "Add subtitle file\u{2026}".into(), accel: None, check: None, enabled: true, current: false }));
         e.push(ui::Entry::Separator);
         e.push(ui::Entry::Heading(subs::delay_text(v.subs.delay_us).replace("Subtitle delay", "Delay")));
-        let item = |a: Action, label: &str, accel: Option<&'static str>, enabled: bool| ui::Entry::Item(ui::MenuItem { tint: None, action: a, glyph: None, label: label.into(), accel, check: None, enabled, current: false });
+        let item = |a: Action, label: &str, accel: Option<&'static str>, enabled: bool| ui::Entry::Item(ui::MenuItem { icon: None, tint: None, action: a, glyph: None, label: label.into(), accel, check: None, enabled, current: false });
         e.push(item(Action::SubDelay(-1), "Earlier", Some("G"), true));
         e.push(item(Action::SubDelay(1), "Later", Some("H"), true));
         e.push(item(Action::SubDelay(0), "Reset delay", None, v.subs.delay_us != 0));

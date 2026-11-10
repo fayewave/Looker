@@ -841,6 +841,9 @@ pub struct MenuItem<A> {
     pub current: bool,
     /// The glyph's own colour (a folder's yellow); with the colour-tag glyph, a dot in it (a colour collection).
     pub tint: Option<u32>,
+    /// Windows' own icon in place of the glyph (a folder's, a drive's, This PC's), as the sidebar draws them; the
+    /// glyph stands in while Windows has none.
+    pub icon: Option<crate::shell_icons::Kind>,
 }
 
 /// A value with a minus and a plus (Transient's "Height  [-  1 row  +]"): each button an action, None when
@@ -1188,7 +1191,13 @@ impl<A: Copy> Menu<A> {
             } else {
                 rgb(raised.placeholder)
             };
-            if let Some(glyph) = it.glyph {
+            let ir = rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW);
+            let shell = it.icon.as_ref().map(|k| crate::shell_icons::get(k, (16.0 * g.dpi / 96.0).round() as u32));
+            if let Some(crate::shell_icons::Lookup::Ready(icon)) = &shell {
+                g.draw_icon(icon, ir, 16.0, if it.enabled { 1.0 } else { 0.45 }, None);
+            } else if matches!(shell, Some(crate::shell_icons::Lookup::Pending)) {
+                // Loading: nothing yet (it redraws when it arrives).
+            } else if let Some(glyph) = it.glyph {
                 let ic = if hot || !it.enabled { fg } else { it.tint.map_or(rgb(raised.icon), rgb) };
                 if glyph == 0xEA3B && it.tint.is_some() {
                     let c = it.tint.map_or(fg, rgb);

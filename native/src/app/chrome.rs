@@ -543,6 +543,9 @@ impl App {
         if self.audio_shown() {
             // An audio file sits on the page itself (its cover is a picture of its own, not a photo on a canvas).
             g.fill(bg, g.photo_rgb(self.theme().content));
+        } else if self.fullscreen.is_some() && self.video_shown() {
+            // A video in fullscreen: pure black around it, no checkerboard, like a cinema (Faye, 2026-11-11).
+            g.fill(bg, g.photo_rgb(0x000000));
         } else if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {

@@ -84,17 +84,17 @@ pub(super) enum Action {
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
+    Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
 /// An item with a tickbox at the right: ticked when on (a setting, or the one picked of several).
 pub(super) fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { tint: None, action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
+    Entry::Item(MenuItem { icon: None, tint: None, action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
 }
 
 /// A panel toggle: its icon and key, and a tickbox showing whether it's out (Faye, 2026-11-11).
 fn toggle(action: Action, glyph: u16, label: &str, accel: &'static str, enabled: bool, on: bool) -> Entry<Action> {
-    Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel: Some(accel), check: Some(on), enabled, current: false })
+    Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel: Some(accel), check: Some(on), enabled, current: false })
 }
 
 impl App {
@@ -125,14 +125,14 @@ impl App {
         if self.video_shown() && self.player_ref().is_some() {
             let tracks = self.video_audio_tracks();
             let rows: Vec<Entry<Action>> = if tracks.is_empty() {
-                vec![Entry::Item(MenuItem { tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
+                vec![Entry::Item(MenuItem { icon: None, tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
             } else {
                 tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
             };
             e.push(Entry::Separator);
             // Loop, ticked as the player is now (Faye, 2026-11-10), as in the bar's Settings.
             let looping = self.player_ref().is_some_and(|p| p.looping());
-            e.push(Entry::Item(MenuItem { tint: None, action: Action::ToggleVideoLoop, glyph: Some(0xE8EE), label: "Loop".into(), accel: None, check: Some(looping), enabled: true, current: false }));
+            e.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::ToggleVideoLoop, glyph: Some(0xE8EE), label: "Loop".into(), accel: None, check: Some(looping), enabled: true, current: false }));
             // And which picture stream shows, as the audio (Faye, 2026-11-10), there even with one.
             let pictures: Vec<Entry<Action>> =
                 self.video_picture_tracks().into_iter().map(|(stream, label, showing)| check(Action::VideoTrack(stream), &label, showing)).collect();

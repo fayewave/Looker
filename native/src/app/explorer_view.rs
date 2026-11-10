@@ -54,7 +54,7 @@ fn row_icon(r: &explorer::Row) -> shell_icons::Kind {
 }
 
 /// A place's icon (a tab's, a sidebar row's): a folder by path, This PC.
-fn place_icon(p: &Place) -> Option<shell_icons::Kind> {
+pub(super) fn place_icon(p: &Place) -> Option<shell_icons::Kind> {
     match p {
         Place::Folder(f) => Some(shell_icons::Kind::Path(f.clone())),
         Place::Computer => Some(shell_icons::Kind::Computer),

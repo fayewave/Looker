@@ -44,9 +44,11 @@ pub(super) enum Mode {
 }
 
 enum Drag {
-    /// Pressed on the lanes at this frame: a click (seek) until it moves.
+    /// Pressed on the lanes: dragging scrubs, seeking as it goes (Transient's; Faye, 2026-11-11).
     Press { x: f32, frame: f64 },
-    /// Marking a region, from and to (frames).
+    /// Marking a region, from and to (frames). Off for now (Faye, 2026-11-11: a drag seeks instead); kept for
+    /// when it comes back with a modifier.
+    #[allow(dead_code)]
     Select { from: f64, to: f64 },
     /// The scrollbar's thumb held, this many frames from the view's start.
     Scroll { grab: f64 },
@@ -708,7 +710,17 @@ impl App {
         if let Some(a) = self.audio_view.as_mut() {
             a.drag = Some(Drag::Press { x, frame });
         }
+        self.audio_seek_to(frame);
         self.invalidate();
+    }
+
+    /// Seeks to `frame`, dropping a loop region it's outside.
+    fn audio_seek_to(&mut self, frame: f64) {
+        let Some(p) = self.player().and_then(Engine::audio) else { return };
+        if p.region().is_some_and(|(a, b)| (frame as i64) < a || frame as i64 >= b) {
+            p.set_region(None);
+        }
+        p.seek_frame(frame as i64);
     }
 
     pub(super) fn audio_scroll_press(&mut self, x: f32) {
@@ -729,11 +741,13 @@ impl App {
         let Some(drag) = self.audio_view.as_ref().and_then(|a| a.drag.as_ref()) else { return };
         match *drag {
             Drag::Press { x: x0, frame } => {
-                if (x - x0).abs() > 4.0 {
-                    let to = self.audio_frame_at(x).unwrap_or(frame);
+                // Scrubbing: the playhead follows the pointer.
+                let to = self.audio_frame_at(x).unwrap_or(frame);
+                if to != frame {
                     if let Some(a) = self.audio_view.as_mut() {
-                        a.drag = Some(Drag::Select { from: frame, to });
+                        a.drag = Some(Drag::Press { x: x0, frame: to });
                     }
+                    self.audio_seek_to(to);
                 }
             }
             Drag::Select { from, .. } => {
@@ -755,18 +769,14 @@ impl App {
         self.invalidate();
     }
 
-    /// Let go: a click seeks there (and drops a region it's outside), a drag loops what it marked.
+    /// Let go: a click or scrub has already sought; a marked region (off for now) loops.
     pub(super) fn audio_release(&mut self) {
         let Some(drag) = self.audio_view.as_mut().and_then(|a| a.drag.take()) else { return };
         let rate = self.audio_rate();
         let Some(p) = self.player().and_then(Engine::audio) else { return };
         match drag {
-            Drag::Press { frame, .. } => {
-                if p.region().is_some_and(|(a, b)| (frame as i64) < a || frame as i64 >= b) {
-                    p.set_region(None);
-                }
-                p.seek_frame(frame as i64);
-            }
+            // Already where the scrub left it.
+            Drag::Press { .. } => {}
             Drag::Select { from, to } => {
                 let (a, b) = (from.min(to), from.max(to));
                 if (b - a) / rate >= MIN_REGION_SECS {
