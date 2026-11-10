@@ -2562,6 +2562,11 @@ impl App {
         if self.explorer.latched && !just_latched && d.abs() >= STICK {
             self.explorer.latched = false;
             self.explorer.spring = Some((if d > 0.0 { BOUNCE } else { -BOUNCE }, now));
+            if d < 0.0 {
+                // Back to the card: it glides from the line to the pointer on the app's curve, as going into browse
+                // mode does (it jumped there: Faye, 2026-11-10).
+                self.explorer.width_settle = Some(crate::motion::Settle::from(self.explorer_width()));
+            }
         }
         let was = self.browsing();
         if self.explorer.latched {
