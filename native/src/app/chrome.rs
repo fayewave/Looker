@@ -362,7 +362,11 @@ impl App {
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
-        let card_moving = self.draw_info(&g) | self.draw_explorer(&g);
+        let info_moving = self.draw_info(&g);
+        // The explorer's hover highlights end at once, no fade out (Faye, 2026-11-10).
+        self.fades.instant_out = true;
+        let card_moving = info_moving | self.draw_explorer(&g);
+        self.fades.instant_out = false;
         let strip_moving = self.draw_strip(&g);
         if self.viewer.current.is_some() && self.placeholder.is_none() {
             self.draw_page_bar(&g);

@@ -43,6 +43,8 @@ const VOLUME_W: f32 = 76.0;
 /// held (no knob on either; always the hovered thickness, no growing: Faye, 2026-11-10).
 const SLIDER_H: f32 = 8.0;
 const SLIDER_GROW: f32 = 0.0;
+/// Their corners: a little rounded (Faye, 2026-11-10).
+const SLIDER_R: f32 = 2.5;
 const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
 const PREVIEW_W: f32 = 160.0;
@@ -51,7 +53,7 @@ const PREVIEW_H: f32 = 90.0;
 const RESUME_MARGIN_US: i64 = 10_000_000;
 const RESUME_CAP: usize = 200;
 /// The play/pause flashed over a clicked video: how long it fades, and its rounded square.
-const FLASH: Duration = Duration::from_millis(350);
+const FLASH: Duration = Duration::from_millis(450);
 const FLASH_D: f32 = 84.0;
 const FLASH_R: f32 = 18.0;
 /// Which the flash shows (Segoe's play and pause code points, though it draws them as shapes).
@@ -250,6 +252,16 @@ pub(super) fn clock_text(us: i64, hours: bool) -> String {
 pub(super) const BADGE_MIN_H: f32 = 40.0;
 
 /// A video's length in the bottom-right corner of its thumbnail `r`: white on a dark pill, as file managers do.
+/// Fills a slider's rounded track from its left end to `x`: the track's corners, a square end at `x`.
+fn fill_track_to(g: &Gfx, line: D2D_RECT_F, x: f32, c: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F) {
+    if x <= line.left {
+        return;
+    }
+    g.push_clip(D2D_RECT_F { right: x.min(line.right), ..line });
+    g.fill_round(line, SLIDER_R, c);
+    g.pop_clip();
+}
+
 pub(super) fn draw_duration_badge(g: &Gfx, r: D2D_RECT_F, us: i64) {
     let text = clock_text(us, us >= 3_600_000_000);
     let w = g.measure_tabular(&wide(&text), &g.fonts.caption).ceil() + 8.0;
@@ -768,8 +780,15 @@ impl App {
                             p.seek(t, true);
                         }
                     }
-                    VK_OEM_PERIOD => p.step_forward(),
-                    VK_OEM_COMMA => p.step_back(),
+                    // Said as the volume is (Faye, 2026-11-10).
+                    VK_OEM_PERIOD => {
+                        p.step_forward();
+                        toast = Some("Next frame".to_string());
+                    }
+                    VK_OEM_COMMA => {
+                        p.step_back();
+                        toast = Some("Previous frame".to_string());
+                    }
                     VK_LEFT | VK_RIGHT if shift => {
                         let t = p.position() + if vk == VK_RIGHT { JUMP_US } else { -JUMP_US };
                         p.seek(t, true);
@@ -939,7 +958,7 @@ impl App {
                 app.hits.add(id, r);
             }
             let st = app.state(id, true);
-            ui::button_frame(g, r, kind, &st)
+            ui::quiet_frame(g, r, kind, &st)
         };
         let glyph = if ended { 0xE72C } else if playing { 0xE769 } else { 0xE768 };
         if let Some(r) = l.play {
@@ -964,20 +983,17 @@ impl App {
         let over = self.hover == Some(Hit::VideoSeek) || scrubbing;
         let k = self.fades.get(Hit::VideoSeek, over);
         let grow = SLIDER_GROW / 2.0 * k;
-        // Square ends, the red's too: where it stops reads exactly (Faye, 2026-11-10).
+        // Slightly rounded corners, but the fills' ends stay square: where the red stops reads exactly (Faye,
+        // 2026-11-10).
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
-        g.fill(line, rgb(raised.track));
+        g.fill_round(line, SLIDER_R, rgb(raised.track));
         let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
         let px = line.left + (line.right - line.left) * frac;
-        if px > line.left {
-            g.fill(D2D_RECT_F { right: px, ..line }, rgb(t.accent));
-        }
+        fill_track_to(g, line, px, rgb(t.accent));
         // Over the red too (Faye: the whole way to the pointer).
         if k > 0.0 && !scrubbing {
             let mx = self.mouse.0.clamp(line.left, line.right);
-            if mx > line.left {
-                g.fill(D2D_RECT_F { right: mx, ..line }, gfx::rgba(raised.text, 0.28 * k));
-            }
+            fill_track_to(g, line, mx, gfx::rgba(raised.text, 0.28 * k));
         }
 
         let vol = self.settings.video_volume;
@@ -996,21 +1012,19 @@ impl App {
             let held = self.pressed == Some(Hit::VideoVolume);
             let k = self.fades.get(Hit::VideoVolume, self.hover == Some(Hit::VideoVolume) || held);
             let cy = (r.top + r.bottom) / 2.0;
-            // Square, as the seek bar.
+            // Rounded as the seek bar.
             let h = SLIDER_H + SLIDER_GROW * k;
             let line = rect(r.left + 6.0, cy - h / 2.0, r.right - r.left - 12.0, h);
-            g.fill(line, rgb(raised.track));
+            g.fill_round(line, SLIDER_R, rgb(raised.track));
             let shown = if muted { 0.0 } else { vol };
             let px = line.left + (line.right - line.left) * shown;
             if shown > 0.0 {
-                g.fill(D2D_RECT_F { right: px, ..line }, rgb(if muted { raised.label } else { raised.text }));
+                fill_track_to(g, line, px, rgb(if muted { raised.label } else { raised.text }));
             }
             // The seek bar's light fill up to the pointer while it's on it.
             if k > 0.0 && !held {
                 let mx = self.mouse.0.clamp(line.left, line.right);
-                if mx > line.left {
-                    g.fill(D2D_RECT_F { right: mx, ..line }, gfx::rgba(raised.text, 0.28 * k));
-                }
+                fill_track_to(g, line, mx, gfx::rgba(raised.text, 0.28 * k));
             }
         }
         if let Some(r) = l.speed {

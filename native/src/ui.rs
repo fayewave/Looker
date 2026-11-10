@@ -113,11 +113,13 @@ impl<T: Copy + PartialEq> Hits<T> {
 pub struct Fades<T> {
     map: HashMap<T, Ease<1>>,
     pub moving: bool,
+    /// While set, `hover` drops to 0 at once instead of fading out (the explorer's highlights).
+    pub instant_out: bool,
 }
 
 impl<T: Copy + Eq + Hash> Fades<T> {
     pub fn new() -> Self {
-        Fades { map: HashMap::new(), moving: false }
+        Fades { map: HashMap::new(), moving: false, instant_out: false }
     }
 
     /// Call once per frame before drawing.
@@ -139,9 +141,9 @@ impl<T: Copy + Eq + Hash> Fades<T> {
 
     /// A hover highlight: on at once, fading back out once it isn't.
     pub fn hover(&mut self, id: T, on: bool) -> f32 {
-        if on {
-            self.map.insert(id, Ease::at([1.0]));
-            return 1.0;
+        if on || self.instant_out {
+            self.map.insert(id, Ease::at([on as u8 as f32]));
+            return on as u8 as f32;
         }
         self.get(id, false)
     }
@@ -175,6 +177,21 @@ impl State {
 /// Draws a button's frame in `r` and returns its content colour.
 pub fn button_frame(g: &Gfx, r: D2D_RECT_F, kind: Kind, s: &State) -> D2D1_COLOR_F {
     frame(g, r, 5.0, kind, s)
+}
+
+/// A boxed button (or toggle while off) with no box until the pointer is on it: the fill and outline fade in with
+/// the hover, pressed is the accent as ever (the video bar's buttons, Faye 2026-11-10).
+pub fn quiet_frame(g: &Gfx, r: D2D_RECT_F, kind: Kind, s: &State) -> D2D1_COLOR_F {
+    if !matches!(kind, Kind::Standard | Kind::Toggle(false)) || (s.pressed && s.enabled) {
+        return button_frame(g, r, kind, s);
+    }
+    let t = theme::t();
+    let h = if s.enabled { s.hover } else { 0.0 };
+    if h > 0.0 {
+        g.fill_round(r, 5.0, rgba(t.hover_fill, h));
+        stroke(g, r, 5.0, faded(mix(t.divider, t.accent, h), h));
+    }
+    faded(rgb(t.text), if s.enabled { 1.0 } else { 0.45 })
 }
 
 /// `button_frame` with a radius of its own (the theme chips).
