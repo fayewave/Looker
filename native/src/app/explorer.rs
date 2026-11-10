@@ -348,6 +348,9 @@ pub(super) struct Explorer {
     /// it springs back with (from how far, since when).
     pub(super) stretch: f32,
     pub(super) spring: Option<(f32, Instant)>,
+    /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
+    pub(super) width_settle: Option<crate::motion::Settle>,
+    pub(super) side_settle: Option<crate::motion::Settle>,
     /// What's been typed to jump to a row, and when the last character came (`explorer_type_ahead`).
     pub(super) ahead: (String, Option<Instant>),
     pub(super) tags: crate::tags::Tags,
@@ -431,6 +434,8 @@ impl Explorer {
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
+            width_settle: None,
+            side_settle: None,
             ahead: (String::new(), None),
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
@@ -549,7 +554,21 @@ impl App {
         let card = self.card_width();
         let k = self.explorer.browse.value(Instant::now())[0];
         let w = if k <= 0.0 { card } else { card + (self.browse_width() - card) * k };
-        w + self.explorer_stretch()
+        let w = w + self.explorer_stretch();
+        // Double-clicked back to its default: it eases there.
+        match self.explorer.width_settle {
+            Some(s) if s.moving() => s.value(w),
+            _ => w,
+        }
+    }
+
+    /// The sidebar's width, easing back to its default after a double-click on its edge.
+    pub(super) fn sidebar_w(&self) -> f32 {
+        let w = self.settings.sidebar_width;
+        match self.explorer.side_settle {
+            Some(s) if s.moving() => s.value(w),
+            _ => w,
+        }
     }
 
     /// How far the edge is pulled or bouncing past where it rests: the live rubber band while it's dragged in the
@@ -600,7 +619,11 @@ impl App {
             self.explorer.spring = None; // settled: one last layout at rest
             return true;
         }
-        self.explorer.browse.moving(now) | self.explorer.browse.settle(now) | springing
+        let settling = self.explorer.width_settle.is_some_and(|s| s.moving());
+        if !settling && self.explorer.width_settle.take().is_some() {
+            return true; // one last layout at its default
+        }
+        self.explorer.browse.moving(now) | self.explorer.browse.settle(now) | springing | settling
     }
 
     pub(super) fn left_inset(&self) -> f32 {
@@ -2445,6 +2468,7 @@ impl App {
     }
 
     pub(super) fn sidebar_grip_reset(&mut self) {
+        self.explorer.side_settle = Some(crate::motion::Settle::from(self.sidebar_w()));
         self.settings.sidebar_width = crate::settings::SIDEBAR_WIDTH;
         settings::save(&self.settings);
         self.invalidate();
@@ -2551,6 +2575,8 @@ impl App {
     /// Double-click: browse mode back to its default width, the card to its own.
     pub(super) fn explorer_grip_reset(&mut self) {
         self.explorer.drag = None;
+        // It eases from where it is to its default (Faye, 2026-11-10).
+        self.explorer.width_settle = Some(crate::motion::Settle::from(self.explorer_width()));
         if self.browsing() {
             self.settings.browse_share = 0.0;
             settings::save(&self.settings);

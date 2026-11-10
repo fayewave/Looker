@@ -189,7 +189,8 @@ impl App {
         g.push_clip(inner);
         let mut moving = slide > 0.0 && slide < 1.0;
         let main = if column_sidebar {
-            let side_w = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
+            let side_w = self.sidebar_w().clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
+            moving |= self.explorer.side_settle.is_some_and(|s| s.moving());
             let shown = g.snap(side_w * slide);
             let side = D2D_RECT_F { left: inner.left + shown - side_w, right: inner.left + shown, ..inner };
             // Its own fill, a step further from the page than the list's (theme `pane`), inside the card's corners.

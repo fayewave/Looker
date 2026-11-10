@@ -56,7 +56,7 @@ impl App {
         }
         let moving = sl.info.moving() || sl.explorer.moving() || sl.strip.moving();
         let landed = sl.info.settle() | sl.explorer.settle() | sl.strip.settle();
-        let browse = self.browse_moving();
+        let browse = self.browse_moving() | self.info_settling();
         let (moving, landed) = (moving || browse, landed);
         // A snap moves the insets too: the layout done by whatever changed the state (a page closing) measured
         // the old ones.

@@ -33,6 +33,33 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// A size eased from where it was to wherever it's meant to be now, on the one curve (a card's edge
+/// double-clicked back to its default: Faye, 2026-11-10). The target can move while it settles (a window resize).
+#[derive(Clone, Copy)]
+pub struct Settle {
+    from: f32,
+    at: Instant,
+}
+
+impl Settle {
+    pub fn from(v: f32) -> Settle {
+        Settle { from: v, at: Instant::now() }
+    }
+
+    /// The size now, on its way to `target`.
+    pub fn value(&self, target: f32) -> f32 {
+        self.from + (target - self.from) * ease_out(progress_secs(self.at) / EASE)
+    }
+
+    pub fn moving(&self) -> bool {
+        enabled() && self.at.elapsed().as_secs_f32() < EASE
+    }
+}
+
+fn progress_secs(at: Instant) -> f32 {
+    if enabled() { at.elapsed().as_secs_f32() } else { EASE }
+}
+
 /// How far (0..1, eased) something that started at `since` has come.
 pub fn progress(since: Instant) -> f32 {
     if !enabled() {

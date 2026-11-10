@@ -42,11 +42,13 @@ pub(super) struct Card {
     max_scroll: f32,
     /// A grip drag: the pointer x and the width when it started.
     pub drag: Option<(f32, f32)>,
+    /// Its width easing back to the default (its edge double-clicked).
+    pub settle: Option<crate::motion::Settle>,
 }
 
 impl Card {
     pub fn new() -> Card {
-        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None }
+        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None }
     }
 
     /// The scroll offset to draw this frame, and whether it is still moving.
@@ -86,13 +88,31 @@ impl App {
 
     /// What the card takes from the right of the viewport (its width, margins included).
     pub(super) fn right_inset(&self) -> f32 {
-        self.settings.info_width * self.slides.info.value()
+        self.info_w() * self.slides.info.value()
+    }
+
+    /// The card's width, easing back to its default after a double-click on its edge.
+    pub(super) fn info_w(&self) -> f32 {
+        let w = self.settings.info_width;
+        match self.info_card.settle {
+            Some(s) if s.moving() => s.value(w),
+            _ => w,
+        }
+    }
+
+    /// Still easing back to its default (the layout follows each frame); once more as it lands.
+    pub(super) fn info_settling(&mut self) -> bool {
+        let moving = self.info_card.settle.is_some_and(|s| s.moving());
+        if !moving && self.info_card.settle.take().is_some() {
+            return true;
+        }
+        moving
     }
 
     /// Slid out to the right by however much of it is hidden.
     fn info_card_rect(&self) -> D2D_RECT_F {
         let v = self.viewport();
-        let w = self.settings.info_width;
+        let w = self.info_w();
         let dx = w * (1.0 - self.slides.info.value());
         D2D_RECT_F { left: v.right - w + MARGIN + dx, top: v.top + MARGIN, right: v.right - MARGIN + dx, bottom: v.bottom - MARGIN }
     }
@@ -193,6 +213,8 @@ impl App {
 
     pub(super) fn info_grip_reset(&mut self) {
         self.info_card.drag = None;
+        // It eases from where it is to its default (Faye, 2026-11-10).
+        self.info_card.settle = Some(crate::motion::Settle::from(self.info_w()));
         self.settings.info_width = INFO_WIDTH;
         settings::save(&self.settings);
         self.layout_changed();
