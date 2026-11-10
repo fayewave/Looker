@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 9;
+const API: c_int = 10;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -48,7 +48,7 @@ pub struct Info {
     audio_codec: [c_char; 32],
 }
 
-fn text(b: &[c_char]) -> String {
+pub(super) fn text(b: &[c_char]) -> String {
     let bytes: Vec<u8> = b.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -57,6 +57,18 @@ impl Info {
     fn zeroed() -> Info {
         // SAFETY: plain C data, all-zero is a valid value.
         unsafe { std::mem::zeroed() }
+    }
+    /// An audio file's facts in a video's shape, for the controls bar (no picture: 0 x 0, no frame rate).
+    pub fn audio_only(duration_us: i64, channels: i32, rate: i32, bit_rate: i64, codec: &str) -> Info {
+        let mut i = Info::zeroed();
+        i.duration_us = duration_us;
+        i.audio_channels = channels;
+        i.audio_rate = rate;
+        i.bit_rate = bit_rate;
+        for (d, s) in i.audio_codec.iter_mut().zip(codec.bytes().take(31)) {
+            *d = s as c_char;
+        }
+        i
     }
     /// FFmpeg's short codec name ("h264", "hevc", "prores"...).
     pub fn codec(&self) -> String {
@@ -244,7 +256,7 @@ type ApiFn = unsafe extern "C" fn() -> c_int;
 type ProbeFn = unsafe extern "C" fn(*const u16, *mut Info) -> c_int;
 type StillFn = unsafe extern "C" fn(*const u16, c_int, c_int, *mut Info, *mut c_int, *mut c_int, *mut *mut u8) -> c_int;
 
-struct Lib {
+pub(super) struct Lib {
     probe: ProbeFn,
     still: StillFn,
     free: unsafe extern "C" fn(*mut c_void),
@@ -265,6 +277,14 @@ struct Lib {
     tempo_process: unsafe extern "C" fn(*mut c_void, *const f32, c_int, *mut *const f32) -> c_int,
     tempo_close: unsafe extern "C" fn(*mut c_void),
     frame_rgba: unsafe extern "C" fn(*const LvFrame, c_int, c_int, c_int, *mut c_int, *mut c_int, *mut *mut u8) -> c_int,
+    // The audio files' reader (la_* in looker_video.c, imaging/audio.rs).
+    pub(super) la_open: unsafe extern "C" fn(*const u16, c_int, *mut super::audio::Facts, *mut *mut c_void) -> c_int,
+    pub(super) la_close: unsafe extern "C" fn(*mut c_void),
+    pub(super) la_read: unsafe extern "C" fn(*mut c_void, *mut *const f32, *mut c_int, *mut i64) -> c_int,
+    pub(super) la_seek: unsafe extern "C" fn(*mut c_void, i64) -> c_int,
+    pub(super) la_interrupt: unsafe extern "C" fn(*mut c_void),
+    pub(super) la_cover: unsafe extern "C" fn(*const c_void, *mut *const u8, *mut c_int) -> c_int,
+    pub(super) la_tags: unsafe extern "C" fn(*const c_void, *mut c_char, c_int) -> c_int,
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -306,11 +326,18 @@ fn load() -> Result<Lib, String> {
             tempo_process: sym!("lv_tempo_process"),
             tempo_close: sym!("lv_tempo_close"),
             frame_rgba: sym!("lv_frame_rgba"),
+            la_open: sym!("la_open"),
+            la_close: sym!("la_close"),
+            la_read: sym!("la_read"),
+            la_seek: sym!("la_seek"),
+            la_interrupt: sym!("la_interrupt"),
+            la_cover: sym!("la_cover"),
+            la_tags: sym!("la_tags"),
         })
     }
 }
 
-fn lib() -> Result<&'static Lib, String> {
+pub(super) fn lib() -> Result<&'static Lib, String> {
     LIB.get_or_init(|| {
         let r = load();
         if let Err(e) = &r {
@@ -322,13 +349,13 @@ fn lib() -> Result<&'static Lib, String> {
     .map_err(|e| e.clone())
 }
 
-fn error(l: &Lib, code: c_int) -> String {
+pub(super) fn error(l: &Lib, code: c_int) -> String {
     let mut buf = [0 as c_char; 256];
     unsafe { (l.error)(code, buf.as_mut_ptr(), buf.len() as c_int) };
     format!("FFmpeg {code}: {}", text(&buf))
 }
 
-fn wide(path: &Path) -> Vec<u16> {
+pub(super) fn wide(path: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }

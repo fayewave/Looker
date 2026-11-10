@@ -8,6 +8,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod audio;
 mod clipboard;
 mod colour;
 mod decode;
@@ -36,6 +37,7 @@ mod trace;
 mod ui;
 mod view;
 mod viewer;
+mod waveform;
 mod yuv;
 
 use std::path::PathBuf;

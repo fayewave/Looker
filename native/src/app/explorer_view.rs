@@ -772,7 +772,7 @@ impl App {
             // On the solid accent everything is white.
             let ink = |c: u32| if lit { rgb(t.on_accent) } else { gfx::rgba(c, faded) };
             // A video's length goes on its thumbnail when that's big enough (the meta thread probes it).
-            let is_video = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Video;
+            let is_video = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio);
             let badge = is_video && icon_h >= video::BADGE_MIN_H;
             if r.kind == Kind::Image {
                 self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);

@@ -259,6 +259,9 @@ impl App {
                     if self.video.is_some() {
                         self.video_pointer(x, y);
                     }
+                    if matches!(self.pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
+                        self.audio_pointer(x);
+                    }
                     if let Some((px, py, moved)) = self.pan_drag {
                         // A few DIPs of slack, so a right-click that wobbles still opens the menu.
                         if moved || (x - px).abs() + (y - py).abs() > 4.0 {
@@ -342,6 +345,8 @@ impl App {
                             | Hit::VideoSettings
                             | Hit::VideoTime
                             | Hit::VideoFullscreen
+                            | Hit::AudioMode(_)
+                            | Hit::AudioClear
                             | Hit::ModelCube
                             | Hit::ExplorerBack
                             | Hit::ExplorerForward
@@ -437,6 +442,8 @@ impl App {
                     match h {
                         Some(Hit::VideoSeek) => self.scrub_start(x),
                         Some(Hit::VideoVolume) => self.volume_at(x),
+                        Some(Hit::AudioWave) => self.audio_press(x),
+                        Some(Hit::AudioScroll) => self.audio_scroll_press(x),
                         _ => {}
                     }
                     self.press_at = (x, y);
@@ -464,6 +471,9 @@ impl App {
                     if pressed == Some(Hit::VideoSeek) {
                         self.scrub_end();
                     }
+                    if matches!(pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
+                        self.audio_release();
+                    }
                     if pressed == Some(Hit::VideoVolume) {
                         settings::save(&self.settings);
                     }
@@ -477,6 +487,10 @@ impl App {
                         match h {
                             Some(p @ (Hit::PickerPreset(_) | Hit::PickerDone | Hit::PickerCancel)) => self.picker_click(p),
                             Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
+                            Some(Hit::AudioMode(i)) => self.set_audio_mode(i),
+                            Some(Hit::AudioClear) => {
+                                self.audio_clear_region();
+                            }
                             Some(Hit::ExplorerUp) => self.explorer_up(),
                             Some(Hit::ExplorerHistory) => self.explorer_history_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerBookmarks) => self.explorer_jump_menu(false, r.unwrap_or_default()),
@@ -668,7 +682,11 @@ impl App {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
-                    if self.hit(x, y) == Some(Hit::Viewport) && self.video_shown() {
+                    if self.hit(x, y) == Some(Hit::AudioWave) {
+                        self.audio_double_click();
+                    } else if self.hit(x, y) == Some(Hit::AudioScroll) {
+                        self.audio_zoom_fit();
+                    } else if self.hit(x, y) == Some(Hit::Viewport) && self.video_shown() {
                         self.video_double_click();
                     } else if self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
                         self.model_reset();
@@ -690,6 +708,7 @@ impl App {
                 WM_CAPTURECHANGED => {
                     self.drag = None;
                     self.scrub_end();
+                    self.audio_release(); // ReleaseCapture in WM_LBUTTONUP lands here first: the drag is applied, not lost
                     if self.explorer.row_drag.take().is_some() {
                         self.invalidate();
                     }
@@ -751,6 +770,10 @@ impl App {
                     }
                     if self.hit(x, y).is_some_and(video::is_bar_hit) {
                         self.video_volume_by(delta as f32 / 120.0 * 0.05);
+                        return Some(LRESULT(0));
+                    }
+                    if matches!(self.hit(x, y), Some(Hit::AudioWave | Hit::AudioScroll)) {
+                        self.audio_wheel(delta as f32, x, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
                     }
                     if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
@@ -831,7 +854,7 @@ impl App {
                         }
                         return Some(LRESULT(0));
                     }
-                    if self.video_key(vk, shift, ctrl) {
+                    if self.audio_key(vk, ctrl) || self.video_key(vk, shift, ctrl) {
                         return Some(LRESULT(0));
                     }
                     match vk {

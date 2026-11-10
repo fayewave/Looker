@@ -419,7 +419,7 @@ impl App {
             } else if let Some(t) = self.thumbs.get(&path, stamp) {
                 t.draw_fit(g, inner);
                 // A video: its length in the corner (asked of the explorer's meta thread).
-                if format::from_extension(path.extension().and_then(|e| e.to_str())) == format::Format::Video && inner.bottom - inner.top >= video::BADGE_MIN_H {
+                if matches!(format::from_extension(path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio) && inner.bottom - inner.top >= video::BADGE_MIN_H {
                     match self.explorer.meta.get(&crate::explorer::norm(&path)).filter(|m| m.stamp == stamp) {
                         Some(m) => {
                             if let Some(d) = m.duration_us {

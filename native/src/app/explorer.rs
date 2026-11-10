@@ -1877,6 +1877,11 @@ impl App {
                         let out: Vec<(PathBuf, Meta)> = batch
                             .into_iter()
                             .map(|(p, stamp)| {
+                                // An audio file: its length.
+                                if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Audio {
+                                    let duration_us = crate::imaging::audio::probe(&p).ok().map(|(f, _)| f.duration_us).filter(|&d| d > 0);
+                                    return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us });
+                                }
                                 // A video: its size, length and recording date from one probe.
                                 if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video {
                                     let info = crate::imaging::video::probe(&p).ok();

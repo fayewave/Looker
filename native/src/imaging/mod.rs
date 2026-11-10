@@ -14,6 +14,7 @@ pub mod pdf;
 mod raster;
 pub mod raw;
 pub mod svg;
+pub mod audio;
 pub mod video;
 pub mod wic;
 
@@ -140,6 +141,8 @@ enum Step {
     GainMap,
     /// A video's first picture through FFmpeg (bundled).
     Video,
+    /// An audio file's cover, or a sketch of its waveform (FFmpeg too).
+    Audio,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -173,6 +176,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Mtl => &[Mtl],
         Format::Model => &[Model],
         Format::Video => &[Video],
+        Format::Audio => &[Audio],
         Format::Unknown => &[],
     }
 }
@@ -208,6 +212,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::LibRaw => fallback::raw(f, path, box_w, box_h).map(Some),
         Step::GainMap => gainmap::decode(f, path, box_w, box_h),
         Step::Video => video::decode(f, path, box_w, box_h).map(Some),
+        Step::Audio => audio::decode(f, path, box_w, box_h).map(Some),
     }
 }
 

@@ -39,6 +39,8 @@ pub enum Format {
     Model,
     /// A video (FFmpeg through looker_video.dll, see imaging/video.rs).
     Video,
+    /// An audio file (FFmpeg too: imaging/audio.rs; played with its waveform, app/audio.rs).
+    Audio,
 }
 
 #[cfg(test)]
@@ -69,6 +71,7 @@ pub const ALL: &[Format] = &[
     Format::Mtl,
     Format::Model,
     Format::Video,
+    Format::Audio,
 ];
 
 /// Every extension Looker opens (lower case, no dot). Must equal the manifest FTA list.
@@ -83,6 +86,8 @@ pub const EXTENSIONS: &[&str] = &[
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
     // Video.
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
+    // Audio.
+    "mp3", "m4a", "m4b", "aac", "flac", "wav", "aif", "aiff", "ogg", "oga", "opus", "wma", "mka", "wv", "ape", "caf",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -121,6 +126,8 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "mtl" => Format::Mtl,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
+        "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
+        | "caf" => Format::Audio,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -191,8 +198,27 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
         if ["heic", "heix", "heif", "hevc", "mif1", "msf1"].iter().any(|b| ascii(h, 8, b)) {
             return Format::Heif;
         }
+        // Audio-only MP4: iTunes' brands, or a general one (isom, mp42) named .m4a.
+        if ["M4A ", "M4B ", "M4P ", "F4A "].iter().any(|b| ascii(h, 8, b)) || from_extension(ext) == Format::Audio {
+            return Format::Audio;
+        }
         // Every other ISO-BMFF brand is a movie: isom, mp41/mp42, M4V, qt, 3gp4...
         return Format::Video;
+    }
+    // Audio files: WAV (and RF64), AIFF, FLAC, Ogg, MP3 with an ID3 tag, WavPack, Monkey's Audio, CAF; Matroska and
+    // ASF only by name (.mka, .wma: the same containers as video).
+    if (ascii(h, 0, "RIFF") || ascii(h, 0, "RF64")) && ascii(h, 8, "WAVE")
+        || (ascii(h, 0, "FORM") && (ascii(h, 8, "AIFF") || ascii(h, 8, "AIFC")))
+        || ascii(h, 0, "fLaC")
+        || ascii(h, 0, "OggS")
+        || ascii(h, 0, "ID3")
+        || ascii(h, 0, "wvpk")
+        || ascii(h, 0, "MAC ")
+        || ascii(h, 0, "caff")
+        || ((starts(h, &[0x1A, 0x45, 0xDF, 0xA3]) || starts(h, &[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11]))
+            && from_extension(ext) == Format::Audio)
+    {
+        return Format::Audio;
     }
     // Video containers: Matroska/WebM (EBML), AVI, ASF/WMV, MXF (partition pack key), MPEG program stream, and a
     // QuickTime movie old enough to start with an atom other than ftyp.
@@ -240,6 +266,10 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     let s = if starts(h, &[0xEF, 0xBB, 0xBF]) { &h[3..] } else { h };
     if ascii(s, 0, "<?xml") || ascii(s, 0, "<svg") || ascii(s, 0, "<!--") {
         return Format::Svg;
+    }
+    // A bare MPEG audio or ADTS frame (an MP3 or AAC without a tag): 11 sync bits.
+    if h.len() >= 2 && h[0] == 0xFF && h[1] & 0xE0 == 0xE0 {
+        return Format::Audio;
     }
     from_extension(ext)
 }
@@ -294,6 +324,7 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
             e => return Some(e.to_string()),
         },
         Format::Video => return Some(if ext.is_empty() { "Video".into() } else { ext }),
+        Format::Audio => return Some(if ext.is_empty() { "Audio".into() } else { ext }),
     };
     Some(s.to_string())
 }
@@ -357,6 +388,24 @@ mod tests {
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x18], b"ftyp", b"heic"]), Some("mp4")), Format::Heif);
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"mdat"]), Some("txt")), Format::Unknown);
         assert_eq!(display_name(Format::Video, Some(Path::new("clip.mov"))).as_deref(), Some("MOV"));
+    }
+
+    #[test]
+    fn audio_files() {
+        for brand in [&b"M4A "[..], b"M4B "] {
+            assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x20], b"ftyp", brand]), None), Format::Audio, "{brand:?}");
+        }
+        assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x20], b"ftyp", b"mp42"]), Some("m4a")), Format::Audio);
+        assert_eq!(sniff(&cat(&[b"RIFF", &[0, 0, 0, 0], b"WAVEfmt "]), None), Format::Audio);
+        assert_eq!(sniff(&cat(&[b"FORM", &[0, 0, 0, 0], b"AIFF"]), None), Format::Audio);
+        for m in [&b"fLaC"[..], b"OggS\0\x02", b"ID3\x04\0", b"wvpk", b"MAC \x96\x0f", b"caff", &[0xFF, 0xFB, 0x90], &[0xFF, 0xF1, 0x50]] {
+            assert_eq!(sniff(m, None), Format::Audio, "{m:?}");
+        }
+        // Matroska and ASF by name only.
+        assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], Some("mka")), Format::Audio);
+        assert_eq!(sniff(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6], Some("wma")), Format::Audio);
+        assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], Some("mkv")), Format::Video);
+        assert_eq!(display_name(Format::Audio, Some(Path::new("song.flac"))).as_deref(), Some("FLAC"));
     }
 
     #[test]

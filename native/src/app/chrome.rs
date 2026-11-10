@@ -282,9 +282,12 @@ impl App {
                 parts.push((4, if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) }));
             }
             let (w, h) = self.current_dims().unwrap_or((c.native_w, c.native_h));
-            parts.push((1, format!("{w} × {h}")));
+            // An audio file: its format and length (its cover's size means nothing here).
+            if c.format != format::Format::Audio {
+                parts.push((1, format!("{w} × {h}")));
+            }
             // A video: its frame rate, codec, HDR, length and bit rate instead of megapixels (Faye, 2026-11-10).
-            if c.format == format::Format::Video {
+            if matches!(c.format, format::Format::Video | format::Format::Audio) {
                 parts.extend(self.video_status());
             } else if let Some(e) = self.current_exif() {
                 // A photo: the camera and its exposure, when the file says.
@@ -295,7 +298,7 @@ impl App {
                     parts.push((5, s));
                 }
             }
-            if c.pages == 0 && c.format != format::Format::Video {
+            if c.pages == 0 && !matches!(c.format, format::Format::Video | format::Format::Audio) {
                 // a page's 96-dpi size is not a pixel count
                 parts.push((5, format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0)));
             }
@@ -375,6 +378,7 @@ impl App {
         let sliding = self.step_slides();
         self.prepare_model(&g);
         self.prepare_video(&g);
+        self.prepare_audio(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
@@ -406,7 +410,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.model_animating() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.audio_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -498,7 +502,7 @@ impl App {
     pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
         // A photo's camera and exposure come from its EXIF (read once per file, as the info card does).
-        if self.placeholder.is_none() && self.viewer.current_entry().is_some_and(|c| !matches!(c.format, format::Format::Video | format::Format::Model)) {
+        if self.placeholder.is_none() && self.viewer.current_entry().is_some_and(|c| !matches!(c.format, format::Format::Video | format::Format::Audio | format::Format::Model)) {
             self.request_exif();
         }
         // Centred in the whole row (an inset box sat the text 1.5 px high).
@@ -534,7 +538,10 @@ impl App {
             return;
         }
         let bg = self.photo_layer();
-        if self.settings.checkerboard {
+        if self.audio_shown() {
+            // An audio file sits on the page itself (its cover is a picture of its own, not a photo on a canvas).
+            g.fill(bg, g.photo_rgb(self.theme().content));
+        } else if self.settings.checkerboard {
             g.checkerboard(bg);
         } else {
             g.fill(bg, g.photo_rgb(gfx::checker_plain()));
@@ -546,7 +553,7 @@ impl App {
         }
         // A file Looker can't open covers the photo: the photo isn't drawn at all (it would show around the
         // cover, behind the floating bars).
-        let model = self.draw_model(g);
+        let model = self.draw_model(g) || self.draw_audio_photo(g);
         if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none() && !model) {
             {
                 let r = self.view.frame();
@@ -594,6 +601,7 @@ impl App {
         }
         // The photo layer ends here (see Gfx::begin_ui).
         g.begin_ui(None);
+        self.draw_audio(g);
         if self.viewer.shown.is_none() && self.viewer.error.is_some() {
             self.draw_cant_display(g);
         }

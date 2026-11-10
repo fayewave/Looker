@@ -759,6 +759,134 @@
             <uap:SupportedFileTypes><uap:FileType>.3gp</uap:FileType></uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="mp3">
+            <uap:DisplayName>MP3 audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\mp3.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.mp3</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="m4a">
+            <uap:DisplayName>M4A audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\m4a.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.m4a</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="m4b">
+            <uap:DisplayName>M4B audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\m4b.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.m4b</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="aac">
+            <uap:DisplayName>AAC audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\aac.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.aac</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="flac">
+            <uap:DisplayName>FLAC audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\flac.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.flac</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="wav">
+            <uap:DisplayName>WAV audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\wav.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.wav</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="aif">
+            <uap:DisplayName>AIF audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\aif.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.aif</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="aiff">
+            <uap:DisplayName>AIFF audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\aiff.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.aiff</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="ogg">
+            <uap:DisplayName>OGG audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\ogg.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.ogg</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="oga">
+            <uap:DisplayName>OGA audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\oga.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.oga</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="opus">
+            <uap:DisplayName>OPUS audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\opus.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.opus</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="wma">
+            <uap:DisplayName>WMA audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\wma.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.wma</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="mka">
+            <uap:DisplayName>MKA audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\mka.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.mka</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="wv">
+            <uap:DisplayName>WV audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\wv.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.wv</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="ape">
+            <uap:DisplayName>APE audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\ape.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.ape</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="caf">
+            <uap:DisplayName>CAF audio</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\caf.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.caf</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
         <!-- file types: end -->
 
         <!-- `Looker photo.jpg` from any terminal (App Execution Alias). -->

@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use windows::core::Interface;
 
 use super::*;
-use crate::player::{Player, Preview};
+use crate::audio::AudioPlayer;
+use crate::imaging::video::{Info, Track};
+use crate::player::{Due, Player, Preview};
 use crate::yuv::{self, Converter, Look};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT};
 
@@ -74,7 +76,9 @@ const SCRUB_EXACT_US: i64 = 2_000_000;
 
 pub(super) struct VideoView {
     pub path: PathBuf,
-    player: Option<Player>,
+    /// An audio file (app/audio.rs draws it): its engine plays sound only.
+    pub audio: bool,
+    player: Option<Engine>,
     /// On the current device; dropped when it changes.
     conv: Option<Converter>,
     bitmap: Option<ID2D1Bitmap1>,
@@ -196,7 +200,7 @@ impl VideoView {
     }
 
     /// The time the bar shows: where the seek bar is held, else the picture on screen.
-    fn position(&self) -> i64 {
+    pub(super) fn position(&self) -> i64 {
         match (&self.scrub, &self.player) {
             (Some(s), _) => s.at,
             (None, Some(p)) => p.position(),
@@ -343,7 +347,8 @@ fn resume_point(path: &Path) -> Option<i64> {
 impl App {
     /// After every navigation: a video on screen gets a player; anything else drops the last one.
     pub(super) fn sync_video(&mut self) {
-        let want = self.current_path().filter(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video).map(Path::to_path_buf);
+        let kind = |p: &Path| format::from_extension(p.extension().and_then(|e| e.to_str()));
+        let want = self.current_path().filter(|p| matches!(kind(p), format::Format::Video | format::Format::Audio)).map(Path::to_path_buf);
         if self.video.as_ref().is_some_and(|v| Some(&v.path) == want.as_ref()) {
             return;
         }
@@ -352,12 +357,14 @@ impl App {
             self.video = None;
             return;
         };
-        if self.settings.video_start_muted && !self.settings.video_muted {
+        if self.settings.video_start_muted && !self.settings.video_muted && kind(&path) == format::Format::Video {
             self.settings.video_muted = true;
             settings::save(&self.settings);
         }
         self.video_moved = Instant::now(); // the bar shows a moment as it opens
+        let audio = kind(&path) == format::Format::Audio;
         self.video = Some(VideoView {
+            audio,
             path,
             player: None,
             conv: None,
@@ -409,7 +416,7 @@ impl App {
                 s.convert_max_ms
             ));
         }
-        let Some(p) = v.player.as_ref().filter(|p| p.info.is_some()) else { return };
+        let Some(p) = v.player.as_ref().filter(|p| p.info().is_some()) else { return };
         let dur = p.duration();
         if !self.settings.video_resume || dur < settings::RESUME_MIN_SECS as i64 * 1_000_000 {
             return;
@@ -439,7 +446,7 @@ impl App {
 
     /// The slideshow's dwell is up but this video is still opening or playing: it waits for the end.
     pub(super) fn video_holds_slideshow(&self) -> bool {
-        self.video_shown() && self.video.as_ref().and_then(|v| v.player.as_ref()).is_none_or(|p| p.info.is_none() || !p.at_end())
+        self.video_shown() && self.video.as_ref().and_then(|v| v.player.as_ref()).is_none_or(|p| p.info().is_none() || !p.at_end())
     }
 
     /// Frames are moving, the player is still coming up, or a preview is on its way: draw again next vsync.
@@ -469,7 +476,7 @@ impl App {
         let Some(v) = self.video.as_mut().filter(|v| !v.failed) else { return };
         if v.player.is_none() {
             // The first ~200 ms after launch draw on WARP: wait for the hardware device to decode on its GPU.
-            if g.is_warp() && !HW_FAILED.load(Ordering::Relaxed) {
+            if !v.audio && g.is_warp() && !HW_FAILED.load(Ordering::Relaxed) {
                 return;
             }
             let dev = if g.is_warp() { std::ptr::null_mut() } else { g.d3d().as_raw() };
@@ -483,7 +490,11 @@ impl App {
                     None => (0, autoplay),
                 },
             };
-            let mut p = Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.video_track, v.audio_track);
+            let mut p = if v.audio {
+                Engine::Audio(AudioPlayer::open(&v.path, v.audio_track, play, volume, muted))
+            } else {
+                Engine::Video(Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.video_track, v.audio_track))
+            };
             if at > 0 {
                 p.seek(at, true);
             }
@@ -498,9 +509,10 @@ impl App {
             }
             Some(Ok(())) => {
                 let dur = p.duration();
-                let auto = *v.auto_loop.get_or_insert(loop_secs == u32::MAX || (dur > 0 && dur < loop_secs as i64 * 1_000_000));
+                // Short videos loop like animations; sounds don't (the loop button still loops one).
+                let auto = *v.auto_loop.get_or_insert(!v.audio && (loop_secs == u32::MAX || (dur > 0 && dur < loop_secs as i64 * 1_000_000)));
                 let want = v.looping.unwrap_or(auto) && !slideshow;
-                if p.looping != want {
+                if p.looping() != want {
                     p.set_looping(want);
                 }
             }
@@ -514,7 +526,7 @@ impl App {
         }
         let Some(v) = self.video.as_mut() else { return };
         let Some(p) = v.player.as_mut() else { return };
-        if p.info.is_none() {
+        if p.info().is_none() {
             return;
         }
         // Scrubbing: the next seek once the last one's picture is up.
@@ -550,7 +562,7 @@ impl App {
             v.stats.last = None;
         }
         let Some(due) = p.due(shown_at) else { return };
-        let Some(info) = p.info.as_ref() else { return };
+        let Some(info) = p.info() else { return };
         // The display size, scaled by how the picture compares with the size the headers gave (a 1080p stream can
         // be stored 1088 high): square pixels and upright, as the still was.
         let (pw, ph) = (due.picture.width.max(1) as f64, due.picture.height.max(1) as f64);
@@ -622,17 +634,20 @@ impl App {
         self.video.as_ref().filter(|_| self.placeholder.is_none()).and_then(|v| Some((v.bitmap.clone()?, v.sdr)))
     }
 
-    fn player(&mut self) -> Option<&mut Player> {
-        self.video.as_mut().filter(|v| !v.failed).and_then(|v| v.player.as_mut()).filter(|p| p.info.is_some())
+    pub(super) fn player(&mut self) -> Option<&mut Engine> {
+        self.video.as_mut().filter(|v| !v.failed).and_then(|v| v.player.as_mut()).filter(|p| p.info().is_some())
     }
 
     /// The status row's facts about the video playing (frame rate, codec...), once it has opened.
     pub(super) fn video_status(&self) -> Vec<(u8, String)> {
-        self.player_ref().and_then(|p| p.info.as_ref()).map(crate::imaging::video::status_parts).unwrap_or_default()
+        match self.player_ref() {
+            Some(Engine::Audio(a)) => a.facts.as_ref().map(|f| vec![(1, crate::imaging::audio::format_line(f)), (2, crate::imaging::video::duration_text(a.duration()))]).unwrap_or_default(),
+            p => p.and_then(|p| p.info()).map(crate::imaging::video::status_parts).unwrap_or_default(),
+        }
     }
 
-    pub(super) fn player_ref(&self) -> Option<&Player> {
-        self.video.as_ref().filter(|v| !v.failed).and_then(|v| v.player.as_ref()).filter(|p| p.info.is_some())
+    pub(super) fn player_ref(&self) -> Option<&Engine> {
+        self.video.as_ref().filter(|v| !v.failed).and_then(|v| v.player.as_ref()).filter(|p| p.info().is_some())
     }
 
     pub(super) fn video_volume_by(&mut self, delta: f32) {
@@ -765,7 +780,7 @@ impl App {
     pub(super) fn toggle_video_loop(&mut self) {
         let Some(v) = self.video.as_mut() else { return };
         let Some(p) = v.player.as_mut() else { return };
-        let on = !p.looping;
+        let on = !p.looping();
         p.set_looping(on);
         v.looping = Some(on);
         self.show_video_toast(if on { "Loop on" } else { "Loop off" });
@@ -791,6 +806,24 @@ impl App {
                     return matches!(vk, VK_SPACE | VK_K | VK_L | VK_J | VK_OEM_COMMA | VK_OEM_PERIOD) || (shift && matches!(vk, VK_LEFT | VK_RIGHT));
                 };
                 let mut toast = None;
+                // Sound only: no speeds or pictures to step; J and L jump back and forward.
+                if p.is_audio() {
+                    match vk {
+                        VK_K => p.set_playing(false),
+                        VK_L if !p.playing() => p.set_playing(true),
+                        VK_L | VK_J => {
+                            let t = p.position() + if vk == VK_L { JUMP_US } else { -JUMP_US };
+                            p.seek(t, true);
+                        }
+                        VK_LEFT | VK_RIGHT if shift => {
+                            let t = p.position() + if vk == VK_RIGHT { JUMP_US } else { -JUMP_US };
+                            p.seek(t, true);
+                        }
+                        _ => return false,
+                    }
+                    self.invalidate();
+                    return true;
+                }
                 match vk {
                     VK_K => {
                         p.set_playing(false);
@@ -1111,8 +1144,8 @@ impl App {
         let area = self.image_area();
         let label = self.time_text(at);
         let Some(v) = self.video.as_mut() else { return };
-        if v.preview.is_none() {
-            let rotation = v.player.as_ref().and_then(|p| p.info.as_ref()).map_or(0, |i| i.rotation);
+        if v.preview.is_none() && !v.audio {
+            let rotation = v.player.as_ref().and_then(|p| p.info()).map_or(0, |i| i.rotation);
             let s = g.dpi / 96.0;
             let dev = if g.is_warp() { std::ptr::null_mut() } else { g.d3d().as_raw() };
             v.preview = Some(Preview::open(&v.path, rotation, (PREVIEW_W * s) as u32, (PREVIEW_H * s) as u32, gfx::Sendable(dev)));
@@ -1296,16 +1329,22 @@ impl App {
 
     /// The Settings menu's rows: the speeds, then Loop, each ticked as the player is now.
     pub(super) fn video_settings_entries(&self) -> Vec<ui::Entry<menus::Action>> {
-        let (speed, looping) = self.player_ref().map_or((1.0, false), |p| (p.speed(), p.looping));
-        let mut entries = vec![ui::Entry::Heading("Speed".into())];
-        entries.extend(
-            SPEEDS.iter().enumerate().map(|(i, &s)| menus::check(menus::Action::Choose(i), &if s == 1.0 { "Normal".to_string() } else { speed_text(s) }, s == speed)),
-        );
-        entries.push(ui::Entry::Separator);
+        let (speed, looping) = self.player_ref().map_or((1.0, false), |p| (p.speed(), p.looping()));
+        let audio = self.player_ref().is_some_and(Engine::is_audio);
+        let mut entries = Vec::new();
+        if !audio {
+            entries.push(ui::Entry::Heading("Speed".into()));
+            entries.extend(
+                SPEEDS.iter().enumerate().map(|(i, &s)| menus::check(menus::Action::Choose(i), &if s == 1.0 { "Normal".to_string() } else { speed_text(s) }, s == speed)),
+            );
+            entries.push(ui::Entry::Separator);
+        }
         entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
-        entries.push(ui::Entry::Separator);
-        entries.push(ui::Entry::Heading("Time".into()));
-        entries.extend(self.time_display_entries());
+        if !audio {
+            entries.push(ui::Entry::Separator);
+            entries.push(ui::Entry::Heading("Time".into()));
+            entries.extend(self.time_display_entries());
+        }
         entries
     }
 
@@ -1329,7 +1368,11 @@ impl App {
     /// pictures (exact on a variable frame rate), else worked out from the frame rate.
     fn time_text(&self, us: i64) -> String {
         let Some(p) = self.player_ref() else { return String::new() };
-        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        // Sound: minutes and seconds, as a music player shows them.
+        if p.is_audio() {
+            return clock_text(us, p.duration() >= 3_600_000_000);
+        }
+        let fps = p.info().and_then(|i| i.fps()).unwrap_or(0.0);
         if self.settings.video_frames {
             if let Some((n, _)) = p.frame_number(us) {
                 return n.to_string();
@@ -1344,7 +1387,10 @@ impl App {
     /// The bar's total: the duration's timecode, or how many pictures there are.
     fn total_text(&self) -> String {
         let Some(p) = self.player_ref() else { return String::new() };
-        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        if p.is_audio() {
+            return clock_text(p.duration(), p.duration() >= 3_600_000_000);
+        }
+        let fps = p.info().and_then(|i| i.fps()).unwrap_or(0.0);
         if self.settings.video_frames {
             if let Some((_, count)) = p.frame_number(0) {
                 return count.to_string();
@@ -1359,7 +1405,10 @@ impl App {
     /// The widest the bar's times get, for their boxes.
     fn time_template(&self) -> String {
         let Some(p) = self.player_ref() else { return String::new() };
-        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        if p.is_audio() {
+            return clock_text(p.duration(), p.duration() >= 3_600_000_000).chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
+        }
+        let fps = p.info().and_then(|i| i.fps()).unwrap_or(0.0);
         if self.settings.video_frames && (fps > 0.0 || p.frame_number(0).is_some()) {
             return "0".repeat(self.total_text().len());
         }
@@ -1368,6 +1417,9 @@ impl App {
 
     /// A click on the bar's times: Timecode or Frames, in a menu off them.
     fn toggle_time_menu(&mut self) {
+        if self.player_ref().is_some_and(Engine::is_audio) {
+            return;
+        }
         if matches!(self.menu, Some((menus::MenuKind::VideoTime, _))) {
             self.close_menu();
             return;
@@ -1394,6 +1446,106 @@ impl App {
         self.menu = Some((menus::MenuKind::VideoSettings, ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
         self.invalidate();
+    }
+}
+
+/// What plays: a video's player (pictures and sound), or an audio file's (sound only, app/audio.rs). The bar,
+/// keys, resume points and media controls drive either through this.
+pub(super) enum Engine {
+    Video(Player),
+    Audio(AudioPlayer),
+}
+
+macro_rules! both {
+    ($s:expr, $p:ident => $e:expr) => {
+        match $s {
+            Engine::Video($p) => $e,
+            Engine::Audio($p) => $e,
+        }
+    };
+}
+
+impl Engine {
+    pub(super) fn is_audio(&self) -> bool {
+        matches!(self, Engine::Audio(_))
+    }
+    pub(super) fn audio(&mut self) -> Option<&mut AudioPlayer> {
+        if let Engine::Audio(a) = self { Some(a) } else { None }
+    }
+    pub(super) fn audio_ref(&self) -> Option<&AudioPlayer> {
+        if let Engine::Audio(a) = self { Some(a) } else { None }
+    }
+    pub(super) fn info(&self) -> Option<&Info> {
+        both!(self, p => p.info.as_ref())
+    }
+    fn poll_open(&mut self) -> Option<Result<(), String>> {
+        both!(self, p => p.poll_open())
+    }
+    fn due(&mut self, now: Instant) -> Option<Due> {
+        if let Engine::Video(p) = self { p.due(now) } else { None }
+    }
+    pub(super) fn animating(&self) -> bool {
+        both!(self, p => p.animating())
+    }
+    pub(super) fn playing(&self) -> bool {
+        both!(self, p => p.playing())
+    }
+    pub(super) fn set_playing(&mut self, play: bool) {
+        both!(self, p => p.set_playing(play))
+    }
+    pub(super) fn position(&self) -> i64 {
+        both!(self, p => p.position())
+    }
+    pub(super) fn duration(&self) -> i64 {
+        both!(self, p => p.duration())
+    }
+    pub(super) fn seek(&mut self, us: i64, exact: bool) {
+        both!(self, p => p.seek(us, exact))
+    }
+    pub(super) fn at_end(&self) -> bool {
+        both!(self, p => p.at_end())
+    }
+    pub(super) fn looping(&self) -> bool {
+        both!(self, p => p.looping)
+    }
+    pub(super) fn set_looping(&mut self, on: bool) {
+        both!(self, p => p.set_looping(on))
+    }
+    pub(super) fn set_volume(&mut self, volume: f32, muted: bool) {
+        both!(self, p => p.set_volume(volume, muted))
+    }
+    pub(super) fn frame_number(&self, us: i64) -> Option<(usize, usize)> {
+        if let Engine::Video(p) = self { p.frame_number(us) } else { None }
+    }
+    pub(super) fn audio_tracks(&self) -> &[Track] {
+        if let Engine::Video(p) = self { p.audio_tracks() } else { &[] }
+    }
+    pub(super) fn video_tracks(&self) -> &[Track] {
+        if let Engine::Video(p) = self { p.video_tracks() } else { &[] }
+    }
+    fn step_forward(&mut self) {
+        if let Engine::Video(p) = self {
+            p.step_forward()
+        }
+    }
+    fn step_back(&mut self) {
+        if let Engine::Video(p) = self {
+            p.step_back()
+        }
+    }
+    pub(super) fn speed(&self) -> f64 {
+        if let Engine::Video(p) = self { p.speed() } else { 1.0 }
+    }
+    fn set_speed(&mut self, s: f64) {
+        if let Engine::Video(p) = self {
+            p.set_speed(s)
+        }
+    }
+    fn exact_is_quick(&self, us: i64) -> bool {
+        if let Engine::Video(p) = self { p.exact_is_quick(us) } else { true }
+    }
+    fn settled(&self) -> bool {
+        if let Engine::Video(p) = self { p.settled() } else { true }
     }
 }
 

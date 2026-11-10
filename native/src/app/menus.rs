@@ -91,7 +91,7 @@ impl App {
         let rotate = image && self.can_rotate();
         // Set as wallpaper for photos only (not videos, documents or 3D models: Faye, 2026-11-10).
         let photo = image
-            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Pdf | format::Format::Model | format::Format::Mtl));
+            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Audio | format::Format::Pdf | format::Format::Model | format::Format::Mtl));
         let mut e = vec![
             item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
             item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),

@@ -19,11 +19,13 @@ const KIND_OF = {
   model: "obj stl ply 3mf gltf glb",
   material: "mtl",
   video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp",
+  audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf",
 };
 const TYPE_NAME = {
   photo: e => `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
   vector: () => "SVG image", doc: () => "PDF document", layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => `${e} 3D model`, material: () => "MTL material library", video: e => `${e} video`,
+  audio: e => `${e} audio`,
 };
 
 // The real width of `t` at `size` (with the 2 % letter spacing), measured in Segoe UI.
@@ -64,6 +66,18 @@ const DRAW = {
     for (const y of holes) s += `<rect x="${small ? 18 : 22}" y="${y + (small ? 0 : 4)}" width="${hs}" height="${hs}" rx="5" fill="${INK}"/><rect x="${small ? 212 : 216}" y="${y + (small ? 0 : 4)}" width="${hs}" height="${hs}" rx="5" fill="${INK}"/>`;
     const t = small ? "M95 84 L171 128 L95 172 Z" : "M101 94 L165 128 L101 162 Z";
     return s + `<path d="${t}" fill="${INK}" stroke="${INK}" stroke-width="14" stroke-linejoin="round"/>`;
+  },
+  // A waveform: mirrored bars about the middle, as the audio view draws it.
+  audio: (ext, small) => {
+    const hs = small ? [0.42, 0.78, 1, 0.62, 0.34] : [0.3, 0.55, 0.85, 1, 0.7, 0.9, 0.5, 0.32];
+    const bw = small ? 26 : 16, pitch = small ? 38 : 24;
+    const x0 = 128 - ((hs.length - 1) * pitch + bw) / 2, top = small ? 128 : 112, amp = small ? 82 : 66;
+    let s = `<rect x="12" y="12" width="232" height="232" rx="30" fill="${RED}"/>`;
+    hs.forEach((h, i) => {
+      const half = Math.max(bw / 2, h * amp);
+      s += `<rect x="${(x0 + i * pitch).toFixed(1)}" y="${(top - half).toFixed(1)}" width="${bw}" height="${(half * 2).toFixed(1)}" rx="${bw / 2}" fill="${INK}"/>`;
+    });
+    return s;
   },
   anim: (ext, small) => `<rect x="${small ? 56 : 52}" y="16" width="${small ? 188 : 192}" height="160" rx="24" fill="${DARK}"/>
     ${small ? "" : `<rect x="32" y="36" width="192" height="160" rx="24" fill="${RED}" opacity=".75"/>`}

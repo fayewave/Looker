@@ -42,11 +42,19 @@ pub struct Exif {
     pub altitude: Option<String>,
     /// A video's facts (codec, frame rate, duration...), already worded; empty for a photo.
     pub video: Vec<(&'static str, String)>,
+    /// An audio file's facts and its tags, already worded; empty otherwise.
+    pub audio: Vec<(&'static str, String)>,
+    pub tags: Vec<(&'static str, String)>,
 }
 
 /// Reads the file's EXIF block; None when it has none or the container isn't one EXIF can live in. A video's
 /// facts come from its container instead.
 pub fn read(path: &Path) -> Option<Exif> {
+    if crate::format::sniff_file(path) == crate::format::Format::Audio {
+        let (f, t) = crate::imaging::audio::probe(path).ok()?;
+        let (audio, tags) = crate::imaging::audio::facts(&f, &t);
+        return Some(Exif { audio, tags, ..Default::default() });
+    }
     if crate::format::sniff_file(path) == crate::format::Format::Video {
         let info = crate::imaging::video::probe(path).ok()?;
         return Some(Exif { video: crate::imaging::video::facts(&info), taken: local_time(info.created), ..Default::default() });
@@ -233,6 +241,8 @@ pub fn groups(e: &Exif, date: impl Fn(ExifTime) -> String) -> Vec<Group> {
         }
     };
     push("Video", e.video.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
+    push("Audio", e.audio.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
+    push("Tags", e.tags.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
     push("Camera", vec![("Make", e.make.clone()), ("Model", e.model.clone()), ("Lens", e.lens.clone())]);
     push(
         "Exposure",

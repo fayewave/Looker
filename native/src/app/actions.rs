@@ -46,7 +46,7 @@ impl App {
     pub(super) fn can_rotate(&self) -> bool {
         !self.saving_rotation
             && self.placeholder.is_none()
-            && self.viewer.current_entry().is_some_and(|e| e.pages == 0 && !matches!(e.format, format::Format::Model | format::Format::Video))
+            && self.viewer.current_entry().is_some_and(|e| e.pages == 0 && !matches!(e.format, format::Format::Model | format::Format::Video | format::Format::Audio))
     }
 
     /// Turns the image on screen 90° as a preview only: the file is untouched until it is saved, so the

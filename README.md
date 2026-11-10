@@ -40,6 +40,8 @@ it keeps itself up to date.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 - Videos play, HDR and 4K60 included, with frame stepping, frame-accurate scrubbing, a timecode or frame count,
   and the media keys and taskbar progress.
+- Audio files play with their cover, tags and a waveform (or spectrogram) per channel: click to seek, drag to loop
+  a part, Ctrl+wheel to zoom; loudness in LUFS.
 - Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
 
 <img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
@@ -51,6 +53,7 @@ it keeps itself up to date.
 - **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
   KDC, ERF, MEF
 - **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, MPG/MPEG, 3GP
+- **Audio:** MP3, M4A/M4B, AAC, FLAC, WAV, AIFF, Ogg/Opus, WMA, MKA, WavPack, APE, CAF
 - **Documents:** PDF
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries
 

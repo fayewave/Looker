@@ -17,6 +17,7 @@ mod menus;
 mod model;
 mod page;
 mod slideshow;
+mod audio;
 mod video;
 
 use std::os::windows::fs::MetadataExt;
@@ -251,6 +252,12 @@ enum Hit {
     /// The times either side of the seek bar: a click picks Timecode or Frames.
     VideoTime,
     VideoFullscreen,
+    /// An audio file's waveform (and ruler), its scrollbar while zoomed in, the Waveform / Spectrogram toggle, and
+    /// the loop region's clear button.
+    AudioWave,
+    AudioScroll,
+    AudioMode(u8),
+    AudioClear,
     /// The 3D view's cube (which face: worked out from the point).
     ModelCube,
     /// A document's page bar: the pill, and its two buttons.
@@ -595,6 +602,8 @@ pub struct App {
     /// The 3D model on screen, while the current file is one.
     model: Option<model::ModelView>,
     video: Option<video::VideoView>,
+    /// An audio file's view (cover, waveform), while one is up.
+    audio_view: Option<audio::AudioView>,
     /// The playing video on the taskbar button and in Windows' media controls (media.rs).
     media: crate::media::Media,
     /// The Custom accent's colour picker, open over the Settings card.
@@ -739,7 +748,7 @@ impl App {
         let (w, h) = (v.right - v.left, v.bottom - v.top);
         let video = self.fullscreen.is_none()
             && self.placeholder.is_none()
-            && self.current_path().is_some_and(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video);
+            && self.current_path().is_some_and(|p| matches!(format::from_extension(p.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio));
         // A video's bar band replaces the bottom pad (the bar keeps its own margin off the status row).
         let h = if video { h + self.preview_pad() } else { h };
         let room = if video { video::bar_band(w).min(h * 0.4) } else { 0.0 };
@@ -1136,6 +1145,9 @@ impl App {
         if let Some(v) = &mut self.video {
             v.device_lost();
         }
+        if let Some(a) = &mut self.audio_view {
+            a.device_lost();
+        }
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -1332,6 +1344,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             placeholder: None,
             model: None,
             video: None,
+            audio_view: None,
             media: Default::default(),
             accent_picker: None,
             video_moved: std::time::Instant::now(),

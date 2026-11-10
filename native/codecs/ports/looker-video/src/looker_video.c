@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 9
+#define LOOKER_VIDEO_API 10
 
 typedef struct LvInfo
 {
@@ -1794,4 +1794,329 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
             avcodec_send_packet(p->adec, p->pkt);
         av_packet_unref(p->pkt);
     }
+}
+
+// ---- audio files ----------------------------------------------------------------------------------------------
+//
+// The audio view's reader (Looker's imaging/audio.rs): one audio stream at its own rate and channel count, as
+// interleaved float, each block placed in frames (one sample per channel) from the stream's start. la_seek is
+// exact: the next block starts at the frame asked for. A reader belongs to one thread (the player and the waveform
+// scan each open their own); la_interrupt may come from any.
+
+typedef struct LaInfo
+{
+    long long duration_us; // 0 when unknown
+    long long frames;      // from the duration: an estimate until a scan has counted them
+    long long bit_rate;    // bits per second, 0 when unknown
+    int rate, channels;
+    int bits;      // bits per sample as stored (16, 24...), 0 for lossy codecs
+    int lossless;  // the codec is lossless (FLAC, ALAC, PCM, WavPack, APE...)
+    int has_cover; // an attached picture: la_cover
+    int stream;    // the stream read
+    char codec[32];     // FFmpeg's short codec name: "mp3", "flac", "aac"...
+    char profile[32];   // "LC", "HE-AAC"... or ""
+    char layout[48];    // "mono", "stereo", "5.1(side)"...
+    char container[48]; // the demuxer: "mp3", "mov,mp4,m4a,3gp,3g2,mj2", "ogg"...
+} LaInfo;
+
+typedef struct LaReader
+{
+    Input in;
+    int ai;
+    AVCodecContext *dec;
+    SwrContext *swr;
+    AVPacket *pkt;
+    AVFrame *frame;
+    float *buf;
+    int buf_cap;
+    int rate, channels;
+    int lossless;
+    int64_t start;  // the stream's first timestamp, in its time base
+    long long pos;  // the frame the next block starts at
+    long long want; // after a seek: what comes before this frame is dropped (-1: nothing)
+    int eof;
+    volatile LONG interrupt;
+} LaReader;
+
+EXPORT void la_close(LaReader *r)
+{
+    if (!r)
+        return;
+    av_free(r->buf);
+    swr_free(&r->swr);
+    av_frame_free(&r->frame);
+    av_packet_free(&r->pkt);
+    avcodec_free_context(&r->dec);
+    input_close(&r->in);
+    free(r);
+}
+
+// Opens `path`'s audio stream `stream` (-1: the best one).
+EXPORT int la_open(const wchar_t *path, int stream, LaInfo *info, LaReader **out)
+{
+    *out = NULL;
+    memset(info, 0, sizeof *info);
+    LaReader *r = calloc(1, sizeof *r);
+    if (!r)
+        return AVERROR(ENOMEM);
+    int e = input_open(&r->in, path, 1);
+    if (e < 0)
+    {
+        la_close(r);
+        return e;
+    }
+    AVFormatContext *fmt = r->in.fmt;
+    int ai = -1;
+    if (stream >= 0 && (unsigned)stream < fmt->nb_streams && fmt->streams[stream]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+        ai = stream;
+    else
+        ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (ai < 0)
+    {
+        la_close(r);
+        return AVERROR_STREAM_NOT_FOUND;
+    }
+    r->ai = ai;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+        fmt->streams[i]->discard = (int)i == ai ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+    AVStream *st = fmt->streams[ai];
+    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    if (!codec)
+    {
+        la_close(r);
+        return AVERROR_DECODER_NOT_FOUND;
+    }
+    r->dec = avcodec_alloc_context3(codec);
+    r->pkt = av_packet_alloc();
+    r->frame = av_frame_alloc();
+    if (!r->dec || !r->pkt || !r->frame)
+    {
+        la_close(r);
+        return AVERROR(ENOMEM);
+    }
+    if ((e = avcodec_parameters_to_context(r->dec, st->codecpar)) < 0)
+    {
+        la_close(r);
+        return e;
+    }
+    r->dec->pkt_timebase = st->time_base;
+    if ((e = avcodec_open2(r->dec, codec, NULL)) < 0)
+    {
+        la_close(r);
+        return e;
+    }
+    r->rate = r->dec->sample_rate > 0 ? r->dec->sample_rate : st->codecpar->sample_rate;
+    r->channels = r->dec->ch_layout.nb_channels > 0 ? r->dec->ch_layout.nb_channels : st->codecpar->ch_layout.nb_channels;
+    if (r->rate <= 0 || r->channels <= 0)
+    {
+        la_close(r);
+        return AVERROR_INVALIDDATA;
+    }
+    r->start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+    r->want = -1;
+
+    const AVCodecParameters *p = st->codecpar;
+    info->rate = r->rate;
+    info->channels = r->channels;
+    info->stream = ai;
+    if (fmt->duration > 0)
+        info->duration_us = fmt->duration;
+    else if (st->duration > 0)
+        info->duration_us = av_rescale_q(st->duration, st->time_base, AV_TIME_BASE_Q);
+    if (st->duration > 0)
+        info->frames = av_rescale_q(st->duration, st->time_base, (AVRational){1, r->rate});
+    else
+        info->frames = info->duration_us * r->rate / 1000000;
+    info->bit_rate = p->bit_rate > 0 ? p->bit_rate : fmt->bit_rate;
+    const AVCodecDescriptor *cd = avcodec_descriptor_get(p->codec_id);
+    info->lossless = r->lossless = cd && (cd->props & AV_CODEC_PROP_LOSSLESS) && !(cd->props & AV_CODEC_PROP_LOSSY);
+    if (info->lossless)
+    {
+        info->bits = p->bits_per_raw_sample > 0 ? p->bits_per_raw_sample : p->bits_per_coded_sample;
+        if (info->bits <= 0)
+            info->bits = av_get_bytes_per_sample(r->dec->sample_fmt) * 8;
+    }
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+        if ((fmt->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC) && fmt->streams[i]->attached_pic.size > 0)
+            info->has_cover = 1;
+    copy_str(info->codec, sizeof info->codec, cd ? cd->name : "");
+    copy_str(info->profile, sizeof info->profile, avcodec_profile_name(p->codec_id, p->profile));
+    av_channel_layout_describe(&r->dec->ch_layout, info->layout, sizeof info->layout);
+    copy_str(info->container, sizeof info->container, fmt->iformat ? fmt->iformat->name : "");
+    *out = r;
+    return 0;
+}
+
+// The file's cover picture (its encoded bytes: JPEG or PNG, as stored), valid while the reader is open; the
+// front cover when several are tagged.
+EXPORT int la_cover(const LaReader *r, const unsigned char **data, int *size)
+{
+    const AVFormatContext *fmt = r->in.fmt;
+    const AVStream *best = NULL;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        const AVStream *s = fmt->streams[i];
+        if (!(s->disposition & AV_DISPOSITION_ATTACHED_PIC) || s->attached_pic.size <= 0)
+            continue;
+        const AVDictionaryEntry *c = av_dict_get(s->metadata, "comment", NULL, 0);
+        if (!best || (c && strstr(c->value, "front")))
+            best = s;
+    }
+    if (!best)
+        return AVERROR_STREAM_NOT_FOUND;
+    *data = best->attached_pic.data;
+    *size = best->attached_pic.size;
+    return 0;
+}
+
+static int append_tags(const AVDictionary *d, char *buf, int cap, int at)
+{
+    const AVDictionaryEntry *t = NULL;
+    while ((t = av_dict_get(d, "", t, AV_DICT_IGNORE_SUFFIX)))
+    {
+        int k = (int)strlen(t->key), v = (int)strlen(t->value);
+        if (at + k + v + 2 < cap)
+        {
+            memcpy(buf + at, t->key, k);
+            buf[at + k] = 0x1f;
+            memcpy(buf + at + k + 1, t->value, v);
+            buf[at + k + 1 + v] = 0x1e;
+        }
+        at += k + v + 2;
+    }
+    return at;
+}
+
+// The container's tags then the stream's (Ogg and Opus keep theirs on the stream), UTF-8, each "key 0x1F value
+// 0x1E". Returns the length they need; writes them only when that fits in `cap`.
+EXPORT int la_tags(const LaReader *r, char *buf, int cap)
+{
+    int n = append_tags(r->in.fmt->metadata, buf, cap, 0);
+    n = append_tags(r->in.fmt->streams[r->ai]->metadata, buf, cap, n);
+    if (n < cap)
+        buf[n] = 0;
+    return n;
+}
+
+EXPORT void la_interrupt(LaReader *r)
+{
+    InterlockedExchange(&r->interrupt, 1);
+}
+
+// The decoded frame as interleaved float: 0 when it's dropped (before a seek's target), else its block.
+static int la_convert(LaReader *r, AVFrame *f, const float **samples, int *frames, long long *pos)
+{
+    if (r->want >= 0)
+    {
+        AVStream *st = r->in.fmt->streams[r->ai];
+        int64_t ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+        if (ts != AV_NOPTS_VALUE)
+            r->pos = av_rescale_q(ts - r->start, st->time_base, (AVRational){1, r->rate});
+    }
+    if (r->swr == NULL)
+    {
+        AVChannelLayout out_layout;
+        if (av_channel_layout_copy(&out_layout, &f->ch_layout) < 0 || out_layout.nb_channels != r->channels)
+            av_channel_layout_default(&out_layout, r->channels);
+        int e = swr_alloc_set_opts2(&r->swr, &out_layout, AV_SAMPLE_FMT_FLT, r->rate, &f->ch_layout,
+                                    (enum AVSampleFormat)f->format, f->sample_rate, 0, NULL);
+        av_channel_layout_uninit(&out_layout);
+        if (e < 0 || swr_init(r->swr) < 0)
+        {
+            swr_free(&r->swr);
+            return AVERROR(EINVAL);
+        }
+    }
+    int cap = swr_get_out_samples(r->swr, f->nb_samples);
+    if (cap > r->buf_cap)
+    {
+        av_free(r->buf);
+        r->buf = av_malloc((size_t)cap * r->channels * sizeof(float));
+        r->buf_cap = r->buf ? cap : 0;
+        if (!r->buf)
+            return AVERROR(ENOMEM);
+    }
+    uint8_t *dst = (uint8_t *)r->buf;
+    int n = swr_convert(r->swr, &dst, cap, (const uint8_t **)f->extended_data, f->nb_samples);
+    if (n <= 0)
+        return 0;
+    long long at = r->pos;
+    r->pos += n;
+    int skip = 0;
+    if (r->want >= 0)
+    {
+        if (at + n <= r->want)
+            return 0;
+        if (at < r->want)
+            skip = (int)(r->want - at);
+        r->want = -1;
+    }
+    *samples = r->buf + (size_t)skip * r->channels;
+    *frames = n - skip;
+    *pos = at + skip;
+    return 1;
+}
+
+// The next block: `*frames` frames of interleaved float at `*samples` (valid until the next call on this reader),
+// starting at frame `*pos`. AVERROR_EOF at the end; AVERROR_EXIT after la_interrupt, until la_seek.
+EXPORT int la_read(LaReader *r, const float **samples, int *frames, long long *pos)
+{
+    for (;;)
+    {
+        if (r->interrupt)
+            return AVERROR_EXIT;
+        int e = avcodec_receive_frame(r->dec, r->frame);
+        if (e == 0)
+        {
+            int got = la_convert(r, r->frame, samples, frames, pos);
+            av_frame_unref(r->frame);
+            if (got < 0)
+                return got;
+            if (got)
+                return 0;
+            continue;
+        }
+        if (e == AVERROR_EOF)
+            return AVERROR_EOF;
+        if (e != AVERROR(EAGAIN))
+            return e;
+        if (r->eof)
+            return AVERROR_EOF;
+        e = av_read_frame(r->in.fmt, r->pkt);
+        if (e < 0)
+        {
+            r->eof = 1;
+            avcodec_send_packet(r->dec, NULL); // drains what the decoder holds
+            continue;
+        }
+        if (r->pkt->stream_index == r->ai)
+            avcodec_send_packet(r->dec, r->pkt); // a damaged packet is skipped
+        av_packet_unref(r->pkt);
+    }
+}
+
+// Goes to `frame`: the next block starts exactly there. Lossy codecs start decoding a little before (their
+// frames lean on the ones before: MP3's bit reservoir, Opus's pre-roll) so the first block heard is whole.
+EXPORT int la_seek(LaReader *r, long long frame)
+{
+    InterlockedExchange(&r->interrupt, 0);
+    if (frame < 0)
+        frame = 0;
+    AVFormatContext *fmt = r->in.fmt;
+    AVStream *st = fmt->streams[r->ai];
+    long long from = r->lossless ? frame : frame - r->rate / 10;
+    if (from < 0)
+        from = 0;
+    int64_t ts = r->start + av_rescale_q_rnd(from, (AVRational){1, r->rate}, st->time_base, AV_ROUND_DOWN);
+    int e = avformat_seek_file(fmt, r->ai, INT64_MIN, ts, ts, 0);
+    if (e < 0)
+        e = av_seek_frame(fmt, r->ai, ts, AVSEEK_FLAG_BACKWARD);
+    if (e < 0)
+        return e;
+    avcodec_flush_buffers(r->dec);
+    swr_free(&r->swr);
+    r->eof = 0;
+    r->pos = from;
+    r->want = frame;
+    return 0;
 }
