@@ -589,7 +589,10 @@ impl App {
         e.push(ticked(Action::SavedView(Some(Scope::Folder)), 0xE72E, "This folder", scope == Some(Scope::Folder), folder));
         e.push(ticked(Action::SavedView(Some(Scope::Tree)), 0xE72E, "This folder and subfolders", scope == Some(Scope::Tree), folder));
         e.push(Entry::Separator);
-        e.push(item(Action::SetDefaultView, 0xE7F4, "Set as default", None, scope.is_some() && *v != self.settings.default_view()));
+        // Without a saved view every change already is the default (`store_view`), so there's nothing to set: say
+        // so rather than show a button that never lights up.
+        let differs = *v != self.settings.default_view();
+        e.push(item(Action::SetDefaultView, 0xE7F4, if differs { "Set as default" } else { "Already the default" }, None, differs));
         e
     }
 
@@ -612,8 +615,15 @@ impl App {
     /// A column header's menu (right-click), as Transient's: move it, size it, close it, then every column
     /// by group, ticked while it shows.
     pub(super) fn column_menu(&mut self, idx: usize, x: f32, y: f32) {
-        let cols = self.explorer.look.columns.clone();
-        let Some(&(c, _)) = cols.get(idx) else { return };
+        let Some(e) = self.column_entries(idx) else { return };
+        self.show_menu(MenuKind::Columns(idx), e, x, y);
+    }
+
+    /// The header menu's rows: the column's own actions, then a submenu per category (Transient's), ticked
+    /// while any of its columns shows.
+    pub(super) fn column_entries(&self, idx: usize) -> Option<Vec<Entry<Action>>> {
+        let cols = &self.explorer.look.columns;
+        let &(c, _) = cols.get(idx)?;
         let mut e = vec![
             item(Action::ColShift(false), 0xE76B, "Shift column left", None, idx > 0),
             item(Action::ColShift(true), 0xE76C, "Shift column right", None, idx + 1 < cols.len()),
@@ -623,16 +633,19 @@ impl App {
             item(Action::ColFitAll, 0xE9A6, "Size all columns to fit", None, true),
             item(Action::ColRestore, 0xE7A7, "Restore default columns", None, true),
         ];
+        e.push(Entry::Separator);
         for (name, kinds) in ColKind::GROUPS {
-            e.push(Entry::Separator);
-            e.push(Entry::Heading(name.into()));
+            let mut sub = Vec::new();
+            let mut any = false;
             for &k in kinds {
                 let shown = cols.iter().any(|(s, _)| *s == k);
-                e.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
+                any |= shown;
+                sub.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::ColToggle(k), glyph: None, label: k.label().into(), accel: None, check: Some(shown), enabled: k != ColKind::Name, current: false }));
             }
+            let e_sub = &mut sub;
             // Transient's Date and Time options, under its columns: how the dates read.
             if kinds.contains(&ColKind::Modified) {
-                e.push(Entry::Separator);
+                e_sub.push(Entry::Separator);
                 let s = &self.settings;
                 for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year), (3, "Leading zeros in the date", s.date_pad), (4, "Align times", s.date_align)] {
                     // The date can't go while the time is off (something has to show), nor the year without the date.
@@ -642,11 +655,12 @@ impl App {
                         4 => s.date_show_time,
                         _ => s.date_show_date,
                     };
-                    e.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
+                    e_sub.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
                 }
             }
+            e.push(Entry::Sub(any.then_some(0xE73E), name.into(), sub));
         }
-        self.show_menu(MenuKind::Columns(idx), e, x, y);
+        Some(e)
     }
 
     /// Bookmarks the folder showing (or takes it off).

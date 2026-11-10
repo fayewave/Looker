@@ -62,7 +62,7 @@ impl App {
             // Escape or Left closes an open submenu first.
             VK_ESCAPE | VK_LEFT if in_sub => {
                 if let Some((_, m)) = &mut self.menu {
-                    m.sub = None;
+                    m.close_sub();
                 }
                 self.invalidate();
             }

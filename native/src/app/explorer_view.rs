@@ -36,10 +36,15 @@ const SHELL_ICON: f32 = 16.0;
 /// faded by `opacity`, recoloured in `tint`. False when Windows has none (the caller draws its glyph); nothing
 /// is drawn while it loads.
 pub(super) fn shell_icon(g: &Gfx, kind: &shell_icons::Kind, r: D2D_RECT_F, opacity: f32, tint: Option<u32>) -> bool {
-    let px = (SHELL_ICON * g.dpi / 96.0).round() as u32;
+    shell_icon_at(g, kind, r, SHELL_ICON, opacity, tint)
+}
+
+/// The same, `dip` across (the system image lists go to 48 at 100 %).
+pub(super) fn shell_icon_at(g: &Gfx, kind: &shell_icons::Kind, r: D2D_RECT_F, dip: f32, opacity: f32, tint: Option<u32>) -> bool {
+    let px = (dip * g.dpi / 96.0).round() as u32;
     match shell_icons::get(kind, px) {
         shell_icons::Lookup::Ready(icon) => {
-            g.draw_icon(&icon, r, SHELL_ICON, opacity, tint);
+            g.draw_icon(&icon, r, dip, opacity, tint);
             true
         }
         shell_icons::Lookup::Pending => true,
@@ -82,6 +87,11 @@ pub(super) fn cell_text(r: &explorer::Row, c: ColKind, m: Option<&Meta>) -> Stri
         ColKind::Megapixels => m.and_then(|m| m.dims).map_or(String::new(), |(w, h)| format!("{:.1} MP", w as f64 * h as f64 / 1_000_000.0)),
         ColKind::Camera => m.and_then(|m| m.camera.clone()).unwrap_or_default(),
         ColKind::Lens => m.and_then(|m| m.lens.clone()).unwrap_or_default(),
+        ColKind::Width => m.and_then(|m| m.dims).map_or(String::new(), |(w, _)| w.to_string()),
+        ColKind::Height => m.and_then(|m| m.dims).map_or(String::new(), |(_, h)| h.to_string()),
+        ColKind::AspectRatio => m.and_then(|m| m.dims).map_or(String::new(), |(w, h)| aspect_text(w, h)),
+        ColKind::Duration => m.and_then(|m| m.duration_us).map_or(String::new(), crate::imaging::video::duration_text),
+        c if c.lazy() => m.and_then(|m| m.field(c)).unwrap_or_default().to_string(),
         _ => String::new(),
     }
 }
@@ -776,7 +786,9 @@ impl App {
             let badge = is_video && icon_h >= video::BADGE_MIN_H;
             // Videos and GIFs: a play badge in the thumbnail's middle.
             let moving_picture = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Gif);
-            if r.kind == Kind::Image {
+            // Audio shows a plain waveform icon, not the file's own waveform (Faye, 2026-11-11).
+            let is_audio = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Audio;
+            if r.kind == Kind::Image && !is_audio {
                 self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
                 if lazy_shown || badge {
                     lazy_wanted.push((r.path.clone(), r.stamp, r.cloud));
@@ -806,7 +818,10 @@ impl App {
                 // Name: the thumbnail or glyph, the name, its tags.
                 let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
                 let mut drew = false;
-                if r.kind == Kind::Image {
+                if is_audio {
+                    draw_wave_icon(g, ib, ink(t.icon));
+                    drew = true;
+                } else if r.kind == Kind::Image {
                     if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
                         g.fill_round(ib, 2.0, rgb(t.field));
                         th.draw_fit(g, ib);
@@ -817,6 +832,13 @@ impl App {
                         if let Some(d) = meta.as_ref().and_then(|m| m.duration_us).filter(|_| badge) {
                             video::draw_duration_badge(g, ib, d);
                         }
+                    }
+                }
+                if !drew && r.kind == Kind::Other {
+                    // A file Looker can't open: Windows' icon for its type.
+                    if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                        let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
+                        drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
                     }
                 }
                 if !drew && r.is_folder() {
@@ -1499,4 +1521,43 @@ impl App {
         g.pop_fade();
         moving
     }
+}
+
+/// A generic waveform: bars of set heights, centred in `r` (an audio file's icon in the explorer's rows).
+fn draw_wave_icon(g: &Gfx, r: D2D_RECT_F, colour: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F) {
+    const BARS: [f32; 7] = [0.3, 0.62, 1.0, 0.5, 0.82, 0.42, 0.24];
+    let side = (r.right - r.left).min(r.bottom - r.top).min(64.0);
+    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+    let h = side * 0.62;
+    let pitch = side * 0.62 / BARS.len() as f32;
+    let bar = (pitch * 0.55).max(1.5);
+    let x0 = cx - pitch * BARS.len() as f32 / 2.0 + (pitch - bar) / 2.0;
+    for (i, k) in BARS.iter().enumerate() {
+        let bh = (h * k).max(bar);
+        let x = g.snap(x0 + i as f32 * pitch);
+        g.fill_round(rect(x, cy - bh / 2.0, bar, bh), bar / 2.0, colour);
+    }
+}
+
+/// "16:9", "3:2", or "1.85:1" when the sides don't reduce to small numbers.
+fn aspect_text(w: u32, h: u32) -> String {
+    if w == 0 || h == 0 {
+        return String::new();
+    }
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    let g = gcd(w, h);
+    let (a, b) = (w / g, h / g);
+    if a <= 32 && b <= 32 {
+        return format!("{a}:{b}");
+    }
+    // Near a common one (a 1920 x 1088 frame, a crop off by a pixel): that one.
+    let r = w as f64 / h as f64;
+    for (a, b) in [(16, 9), (9, 16), (4, 3), (3, 4), (3, 2), (2, 3), (1, 1), (21, 9), (5, 4), (4, 5), (16, 10), (10, 16)] {
+        if (r - a as f64 / b as f64).abs() < 0.01 {
+            return format!("{a}:{b}");
+        }
+    }
+    format!("{r:.2}:1")
 }

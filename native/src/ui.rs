@@ -905,6 +905,10 @@ pub struct Menu<A> {
     opened: Instant,
     /// A submenu open beside it: the entry it hangs off, and its menu.
     pub sub: Option<(usize, Box<Menu<A>>)>,
+    /// Closing: when, and how far open it was then (it shrinks back from there, the opening played backwards).
+    closing: Option<(Instant, f32)>,
+    /// The submenu that closed last, drawn while it fades out.
+    sub_out: Option<Box<Menu<A>>>,
 }
 
 impl<A: Copy> Menu<A> {
@@ -930,7 +934,7 @@ impl<A: Copy> Menu<A> {
     }
 
     fn make(entries: Vec<Entry<A>>, x: f32, y: f32, width: f32, origin: (f32, f32)) -> Menu<A> {
-        Menu { entries, x, y, width, cursor: None, origin, opened: Instant::now(), sub: None }
+        Menu { entries, x, y, width, cursor: None, origin, opened: Instant::now(), sub: None, closing: None, sub_out: None }
     }
 
     /// Entry `i` opens a submenu.
@@ -952,7 +956,37 @@ impl<A: Copy> Menu<A> {
             ox = x + width;
         }
         let y = (row.top - MENU_PAD_TOP).min(bounds.bottom - 4.0 - h).max(bounds.top + 4.0);
+        self.close_sub();
         self.sub = Some((i, Box::new(Self::make(entries, x, y, width, (ox, y)))));
+    }
+
+    /// Closes the submenu, which then plays its opening backwards.
+    pub fn close_sub(&mut self) {
+        if let Some((_, mut s)) = self.sub.take() {
+            s.close();
+            self.sub_out = Some(s);
+        }
+    }
+
+    /// Starts closing: the caller keeps drawing it (no longer hit-tested) until `gone`.
+    pub fn close(&mut self) {
+        if self.closing.is_none() {
+            self.closing = Some((Instant::now(), motion::progress(self.opened)));
+        }
+        self.close_sub();
+    }
+
+    /// Done closing: nothing left to draw.
+    pub fn gone(&self) -> bool {
+        self.closing.is_some_and(|(at, _)| motion::progress(at) >= 1.0) && self.sub_out.as_ref().is_none_or(|s| s.gone())
+    }
+
+    /// How open it is, 0 to 1: opening, or closing back down.
+    fn openness(&self) -> f32 {
+        match self.closing {
+            Some((at, from)) => from * (1.0 - motion::progress(at)),
+            None => motion::progress(self.opened),
+        }
     }
 
     /// A menu with its top-left at (x, y) (the pointer), flipped to stay inside `bounds`.
@@ -1001,9 +1035,13 @@ impl<A: Copy> Menu<A> {
         rect(self.x, self.y, self.width, self.height())
     }
 
-    /// Still opening: draw again next frame.
+    /// Still opening or closing (or a submenu is): draw again next frame.
     pub fn moving(&self) -> bool {
-        motion::progress(self.opened) < 1.0
+        let own = match self.closing {
+            Some((at, _)) => motion::progress(at) < 1.0,
+            None => motion::progress(self.opened) < 1.0,
+        };
+        own || self.sub_out.as_ref().is_some_and(|s| s.moving())
     }
 
     /// Item rects, by entry index.
@@ -1104,8 +1142,14 @@ impl<A: Copy> Menu<A> {
 
     /// Draws the menu. `hover` is the entry under the pointer, `swatch` the swatch.
     pub fn draw(&self, g: &Gfx, hover: Option<usize>, swatch: Option<(usize, usize)>) {
+        if let Some(s) = self.sub_out.as_ref().filter(|s| !s.gone()) {
+            s.draw(g, None, None);
+        }
+        let e = self.openness();
+        if e <= 0.0 && self.closing.is_some() {
+            return;
+        }
         let raised = theme::raised();
-        let e = motion::progress(self.opened);
         g.push_fade(e, 0.94 + 0.06 * e, self.origin.0, self.origin.1);
         let panel = self.bounds();
         shadow(g, panel, 8.0);

@@ -106,7 +106,7 @@ impl App {
         let rotate = image && self.can_rotate();
         // Set as wallpaper for photos only (not videos, documents or 3D models: Faye, 2026-11-10).
         let photo = image
-            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Audio | format::Format::Pdf | format::Format::Model | format::Format::Mtl));
+            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Audio | format::Format::Pdf | format::Format::Text | format::Format::Model | format::Format::Mtl));
         let mut e = vec![
             item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
             item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),
@@ -190,9 +190,17 @@ impl App {
     }
 
     pub(super) fn close_menu(&mut self) {
-        if self.menu.take().is_some() {
+        if self.retire_menu().is_some() {
             self.invalidate();
         }
+    }
+
+    /// Takes the open menu away, leaving it to play its opening backwards (`menus_out`); its kind.
+    pub(super) fn retire_menu(&mut self) -> Option<MenuKind> {
+        let (kind, mut m) = self.menu.take()?;
+        m.close();
+        self.menus_out.push(m);
+        Some(kind)
     }
 
     /// The thumbnail strip's menu.
@@ -287,7 +295,24 @@ impl App {
             self.invalidate();
             return;
         }
-        let kind = self.menu.take().map(|(k, _)| k);
+        // The column header menu's column and date ticks: it stays open, its submenu out (Transient's).
+        if let (Some((MenuKind::Columns(idx), _)), Action::ColToggle(_) | Action::DateOption(_)) = (&self.menu, action) {
+            let idx = *idx;
+            self.run_explorer_action(action, MenuKind::Columns(idx));
+            if let Some(entries) = self.column_entries(idx) {
+                if let Some((_, m)) = self.menu.as_mut() {
+                    if let Some((i, sub)) = m.sub.as_mut() {
+                        if let Some(Entry::Sub(_, _, rows)) = entries.get(*i) {
+                            sub.entries = rows.clone();
+                        }
+                    }
+                    m.entries = entries;
+                }
+            }
+            self.invalidate();
+            return;
+        }
+        let kind = self.retire_menu();
         self.invalidate();
         match kind {
             Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::Tab(_))) => {
@@ -331,7 +356,7 @@ impl App {
             self.invalidate();
             return;
         }
-        let kind = self.menu.take().map(|(k, _)| k);
+        let kind = self.retire_menu();
         self.invalidate();
         if let Some(kind) = kind {
             self.run_explorer_action(action, kind);

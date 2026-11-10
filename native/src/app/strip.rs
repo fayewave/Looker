@@ -408,11 +408,17 @@ impl App {
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
             if img.is_none() {
-                // A file Looker can't open: the explorer's file glyph and its extension, at 45 %.
+                // A file Looker can't open: Windows' icon for its type (the explorer's file glyph if it has none)
+                // and its extension.
                 let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
                 let mid = (inner.top + inner.bottom) / 2.0;
-                let glyph_y = if ext.is_empty() { mid - 10.0 } else { mid - 18.0 };
-                g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), gfx::rgba(th.icon, 0.45), Align::Center);
+                let side = ((inner.bottom - inner.top) - 32.0).clamp(16.0, 48.0).floor();
+                let icon_r = rect(inner.left, mid - 4.0 - side, inner.right - inner.left, side);
+                let shown = !ext.is_empty() && super::explorer_view::shell_icon_at(g, &crate::shell_icons::Kind::Extension(ext.to_lowercase()), icon_r, side, 1.0, None);
+                if !shown {
+                    let glyph_y = if ext.is_empty() { mid - 10.0 } else { mid - 18.0 };
+                    g.text(&[0xE7C3], &g.fonts.icons, rect(inner.left, glyph_y, inner.right - inner.left, 20.0), gfx::rgba(th.icon, 0.45), Align::Center);
+                }
                 if !ext.is_empty() {
                     g.text(&wide(&ext), &g.fonts.caption, rect(inner.left + 4.0, mid + 4.0, (inner.right - inner.left - 8.0).max(0.0), 16.0), gfx::rgba(th.label, 0.7), Align::Center);
                 }

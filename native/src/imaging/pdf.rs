@@ -24,7 +24,20 @@ fn err(e: windows::core::Error) -> String {
 /// Opens a document from a copy of the file in memory: the renderer reads pages lazily for as long as the
 /// document lives, and a document over the file itself would keep it open (no rename or delete meanwhile).
 /// Encrypted and broken files fail here and show as "Can't display".
-pub fn open(path: &Path) -> Result<PdfDocument, String> {
+pub fn open(path: &Path) -> Result<Document, String> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("txt")) {
+        return super::text::open(path).map(Document::Text);
+    }
+    open_pdf(path).map(Document::Pdf)
+}
+
+/// A document shown as pages: a PDF, or plain text laid out on pages (`text.rs`).
+pub enum Document {
+    Pdf(PdfDocument),
+    Text(super::text::TextDoc),
+}
+
+fn open_pdf(path: &Path) -> Result<PdfDocument, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let stream = InMemoryRandomAccessStream::new().map_err(err)?;
     let w = DataWriter::CreateDataWriter(&stream).map_err(err)?;
@@ -36,7 +49,11 @@ pub fn open(path: &Path) -> Result<PdfDocument, String> {
 }
 
 /// Every page's size in 96-dpi pixels; a page without a usable size (corrupt MediaBox) still gets a slot.
-pub fn page_sizes(doc: &PdfDocument) -> Result<Vec<(f32, f32)>, String> {
+pub fn page_sizes(doc: &Document) -> Result<Vec<(f32, f32)>, String> {
+    let doc = match doc {
+        Document::Pdf(d) => d,
+        Document::Text(t) => return Ok(super::text::page_sizes(t)),
+    };
     let n = doc.PageCount().map_err(err)?;
     let sane = |v: f32| if v.is_finite() && v >= 1.0 { v.round() } else { 1.0 };
     (0..n)
@@ -48,7 +65,11 @@ pub fn page_sizes(doc: &PdfDocument) -> Result<Vec<(f32, f32)>, String> {
 }
 
 /// Rasterizes page `index` at exactly `w × h` into premultiplied BGRA.
-pub fn render(f: &IWICImagingFactory, doc: &PdfDocument, index: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+pub fn render(f: &IWICImagingFactory, doc: &Document, index: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let doc = match doc {
+        Document::Pdf(d) => d,
+        Document::Text(t) => return super::text::render(f, t, index as usize, w, h),
+    };
     let page = doc.GetPage(index).map_err(err)?;
     let opts = PdfPageRenderOptions::new().map_err(err)?;
     opts.SetDestinationWidth(w).map_err(err)?;

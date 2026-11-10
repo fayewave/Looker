@@ -35,6 +35,8 @@ pub enum Format {
     Pdf,
     /// Wavefront material library (text; drawn as a sheet of material cards).
     Mtl,
+    /// Plain text, laid out on pages (`imaging/text.rs`).
+    Text,
     /// A 3D model: OBJ, STL, PLY, 3MF, glTF/GLB (rendered with Direct3D, see model/).
     Model,
     /// A video (FFmpeg through looker_video.dll, see imaging/video.rs).
@@ -69,6 +71,7 @@ pub const ALL: &[Format] = &[
     Format::Qoi,
     Format::Pdf,
     Format::Mtl,
+    Format::Text,
     Format::Model,
     Format::Video,
     Format::Audio,
@@ -84,6 +87,10 @@ pub const EXTENSIONS: &[&str] = &[
     "iiq", "mrw", "dcr", "kdc", "erf", "mef",
     // 3D models and material libraries.
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
+    // Source engine: Hammer maps and materials.
+    "vmf", "vmt",
+    // Text.
+    "txt",
     // Video.
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
     // Audio.
@@ -123,8 +130,9 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "pnm" | "ppm" | "pgm" | "pbm" => Format::Pnm,
         "xcf" => Format::Xcf,
         "qoi" => Format::Qoi,
-        "mtl" => Format::Mtl,
-        "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" => Format::Model,
+        "mtl" | "vmt" => Format::Mtl,
+        "txt" => Format::Text,
+        "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
         | "caf" => Format::Audio,
@@ -317,7 +325,8 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         Format::Qoi => "QOI",
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
-        Format::Mtl => "MTL",
+        Format::Text => "Text",
+        Format::Mtl => if ext == "VMT" { "VMT" } else { "MTL" },
         Format::Model => match ext.as_str() {
             "GLTF" => "glTF",
             "" => "3D model",
@@ -386,7 +395,7 @@ mod tests {
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"wide"]), Some("mov")), Format::Video);
         // An image keeps its brand, and a stray atom name means nothing without a video extension.
         assert_eq!(sniff(&cat(&[&[0, 0, 0, 0x18], b"ftyp", b"heic"]), Some("mp4")), Format::Heif);
-        assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"mdat"]), Some("txt")), Format::Unknown);
+        assert_eq!(sniff(&cat(&[&[0, 0, 0, 8], b"mdat"]), Some("dat")), Format::Unknown);
         assert_eq!(display_name(Format::Video, Some(Path::new("clip.mov"))).as_deref(), Some("MOV"));
     }
 

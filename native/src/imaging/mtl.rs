@@ -35,6 +35,8 @@ pub struct Material {
     pub pm: Option<f32>,
     /// (statement, file name as written), in file order.
     pub maps: Vec<(String, String)>,
+    /// More rows as (label, value): a Source material's shader and parameters (`vmt.rs`).
+    pub extra: Vec<(String, String)>,
 }
 
 impl Material {
@@ -204,32 +206,45 @@ enum Value {
     Text(String),
 }
 
-fn rows(m: &Material) -> Vec<(&'static str, Value)> {
-    let mut r = Vec::new();
+/// Most rows a card shows; past it the last says how many more there are.
+const MAX_ROWS: usize = 18;
+
+fn rows(m: &Material) -> Vec<(String, Value)> {
+    let mut r: Vec<(String, Value)> = Vec::new();
     for (label, c) in [("Diffuse", m.kd), ("Ambient", m.ka), ("Specular", m.ks), ("Emission", m.ke), ("Transmission", m.tf)] {
         if let Some(c) = c {
-            r.push((label, Value::Colour(c)));
+            r.push((label.into(), Value::Colour(c)));
         }
     }
     let num = |v: f32| format!("{}", (v * 1000.0).round() / 1000.0);
     if let Some(v) = m.ns {
-        r.push(("Shininess", Value::Text(num(v))));
+        r.push(("Shininess".into(), Value::Text(num(v))));
     }
     if let Some(v) = m.d {
-        r.push(("Opacity", Value::Text(num(v))));
+        r.push(("Opacity".into(), Value::Text(num(v))));
     }
     if let Some(v) = m.ni {
-        r.push(("Refraction", Value::Text(num(v))));
+        r.push(("Refraction".into(), Value::Text(num(v))));
     }
     if let Some(v) = m.pr {
-        r.push(("Roughness", Value::Text(num(v))));
+        r.push(("Roughness".into(), Value::Text(num(v))));
     }
     if let Some(v) = m.pm {
-        r.push(("Metallic", Value::Text(num(v))));
+        r.push(("Metallic".into(), Value::Text(num(v))));
     }
     if let Some(n) = m.illum {
         let name = illum_name(n);
-        r.push(("Illumination", Value::Text(if name.is_empty() { n.to_string() } else { format!("{n} · {name}") })));
+        r.push(("Illumination".into(), Value::Text(if name.is_empty() { n.to_string() } else { format!("{n} · {name}") })));
+    }
+    // A Source material's shader goes first.
+    let at = if m.extra.first().is_some_and(|(k, _)| k == "Shader") { 0 } else { r.len() };
+    for (i, (k, v)) in m.extra.iter().enumerate() {
+        r.insert((at + i).min(r.len()), (k.clone(), Value::Text(v.clone())));
+    }
+    if r.len() > MAX_ROWS {
+        let more = r.len() - (MAX_ROWS - 1);
+        r.truncate(MAX_ROWS - 1);
+        r.push((String::new(), Value::Text(format!("+{more} more"))));
     }
     r
 }
@@ -410,11 +425,19 @@ fn wide(s: &str) -> Vec<u16> {
 
 pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let mats = parse(&String::from_utf8_lossy(&bytes));
-    if mats.is_empty() {
-        return Err("the library defines no materials".into());
-    }
+    let src = String::from_utf8_lossy(&bytes);
     let dir = path.parent().unwrap_or(Path::new("."));
+    let source = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vmt"));
+    let mats = if source {
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        super::vmt::parse(&src, &name).into_iter().collect()
+    } else {
+        parse(&src)
+    };
+    if mats.is_empty() {
+        return Err(if source { "the material has no shader".into() } else { "the library defines no materials".into() });
+    }
+    let resolve = |name: &str| if source { super::vmt::resolve(path, name) } else { resolve(dir, name) };
     let (cards, sw, sh) = layout(&mats);
     let (box_w, box_h) = if box_w == 0 || box_h == 0 { (VECTOR_MAX_EDGE, VECTOR_MAX_EDGE) } else { (box_w, box_h) };
     let scale = (box_w as f32 / sw).min(box_h as f32 / sh).min(VECTOR_MAX_EDGE as f32 / sw.max(sh));
@@ -427,9 +450,14 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
     let mut textures: HashMap<PathBuf, Option<Texture>> = HashMap::new();
     for m in &mats {
         for (_, name) in &m.maps {
-            let Some(p) = resolve(dir, name) else { continue };
-            textures.entry(p.clone()).or_insert_with(|| match super::decode_srgb(f, &p, tex_box, tex_box) {
-                Ok(d) => Some(Texture::new(d.width, d.height, d.frames.into_iter().next()?.pixels)),
+            let Some(p) = resolve(name) else { continue };
+            let vtf = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtf"));
+            textures.entry(p.clone()).or_insert_with(|| match if vtf {
+                std::fs::read(&p).map_err(|e| e.to_string()).and_then(|b| super::vtf::decode(&b, tex_box)).map(|t| Texture::new(t.width, t.height, t.pixels))
+            } else {
+                super::decode_srgb(f, &p, tex_box, tex_box).and_then(|d| Ok(Texture::new(d.width, d.height, d.frames.into_iter().next().ok_or("no frame")?.pixels)))
+            } {
+                Ok(t) => Some(t),
                 Err(e) => {
                     crate::trace::mark(format!("mtl: map {} failed: {e}", p.display()));
                     None
@@ -437,7 +465,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
             });
         }
     }
-    let texture =|m: &Material, key: &str| m.map(key).and_then(|n| resolve(dir, n)).and_then(|p| textures.get(&p)?.as_ref());
+    let texture =|m: &Material, key: &str| m.map(key).and_then(|n| resolve(n)).and_then(|p| textures.get(&p)?.as_ref());
 
     let text = text()?;
     let e = |e: windows::core::Error| e.message().to_string();
@@ -494,17 +522,19 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
             let vw = cx + CARD_W - PAD - vx;
             let name = if m.name.is_empty() { "(unnamed)" } else { &m.name };
             label(name, &name_font, rect(vx, y, vw, NAME_H - 6.0), 0xF2F2F2);
+            // Source parameters ($envmaptint, ...) are longer than an .mtl's labels.
+            let lw = if source { 128.0 } else { 92.0 };
             for (i, (what, value)) in rows(m).iter().enumerate() {
                 let ry = y + NAME_H + i as f32 * ROW_H;
-                label(what, &body, rect(vx, ry, 92.0, ROW_H), 0x9A9A9A);
+                label(what, &body, rect(vx, ry, lw - 6.0, ROW_H), 0x9A9A9A);
                 match value {
                     Value::Colour(c) => {
                         let srgb = |v: f32| (to_srgb(v) * 255.0 + 0.5) as u32;
-                        fill(rect(vx + 92.0, ry + 3.0, 14.0, 14.0), (srgb(c[0]) << 16) | (srgb(c[1]) << 8) | srgb(c[2]), 3.0);
+                        fill(rect(vx + lw, ry + 3.0, 14.0, 14.0), (srgb(c[0]) << 16) | (srgb(c[1]) << 8) | srgb(c[2]), 3.0);
                         let t = format!("{:.3}  {:.3}  {:.3}", c[0], c[1], c[2]);
-                        label(&t, &body, rect(vx + 114.0, ry, vw - 114.0, ROW_H), 0xF2F2F2);
+                        label(&t, &body, rect(vx + lw + 22.0, ry, vw - lw - 22.0, ROW_H), 0xF2F2F2);
                     }
-                    Value::Text(t) => label(t, &body, rect(vx + 92.0, ry, vw - 92.0, ROW_H), 0xF2F2F2),
+                    Value::Text(t) => label(t, &body, rect(vx + lw, ry, vw - lw, ROW_H), 0xF2F2F2),
                 }
             }
             let top = SPHERE.max(NAME_H + rows(m).len() as f32 * ROW_H);
@@ -512,7 +542,7 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
                 let tx = x + (i % TILES_PER_ROW) as f32 * (TILE + TILE_GAP);
                 let ty = y + top + 16.0 + (i / TILES_PER_ROW) as f32 * (TILE + TILE_LABEL_H + TILE_GAP);
                 fill(rect(tx, ty, TILE, TILE), 0x202020, 4.0);
-                match resolve(dir, name).and_then(|p| textures.get(&p)?.as_ref()) {
+                match resolve(name).and_then(|p| textures.get(&p)?.as_ref()) {
                     Some(t) => {
                         if let Ok(b) = bitmap(t.w, t.h, &t.pixels) {
                             let k = (TILE / t.w as f32).min(TILE / t.h as f32);

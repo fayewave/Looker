@@ -484,7 +484,7 @@ impl App {
         } else if span < total as f64 * 0.999 {
             Some(format!("Zoom {:.1}\u{00d7}", total as f64 / span.max(1.0)))
         } else {
-            Some("Drag to loop a part  \u{b7}  Ctrl+wheel to zoom".to_string())
+            None
         };
         if let Some(s) = left_text {
             g.text(&wide(&s), &g.fonts.caption, rect(l.row.left, l.row.top, (right - l.row.left - 8.0).max(0.0), ROW_H), rgb(t.placeholder), Align::Left);

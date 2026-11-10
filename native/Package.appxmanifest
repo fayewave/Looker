@@ -656,6 +656,30 @@
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vmf">
+            <uap:DisplayName>VMF Hammer map</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\vmf.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.vmf</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vmt">
+            <uap:DisplayName>VMT Source material</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\vmt.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.vmt</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="txt">
+            <uap:DisplayName>Text document</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\txt.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.txt</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="mp4">
             <uap:DisplayName>MP4 video</uap:DisplayName>
             <uap:Logo>Assets\FileIcons\mp4.png</uap:Logo>

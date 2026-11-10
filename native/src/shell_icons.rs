@@ -40,6 +40,9 @@ pub enum Kind {
     Path(PathBuf),
     /// This PC.
     Computer,
+    /// A file type's icon, by extension (lower case, no dot), by attributes only: never reads the file, so cloud
+    /// files stay online-only, and one lookup serves every file of the type.
+    Extension(String),
 }
 
 pub struct Icon {
@@ -184,6 +187,10 @@ fn icon_index(kind: &Kind) -> Option<i32> {
             Kind::Path(p) => {
                 let path: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
                 SHGetFileInfoW(PCWSTR(path.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size, SHGFI_SYSICONINDEX)
+            }
+            Kind::Extension(e) => {
+                let path = wide(&format!("file.{e}"));
+                SHGetFileInfoW(PCWSTR(path.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(0x80), Some(&mut sfi), size, SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES)
             }
             Kind::Computer => {
                 let pidl = SHGetKnownFolderIDList(&FOLDERID_ComputerFolder, KF_FLAG_DEFAULT.0 as u32, None).ok()?;

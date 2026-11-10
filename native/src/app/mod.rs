@@ -567,6 +567,8 @@ pub struct App {
     hits: ui::Hits<Hit>,
     fades: ui::Fades<Hit>,
     menu: Option<(menus::MenuKind, ui::Menu<menus::Action>)>,
+    /// Menus closing (`retire_menu`), drawn until they've shrunk away.
+    menus_out: Vec<ui::Menu<menus::Action>>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
     dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
@@ -1327,6 +1329,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             hits: ui::Hits::new(),
             fades: ui::Fades::new(),
             menu: None,
+            menus_out: Vec::new(),
             tooltip: None,
             dialog: None,
             toast: None,

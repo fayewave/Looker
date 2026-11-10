@@ -7,7 +7,7 @@
 //! switches, their hairlines) and all text and icons are neutral greys, as the old Looker's were, so nothing but
 //! the accent shows colour. Paper is warm all through, as Snapper's.
 //!
-//! Each theme comes in any of Snapper's accents (Orchid, Lime, Sky, Amber, Crimson, White, or Custom: any colour
+//! Each theme comes in any of Snapper's accents (Orchid, Lime, Sky, Crimson, White, or Custom: any colour
 //! picked), Crimson, Looker's red, the default. The tokens below are Crimson's as drawn; `derive` works out the
 //! others the way Snapper does, from a few colours each (`HUES`, or `custom_hue`): the accent itself, the fills
 //! made from it (a text selection, a picked control) in its hue at the same luminance, and the page's tint turned
@@ -82,7 +82,6 @@ pub enum Accent {
     Orchid,
     Lime,
     Sky,
-    Amber,
     Crimson,
     White,
     /// Any colour, picked in Settings (`set_custom`).
@@ -90,18 +89,17 @@ pub enum Accent {
 }
 
 impl Accent {
-    pub const ALL: [Accent; 7] = [Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Amber, Accent::Crimson, Accent::White, Accent::Custom];
+    pub const ALL: [Accent; 6] = [Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Crimson, Accent::White, Accent::Custom];
     /// Looker's red.
     pub const DEFAULT: Accent = Accent::Crimson;
     /// The order the Appearance page shows them in: Looker's red first (Faye, 2026-11-10). `ALL` keeps `HUES`'s.
-    pub const PICKER: [Accent; 7] = [Accent::Crimson, Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Amber, Accent::White, Accent::Custom];
+    pub const PICKER: [Accent; 6] = [Accent::Crimson, Accent::Orchid, Accent::Lime, Accent::Sky, Accent::White, Accent::Custom];
 
     pub fn name(self) -> &'static str {
         match self {
             Accent::Orchid => "Orchid",
             Accent::Lime => "Lime",
             Accent::Sky => "Sky",
-            Accent::Amber => "Amber",
             Accent::Crimson => "Crimson",
             Accent::White => "White",
             Accent::Custom => "Custom",
@@ -337,11 +335,10 @@ struct Hue {
 
 /// The accents with colours of their own, in `Accent` order (Custom is worked out). Snapper's, Crimson its take
 /// on Looker's red (Looker's own tokens are used for Crimson as they are: `derive`).
-const HUES: [Hue; 6] = [
+const HUES: [Hue; 5] = [
     Hue { dark: [0xDFA2E3, 0xE27AEA, 0xEDB6F0, 0x2A1530], light: [0xA8519E, 0xB0409F, 0xFFFFFF], paper: 0x9C4592, exact: false },
     Hue { dark: [0xC2EC3A, 0xB4E33A, 0xD4F466, 0x1A2400], light: [0x4E7A00, 0x5A8C00, 0xFFFFFF], paper: 0x4A7400, exact: true },
     Hue { dark: [0x9EC4F2, 0x6EA6F4, 0xBAD6F7, 0x0F213A], light: [0x2F68B0, 0x2C6DCC, 0xFFFFFF], paper: 0x2B60A4, exact: false },
-    Hue { dark: [0xF4AE7E, 0xF28C4A, 0xF7C6A2, 0x2E1607], light: [0xAD4E0E, 0xC25A12, 0xFFFFFF], paper: 0xA2480C, exact: false },
     Hue { dark: [0xE81E22, 0xF52524, 0xFF6B6A, 0xFFFFFF], light: [0xD21E1E, 0xE0201F, 0xFFFFFF], paper: 0xD21E1E, exact: true },
     Hue { dark: [0xEEEEEE, 0xFFFFFF, 0xFFFFFF, 0x141414], light: [0x2B2B2B, 0x000000, 0xFFFFFF], paper: 0x2B2620, exact: true },
 ];
@@ -438,7 +435,7 @@ fn themes(a: Accent) -> &'static [[Theme; 4]; 2] {
     if a == Accent::Custom {
         return custom_themes(custom());
     }
-    static TABLE: std::sync::OnceLock<[[[Theme; 4]; 2]; 6]> = std::sync::OnceLock::new();
+    static TABLE: std::sync::OnceLock<[[[Theme; 4]; 2]; 5]> = std::sync::OnceLock::new();
     &TABLE.get_or_init(|| std::array::from_fn(|i| build(Accent::ALL[i], &HUES[i])))[a as usize]
 }
 
@@ -641,7 +638,7 @@ mod tests {
     /// Every theme in every accent (Custom in all sorts of colours), plain and raised, keeps its contrast.
     #[test]
     fn every_accent_keeps_contrast() {
-        let mut all: Vec<(String, &[[Theme; 4]; 2])> = Accent::ALL[..6].iter().map(|a| (a.name().to_string(), themes(*a))).collect();
+        let mut all: Vec<(String, &[[Theme; 4]; 2])> = Accent::ALL[..5].iter().map(|a| (a.name().to_string(), themes(*a))).collect();
         all.extend(CUSTOMS.iter().map(|c| (format!("Custom {c:06X}"), custom_themes(*c))));
         for (name, set) in all {
             for (raised, row) in set.iter().enumerate() {

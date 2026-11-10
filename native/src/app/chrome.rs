@@ -726,9 +726,15 @@ impl App {
                         m.open_sub(g, i, rect(0.0, 0.0, w, h));
                     }
                 }
-                Some(i) if i < ui::MENU_SUB => m.sub = None,
+                Some(i) if i < ui::MENU_SUB => m.close_sub(),
                 _ => {}
             }
+        }
+        // Menus that closed, playing their opening backwards; never hit-tested.
+        self.menus_out.retain(|m| !m.gone());
+        for m in &self.menus_out {
+            m.draw(g, None, None);
+            moving = true;
         }
         if let Some((_, m)) = &self.menu {
             self.hits.add(Hit::MenuSurface, m.bounds());

@@ -10,10 +10,13 @@ mod gainmap;
 pub(crate) mod hdr;
 pub mod heif;
 pub mod mtl;
+mod vmt;
+mod vtf;
 pub mod pdf;
 mod raster;
 pub mod raw;
 pub mod svg;
+mod text;
 pub mod audio;
 pub mod video;
 pub mod wic;
@@ -172,7 +175,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Pcx => &[Pcx],
         Format::Xcf => &[Xcf],
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
-        Format::Pdf => &[Pdf],
+        Format::Pdf | Format::Text => &[Pdf],
         Format::Mtl => &[Mtl],
         Format::Model => &[Model],
         Format::Video => &[Video],

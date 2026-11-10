@@ -9,6 +9,7 @@ mod ply;
 pub mod render;
 mod stl;
 mod threemf;
+mod vmf;
 
 use std::collections::HashMap;
 use std::os::windows::fs::MetadataExt;
@@ -142,6 +143,7 @@ pub fn load(f: &IWICImagingFactory, path: &Path) -> Result<Arc<Mesh>, String> {
         "ply" => ply::parse(f, path, &bytes)?,
         "3mf" => threemf::parse(&bytes)?,
         "gltf" | "glb" => gltf::parse(f, path, &bytes)?,
+        "vmf" => vmf::parse(&bytes)?,
         _ => {
             let obj = parse_obj(&String::from_utf8_lossy(&bytes));
             finish(f, path, obj)

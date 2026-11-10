@@ -22,6 +22,7 @@ mod gfx;
 mod imaging;
 mod media;
 mod instance;
+mod keyvalues;
 mod metadata;
 mod model;
 mod motion;

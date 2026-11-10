@@ -727,7 +727,7 @@ impl App {
             UpdateStatus::Failed => "Couldn't install the update",
             UpdateStatus::Unknown => "Couldn't check for updates",
         };
-        let r = rows.row(g, &format!("Looker {}", env!("CARGO_PKG_VERSION")), status);
+        let r = rows.row(g, &format!("Looker {}", env!("LOOKER_VERSION")), status);
         let idle = !matches!(self.update, UpdateStatus::Checking | UpdateStatus::Installing);
         self.text_button(g, r, "Check now", Hit::PageLink(link::CHECK), ui::Kind::Standard, open && idle);
         if matches!(self.update, UpdateStatus::Available | UpdateStatus::Failed) {
@@ -754,7 +754,7 @@ impl App {
             g.draw_bitmap(&bmp, rect(rows.x, g.snap(rows.y + 6.0), lw, LOGO_H), 1.0);
         }
         rows.y += LOGO_H + 18.0;
-        rows.row(g, &format!("Version {} \u{00B7} {}", env!("CARGO_PKG_VERSION"), std::env::consts::ARCH), "A fast, native photo viewer for Windows 11");
+        rows.row(g, &format!("Version {} \u{00B7} {}", env!("LOOKER_VERSION"), std::env::consts::ARCH), "A fast, native photo viewer for Windows 11");
         rows.heading(g, "More");
         let r = rows.row(g, "Source code", "github.com/fayewave/Looker");
         self.text_button(g, r, "Open GitHub", Hit::PageLink(link::GITHUB), ui::Kind::Standard, open);

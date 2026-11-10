@@ -160,6 +160,108 @@ pub(super) struct Meta {
     pub lens: Option<String>,
     /// A video's length (badges on its thumbnail).
     pub duration_us: Option<i64>,
+    /// The other columns' text (camera settings, codecs, tags...), as `meta_fields` reads them.
+    pub fields: Vec<(ColKind, String)>,
+}
+
+impl Meta {
+    pub fn field(&self, c: ColKind) -> Option<&str> {
+        self.fields.iter().find(|(k, _)| *k == c).map(|(_, v)| v.as_str())
+    }
+}
+
+/// A number to sort a column's text by: "1/250 sec" as its fraction, else the first number in it ("f/2.8",
+/// "48 kHz", "12.5 Mbit/s", "3/12").
+pub(super) fn sort_number(c: ColKind, t: &str) -> Option<f64> {
+    if c == ColKind::Exposure {
+        if let Some(rest) = t.strip_prefix("1/") {
+            let d: f64 = rest.split_whitespace().next()?.parse().ok()?;
+            return (d > 0.0).then(|| 1.0 / d);
+        }
+    }
+    let start = t.find(|ch: char| ch.is_ascii_digit() || ch == '-' || ch == '+')?;
+    let num: String = t[start..].chars().take_while(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == '-' || *ch == '+').collect();
+    num.parse().ok()
+}
+
+/// The text of the columns past the basics, from what the meta thread read.
+fn photo_fields(x: &crate::metadata::Exif) -> Vec<(ColKind, String)> {
+    let mut f = Vec::new();
+    for (c, v) in [
+        (ColKind::Make, &x.make),
+        (ColKind::Aperture, &x.aperture),
+        (ColKind::Exposure, &x.exposure),
+        (ColKind::Iso, &x.iso),
+        (ColKind::FocalLength, &x.focal),
+        (ColKind::ExposureBias, &x.bias),
+        (ColKind::Flash, &x.flash),
+        (ColKind::Metering, &x.metering),
+        (ColKind::WhiteBalance, &x.white_balance),
+        (ColKind::Altitude, &x.altitude),
+    ] {
+        if let Some(v) = v {
+            f.push((c, v.clone()));
+        }
+    }
+    if let (Some(lat), Some(lon)) = (x.latitude, x.longitude) {
+        f.push((ColKind::Gps, format!("{lat:.5}, {lon:.5}")));
+    }
+    f
+}
+
+fn video_fields(i: &crate::imaging::video::Info) -> Vec<(ColKind, String)> {
+    let mut f = Vec::new();
+    for (label, v) in crate::imaging::video::facts(i) {
+        let c = match label {
+            "Codec" => ColKind::VideoCodec,
+            "Frame rate" => ColKind::FrameRate,
+            "Format" => ColKind::VideoFormat,
+            "Colour" => ColKind::Colour,
+            "Bit rate" => ColKind::BitRate,
+            // "AAC, stereo, 48 kHz": the codec, its channels, its rate.
+            "Audio" => {
+                let mut parts = v.split(", ");
+                for c in [ColKind::AudioCodec, ColKind::Channels, ColKind::SampleRate] {
+                    if let Some(p) = parts.next() {
+                        f.push((c, p.to_string()));
+                    }
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        f.push((c, v));
+    }
+    f
+}
+
+fn audio_fields(path: &std::path::Path) -> (Option<i64>, Vec<(ColKind, String)>) {
+    let Ok((facts, tags)) = crate::imaging::audio::probe(path) else { return (None, Vec::new()) };
+    let duration_us = Some(facts.duration_us).filter(|&d| d > 0);
+    let (a, t) = crate::imaging::audio::facts(&facts, &tags);
+    let mut f = Vec::new();
+    for (label, v) in a.into_iter().chain(t) {
+        let c = match label {
+            "Codec" => ColKind::AudioCodec,
+            "Sample rate" => ColKind::SampleRate,
+            "Channels" => ColKind::Channels,
+            "Bit depth" => ColKind::BitDepth,
+            "Bit rate" => ColKind::BitRate,
+            "Title" => ColKind::Title,
+            "Artist" => ColKind::Artist,
+            "Album" => ColKind::Album,
+            "Album artist" => ColKind::AlbumArtist,
+            "Year" => ColKind::Year,
+            "Genre" => ColKind::Genre,
+            "Track" => ColKind::Track,
+            "Composer" => ColKind::Composer,
+            "BPM" => ColKind::Bpm,
+            "Key" => ColKind::Key,
+            _ => continue,
+        };
+        f.push((c, v));
+    }
+    (duration_us, f)
 }
 
 /// A tab that isn't in front: where it is and how it was left (the one in front lives in `Explorer` itself).
@@ -1996,8 +2098,8 @@ impl App {
                             .map(|(p, stamp)| {
                                 // An audio file: its length.
                                 if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Audio {
-                                    let duration_us = crate::imaging::audio::probe(&p).ok().map(|(f, _)| f.duration_us).filter(|&d| d > 0);
-                                    return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us });
+                                    let (duration_us, fields) = audio_fields(&p);
+                                    return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us, fields });
                                 }
                                 // A video: its size, length and recording date from one probe.
                                 if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video {
@@ -2005,14 +2107,16 @@ impl App {
                                     let dims = info.as_ref().filter(|i| i.width > 0 && i.height > 0).map(|i| (i.width as u32, i.height as u32));
                                     let duration_us = info.as_ref().map(|i| i.duration_us).filter(|&d| d > 0);
                                     let taken = info.as_ref().and_then(|i| crate::metadata::local_time(i.created));
-                                    return (p, Meta { stamp, dims, taken, camera: None, lens: None, duration_us });
+                                    let fields = info.as_ref().map(video_fields).unwrap_or_default();
+                                    return (p, Meta { stamp, dims, taken, camera: None, lens: None, duration_us, fields });
                                 }
                                 let dims = f.as_ref().and_then(|f| explorer::dimensions(f, &p));
                                 let exif = crate::metadata::read(&p);
                                 let camera = exif.as_ref().and_then(|x| x.model.clone().or_else(|| x.make.clone()));
                                 let lens = exif.as_ref().and_then(|x| x.lens.clone());
                                 let taken = exif.as_ref().and_then(|x| x.taken);
-                                (p, Meta { stamp, dims, taken, camera, lens, duration_us: None })
+                                let fields = exif.as_ref().map(photo_fields).unwrap_or_default();
+                                (p, Meta { stamp, dims, taken, camera, lens, duration_us: None, fields })
                             })
                             .collect();
                         let ptr = Box::into_raw(Box::new(out));
@@ -3289,6 +3393,15 @@ fn sort_key(r: &Row, c: ColKind, m: Option<&Meta>) -> SortKey {
         ColKind::Dimensions | ColKind::Megapixels => m.and_then(|m| m.dims).map_or(SortKey::None, |(w, h)| SortKey::Num(w as f64 * h as f64)),
         ColKind::Camera => text(m.and_then(|m| m.camera.clone())),
         ColKind::Lens => text(m.and_then(|m| m.lens.clone())),
+        ColKind::Width => m.and_then(|m| m.dims).map_or(SortKey::None, |(w, _)| SortKey::Num(w as f64)),
+        ColKind::Height => m.and_then(|m| m.dims).map_or(SortKey::None, |(_, h)| SortKey::Num(h as f64)),
+        ColKind::AspectRatio => m.and_then(|m| m.dims).filter(|d| d.1 > 0).map_or(SortKey::None, |(w, h)| SortKey::Num(w as f64 / h as f64)),
+        ColKind::Duration => m.and_then(|m| m.duration_us).map_or(SortKey::None, |d| SortKey::Num(d as f64)),
+        c => match m.and_then(|m| m.field(c)) {
+            None => SortKey::None,
+            Some(t) if c.right_aligned() => sort_number(c, t).map_or(SortKey::Text(t.to_string()), SortKey::Num),
+            Some(t) => SortKey::Text(t.to_string()),
+        },
     }
 }
 
