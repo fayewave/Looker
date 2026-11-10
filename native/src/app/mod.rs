@@ -1139,6 +1139,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year);
         page::apply_frame_colours(hwnd);
         crate::trace::mark("window created");
+        crate::shell_icons::init(hwnd);
         DragAcceptFiles(hwnd, true); // files and folders dropped from Explorer
         if crate::store::packaged() {
             SetTimer(Some(hwnd), TIMER_UPDATES, 1500, None);
