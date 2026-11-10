@@ -33,7 +33,7 @@ pub struct Settings {
     pub wheel_navigates: bool,
     /// Pointer zooms (wheel, double-click) aim at the middle of the view rather than the pointer.
     pub zoom_center: bool,
-    /// The theme in use: Ember (default), Garnet, Paper or Blush (theme.rs). While `theme_follow`, whichever of
+    /// The theme in use: Black (default), Dark, Paper or Light (theme.rs). While `theme_follow`, whichever of
     /// `theme_dark` and `theme_light` matches Windows' app mode (`follow_windows`).
     pub theme: crate::theme::ThemeId,
     /// Match Windows: dark or light as Windows' app mode is, in the themes picked for each (Snapper's).
@@ -132,7 +132,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, theme_follow: false, theme_dark: crate::theme::ThemeId::Ember, theme_light: crate::theme::ThemeId::Blush, bars_opaque: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -277,10 +277,10 @@ pub fn parse(text: &str) -> Settings {
             "video_loop" => s.video_loop_secs = if v == "always" { u32::MAX } else { v.parse().unwrap_or(10) },
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
-            "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Ember),
+            "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Black),
             "theme_follow" => s.theme_follow = v != "0",
-            "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Ember),
-            "theme_light" => s.theme_light = crate::theme::ThemeId::parse(v).filter(|t| !t.theme().dark).unwrap_or(crate::theme::ThemeId::Blush),
+            "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Black),
+            "theme_light" => s.theme_light = crate::theme::ThemeId::parse(v).filter(|t| !t.theme().dark).unwrap_or(crate::theme::ThemeId::Light),
             "bars_opaque" => s.bars_opaque = v != "0",
             "checkerboard" => s.checkerboard = v != "0",
             "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
@@ -468,7 +468,7 @@ pub fn from_legacy(get: impl Fn(&str) -> Option<Legacy>) -> Settings {
     s.cache_mb = int("CacheBudgetMB").map_or(CACHE_MB, |m| m.clamp(128, 2048) as u32);
     s.wheel_navigates = int("WheelMode") == Some(1);
     s.zoom_center = int("ZoomAnchor") == Some(1);
-    s.theme = if int("Theme") == Some(1) { crate::theme::ThemeId::Garnet } else { crate::theme::ThemeId::Ember };
+    s.theme = if int("Theme") == Some(1) { crate::theme::ThemeId::Dark } else { crate::theme::ThemeId::Black };
     s.remember_window = flag("RememberWindow").unwrap_or(true);
     s.default_hint_dismissed = flag("DefaultHintDismissed").unwrap_or(false);
     s.recents_enabled = flag("RecentsEnabled").unwrap_or(true);
@@ -516,9 +516,9 @@ mod tests {
             explorer_width: 300.0,
             wheel_navigates: true,
             zoom_center: true,
-            theme: crate::theme::ThemeId::Garnet,
+            theme: crate::theme::ThemeId::Dark,
             theme_follow: true,
-            theme_dark: crate::theme::ThemeId::Garnet,
+            theme_dark: crate::theme::ThemeId::Dark,
             theme_light: crate::theme::ThemeId::Paper,
             bars_opaque: true,
             checkerboard: false,
@@ -605,7 +605,7 @@ mod tests {
         .collect();
         let s = from_legacy(|k| m.get(k).cloned());
         assert_eq!(s.sort, Sort { field: crate::folder::SortField::Date, descending: true });
-        assert!(s.strip_visible && s.theme == crate::theme::ThemeId::Garnet && s.wheel_navigates && !s.zoom_center);
+        assert!(s.strip_visible && s.theme == crate::theme::ThemeId::Dark && s.wheel_navigates && !s.zoom_center);
         assert_eq!(s.strip_height, STRIP_MAX);
         assert_eq!(s.info_width, 400.0);
         assert_eq!(s.cache_mb, 1024);
