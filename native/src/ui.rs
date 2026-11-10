@@ -621,6 +621,12 @@ impl Toast {
         Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms }
     }
 
+    /// The same, shown fully for `hold_ms` (the video's readouts: Faye, 2026-11-10, a tad longer than quick).
+    pub fn held(mut self, hold_ms: f32) -> Toast {
+        self.hold_ms = hold_ms;
+        self
+    }
+
     pub fn phase(&self) -> ToastPhase {
         let t = self.start.elapsed().as_secs_f32() * 1000.0;
         let fade_in = EASE * 1000.0;

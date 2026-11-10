@@ -249,7 +249,13 @@ pub(super) fn clock_text(us: i64, hours: bool) -> String {
 /// Thumbnails at least this tall get a video's length on them.
 pub(super) const BADGE_MIN_H: f32 = 40.0;
 
-/// A video's length in the bottom-right corner of its thumbnail `r`: white on a dark pill, as file managers do.
+/// The widest `timecode` can be for a video at `fps`: all zeros, with as many picture digits as the rate needs
+/// (three past 100 fps: Faye, 2026-11-10, a 120 fps video's times were cut off).
+fn timecode_template(fps: f64, hours: bool) -> String {
+    let digits = if fps > 0.0 { ((fps.ceil() as u64).saturating_sub(1)).max(1).to_string().len().max(2) } else { 2 };
+    format!("{}:{}", if hours { "0:00:00" } else { "00:00" }, "0".repeat(digits))
+}
+
 /// Fills a slider's rounded track from its left end to `x`: the track's corners, a square end at `x`.
 fn fill_track_to(g: &Gfx, line: D2D_RECT_F, x: f32, c: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F) {
     if x <= line.left {
@@ -259,6 +265,8 @@ fn fill_track_to(g: &Gfx, line: D2D_RECT_F, x: f32, c: windows::Win32::Graphics:
     g.fill_round(line, SLIDER_R, c);
     g.pop_clip();
 }
+
+/// A video's length in the bottom-right corner of its thumbnail `r`: white on a dark pill, as file managers do.
 
 pub(super) fn draw_duration_badge(g: &Gfx, r: D2D_RECT_F, us: i64) {
     let text = clock_text(us, us >= 3_600_000_000);
@@ -622,7 +630,7 @@ impl App {
         self.settings.video_muted = false;
         self.apply_volume();
         if toast {
-            self.show_toast(format!("Volume {:.0}%", self.settings.video_volume * 100.0), true);
+            self.show_video_toast(format!("Volume {:.0}%", self.settings.video_volume * 100.0));
         }
     }
 
@@ -701,16 +709,19 @@ impl App {
         // the disc and glyph re-snapped to the pixels every frame: it shook).
         g.push_fade(1.0 - t * t, 1.0, cx, cy);
         g.fill_round(disc, FLASH_R, gfx::rgba(0x000000, 0.72));
+        // A slight white edge (Faye, 2026-11-10).
+        ui::stroke(g, disc, FLASH_R, gfx::rgba(0xFFFFFF, 0.22));
         let ink = gfx::rgba(0xFFFFFF, 1.0);
         if glyph == PLAY_GLYPH {
             // What shows centred in the square (Faye, 2026-11-10: by its centroid it sat ~4 px right). The rounded
             // tip ends short of the point: the curve's middle is half the corner's run back along the axis.
-            let (w, h, r) = (32.0f32, 36.0f32, 5.0f32);
+            // A tad larger in the square (Faye, 2026-11-10; was 32 x 36).
+            let (w, h, r) = (38.0f32, 43.0f32, 6.0f32);
             let tip_cut = r / 2.0 * (w / (w * w + h * h / 4.0).sqrt());
             let left = cx - (w - tip_cut) / 2.0;
             g.fill_rounded_polygon(&[(left, cy - h / 2.0), (left + w, cy), (left, cy + h / 2.0)], r, ink);
         } else {
-            let (w, h, gap) = (10.0, 34.0, 8.0);
+            let (w, h, gap) = (12.0, 40.0, 9.0);
             g.fill_round(rect(cx - gap / 2.0 - w, cy - h / 2.0, w, h), 3.0, ink);
             g.fill_round(rect(cx + gap / 2.0, cy - h / 2.0, w, h), 3.0, ink);
         }
@@ -733,7 +744,7 @@ impl App {
         let on = !p.looping;
         p.set_looping(on);
         v.looping = Some(on);
-        self.show_toast(if on { "Loop on" } else { "Loop off" }, true);
+        self.show_video_toast(if on { "Loop on" } else { "Loop off" });
     }
 
     /// A key for the video; false when it isn't one (or no video is up).
@@ -745,7 +756,7 @@ impl App {
         match vk {
             VK_M => {
                 self.toggle_mute();
-                self.show_toast(if self.video_muted() { "Muted" } else { "Sound on" }, true);
+                self.show_video_toast(if self.video_muted() { "Muted" } else { "Sound on" });
             }
             VK_UP if !explorer => self.video_volume_by(0.05),
             VK_DOWN if !explorer => self.video_volume_by(-0.05),
@@ -797,7 +808,7 @@ impl App {
                     _ => return false,
                 }
                 if let Some(t) = toast {
-                    self.show_toast(t, true);
+                    self.show_video_toast(t);
                 }
             }
         }
@@ -854,7 +865,8 @@ impl App {
         let bar = rect(x, g.snap(a.bottom - margin - h), w, h);
         let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
-        let tw = g.measure_tabular(&wide(if long { "0:00:00:00" } else { "00:00:00" }), &g.fonts.caption).ceil() + 2.0;
+        let fps = self.player_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
+        let tw = g.measure_tabular(&wide(&timecode_template(fps, long)), &g.fonts.caption).ceil() + 2.0;
         // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
         // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
@@ -958,7 +970,7 @@ impl App {
         if let Some(r) = l.play {
             // The app's boxed buttons and toggles, as the toolbar's (Faye, 2026-11-10).
             let fg = button(self, Hit::VideoPlay, r, ui::Kind::Standard);
-            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
         }
 
         let long = dur >= 3_600_000_000;
@@ -981,7 +993,15 @@ impl App {
         // 2026-11-10).
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
         g.fill_round(line, SLIDER_R, rgb(raised.track));
-        let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        // At the end the position is the last picture's start, a frame short of the duration: full then (Faye,
+        // 2026-11-10: the red stopped before the end).
+        let frac = if ended && self.video.as_ref().is_none_or(|v| v.scrub.is_none()) {
+            1.0
+        } else if dur > 0 {
+            (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
         let px = line.left + (line.right - line.left) * frac;
         fill_track_to(g, line, px, rgb(t.accent));
         // Over the red too (Faye: the whole way to the pointer).
@@ -996,8 +1016,9 @@ impl App {
         let glyph = if muted { 0xE74F } else { 0xE995 };
         if let Some(r) = l.mute {
             let fg = button(self, Hit::VideoMute, r, ui::Kind::Standard);
-            // 16 px: the speaker glyphs sit smaller in their box than play's at 14 (Faye: the same size).
-            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+            // 18 px: the speaker glyphs sit smaller in their box than play's at 16 (Faye: the same size; all a tad
+            // larger, 2026-11-10).
+            g.text(&[glyph], &g.fonts.large_icons, r, fg, Align::Center);
         }
         if let Some(r) = l.volume {
             if live {
@@ -1024,13 +1045,13 @@ impl App {
         if let Some(r) = l.settings {
             let open = matches!(self.menu, Some((menus::MenuKind::VideoSettings, _)));
             let fg = button(self, Hit::VideoSettings, r, ui::Kind::Toggle(open));
-            g.text(&[0xE713], &g.fonts.body_icons, r, fg, Align::Center);
+            g.text(&[0xE713], &g.fonts.icons, r, fg, Align::Center);
         }
         if let Some(r) = l.full {
             let fg = button(self, Hit::VideoFullscreen, r, ui::Kind::Standard);
             // Segoe's back-to-window in fullscreen, full screen otherwise.
             let glyph = if self.fullscreen.is_some() { 0xE73F } else { 0xE740 };
-            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
         }
         g.pop_fade();
 
@@ -1144,13 +1165,8 @@ impl App {
         self.invalidate();
     }
 
-    /// The bar's Settings button: a menu of the speeds and Loop.
-    fn toggle_settings_menu(&mut self) {
-        if matches!(self.menu, Some((menus::MenuKind::VideoSettings, _))) {
-            self.close_menu();
-            return;
-        }
-        let Some(r) = self.hits.rect_of(Hit::VideoSettings) else { return };
+    /// The Settings menu's rows: the speeds, then Loop, each ticked as the player is now.
+    pub(super) fn video_settings_entries(&self) -> Vec<ui::Entry<menus::Action>> {
         let (speed, looping) = self.player_ref().map_or((1.0, false), |p| (p.speed(), p.looping));
         let mut entries = vec![ui::Entry::Heading("Speed".into())];
         entries.extend(
@@ -1158,6 +1174,17 @@ impl App {
         );
         entries.push(ui::Entry::Separator);
         entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
+        entries
+    }
+
+    /// The bar's Settings button: a menu of the speeds and Loop.
+    fn toggle_settings_menu(&mut self) {
+        if matches!(self.menu, Some((menus::MenuKind::VideoSettings, _))) {
+            self.close_menu();
+            return;
+        }
+        let Some(r) = self.hits.rect_of(Hit::VideoSettings) else { return };
+        let entries = self.video_settings_entries();
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((menus::MenuKind::VideoSettings, ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
@@ -1185,6 +1212,10 @@ mod tests {
         assert_eq!(timecode(65_983_000, 60.0, false), "01:05:58");
         assert_eq!(timecode(3_723_040_000, 25.0, true), "1:02:03:01");
         assert_eq!(timecode(5_000_000, 0.0, false), "00:05:00");
+        assert_eq!(timecode_template(30.0, false), "00:00:00");
+        assert_eq!(timecode_template(100.0, false), "00:00:00");
+        assert_eq!(timecode_template(120.0, true), "0:00:00:000");
+        assert_eq!(timecode_template(0.0, false), "00:00:00");
         assert_eq!(speed_text(0.25), "0.25\u{00D7}");
         assert_eq!(speed_text(2.0), "2\u{00D7}");
     }

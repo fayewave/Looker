@@ -34,6 +34,12 @@ impl App {
         self.invalidate();
     }
 
+    /// A video readout (volume, speed, frame step, loop): quick's fade, held 650 ms instead of 350.
+    pub(super) fn show_video_toast(&mut self, text: impl Into<String>) {
+        self.toast = Some(Toast::new(text.into(), true, self.toast.as_ref()).held(650.0));
+        self.invalidate();
+    }
+
     // --- Rotation preview ---------------------------------------------------------------------------
 
     pub(super) fn can_rotate(&self) -> bool {

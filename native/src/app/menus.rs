@@ -193,6 +193,20 @@ impl App {
     /// Runs the item at `index` of the open menu (if enabled) and closes the menu.
     pub(super) fn activate_menu(&mut self, index: usize) {
         let Some(action) = self.menu.as_ref().and_then(|(_, m)| m.action_at(index)) else { return };
+        // The video bar's Settings stays open, its ticks moved (Faye, 2026-11-10).
+        if matches!(self.menu, Some((MenuKind::VideoSettings, _))) {
+            match action {
+                Action::Choose(i) => self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]),
+                Action::ToggleVideoLoop => self.toggle_video_loop(),
+                _ => {}
+            }
+            let entries = self.video_settings_entries();
+            if let Some((_, m)) = self.menu.as_mut() {
+                m.entries = entries;
+            }
+            self.invalidate();
+            return;
+        }
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         match kind {
@@ -200,11 +214,6 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
-            Some(MenuKind::VideoSettings) => match action {
-                Action::Choose(i) => self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]),
-                Action::ToggleVideoLoop => self.toggle_video_loop(),
-                _ => {}
-            },
             Some(MenuKind::Combo(which)) => {
                 if let Action::Choose(i) = action {
                     self.choose(which, i);

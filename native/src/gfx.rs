@@ -173,6 +173,8 @@ pub struct Fonts {
     pub small_icons: IDWriteTextFormat,
     /// 14 px icons: menu rows, glyphs on text buttons.
     pub body_icons: IDWriteTextFormat,
+    /// 18 px icons: the video bar's speaker (its glyphs sit small in their box).
+    pub large_icons: IDWriteTextFormat,
     /// 96 px icons: the file glyph standing in for a file Looker can't show.
     pub hero_icons: IDWriteTextFormat,
     /// 14 px, wrapping, centred, top-aligned: that file's name.
@@ -1341,7 +1343,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, large_icons: icon(18.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 
