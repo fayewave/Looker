@@ -45,8 +45,8 @@ const SLIDER_H: f32 = 6.0;
 const SLIDER_GROW: f32 = 2.0;
 const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
-const PREVIEW_W: f32 = 192.0;
-const PREVIEW_H: f32 = 108.0;
+const PREVIEW_W: f32 = 160.0;
+const PREVIEW_H: f32 = 90.0;
 /// Where a video counts as finished (no resume) or barely started.
 const RESUME_MARGIN_US: i64 = 10_000_000;
 const RESUME_CAP: usize = 200;
@@ -785,7 +785,10 @@ impl App {
     /// The pointer moved to (x, y): the bar comes back, and a drag on the seek bar or volume follows it.
     pub(super) fn video_pointer(&mut self, x: f32, y: f32) {
         if (x, y) != self.mouse {
-            if !self.bar_wanted() {
+            // Over the bar (or using it) every move redraws: the hover fill, the time and the preview follow the
+            // pointer at the display's rate. They used to wait for something else to draw a frame while paused.
+            let on_bar = self.hit(x, y).is_some_and(is_bar_hit) || self.pressed.is_some_and(is_bar_hit);
+            if !self.bar_wanted() || on_bar {
                 self.invalidate();
             }
             self.video_moved = Instant::now();
