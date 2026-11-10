@@ -4,7 +4,7 @@
 //! the same view (zoom, pan, fit).
 //!
 //! The controls bar floats at the bottom of the photo like the page bar: play/pause, the time, the seek bar (a
-//! picture of where the pointer is above it, from a second decoder: `player::Preview`), volume, speed and loop.
+//! picture of where the pointer is above it, from a second decoder: `player::Preview`), volume, and a Settings menu of speed and loop.
 //! It fades once the pointer has been still for a moment while the video plays, and stays while it's paused.
 //!
 //! Keys (agreed with Faye, native/PLAN.md N6): Space, or a click on the video, plays/pauses (a click flashes a
@@ -45,7 +45,6 @@ const SLIDER_H: f32 = 8.0;
 const SLIDER_GROW: f32 = 0.0;
 /// Their corners: a little rounded (Faye, 2026-11-10).
 const SLIDER_R: f32 = 2.5;
-const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
 const PREVIEW_W: f32 = 160.0;
 const PREVIEW_H: f32 = 90.0;
@@ -227,8 +226,7 @@ struct BarLayout {
     seek: D2D_RECT_F,
     mute: Option<D2D_RECT_F>,
     volume: Option<D2D_RECT_F>,
-    speed: Option<D2D_RECT_F>,
-    looped: Option<D2D_RECT_F>,
+    settings: Option<D2D_RECT_F>,
     /// Fullscreen, at the far right: kept as long as the speaker is.
     full: Option<D2D_RECT_F>,
 }
@@ -705,9 +703,12 @@ impl App {
         g.fill_round(disc, FLASH_R, gfx::rgba(0x000000, 0.72));
         let ink = gfx::rgba(0xFFFFFF, 1.0);
         if glyph == PLAY_GLYPH {
-            // Its centroid on the centre (a third of its width left of it, two thirds right), corners rounded.
-            let (w, h) = (32.0, 36.0);
-            g.fill_rounded_polygon(&[(cx - w / 3.0, cy - h / 2.0), (cx + w * 2.0 / 3.0, cy), (cx - w / 3.0, cy + h / 2.0)], 5.0, ink);
+            // What shows centred in the square (Faye, 2026-11-10: by its centroid it sat ~4 px right). The rounded
+            // tip ends short of the point: the curve's middle is half the corner's run back along the axis.
+            let (w, h, r) = (32.0f32, 36.0f32, 5.0f32);
+            let tip_cut = r / 2.0 * (w / (w * w + h * h / 4.0).sqrt());
+            let left = cx - (w - tip_cut) / 2.0;
+            g.fill_rounded_polygon(&[(left, cy - h / 2.0), (left + w, cy), (left, cy + h / 2.0)], r, ink);
         } else {
             let (w, h, gap) = (10.0, 34.0, 8.0);
             g.fill_round(rect(cx - gap / 2.0 - w, cy - h / 2.0, w, h), 3.0, ink);
@@ -726,7 +727,7 @@ impl App {
         self.invalidate();
     }
 
-    fn toggle_video_loop(&mut self) {
+    pub(super) fn toggle_video_loop(&mut self) {
         let Some(v) = self.video.as_mut() else { return };
         let Some(p) = v.player.as_mut() else { return };
         let on = !p.looping;
@@ -810,7 +811,7 @@ impl App {
     /// and while it's over the bar or using it.
     fn bar_wanted(&self) -> bool {
         let Some(p) = self.player_ref() else { return false };
-        let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _)));
+        let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSettings, _)));
         let over = matches!(self.hover, Some(h) if is_bar_hit(h));
         // Out of fullscreen it stays (Faye, 2026-11-10): only fullscreen is the video alone.
         self.fullscreen.is_none() || !p.playing() || using || over || (self.tracking && self.video_moved.elapsed() < BAR_IDLE)
@@ -854,9 +855,8 @@ impl App {
         let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
         let tw = g.measure_tabular(&wide(if long { "0:00:00:00" } else { "00:00:00" }), &g.fonts.caption).ceil() + 2.0;
-        // As it narrows the loop button goes first, then the volume slider, the speed (each while the seek bar
-        // would stay 160 wide), then the times, the speaker with fullscreen, and play (while it would stay 48): the
-        // seek bar stays.
+        // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
+        // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
             2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
         };
@@ -864,9 +864,8 @@ impl App {
             [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
         let base = essentials(with_play, with_times, with_mute) + 160.0;
         let all = with_play && with_times && with_mute;
-        let with_speed = all && base + SPEED_W + 4.0 <= w;
-        let with_volume = with_speed && base + SPEED_W + 4.0 + VOLUME_W <= w;
-        let with_loop = with_volume && base + SPEED_W + 4.0 + VOLUME_W + btn + 4.0 <= w;
+        let with_settings = all && base + btn + 4.0 <= w;
+        let with_volume = with_settings && base + btn + 4.0 + VOLUME_W <= w;
         let play = with_play.then(|| rect(bar.left + pad, y, btn, btn));
         let mut right = bar.right - pad;
         let full = with_mute.then(|| {
@@ -875,15 +874,10 @@ impl App {
             right -= 4.0;
             r
         });
-        let looped = with_loop.then(|| {
+        // Speed and loop live in its menu (Faye, 2026-11-10).
+        let settings = with_settings.then(|| {
             right -= btn;
             let r = rect(right, y, btn, btn);
-            right -= 4.0;
-            r
-        });
-        let speed = with_speed.then(|| {
-            right -= SPEED_W;
-            let r = rect(right, y, SPEED_W, btn);
             right -= 4.0;
             r
         });
@@ -909,7 +903,7 @@ impl App {
         let cy = y + btn / 2.0;
         let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
-        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, speed, looped, full })
+        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, settings, full })
     }
 
     /// The bar, over the photo (above the page bar's place: a video has no pages). Returns whether it's fading.
@@ -936,9 +930,9 @@ impl App {
             return;
         }
         let Some(l) = self.bar_layout(g) else { return };
-        let (dur, playing, speed, looping, ended) = {
+        let (dur, playing, ended) = {
             let p = self.player_ref().unwrap();
-            (p.duration(), p.playing(), p.speed(), p.looping, p.at_end())
+            (p.duration(), p.playing(), p.at_end())
         };
         let pos = self.video.as_ref().map_or(0, |v| v.position());
         let t = theme::t();
@@ -1027,14 +1021,10 @@ impl App {
                 fill_track_to(g, line, mx, gfx::rgba(raised.text, 0.28 * k));
             }
         }
-        if let Some(r) = l.speed {
-            let open = matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _)));
-            let fg = button(self, Hit::VideoSpeed, r, ui::Kind::Toggle(open));
-            g.text_tabular(&wide(&speed_text(speed)), &g.fonts.body, r, fg, Align::Center);
-        }
-        if let Some(r) = l.looped {
-            let fg = button(self, Hit::VideoLoop, r, ui::Kind::Toggle(looping));
-            g.text(&[0xE8EE], &g.fonts.body_icons, r, fg, Align::Center);
+        if let Some(r) = l.settings {
+            let open = matches!(self.menu, Some((menus::MenuKind::VideoSettings, _)));
+            let fg = button(self, Hit::VideoSettings, r, ui::Kind::Toggle(open));
+            g.text(&[0xE713], &g.fonts.body_icons, r, fg, Align::Center);
         }
         if let Some(r) = l.full {
             let fg = button(self, Hit::VideoFullscreen, r, ui::Kind::Standard);
@@ -1147,29 +1137,30 @@ impl App {
         match h {
             Hit::VideoPlay => self.video_toggle_play(),
             Hit::VideoMute => self.toggle_mute(),
-            Hit::VideoLoop => self.toggle_video_loop(),
             Hit::VideoFullscreen => self.toggle_fullscreen(),
-            Hit::VideoSpeed => self.toggle_speed_menu(),
+            Hit::VideoSettings => self.toggle_settings_menu(),
             _ => {}
         }
         self.invalidate();
     }
 
-    fn toggle_speed_menu(&mut self) {
-        if matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _))) {
+    /// The bar's Settings button: a menu of the speeds and Loop.
+    fn toggle_settings_menu(&mut self) {
+        if matches!(self.menu, Some((menus::MenuKind::VideoSettings, _))) {
             self.close_menu();
             return;
         }
-        let Some(r) = self.hits.rect_of(Hit::VideoSpeed) else { return };
-        let speed = self.player_ref().map_or(1.0, |p| p.speed());
-        let entries = SPEEDS
-            .iter()
-            .enumerate()
-            .map(|(i, &s)| menus::check(menus::Action::Choose(i), &if s == 1.0 { "Normal".to_string() } else { speed_text(s) }, s == speed))
-            .collect();
+        let Some(r) = self.hits.rect_of(Hit::VideoSettings) else { return };
+        let (speed, looping) = self.player_ref().map_or((1.0, false), |p| (p.speed(), p.looping));
+        let mut entries = vec![ui::Entry::Heading("Speed".into())];
+        entries.extend(
+            SPEEDS.iter().enumerate().map(|(i, &s)| menus::check(menus::Action::Choose(i), &if s == 1.0 { "Normal".to_string() } else { speed_text(s) }, s == speed)),
+        );
+        entries.push(ui::Entry::Separator);
+        entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
-        self.menu = Some((menus::MenuKind::VideoSpeed, ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
+        self.menu = Some((menus::MenuKind::VideoSettings, ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
         self.invalidate();
     }
@@ -1177,7 +1168,7 @@ impl App {
 
 /// The bar's own hits: the pointer over them keeps it up, and the photo's clicks and drags don't apply.
 pub(super) fn is_bar_hit(h: Hit) -> bool {
-    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSpeed | Hit::VideoLoop | Hit::VideoFullscreen)
+    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSettings | Hit::VideoFullscreen)
 }
 
 #[cfg(test)]

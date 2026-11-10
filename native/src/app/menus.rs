@@ -29,6 +29,8 @@ pub(super) enum Action {
     RemoveRecent,
     /// A ComboBox's item, by index.
     Choose(usize),
+    /// The video bar's Settings menu: loop on/off.
+    ToggleVideoLoop,
     /// The strip's menu: list the folder's other files in it too.
     ToggleStripOther,
     /// The explorer card's: the same for its rows.
@@ -198,11 +200,11 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
-            Some(MenuKind::VideoSpeed) => {
-                if let Action::Choose(i) = action {
-                    self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]);
-                }
-            }
+            Some(MenuKind::VideoSettings) => match action {
+                Action::Choose(i) => self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]),
+                Action::ToggleVideoLoop => self.toggle_video_loop(),
+                _ => {}
+            },
             Some(MenuKind::Combo(which)) => {
                 if let Action::Choose(i) = action {
                     self.choose(which, i);
@@ -301,6 +303,6 @@ pub(super) enum MenuKind {
     Recent(PathBuf),
     /// A Settings drop-down.
     Combo(page::Setting),
-    /// A video's speed menu.
-    VideoSpeed,
+    /// The video bar's Settings menu: speed and loop.
+    VideoSettings,
 }

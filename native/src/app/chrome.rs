@@ -231,8 +231,7 @@ impl App {
             Hit::VideoPlay => "Play or pause (Space)",
             Hit::VideoMute => "Mute (M)",
             Hit::VideoVolume => "Volume (\u{2191} \u{2193}, wheel)",
-            Hit::VideoSpeed => "Speed (J, L)",
-            Hit::VideoLoop => "Loop",
+            Hit::VideoSettings => "Settings",
             Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
             _ => return None,
         })

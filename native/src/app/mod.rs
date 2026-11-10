@@ -221,14 +221,13 @@ enum Hit {
     /// The landing page's "Set Looker as your default photo viewer" and its X.
     DefaultHint,
     DefaultHintClose,
-    /// A video's controls bar: the pill, play/pause, the seek bar, mute, the volume slider, speed and loop.
+    /// A video's controls bar: the pill, play/pause, the seek bar, mute, the volume slider, Settings (speed, loop).
     VideoBar,
     VideoPlay,
     VideoSeek,
     VideoMute,
     VideoVolume,
-    VideoSpeed,
-    VideoLoop,
+    VideoSettings,
     VideoFullscreen,
     /// The 3D view's cube (which face: worked out from the point).
     ModelCube,
