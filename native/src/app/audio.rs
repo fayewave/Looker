@@ -108,6 +108,11 @@ fn ruler_label(secs: f64, step: f64) -> String {
 }
 
 /// "1:05.42": a position to the hundredth.
+/// The audio bar's clock: "3:19.400".
+pub(super) fn precise_us(us: i64) -> String {
+    precise(us.max(0) as f64 / 1e6)
+}
+
 fn precise(secs: f64) -> String {
     let secs = secs.max(0.0);
     let h = (secs / 3600.0).floor() as i64;
@@ -321,13 +326,8 @@ impl App {
         let a = self.audio_view.as_ref()?;
         let mut area = self.image_area();
         let w = area.right - area.left;
-        // Above the controls bar's band (as a video's picture).
-        if self.fullscreen.is_none() {
-            area.bottom += self.preview_pad();
-            area.bottom -= video::bar_band(w).min((area.bottom - area.top) * 0.4);
-        } else {
-            area.bottom -= video::BAR_ROOM;
-        }
+        // Under the bar across the top (Transient's).
+        area.top += video::AUDIO_BAR_H + 12.0;
         let h = area.bottom - area.top;
         if w < 120.0 || h < 120.0 {
             return None;
@@ -344,7 +344,7 @@ impl App {
         let ruler = rect(left, row.bottom + 2.0, right - left, RULER_H);
         let lanes = D2D_RECT_F { left, top: ruler.bottom, right, bottom: scroll.top - SCROLL_GAP };
         // The cover and the text under it, centred in what's left.
-        let text_h = 66.0;
+        let text_h = 32.0;
         let room = top - 16.0 - (area.top + 12.0);
         let side = if has_art { (room - text_h).min(right - left).min(560.0).max(0.0) } else { (room - text_h).clamp(0.0, 132.0) };
         let block = side + text_h;
@@ -394,6 +394,29 @@ impl App {
         true
     }
 
+    /// The audio bar's two lines: the title (the tag, else the file's name), and who made it with the format
+    /// and the loudness.
+    pub(super) fn audio_title_lines(&self) -> (String, String) {
+        let stem = self.current_path().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut parts = Vec::new();
+        let title = match self.player_ref().and_then(Engine::audio_ref) {
+            Some(p) => {
+                if let Some(f) = p.facts.as_ref() {
+                    parts.push(crate::imaging::audio::format_line(f));
+                }
+                if p.tags.title.is_empty() { stem } else { p.tags.title.clone() }
+            }
+            None => stem,
+        };
+        if let Some(loud) = self.audio_view.as_ref().and_then(|a| a.scan.data().loudness) {
+            if let Some(i) = loud.integrated {
+                parts.push(format!("{:.1} LUFS", i).replace('-', "\u{2212}"));
+            }
+            parts.push(format!("Peak {:.1} dB", loud.peak).replace('-', "\u{2212}"));
+        }
+        (title, parts.join("  \u{b7}  "))
+    }
+
     /// Everything else, in the UI layer.
     pub(super) fn draw_audio(&mut self, g: &Gfx) {
         if !self.audio_shown() {
@@ -425,7 +448,7 @@ impl App {
                 g.text(&[0xEC4F], &g.fonts.hero_icons, l.art, rgb(t.placeholder), Align::Center);
             }
         }
-        let (title, byline, mut line) = match self.player_ref().and_then(Engine::audio_ref) {
+        let (_title, byline, mut _line) = match self.player_ref().and_then(Engine::audio_ref) {
             Some(p) => {
                 let stem = self.current_path().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let title = if p.tags.title.is_empty() { stem } else { p.tags.title.clone() };
@@ -433,18 +456,10 @@ impl App {
             }
             None => (self.current_path().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), String::new(), String::new()),
         };
-        if let Some(loud) = self.audio_view.as_ref().and_then(|a| a.scan.data().loudness) {
-            if let Some(i) = loud.integrated {
-                line.push_str(&format!("  \u{b7}  {:.1} LUFS", i).replace('-', "\u{2212}"));
-            }
-            line.push_str(&format!("  \u{b7}  Peak {:.1} dB", loud.peak).replace('-', "\u{2212}"));
-        }
         let tr = l.title;
-        g.text(&wide(&title), &g.fonts.title, rect(tr.left, tr.top, tr.right - tr.left, 22.0), rgb(t.text), Align::Center);
         if !byline.is_empty() {
-            g.text(&wide(&byline), &g.fonts.body, rect(tr.left, tr.top + 22.0, tr.right - tr.left, 18.0), rgb(t.label), Align::Center);
+            g.text(&wide(&byline), &g.fonts.body, rect(tr.left, tr.top, tr.right - tr.left, 18.0), rgb(t.label), Align::Center);
         }
-        g.text_tabular(&wide(&line), &g.fonts.caption, rect(tr.left, tr.top + if byline.is_empty() { 24.0 } else { 40.0 }, tr.right - tr.left, 16.0), rgb(t.placeholder), Align::Center);
 
         // The row: the region (with a clear button) or the zoom on the left, the mode on the right.
         let (mode, region_drag) = match self.audio_view.as_ref() {

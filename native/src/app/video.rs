@@ -244,7 +244,19 @@ struct BarLayout {
     settings: Option<D2D_RECT_F>,
     /// Fullscreen, at the far right: kept as long as the speaker is.
     full: Option<D2D_RECT_F>,
+    /// Stop, after play.
+    stop: Option<D2D_RECT_F>,
+    /// An audio file's bar only (Transient's, at the top): previous and next file, Loop, the title and format
+    /// lines on the left, and the time on the right.
+    prev: Option<D2D_RECT_F>,
+    next: Option<D2D_RECT_F>,
+    looping: Option<D2D_RECT_F>,
+    title: Option<D2D_RECT_F>,
+    clock: Option<D2D_RECT_F>,
 }
+
+/// The audio bar's height: the title and format lines, the seek bar, the buttons.
+pub(super) const AUDIO_BAR_H: f32 = 12.0 + 40.0 + 6.0 + 18.0 + 4.0 + BAR_BTN + 10.0;
 
 /// The bar's timecode: minutes, seconds and the picture within the second, "01:05:12", or "1:02:03:12" for a video
 /// an hour or longer (Faye, 2026-11-10: to see each picture while stepping through). `fps` 0: no pictures part.
@@ -903,6 +915,9 @@ impl App {
     /// and while it's over the bar or using it.
     fn bar_wanted(&self) -> bool {
         let Some(p) = self.player_ref() else { return false };
+        if self.audio_shown() {
+            return true;
+        }
         let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSettings | menus::MenuKind::VideoTime, _)));
         let over = matches!(self.hover, Some(h) if is_bar_hit(h));
         // Out of fullscreen it stays (Faye, 2026-11-10): only fullscreen is the video alone.
@@ -933,6 +948,9 @@ impl App {
     }
 
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
+        if self.audio_shown() {
+            return self.audio_bar_layout(g);
+        }
         // Its own margin off the status row, not the photo's pad as well (its band spaces the video off it).
         let mut a = self.image_area();
         a.bottom += self.preview_pad();
@@ -956,7 +974,7 @@ impl App {
         // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
         // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
-            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + sw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
+            2.0 * pad + 12.0 + if play { 2.0 * btn + 10.0 } else { 0.0 } + if times { 2.0 * tw + sw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
         };
         let (with_play, with_times, with_mute) =
             [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
@@ -965,6 +983,7 @@ impl App {
         let with_settings = all && base + btn + 4.0 <= w;
         let with_volume = with_settings && base + btn + 4.0 + VOLUME_W <= w;
         let play = with_play.then(|| rect(bar.left + pad, y, btn, btn));
+        let stop = play.map(|p| rect(p.right + 4.0, y, btn, btn));
         let mut right = bar.right - pad;
         let full = with_mute.then(|| {
             right -= btn;
@@ -989,7 +1008,7 @@ impl App {
             right -= 8.0;
             r
         });
-        let left = play.map_or(bar.left + pad, |p| p.right + 6.0);
+        let left = stop.map_or(bar.left + pad, |p| p.right + 6.0);
         // Both times after the seek bar, "00:01:00/00:02:00" (Faye, 2026-11-10): the elapsed time against the
         // slash, the total after it, so the slash stays put.
         let times = with_times.then(|| {
@@ -1005,7 +1024,75 @@ impl App {
         let cy = y + btn / 2.0;
         let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
-        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, settings, full })
+        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, settings, full, stop, prev: None, next: None, looping: None, title: None, clock: None })
+    }
+
+    /// An audio file's bar, as Transient's: across the top of the photo area, the title and format top left and
+    /// the time top right, the seek bar the whole width under them, then previous, play, stop, next and Loop on
+    /// the left and the speaker with the volume on the right (Faye, 2026-11-11).
+    fn audio_bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
+        let a = self.image_area();
+        let margin = 12.0;
+        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { margin }, if self.right_inset() > 0.5 { 0.0 } else { margin });
+        let x = g.snap(a.left + ml);
+        let w = g.snap(a.right - mr) - x;
+        if w < 200.0 || a.bottom - a.top < AUDIO_BAR_H + 40.0 {
+            return None;
+        }
+        let bar = rect(x, g.snap(a.top), w, AUDIO_BAR_H);
+        let pad = 14.0;
+        let btn = BAR_BTN;
+        let (l, r) = (bar.left + pad, bar.right - pad);
+        let clock_w = 150.0;
+        let clock = rect(r - clock_w, bar.top + 12.0, clock_w, 40.0);
+        let title = rect(l, bar.top + 12.0, (clock.left - 16.0 - l).max(0.0), 40.0);
+        let cy = clock.bottom + 6.0 + 9.0;
+        let track = rect(l, cy - SLIDER_H / 2.0, r - l, SLIDER_H);
+        let seek = rect(l - 6.0, cy - 9.0, r - l + 12.0, 18.0);
+        let y = cy + 9.0 + 4.0;
+        let mut at = l;
+        let mut next_btn = |gap: f32| {
+            let b = rect(at, y, btn, btn);
+            at += btn + gap;
+            b
+        };
+        let prev = next_btn(4.0);
+        let play = next_btn(4.0);
+        let stop = next_btn(4.0);
+        let next = next_btn(12.0);
+        let looping = next_btn(0.0);
+        let volume = rect(r - VOLUME_W - 40.0, y, VOLUME_W + 40.0, btn);
+        let mute = rect(volume.left - 4.0 - btn, y, btn, btn);
+        let fits = mute.left > looping.right + 8.0;
+        Some(BarLayout {
+            bar,
+            radius: 10.0,
+            play: Some(play),
+            times: None,
+            track,
+            seek,
+            mute: fits.then_some(mute),
+            volume: fits.then_some(volume),
+            settings: None,
+            full: None,
+            stop: Some(stop),
+            prev: Some(prev),
+            next: Some(next),
+            looping: Some(looping),
+            title: Some(title),
+            clock: Some(clock),
+        })
+    }
+
+    /// Stop: paused, back at the start.
+    pub(super) fn video_stop(&mut self) {
+        if let Some(p) = self.player() {
+            p.set_playing(false);
+            let start = p.start_us();
+            p.seek(start, true);
+            self.video_moved = Instant::now();
+            self.invalidate();
+        }
     }
 
     /// The bar, over the photo (above the page bar's place: a video has no pages). Returns whether it's fading.
@@ -1029,8 +1116,9 @@ impl App {
             v.cursor_hidden = hide;
         }
         let layout = if a > 0.0 { self.bar_layout(g) } else { None };
+        let audio = self.audio_shown();
         if let Some(v) = self.video.as_mut() {
-            v.bar_top = layout.as_ref().map(|l| (l.bar.top, a));
+            v.bar_top = layout.as_ref().filter(|_| !audio).map(|l| (l.bar.top, a));
         }
         let Some(l) = layout else { return };
         let (dur, playing, ended) = {
@@ -1062,6 +1150,33 @@ impl App {
             // The app's boxed buttons and toggles, as the toolbar's (Faye, 2026-11-10).
             let fg = button(self, Hit::VideoPlay, r, ui::Kind::Standard);
             g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.stop {
+            let fg = button(self, Hit::VideoStop, r, ui::Kind::Standard);
+            g.text(&[0xE71A], &g.fonts.icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.prev {
+            let fg = button(self, Hit::AudioPrev, r, ui::Kind::Standard);
+            g.text(&[0xE892], &g.fonts.icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.next {
+            let fg = button(self, Hit::AudioNext, r, ui::Kind::Standard);
+            g.text(&[0xE893], &g.fonts.icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.looping {
+            let on = self.player_ref().is_some_and(|p| p.looping());
+            let fg = button(self, Hit::AudioLoop, r, ui::Kind::Toggle(on));
+            g.text(&[0xE8EE], &g.fonts.icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.title {
+            let (title, line) = self.audio_title_lines();
+            g.text(&wide(&title), &g.fonts.title, rect(r.left, r.top, r.right - r.left, 22.0), rgb(raised.text), Align::Left);
+            g.text_tabular(&wide(&line), &g.fonts.caption, rect(r.left, r.top + 22.0, r.right - r.left, 16.0), rgb(raised.label), Align::Left);
+        }
+        if let Some(r) = l.clock {
+            let now = if ended { dur } else { pos };
+            g.text_tabular(&wide(&super::audio::precise_us(now)), &g.fonts.title, rect(r.left, r.top, r.right - r.left, 22.0), rgb(raised.text), Align::Right);
+            g.text_tabular(&wide(&format!("of {}", super::audio::precise_us(dur))), &g.fonts.caption, rect(r.left, r.top + 22.0, r.right - r.left, 16.0), rgb(raised.label), Align::Right);
         }
 
         let long = dur >= 3_600_000_000;
@@ -1158,7 +1273,7 @@ impl App {
         g.pop_fade();
 
         // Over the seek bar: the time there, and a picture of it once the preview decoder has one.
-        if live && over && dur > 0 {
+        if live && over && dur > 0 && !audio {
             let mx = if scrubbing { px } else { self.mouse.0.clamp(l.track.left, l.track.right) };
             let at = if scrubbing { pos } else { (((mx - l.track.left) / (l.track.right - l.track.left).max(1.0)) as f64 * dur as f64) as i64 };
             self.draw_seek_preview(g, &l, mx, at, long);
@@ -1343,6 +1458,10 @@ impl App {
     pub(super) fn video_bar_click(&mut self, h: Hit) {
         match h {
             Hit::VideoPlay => self.video_toggle_play(),
+            Hit::VideoStop => self.video_stop(),
+            Hit::AudioPrev => self.step(-1),
+            Hit::AudioNext => self.step(1),
+            Hit::AudioLoop => self.toggle_video_loop(),
             Hit::VideoMute => self.toggle_mute(),
             Hit::VideoFullscreen => self.toggle_fullscreen(),
             Hit::VideoSettings => self.toggle_settings_menu(),
@@ -1584,7 +1703,7 @@ impl Engine {
 
 /// The bar's own hits: the pointer over them keeps it up, and the photo's clicks and drags don't apply.
 pub(super) fn is_bar_hit(h: Hit) -> bool {
-    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)
+    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoStop | Hit::AudioPrev | Hit::AudioNext | Hit::AudioLoop | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)
 }
 
 #[cfg(test)]

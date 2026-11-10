@@ -247,6 +247,8 @@ enum Hit {
     /// A video's controls bar: the pill, play/pause, the seek bar, mute, the volume slider, Settings (speed, loop).
     VideoBar,
     VideoPlay,
+    /// Stop: paused, back at the start.
+    VideoStop,
     VideoSeek,
     VideoMute,
     VideoVolume,
@@ -260,6 +262,10 @@ enum Hit {
     AudioScroll,
     AudioMode(u8),
     AudioClear,
+    /// The audio bar's previous and next file, and Loop.
+    AudioPrev,
+    AudioNext,
+    AudioLoop,
     /// The 3D view's cube (which face: worked out from the point).
     ModelCube,
     /// A document's page bar: the pill, and its two buttons.

@@ -305,6 +305,11 @@ impl App {
                     self.mouse = (x, y);
                     let h = self.hit(x, y);
                     self.set_hover(h);
+                    // The waveform's pointer line follows the pointer: playing, the vsync redraws it anyway;
+                    // stopped, only this does (it froze and jumped otherwise).
+                    if matches!(self.hover, Some(Hit::AudioWave)) {
+                        self.invalidate();
+                    }
                     self.explorer_tip_moved(x, y);
                     Some(LRESULT(0))
                 }
@@ -350,6 +355,10 @@ impl App {
                             | Hit::PagePrevious
                             | Hit::PageNext
                             | Hit::VideoPlay
+                            | Hit::VideoStop
+                            | Hit::AudioPrev
+                            | Hit::AudioNext
+                            | Hit::AudioLoop
                             | Hit::VideoSeek
                             | Hit::VideoMute
                             | Hit::VideoVolume
@@ -565,7 +574,7 @@ impl App {
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
-                            Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)) => self.video_bar_click(h),
+                            Some(h @ (Hit::VideoPlay | Hit::VideoStop | Hit::AudioPrev | Hit::AudioNext | Hit::AudioLoop | Hit::VideoMute | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)) => self.video_bar_click(h),
                             Some(Hit::ModelCube) if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 => self.view_cube_click(x, y),
                             _ => {}
                         }
