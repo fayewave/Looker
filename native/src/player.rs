@@ -438,7 +438,14 @@ impl Player {
                 pick = Some(p);
             }
         } else if self.step && !fresh {
-            // A frame step: the next picture, and the clock moves to it.
+            // A frame step: the next picture, and the clock moves to it. Never the one on screen again: from a cached
+            // picture the decoder is asked for "at or before its end", and with times rounded to the microsecond
+            // (120 fps: 8333.33 µs) that end can fall 1 µs short of the next picture, giving this one back (Faye,
+            // 2026-11-10: a step that didn't move, mostly on high frame rates after scrubbing).
+            let on_screen = self.shown.map(|(_, pts, _)| pts);
+            while st.pictures.front().is_some_and(|p| on_screen.is_some_and(|s| p.pts_us <= s)) {
+                st.pictures.pop_front();
+            }
             if let Some(p) = st.pictures.pop_front() {
                 self.step = false;
                 st.set_anchor(p.pts_us, now);
@@ -1437,6 +1444,60 @@ mod tests {
         run("slow back", (1..=30).map(|i| here - i * frame + frame / 2).collect(), &mut p);
         run("medium", (1..=20).map(|i| (i * 200_000 + frame / 2).min(info.duration_us - frame)).collect(), &mut p);
         run("jumps", (0..12).map(|i| info.duration_us * ((i * 7) % 12) / 12 + frame / 2).collect(), &mut p);
+    }
+
+    /// Frame steps forward from pictures scrubbed back to (shown from the scrub cache) each move on a picture, on
+    /// the GPU as in the app. High frame rates found it: a step from a cached picture could show that same one.
+    /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture steps_after_scrubbing_back`
+    #[test]
+    #[ignore]
+    fn steps_after_scrubbing_back() {
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let device = unsafe {
+            use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+            use windows::Win32::Graphics::Direct3D11::*;
+            use windows::core::Interface;
+            let mut d = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, Default::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d), None, None).unwrap();
+            let d: ID3D11Device = d.unwrap();
+            let _ = d.cast::<ID3D11Multithread>().unwrap().SetMultithreadProtected(true);
+            d
+        };
+        let raw = windows::core::Interface::as_raw(&device);
+        let mut p = Player::open(&path, crate::gfx::Sendable(raw), false, 0.0, true);
+        let t = Instant::now();
+        while p.poll_open().is_none() {
+            assert!(t.elapsed() < Duration::from_secs(3), "never opened");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let info = p.info.clone().unwrap();
+        let frame = (1e6 * info.fps_den as f64 / info.fps_num as f64) as i64;
+        println!("{:.3} fps, frame {frame} us", info.fps_num as f64 / info.fps_den as f64);
+        next_due(&mut p).expect("first picture");
+        let mid = info.duration_us / 2;
+        let (mut steps, mut stuck) = (0, 0);
+        for round in 0..6 {
+            // A slow drag forward fills the cache; then back over it, and steps from there.
+            let base = mid + round * 40 * frame;
+            for i in 0..30 {
+                p.seek(base + i * frame + frame / 2, true);
+                next_due(&mut p);
+            }
+            p.seek(base + (5 + round) * frame + frame / 2, true);
+            next_due(&mut p);
+            for _ in 0..8 {
+                let before = p.position();
+                p.step_forward();
+                let after = next_due(&mut p).unwrap_or(before);
+                steps += 1;
+                if after <= before {
+                    stuck += 1;
+                    println!("  step from {before} stayed at {after}");
+                }
+            }
+        }
+        println!("{stuck} of {steps} steps didn't move");
+        assert_eq!(stuck, 0);
     }
 
     /// Opens `LOOKER_DECODE` on the CPU, paused, and checks the first picture, frame steps and exact seeks.
