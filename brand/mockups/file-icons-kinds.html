@@ -110,7 +110,7 @@ const KINDS = [
       const hs = small ? 26 : 18;
       let s = `<rect x="8" y="36" width="240" height="184" rx="26" fill="${RED}"/>`;
       for (const y of holes) s += `<rect x="${small ? 18 : 22}" y="${y + (small ? 0 : 4)}" width="${hs}" height="${hs}" rx="5" fill="${INK}"/><rect x="${small ? 212 : 216}" y="${y + (small ? 0 : 4)}" width="${hs}" height="${hs}" rx="5" fill="${INK}"/>`;
-      const t = small ? "M100 84 L176 128 L100 172 Z" : "M106 94 L170 128 L106 162 Z";
+      const t = small ? "M95 84 L171 128 L95 172 Z" : "M101 94 L165 128 L101 162 Z";
       return s + `<path d="${t}" fill="${INK}" stroke="${INK}" stroke-width="14" stroke-linejoin="round"/>`;
     } },
   { key: "anim", name: "Animated", exts: "GIF APNG, animated WEBP/AVIF", sample: "GIF",
