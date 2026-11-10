@@ -407,7 +407,7 @@ impl App {
                     let h = self.hit(x, y);
                     // A click on the video (not a pan) plays or pauses it.
                     if pressed == Some(Hit::Viewport) && h == pressed && self.video_shown() && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 {
-                        self.video_toggle_play();
+                        self.video_click();
                     }
                     if pressed.is_some() && pressed == h && !dropped {
                         let r = h.and_then(|h| self.hits.rect_of(h));
@@ -597,9 +597,8 @@ impl App {
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
                     if self.hit(x, y) == Some(Hit::Viewport) && self.video_shown() {
-                        self.video_toggle_play();
-                    }
-                    if self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
+                        self.video_double_click();
+                    } else if self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
                         self.model_reset();
                     } else if self.hit(x, y) == Some(Hit::Viewport) && self.photo_up() {
                         let (ax, ay) = self.zoom_anchor(x, y);

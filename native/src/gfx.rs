@@ -175,6 +175,8 @@ pub struct Fonts {
     pub body_icons: IDWriteTextFormat,
     /// 96 px icons: the file glyph standing in for a file Looker can't show.
     pub hero_icons: IDWriteTextFormat,
+    /// 40 px icons: the play/pause that flashes over a clicked video.
+    pub flash_icons: IDWriteTextFormat,
     /// 14 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
     /// Inter's tabular figures (`tnum`): every digit the same width, so the status row's numbers don't
@@ -1261,7 +1263,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, flash_icons: icon(40.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 

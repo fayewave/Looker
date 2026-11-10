@@ -352,6 +352,7 @@ impl App {
         let strip_moving = self.draw_strip(&g);
         if self.viewer.current.is_some() && self.placeholder.is_none() {
             self.draw_page_bar(&g);
+            self.draw_video_flash(&g);
             self.draw_video_bar(&g);
         }
         if self.chrome() {

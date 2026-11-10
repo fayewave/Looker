@@ -7,8 +7,9 @@
 //! picture of where the pointer is above it, from a second decoder: `player::Preview`), volume, speed and loop.
 //! It fades once the pointer has been still for a moment while the video plays, and stays while it's paused.
 //!
-//! Keys (agreed with Faye, native/PLAN.md N6): Space, or a click on the video, plays/pauses (a double-click keeps
-//! its photo meaning and undoes the click); K pauses; L plays, then 2x, 4x; J slows back down, or at 1x jumps back
+//! Keys (agreed with Faye, native/PLAN.md N6): Space, or a click on the video, plays/pauses (a click flashes a
+//! play or pause in the middle); a double-click undoes the click and resets the zoom when zoomed or panned, else
+//! goes in or out of fullscreen (Faye, 2026-11-10); K pauses; L plays, then 2x, 4x; J slows back down, or at 1x jumps back
 //! 5 s; `,` / `.` step a picture; Shift+Left/Right jump 5 s; M mutes; Up/Down (when the explorer isn't shown) and
 //! the wheel over the video change the volume (Ctrl+wheel zooms).
 
@@ -38,6 +39,10 @@ const BAR_H: f32 = 44.0;
 pub(super) const BAR_ROOM: f32 = BAR_H + 16.0;
 const BAR_BTN: f32 = 32.0;
 const VOLUME_W: f32 = 76.0;
+/// The seek bar's and the volume slider's thickness, and how much each grows while the pointer is on it or it's
+/// held (no knob on either: Faye, 2026-11-10).
+const SLIDER_H: f32 = 6.0;
+const SLIDER_GROW: f32 = 2.0;
 const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
 const PREVIEW_W: f32 = 192.0;
@@ -45,6 +50,9 @@ const PREVIEW_H: f32 = 108.0;
 /// Where a video counts as finished (no resume) or barely started.
 const RESUME_MARGIN_US: i64 = 10_000_000;
 const RESUME_CAP: usize = 200;
+/// The play/pause flashed over a clicked video: how long it fades, and its circle.
+const FLASH: Duration = Duration::from_millis(500);
+const FLASH_D: f32 = 88.0;
 
 /// The seek bar held down: where it's held, the last seek sent while dragging, and whether it was playing.
 struct Scrub {
@@ -74,6 +82,8 @@ pub(super) struct VideoView {
     looping: Option<bool>,
     /// The picture is SDR Rec. 709 (clamped to SDR white under scRGB like a photo); HDR and wide-gamut ones aren't.
     sdr: bool,
+    /// A click's play/pause glyph in the middle, and when it was clicked.
+    flash: Option<(u16, Instant)>,
     stats: Stats,
 }
 
@@ -287,6 +297,7 @@ impl App {
             still: None,
             looping: None,
             sdr: true,
+            flash: None,
             stats: Stats::default(),
         });
     }
@@ -358,7 +369,7 @@ impl App {
     /// Frames are moving, the player is still coming up, or a preview is on its way: draw again next vsync.
     pub(super) fn video_animating(&self) -> bool {
         self.video.as_ref().is_some_and(|v| {
-            !v.failed && (v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at)) || v.preview.as_ref().is_some_and(|p| p.busy()))
+            !v.failed && (v.flash.is_some() || v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at)) || v.preview.as_ref().is_some_and(|p| p.busy()))
         })
     }
 
@@ -581,6 +592,52 @@ impl App {
         }
     }
 
+    /// A click on the video: plays or pauses, and flashes which in the middle.
+    pub(super) fn video_click(&mut self) {
+        self.video_toggle_play();
+        let playing = self.player_ref().map(|p| p.playing());
+        if let (Some(v), Some(playing)) = (self.video.as_mut(), playing) {
+            v.flash = Some((if playing { 0xE768 } else { 0xE769 }, Instant::now()));
+        }
+    }
+
+    /// A double-click on the video: its first click's play/pause undone (and its flash dropped), then back to fit
+    /// when zoomed or panned, else into or out of fullscreen.
+    pub(super) fn video_double_click(&mut self) {
+        self.video_toggle_play();
+        if let Some(v) = self.video.as_mut() {
+            v.flash = None;
+        }
+        if self.view.has_content() && !self.view.at_fit_position() {
+            self.view.fit();
+            self.after_zoom();
+        } else {
+            self.toggle_fullscreen();
+        }
+        self.invalidate();
+    }
+
+    /// The click's play/pause: a dark disc with the glyph, fading out (and growing a little) over half a second.
+    pub(super) fn draw_video_flash(&mut self, g: &Gfx) {
+        let area = self.image_area();
+        let Some(v) = self.video.as_mut() else { return };
+        let Some((glyph, at)) = v.flash else { return };
+        let t = at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
+        if t >= 1.0 {
+            v.flash = None;
+            return;
+        }
+        let (cx, cy) = ((area.left + area.right) / 2.0, (area.top + area.bottom) / 2.0);
+        let disc = rect(g.snap(cx - FLASH_D / 2.0), g.snap(cy - FLASH_D / 2.0), FLASH_D, FLASH_D);
+        // Held, then gone: most of the fade comes at the end.
+        g.push_fade(1.0 - t * t, 1.0 + 0.12 * t, cx, cy);
+        g.fill_round(disc, FLASH_D / 2.0, gfx::rgba(0x000000, 0.55));
+        // The play triangle's weight sits left of its box: nudged right to look centred.
+        let nudge = if glyph == 0xE768 { 3.0 } else { 0.0 };
+        g.text(&[glyph], &g.fonts.flash_icons, D2D_RECT_F { left: disc.left + nudge, right: disc.right + nudge, ..disc }, gfx::rgba(0xFFFFFF, 0.95), Align::Center);
+        g.pop_fade();
+    }
+
     pub(super) fn set_video_speed(&mut self, s: f64) {
         if let Some(p) = self.player() {
             p.set_speed(s);
@@ -756,7 +813,7 @@ impl App {
         });
         let (tl, tr) = (left + 6.0 + if times.is_some() { 6.0 } else { 0.0 }, right - 6.0 - if times.is_some() { 6.0 } else { 0.0 });
         let cy = y + btn / 2.0;
-        let track = rect(tl, cy - 2.0, (tr - tl).max(1.0), 4.0);
+        let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
         Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, speed, looped })
     }
@@ -807,14 +864,14 @@ impl App {
             g.text_tabular(&wide(&clock_text(dur, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
         }
 
-        // The seek bar: the line, what's played in the accent, the knob while the pointer is on it.
+        // The seek bar: the line, what's played in the accent; thicker while the pointer is on it.
         if live {
             self.hits.add(Hit::VideoSeek, l.seek);
         }
         let scrubbing = self.pressed == Some(Hit::VideoSeek);
         let over = self.hover == Some(Hit::VideoSeek) || scrubbing;
         let k = self.fades.get(Hit::VideoSeek, over);
-        let grow = 1.0 * k;
+        let grow = SLIDER_GROW / 2.0 * k;
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
         let rad = (line.bottom - line.top) / 2.0;
         g.fill_round(line, rad, rgb(raised.track));
@@ -822,11 +879,6 @@ impl App {
         let px = line.left + (line.right - line.left) * frac;
         if px > line.left + 0.5 {
             g.fill_round(D2D_RECT_F { right: px, ..line }, rad, rgb(t.accent));
-        }
-        if k > 0.0 {
-            let d = 12.0 * k;
-            let cy = (line.top + line.bottom) / 2.0;
-            g.fill_round(rect(px - d / 2.0, cy - d / 2.0, d, d), d / 2.0, rgb(raised.text));
         }
 
         let vol = self.settings.video_volume;
@@ -853,15 +905,14 @@ impl App {
             let held = self.pressed == Some(Hit::VideoVolume);
             let k = self.fades.get(Hit::VideoVolume, self.hover == Some(Hit::VideoVolume) || held);
             let cy = (r.top + r.bottom) / 2.0;
-            let line = rect(r.left + 6.0, cy - 2.0, r.right - r.left - 12.0, 4.0);
-            g.fill_round(line, 2.0, rgb(raised.track));
+            let h = SLIDER_H + SLIDER_GROW * k;
+            let line = rect(r.left + 6.0, cy - h / 2.0, r.right - r.left - 12.0, h);
+            g.fill_round(line, h / 2.0, rgb(raised.track));
             let shown = if muted { 0.0 } else { vol };
             let px = line.left + (line.right - line.left) * shown;
             if shown > 0.0 {
-                g.fill_round(D2D_RECT_F { right: px, ..line }, 2.0, rgb(if muted { raised.label } else { raised.text }));
+                g.fill_round(D2D_RECT_F { right: px, ..line }, h / 2.0, rgb(if muted { raised.label } else { raised.text }));
             }
-            let d = 8.0 + 4.0 * k;
-            g.fill_round(rect(px - d / 2.0, cy - d / 2.0, d, d), d / 2.0, rgb(raised.text));
         }
         if let Some(r) = l.speed {
             let open = matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _)));
