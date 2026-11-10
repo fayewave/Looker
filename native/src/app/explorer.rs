@@ -316,6 +316,11 @@ pub(super) struct Explorer {
     /// column's span), for it.
     pub(super) marquee: Option<Marquee>,
     pub(super) list_geom: Option<(D2D_RECT_F, f32, (f32, f32))>,
+    /// The hovered row's cells whose text is cut off (their rect and full text), the cell the pointer was last over,
+    /// and the tabs whose titles are cut off: for full-text tooltips (Faye, 2026-11-10).
+    pub(super) cell_tips: Vec<(D2D_RECT_F, String)>,
+    pub(super) tip_cell: Option<usize>,
+    pub(super) tab_tips: Vec<(u8, String)>,
     pub(super) row_pos: HashMap<String, Ease<1>>,
     pub(super) row_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
@@ -348,6 +353,8 @@ pub(super) struct Explorer {
     /// it springs back with (from how far, since when).
     pub(super) stretch: f32,
     pub(super) spring: Option<(f32, Instant)>,
+    /// This drag came out of browse mode: the card holds at its widest a while before following the pointer in.
+    pub(super) left_browse: bool,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
     pub(super) side_settle: Option<crate::motion::Settle>,
@@ -414,6 +421,9 @@ impl Explorer {
             side_row_drag: None,
             marquee: None,
             list_geom: None,
+            cell_tips: Vec::new(),
+            tip_cell: None,
+            tab_tips: Vec::new(),
             row_pos: HashMap::new(),
             row_anim_until: Instant::now(),
             section_open: HashMap::new(),
@@ -434,6 +444,7 @@ impl Explorer {
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
+            left_browse: false,
             width_settle: None,
             side_settle: None,
             ahead: (String::new(), None),
@@ -2513,6 +2524,7 @@ impl App {
         // From where the edge rests: a bounce still swinging would shift where the sticky zone starts.
         self.explorer.spring = None;
         self.explorer.stretch = 0.0;
+        self.explorer.left_browse = false;
         self.explorer.drag = Some((x, self.explorer_width()));
     }
 
@@ -2534,10 +2546,21 @@ impl App {
         // A fast flick that jumps the zone in one move still lands in it first (its stretch shows for that move).
         let w = if !was && to_browse && self.explorer.stretch == 0.0 { card_cap + STICK * 0.5 } else { w };
         let to_browse = if was { to_browse } else { w > card_cap + STICK };
+        // Narrowed out of browse mode, the card holds at its widest on the rubber band until the pointer is `STICK`
+        // further in, then follows it (Faye, 2026-11-10: sticky that way too).
+        if was && !to_browse {
+            self.explorer.left_browse = true;
+        }
+        if !to_browse && w <= card_cap - STICK {
+            self.explorer.left_browse = false;
+        }
+        let hold = !to_browse && self.explorer.left_browse && w < card_cap;
         self.explorer.stretch = match (was, to_browse) {
             (false, false) if w > card_cap => rubber(w - card_cap),
+            (_, false) if hold => -rubber(card_cap - w),
             _ => 0.0,
         };
+        let w = if hold { card_cap } else { w };
         let now = Instant::now();
         if was != to_browse {
             // The snap: a little overshoot the way it went, swinging back.
@@ -2762,9 +2785,17 @@ impl App {
 
     pub(super) fn explorer_tooltip(&mut self, h: Hit) -> Option<String> {
         match h {
-            Hit::ExplorerRow(i) => self.explorer.row(i).map(|r| {
-                if r.kind == Kind::Other { format!("{}: not an image Looker can open", r.name) } else { r.name.clone() }
-            }),
+            // The full text of the cut-off cell under the pointer (Faye, 2026-11-10); over the name of a file Looker
+            // can't open, that it can't.
+            Hit::ExplorerRow(i) => {
+                let (mx, my) = self.mouse;
+                if let Some((_, text)) = self.explorer.cell_tips.iter().find(|(r, _)| ui::contains(r, mx, my)) {
+                    return Some(text.clone());
+                }
+                let (n0, n1) = self.explorer.list_geom.map_or((0.0, 0.0), |g| g.2);
+                self.explorer.row(i).filter(|r| r.kind == Kind::Other && mx >= n0 && mx <= n1).map(|r| format!("{}: not an image Looker can open", r.name))
+            }
+            Hit::Tab(i) => self.explorer.tab_tips.iter().find(|(k, _)| *k == i).map(|(_, t)| t.clone()),
             Hit::Crumb(_) | Hit::CrumbMore => self.explorer.place.as_ref().map(|p| match p {
                 Place::Folder(f) => f.to_string_lossy().into_owned(),
                 other => other.name(),
@@ -2784,6 +2815,35 @@ impl App {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// Where a tooltip for `h` hangs from: a row's from the cell under the pointer, else the hit's own rect.
+    pub(super) fn explorer_tip_anchor(&self, h: Hit) -> Option<D2D_RECT_F> {
+        if let Hit::ExplorerRow(_) = h {
+            let (mx, my) = self.mouse;
+            if let Some((r, _)) = self.explorer.cell_tips.iter().find(|(r, _)| ui::contains(r, mx, my)) {
+                return Some(*r);
+            }
+        }
+        self.hits.rect_of(h)
+    }
+
+    /// The pointer moved over the list: crossing into another cell of the same row starts its tooltip afresh.
+    pub(super) fn explorer_tip_moved(&mut self, x: f32, y: f32) {
+        if !matches!(self.hover, Some(Hit::ExplorerRow(_))) {
+            self.explorer.tip_cell = None;
+            return;
+        }
+        let cell = self.explorer.cell_tips.iter().position(|(r, _)| ui::contains(r, x, y));
+        if cell != self.explorer.tip_cell {
+            self.explorer.tip_cell = cell;
+            self.hide_tooltip();
+            if cell.is_some() && self.menu.is_none() {
+                unsafe {
+                    SetTimer(Some(self.hwnd), super::TIMER_TOOLTIP, ui::TOOLTIP_DELAY_MS, None);
+                }
+            }
         }
     }
 

@@ -272,6 +272,7 @@ impl App {
             g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit));
         }
         let plus_w = 34.0;
+        self.explorer.tab_tips.clear();
         let fit = ((strip.right - strip.left - 12.0 - plus_w) / (155.0 * n as f32)).min(1.0);
         let tw_target = (155.0 * fit).max(40.0);
         let x0 = strip.left + 6.0;
@@ -390,6 +391,10 @@ impl App {
             let tx = body.left + 34.0;
             let text_end = if closable { cr.left - 4.0 } else { body.right - 10.0 };
             g.text(&wide(&title), &g.fonts.body, rect(tx, body.top, (text_end - tx).max(0.0), body.bottom - body.top), rgb(t.text), Align::Left);
+            // A title cut off: its full text for a tooltip.
+            if self.hover == Some(id) && g.measure(&wide(&title), &g.fonts.body) > (text_end - tx).max(0.0) + 0.5 {
+                self.explorer.tab_tips.push((k as u8, title.clone()));
+            }
             if closable {
                 if close_hot {
                     g.fill_round(cr, 4.0, rgb(t.track));
@@ -616,6 +621,7 @@ impl App {
         // under it (Faye, 2026-11-10).
         let list = D2D_RECT_F { left: list_left, top: hy + HEADER + 2.0, right: list_right - 10.0, bottom: body.bottom - footer_h };
         self.hits.add(Hit::ExplorerList, D2D_RECT_F { left: body.left, right: body.right, ..list });
+        self.explorer.cell_tips.clear();
         // For the selection rectangle: where the list is, its rows' height, and the Name column's span.
         let name_span = cols.iter().find(|c| c.kind == ColKind::Name).map_or((list.left, list.right), |c| (c.x, c.x + c.w));
         self.explorer.list_geom = Some((list, rh, name_span));
@@ -721,6 +727,10 @@ impl App {
                         let right = c.kind.right_aligned();
                         let cr = if right { rect(x, row.top, w - 10.0, rh) } else { rect(x + 8.0, row.top, w - 12.0, rh) };
                         g.text_tabular(&wide(&text), &g.fonts.body, cr, ink(t.placeholder), if right { Align::Right } else { Align::Left });
+                        // Cut off, in the row under the pointer: its full text for a tooltip.
+                        if hovered && g.measure_tabular(&wide(&text), &g.fonts.body) > cr.right - cr.left + 0.5 {
+                            self.explorer.cell_tips.push((rect(x, row.top, w, rh), text));
+                        }
                     }
                     continue;
                 }
@@ -774,6 +784,9 @@ impl App {
                     }
                 } else {
                     g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (name_right - tx).max(0.0), rh), ink(t.text), Align::Left);
+                    if hovered && g.measure(&wide(&r.name), &g.fonts.body) > (name_right - tx).max(0.0) + 0.5 {
+                        self.explorer.cell_tips.push((rect(x, row.top, w, rh), r.name.clone()));
+                    }
                 }
             }
         }

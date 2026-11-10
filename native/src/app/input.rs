@@ -34,7 +34,9 @@ impl App {
         if self.hover != h {
             self.hover = h;
             self.hide_tooltip();
-            if h.and_then(|h| self.tooltip_for(h)).is_some() && self.menu.is_none() {
+            // A row's or a tab's tooltip depends on what's cut off, known once it's drawn: its timer always starts.
+            let maybe = matches!(h, Some(Hit::ExplorerRow(_) | Hit::Tab(_)));
+            if (maybe || h.and_then(|h| self.tooltip_for(h)).is_some()) && self.menu.is_none() {
                 unsafe {
                     SetTimer(Some(self.hwnd), TIMER_TOOLTIP, ui::TOOLTIP_DELAY_MS, None);
                 }
@@ -289,6 +291,7 @@ impl App {
                     self.mouse = (x, y);
                     let h = self.hit(x, y);
                     self.set_hover(h);
+                    self.explorer_tip_moved(x, y);
                     Some(LRESULT(0))
                 }
                 WM_MOUSELEAVE => {

@@ -213,6 +213,7 @@ impl App {
             | Hit::ExplorerBookmark
             | Hit::ExplorerSidebar
             | Hit::ExplorerBrowse
+            | Hit::Tab(_)
             | Hit::SideRow(_) => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }
@@ -760,7 +761,7 @@ impl App {
             }
         }
         if let Some(t) = self.tooltip {
-            if let (Some(text), Some(anchor)) = (self.tooltip_for(t), self.hits.rect_of(t)) {
+            if let (Some(text), Some(anchor)) = (self.tooltip_for(t), self.explorer_tip_anchor(t)) {
                 let (w, h) = self.size_dip();
                 ui::tooltip(g, &text, anchor, rect(0.0, 0.0, w, h));
             }
