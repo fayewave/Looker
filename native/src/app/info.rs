@@ -221,8 +221,10 @@ impl App {
         let Some(path) = self.current_path() else { return out };
         let entry = self.viewer.current_entry();
         let model = entry.is_some_and(|e| e.format == format::Format::Model);
-        // A model's histogram would be of its render, not of anything in the file.
-        if entry.is_some_and(|e| e.histogram.is_some()) && !model {
+        let video = entry.is_some_and(|e| e.format == format::Format::Video);
+        // A model's histogram would be of its render, not of anything in the file; a video's of its first picture
+        // only (hidden: Faye, 2026-11-10).
+        if entry.is_some_and(|e| e.histogram.is_some()) && !model && !video {
             out.push(Block::Histogram);
         }
         out.push(Block::Title("File"));

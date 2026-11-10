@@ -220,7 +220,8 @@ struct BarLayout {
     radius: f32,
     play: Option<D2D_RECT_F>,
     /// The two times, left and right of the seek bar.
-    times: Option<(D2D_RECT_F, D2D_RECT_F)>,
+    /// Elapsed, the slash, and the total, side by side after the seek bar.
+    times: Option<(D2D_RECT_F, D2D_RECT_F, D2D_RECT_F)>,
     /// The seek bar's line, and the taller strip that takes its clicks. Always there.
     track: D2D_RECT_F,
     seek: D2D_RECT_F,
@@ -868,7 +869,9 @@ impl App {
     }
 
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
-        let a = self.image_area();
+        // Its own margin off the status row, not the photo's pad as well (its band spaces the video off it).
+        let mut a = self.image_area();
+        a.bottom += self.preview_pad();
         let aw = a.right - a.left;
         let (margin, h, btn) = bar_metrics(aw);
         let pad = (h - btn) / 2.0;
@@ -883,10 +886,11 @@ impl App {
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
         let _ = long;
         let tw = g.measure_tabular(&wide(&self.time_template()), &g.fonts.caption).ceil() + 2.0;
+        let sw = g.measure(&wide("/"), &g.fonts.caption).ceil() + 4.0;
         // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
         // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
-            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
+            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + sw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
         };
         let (with_play, with_times, with_mute) =
             [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
@@ -919,15 +923,19 @@ impl App {
             right -= 8.0;
             r
         });
-        let mut left = play.map_or(bar.left + pad, |p| p.right + 6.0);
+        let left = play.map_or(bar.left + pad, |p| p.right + 6.0);
+        // Both times after the seek bar, "00:01:00/00:02:00" (Faye, 2026-11-10): the elapsed time against the
+        // slash, the total after it, so the slash stays put.
         let times = with_times.then(|| {
-            let elapsed = rect(left, y, tw, btn);
             right -= tw;
             let total = rect(right, y, tw, btn);
-            left += tw;
-            (elapsed, total)
+            right -= sw;
+            let slash = rect(right, y, sw, btn);
+            right -= tw;
+            let elapsed = rect(right, y, tw, btn);
+            (elapsed, slash, total)
         });
-        let (tl, tr) = (left + 6.0 + if times.is_some() { 6.0 } else { 0.0 }, right - 6.0 - if times.is_some() { 6.0 } else { 0.0 });
+        let (tl, tr) = (left + 6.0, right - 6.0 - if times.is_some() { 6.0 } else { 0.0 });
         let cy = y + btn / 2.0;
         let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
@@ -990,22 +998,21 @@ impl App {
         }
 
         let long = dur >= 3_600_000_000;
-        if let Some((elapsed, total)) = l.times {
-            // Clickable (Timecode or Frames): the bar's quiet box on hover, as its buttons.
+        if let Some((elapsed, slash, total)) = l.times {
+            // One clickable group (Timecode or Frames): the bar's quiet box on hover, as its buttons, from the
+            // elapsed time's box to the end of the total's text.
+            let total_text = self.total_text();
+            let total_w = g.measure_tabular(&wide(&total_text), &g.fonts.caption).ceil();
+            let group = D2D_RECT_F { left: elapsed.left - 5.0, right: (total.left + total_w + 5.0).min(total.right + 5.0), ..elapsed };
             if live {
-                self.hits.add(Hit::VideoTime, elapsed);
-                self.hits.add(Hit::VideoTime, total);
+                self.hits.add(Hit::VideoTime, group);
             }
             let open = matches!(self.menu, Some((menus::MenuKind::VideoTime, _)));
             let st = self.state(Hit::VideoTime, true);
-            let boxed = |r: D2D_RECT_F| D2D_RECT_F { left: r.left - 5.0, right: r.right + 5.0, ..r };
-            let over = |r: &D2D_RECT_F| ui::contains(&boxed(*r), self.mouse.0, self.mouse.1);
-            for r in [elapsed, total] {
-                let s = if over(&r) || open { st } else { ui::State::IDLE };
-                ui::quiet_frame(g, boxed(r), ui::Kind::Toggle(open && over(&r)), &s);
-            }
+            ui::quiet_frame(g, group, ui::Kind::Toggle(open), &st);
             g.text_tabular(&wide(&self.time_text(pos)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
-            g.text_tabular(&wide(&self.total_text()), &g.fonts.caption, total, rgb(raised.label), Align::Left);
+            g.text(&wide("/"), &g.fonts.caption, slash, rgb(raised.label), Align::Center);
+            g.text_tabular(&wide(&total_text), &g.fonts.caption, total, rgb(raised.label), Align::Left);
         }
 
         // The seek bar: the line, a grey fill up to the pointer while it's on it (where a click would put the
@@ -1180,6 +1187,35 @@ impl App {
         self.invalidate();
     }
 
+    /// Each frame: the video playing (or nothing) for the taskbar's progress and Windows' media controls.
+    pub(super) fn update_media(&mut self) {
+        let now = if self.video_shown() {
+            self.player_ref().map(|p| crate::media::Playing {
+                title: self.current_path().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                playing: p.playing(),
+                position_us: if p.at_end() { p.duration() } else { self.video.as_ref().map_or(0, |v| v.position()) },
+                duration_us: p.duration(),
+            })
+        } else {
+            None
+        };
+        self.media.update(self.hwnd, now.as_ref());
+    }
+
+    /// A media control pressed (the keyboard's play/pause key, the media flyout): `button` is media.rs's.
+    pub(super) fn media_button(&mut self, button: usize) {
+        let Some(playing) = self.player_ref().map(|p| p.playing()) else { return };
+        let want = match button {
+            crate::media::BUTTON_PLAY => true,
+            crate::media::BUTTON_PAUSE | crate::media::BUTTON_STOP => false,
+            _ => return,
+        };
+        if want != playing {
+            self.video_toggle_play();
+        }
+        self.invalidate();
+    }
+
     /// A click on one of the bar's buttons.
     pub(super) fn video_bar_click(&mut self, h: Hit) {
         match h {
@@ -1265,16 +1301,13 @@ impl App {
         timecode_template(fps, p.duration() >= 3_600_000_000)
     }
 
-    /// A click on the bar's times: Timecode or Frames, in a menu off the time clicked.
+    /// A click on the bar's times: Timecode or Frames, in a menu off them.
     fn toggle_time_menu(&mut self) {
         if matches!(self.menu, Some((menus::MenuKind::VideoTime, _))) {
             self.close_menu();
             return;
         }
-        let Some(g) = &self.gfx else { return };
-        let (mx, my) = self.mouse;
-        let Some((a, b)) = self.bar_layout(g).and_then(|l| l.times) else { return };
-        let r = if ui::contains(&b, mx, my) { b } else { a };
+        let Some(r) = self.hits.rect_of(Hit::VideoTime) else { return };
         let entries = self.time_display_entries();
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();

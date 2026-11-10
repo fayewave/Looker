@@ -303,13 +303,24 @@ fn clamp_axis(offset: f64, content: f64, viewport: f64, keep_extent: f64) -> f64
     if content <= viewport {
         return (viewport - content) / 2.0;
     }
-    let keep = keep_extent * MIN_VISIBLE_FRACTION;
+    // At most half the view: zoomed in far, 20 % of the image is wider than the view and kept its edges off
+    // screen altogether (Faye, 2026-11-10: panning stopped before an edge could reach the middle).
+    let keep = (keep_extent * MIN_VISIBLE_FRACTION).min(viewport / 2.0);
     clamp(offset, keep - content, viewport - keep)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoomed_in_far_an_edge_still_reaches_the_middle() {
+        // 10 000 wide in a 1 000 view: the left edge may come to the middle (offset 500), no further.
+        assert_eq!(clamp_axis(900.0, 10_000.0, 1_000.0, 10_000.0), 500.0);
+        assert_eq!(clamp_axis(-9_900.0, 10_000.0, 1_000.0, 10_000.0), -9_500.0);
+        // Barely bigger than the view: 20 % of it stays, as before.
+        assert_eq!(clamp_axis(900.0, 1_200.0, 1_000.0, 1_200.0), 760.0);
+    }
 
     #[test]
     fn small_image_opens_at_actual_size() {

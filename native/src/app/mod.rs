@@ -54,8 +54,8 @@ use crate::view::View;
 /// The standard Windows 11 caption height (the C# app's compact TitleBar), caption buttons 46 × 32.
 const TITLE_H: f32 = 32.0;
 const TOOLBAR_H: f32 = 40.0;
-/// The photo's room starts this far below the toolbar: the strip's top pad (strip.rs `TOP_PAD`).
-const PREVIEW_TOP_PAD: f32 = 8.0;
+/// The photo's room is this far off the toolbar and the status row (or strip): the cards' margin, so it's even all round.
+const PREVIEW_PAD: f32 = 12.0;
 const STATUS_H: f32 = 28.0;
 const CAPTION_W: f32 = 46.0;
 /// The toolbar's boxed buttons, as Snapper's: 32 square, 4 apart within a group, 12 between groups, 16 from
@@ -295,7 +295,7 @@ impl Placement {
         } else {
             client_size_for(self)
         };
-        let vh = h as f32 - (TITLE_H + TOOLBAR_H + PREVIEW_TOP_PAD + STATUS_H + bottom_inset) * s;
+        let vh = h as f32 - (TITLE_H + TOOLBAR_H + 2.0 * PREVIEW_PAD + STATUS_H + bottom_inset) * s;
         let vw = w as f32 - right_inset * s;
         (vw.max(1.0) as u32, vh.max(1.0) as u32)
     }
@@ -519,6 +519,8 @@ pub struct App {
     /// The 3D model on screen, while the current file is one.
     model: Option<model::ModelView>,
     video: Option<video::VideoView>,
+    /// The playing video on the taskbar button and in Windows' media controls (media.rs).
+    media: crate::media::Media,
     /// When the pointer last moved: a playing video's bar fades a moment after.
     video_moved: std::time::Instant,
     /// The slideshow's dissolve from the previous image, while it runs.
@@ -660,6 +662,8 @@ impl App {
         let video = self.fullscreen.is_none()
             && self.placeholder.is_none()
             && self.current_path().is_some_and(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video);
+        // A video's bar band replaces the bottom pad (the bar keeps its own margin off the status row).
+        let h = if video { h + self.preview_pad() } else { h };
         let room = if video { video::bar_band(w).min(h * 0.4) } else { 0.0 };
         (w as f64, (h - room).max(1.0) as f64)
     }
@@ -1247,6 +1251,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             placeholder: None,
             model: None,
             video: None,
+            media: Default::default(),
             video_moved: std::time::Instant::now(),
             fade: None,
             last_drawn: None,

@@ -1064,9 +1064,9 @@ pub fn theme_chip(g: &Gfx, r: D2D_RECT_F, name: &str, on: bool, s: &State, of: &
     let t = theme::t();
     let fg = frame(g, r, 6.0, Kind::Toggle(on), s);
     let sw = rect(r.left + 9.0, g.snap(r.top + (r.bottom - r.top - 22.0) / 2.0), 22.0, 22.0);
+    // The theme's colour alone, as Snapper's swatches (Faye, 2026-11-10: no accent dot).
     g.fill_round(sw, 5.0, rgb(of.content));
     stroke(g, sw, 5.0, rgba(t.ink, 0.22));
-    g.fill_round(rect(sw.left + 6.0, sw.top + 6.0, 10.0, 10.0), 5.0, rgb(of.accent));
     label(g, name, &g.fonts.body, rect(sw.right + 10.0, r.top, (r.right - sw.right - 14.0).max(0.0), r.bottom - r.top), fg, Align::Left);
 }
 

@@ -18,6 +18,7 @@ mod folder;
 mod format;
 mod gfx;
 mod imaging;
+mod media;
 mod instance;
 mod metadata;
 mod model;

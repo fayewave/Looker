@@ -537,6 +537,8 @@ impl App {
                     }
                     let (x, y) = self.dip_from_lparam(lp);
                     match self.hit(x, y) {
+                        // The video bar's times: their Timecode/Frames menu, as a left click opens it (Faye).
+                        Some(Hit::VideoTime) => self.video_bar_click(Hit::VideoTime),
                         Some(Hit::ExplorerRow(i)) => {
                             self.close_menu();
                             self.explorer_menu(i, x, y);
@@ -987,6 +989,10 @@ impl App {
                 }
                 crate::thumbs::WM_THUMBS => {
                     self.on_thumbs();
+                    Some(LRESULT(0))
+                }
+                crate::media::WM_MEDIA_BUTTON => {
+                    self.media_button(wp.0);
                     Some(LRESULT(0))
                 }
                 landing::WM_RECENTS => {

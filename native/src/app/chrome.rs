@@ -76,13 +76,20 @@ impl App {
         D2D_RECT_F { top, bottom, ..v }
     }
 
+    /// The photo's room off the toolbar and the status row: `PREVIEW_PAD`, none in fullscreen.
+    pub(super) fn preview_pad(&self) -> f32 {
+        if self.chrome() { PREVIEW_PAD } else { 0.0 }
+    }
+
     pub(super) fn image_area(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let left = v.left + self.left_inset();
-        // Off the toolbar by the strip's own top pad, as the strip's cells are off the photo (Faye, 2026-11-10: it
-        // touched the toolbar's buttons). Fullscreen has no toolbar.
-        let top = if self.chrome() { (v.top + PREVIEW_TOP_PAD).min(v.bottom - 1.0) } else { v.top };
-        D2D_RECT_F { left, top, right: (v.right - self.right_inset()).max(left + 1.0), ..v }
+        // Off the toolbar, and off the status row or the strip, by the cards' margin: the same 12 all round as
+        // between the photo and a card (Faye, 2026-11-10: it touched the toolbar's buttons). Fullscreen has neither.
+        let pad = self.preview_pad();
+        let top = (v.top + pad).min(v.bottom - 1.0);
+        let bottom = (v.bottom - pad).max(top + 1.0);
+        D2D_RECT_F { left, top, right: (v.right - self.right_inset()).max(left + 1.0), bottom }
     }
 
     pub(super) fn caption_rect(&self, c: Caption) -> D2D_RECT_F {
@@ -377,6 +384,7 @@ impl App {
             self.draw_video_flash(&g);
             self.draw_video_bar(&g);
         }
+        self.update_media();
         if self.chrome() {
             self.draw_toolbar(&g);
             self.draw_status(&g);
@@ -444,7 +452,7 @@ impl App {
         for (tool, glyph, r) in self.tool_rects() {
             // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
             // looking the same whatever is behind.
-            g.fill_round(r, 5.0, rgb(t.content));
+            g.fill_round(r, 5.0, rgb(if self.settings.bars_opaque { t.sidebar } else { t.content }));
             let enabled = self.tool_enabled(tool);
             let id = Hit::Tool(tool);
             self.hits.add(id, r);
@@ -595,12 +603,13 @@ impl App {
         // Fading from the window's edge all the way: alpha falls as (1 - t)^1.5 over the gradient.
         let edge_out: Vec<_> =
             [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&k| (k, gfx::rgba(colour, alpha * (1.0 - k).powf(1.5)))).collect();
-        // Solid bars (Appearance): the title bar with the toolbar, and the status row, filled with the page's
-        // colour; no gradient under them (Faye, 2026-11-10).
+        // Solid bars (Appearance): the title bar with the toolbar, and the status row, filled with the theme's
+        // card colour (neutral: the page's tint, Garnet's wine, read as the accent on them; Faye, 2026-11-10); no
+        // gradient under them.
         let solid = self.chrome() && self.settings.bars_opaque;
         if solid {
-            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.content));
-            g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.content));
+            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.sidebar));
+            g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.sidebar));
         } else if self.chrome() {
             let buttons_bottom = Self::toolbar_y() + BUTTON_H;
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
