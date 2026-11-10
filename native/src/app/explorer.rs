@@ -649,7 +649,10 @@ impl App {
         let v = self.viewport();
         let w = self.explorer_width();
         let dx = w * (1.0 - self.slides.explorer.value());
-        D2D_RECT_F { left: v.left + MARGIN - dx, top: v.top + MARGIN, right: v.left + w - MARGIN - dx, bottom: v.bottom - MARGIN }
+        // Pulled or pushed at the sticky line (and bouncing off it), the whole card goes with it a little, not just
+        // its edge (Faye, 2026-11-10): its left side moves a third of the stretch.
+        let pull = self.explorer_stretch() * 0.33;
+        D2D_RECT_F { left: v.left + MARGIN - dx + pull, top: v.top + MARGIN, right: v.left + w - MARGIN - dx, bottom: v.bottom - MARGIN }
     }
 
     pub(super) fn toggle_explorer(&mut self) {

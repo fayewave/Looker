@@ -209,7 +209,7 @@ impl App {
         } else {
             inner
         };
-        let (strip_bottom, strip_moving) = self.draw_tabs(g, main);
+        let (strip_bottom, strip_moving) = self.draw_tabs(g, main, inner);
         moving |= strip_moving;
         let main = D2D_RECT_F { top: strip_bottom, ..main };
         let top = self.draw_nav(g, main, slide);
@@ -260,13 +260,18 @@ impl App {
     /// lines between them; a close button on each while there are two or more; a + after them. A dragged tab
     /// follows the pointer and the others ease aside around an outlined slot. Returns the strip's bottom, and
     /// whether the tabs are still moving.
-    fn draw_tabs(&mut self, g: &Gfx, main: D2D_RECT_F) -> (f32, bool) {
+    fn draw_tabs(&mut self, g: &Gfx, main: D2D_RECT_F, inner: D2D_RECT_F) -> (f32, bool) {
         let t = theme::t();
         let strip = rect(main.left, main.top, main.right - main.left, STRIP_H);
         let n = self.explorer.tabs.len();
         let front = self.explorer.active_tab;
         let now = Instant::now();
         let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
+        // The strip behind the tabs is the browse pane's colour, inactive tabs on it; the tab in front keeps the
+        // card's, joining the list (Faye, 2026-11-10). Inside the card's rounded corners.
+        g.push_clip(strip);
+        g.fill_round(inner, 9.0, rgb(t.pane));
+        g.pop_clip();
         g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, rgb(t.divider));
         if lit > 0.0 {
             g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit));
