@@ -924,7 +924,9 @@ impl App {
         let a = self.image_area();
         // The cards' 12 off the window's edges where no card is beside it (beside one, the area is already its
         // margin off that card), as every panel keeps (Faye, 2026-11-11).
-        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { 12.0 }, if self.right_inset() > 0.5 { 0.0 } else { 12.0 });
+        // What's left of the 12 once a card beside it is narrower than that: it eases in as the card closes, no snap
+        // at the end of the animation (Faye, 2026-11-11).
+        let (ml, mr) = ((12.0 - self.left_inset()).max(0.0), (12.0 - self.right_inset()).max(0.0));
         let card = D2D_RECT_F { left: a.left + ml, top: a.top, right: a.right - mr, bottom: a.bottom + self.preview_pad() - 12.0 };
         if card.right - card.left < 160.0 || card.bottom - card.top < 120.0 {
             return None;

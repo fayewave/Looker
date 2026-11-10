@@ -959,7 +959,7 @@ impl App {
         let pad = (h - btn) / 2.0;
         // As wide as the photo's room: beside a card, out to its edge (already the cards' margin off the card,
         // as the video is: Faye, 2026-11-10); against the window's edge, its margin off that.
-        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { margin }, if self.right_inset() > 0.5 { 0.0 } else { margin });
+        let (ml, mr) = ((margin - self.left_inset()).max(0.0), (margin - self.right_inset()).max(0.0));
         let w = aw - ml - mr;
         if w < 40.0 || a.bottom - a.top < h + 2.0 * margin {
             return None;
@@ -1033,7 +1033,7 @@ impl App {
     fn audio_bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
         let a = self.image_area();
         let margin = 12.0;
-        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { margin }, if self.right_inset() > 0.5 { 0.0 } else { margin });
+        let (ml, mr) = ((margin - self.left_inset()).max(0.0), (margin - self.right_inset()).max(0.0));
         let x = g.snap(a.left + ml);
         let w = g.snap(a.right - mr) - x;
         if w < 200.0 || a.bottom - a.top < AUDIO_BAR_H + 40.0 {
