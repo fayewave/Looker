@@ -358,7 +358,8 @@ pub(super) struct Explorer {
     pub(super) spring: Option<(f32, Instant)>,
     /// The edge is held on the sticky line (the card's widest) until pulled `STICK` off it; and which side of the line
     /// the pointer was on last (for when it crosses).
-    pub(super) latched: bool,
+    /// Held on a sticky line: the card's widest (false) or browse mode's default (true).
+    pub(super) latched: Option<bool>,
     pub(super) last_side: f32,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
@@ -449,7 +450,7 @@ impl Explorer {
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
-            latched: false,
+            latched: None,
             last_side: 0.0,
             width_settle: None,
             side_settle: None,
@@ -2543,74 +2544,123 @@ impl App {
         self.explorer.spring = None;
         self.explorer.stretch = 0.0;
         let w = self.explorer_width();
-        // Resting on the sticky line: it holds there whichever way it's pulled.
-        let (ww, _) = self.size_dip();
-        let cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
-        self.explorer.latched = (w - cap).abs() < 1.5;
-        self.explorer.last_side = w - cap;
+        // Resting on a sticky line: it holds there whichever way it's pulled.
+        let (card_line, browse_line) = self.sticky_lines();
+        self.explorer.latched = None;
+        if (w - card_line).abs() < 1.5 {
+            self.explorer.latched = Some(false);
+        } else if self.browsing() && (w - browse_line).abs() < 1.5 {
+            self.explorer.latched = Some(true);
+        }
+        self.explorer.last_side = w;
         self.explorer.drag = Some((x, w));
     }
 
-    /// One drag covers both widths: the card up to its widest, then past that it becomes browse mode and goes
-    /// on widening (leaving the photo at least 200 DIPs); dragged back, it's the card again.
+    /// The two sticky lines: the card's widest, and browse mode's default width (half the window, or the card and
+    /// the sidebar side by side when that's wider). None for the second when the window leaves no room between.
+    fn sticky_lines(&self) -> (f32, f32) {
+        let (ww, _) = self.size_dip();
+        let card = self.sticky_line();
+        let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
+        let browse = (ww * BROWSE_SHARE).max(card + side + 1.0).min(ww - PREVIEW_DRAGGED_MIN).max(card);
+        (card, browse)
+    }
+
+    /// One drag covers both widths: the card up to its widest, then browse mode from its default width on
+    /// (leaving the photo at least 200 DIPs); dragged back, it's the card again.
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
-        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // The card's widest is a sticky line (Faye, 2026-11-10): whenever the edge reaches it, from either side, or a
-        // drag starts on it, it latches there and stretches on a rubber band whichever way it's pulled, until the
-        // pointer is `STICK` off it; then it lets go with a bounce, into browse mode past it or back to the card short
-        // of it. On the line it's the card (coming in from browse mode, the sidebar goes there). Off it, the edge is
-        // where the pointer is, in browse mode too (the list makes room for the sidebar).
+        // Two sticky lines (Faye, 2026-11-10): the card's widest and browse mode's default width. Between them the
+        // edge never rests: it's held on one line or the other, stretching on a rubber band towards the pointer, and
+        // jumps across once pulled far enough towards the other. Pulled `STICK` off the outside of either line it
+        // lets go with a bounce, free to size the card short of the first or browse mode past the second. Reaching
+        // a line from outside (or, in browse mode, coming within the radius of the second while narrowing: a magnet)
+        // latches it. On the first line it's the card, on the second browse mode at its default width.
         const STICK: f32 = 96.0;
-        let d = w - card_cap;
-        let crossed = self.explorer.last_side != 0.0 && (self.explorer.last_side > 0.0) != (d > 0.0);
-        // In browse mode, narrowing towards the line, it's a magnet: within the radius it takes to pull free, the line
-        // grabs the edge (Faye, 2026-11-10). A few DIPs inside it, so a pointer shaking on the radius doesn't flick
-        // between held and free.
-        let magnet = self.browsing() && d > 0.0 && d < self.explorer.last_side && d <= STICK - 8.0;
-        self.explorer.last_side = if d == 0.0 { self.explorer.last_side } else { d };
+        let (card_line, browse_line) = self.sticky_lines();
+        let gap = browse_line - card_line;
+        // Too little room for two lines: the second is the first.
+        let two = gap >= 24.0;
+        // How far towards the other line it's pulled before it jumps: well short of halfway, so the two jumps don't
+        // meet and a pointer held between them doesn't flick back and forth.
+        let jump = STICK.min(gap * 0.4);
+        let prev = self.explorer.last_side;
+        self.explorer.last_side = w;
         let now = Instant::now();
         let mut just_latched = false;
-        if !self.explorer.latched && (crossed || magnet || d == 0.0) {
-            self.explorer.latched = true;
-            just_latched = true;
+        if self.explorer.latched.is_none() {
+            let line = if two { browse_line } else { card_line };
+            if (prev < card_line) != (w < card_line) || w == card_line || (!two && (prev > card_line) != (w > card_line)) {
+                self.explorer.latched = Some(false);
+                just_latched = true;
+            } else if two && (self.browsing() || prev >= line) && (w <= line || (w < prev && w - line <= STICK - 8.0)) {
+                self.explorer.latched = Some(true);
+                just_latched = true;
+            } else if !self.browsing() && w > card_line {
+                // A card resting past the line (a window made smaller): the line takes it.
+                self.explorer.latched = Some(false);
+                just_latched = true;
+            }
         }
-        // Pulled far enough off the line: it lets go (not in the move that latched it: a flick still shows the hold).
-        if self.explorer.latched && !just_latched && d.abs() >= STICK {
-            self.explorer.latched = false;
-            self.explorer.spring = Some((if d > 0.0 { BOUNCE } else { -BOUNCE }, now));
-            if d < 0.0 {
-                // Back to the card: it glides from the line to the pointer on the app's curve, as going into browse
-                // mode does (it jumped there: Faye, 2026-11-10).
-                self.explorer.width_settle = Some(crate::motion::Settle::over(self.explorer_width(), EDGE_SECS));
+        if !just_latched {
+            match self.explorer.latched {
+                Some(false) if w <= card_line - STICK => {
+                    // Back to the card: it glides from the line to the pointer, as going into browse mode does.
+                    self.explorer.latched = None;
+                    self.explorer.spring = Some((-BOUNCE, now));
+                    self.explorer.width_settle = Some(crate::motion::Settle::over(self.explorer_width(), EDGE_SECS));
+                }
+                Some(false) if two && w >= card_line + jump => self.explorer.latched = Some(true),
+                Some(false) if !two && w >= card_line + STICK => {
+                    self.explorer.latched = None;
+                    self.explorer.spring = Some((BOUNCE, now));
+                }
+                Some(true) if w >= browse_line + STICK => {
+                    self.explorer.latched = None;
+                    self.explorer.spring = Some((BOUNCE, now));
+                    self.explorer.width_settle = Some(crate::motion::Settle::over(self.explorer_width(), EDGE_SECS));
+                }
+                Some(true) if w <= browse_line - jump => self.explorer.latched = Some(false),
+                _ => {}
             }
         }
         let was = self.browsing();
-        if self.explorer.latched {
-            let pull = if just_latched { d.clamp(-STICK * 0.5, STICK * 0.5) } else { d };
-            self.explorer.stretch = pull.signum() * rubber(pull.abs());
-            if was {
-                self.explorer.browse.set([0.0], now);
-            }
-            self.settings.explorer_width = card_cap;
-        } else {
-            self.explorer.stretch = 0.0;
-            if d > 0.0 {
-                if !was {
-                    self.settings.explorer_width = card_cap;
-                    self.explorer.browse.set([1.0], now);
-                    self.explorer.focused = true;
-                }
-                self.settings.browse_share = w / ww;
-            } else {
-                if was {
+        match self.explorer.latched {
+            Some(on_browse) => {
+                let line = if on_browse { browse_line } else { card_line };
+                let d = w - line;
+                let pull = if just_latched { d.clamp(-STICK * 0.5, STICK * 0.5) } else { d };
+                self.explorer.stretch = pull.signum() * rubber(pull.abs());
+                self.settings.explorer_width = card_line;
+                if on_browse {
+                    self.settings.browse_share = 0.0; // the default: half of whatever size the window is
+                    if !was {
+                        self.explorer.browse.set([1.0], now);
+                        self.explorer.focused = true;
+                    }
+                } else if was {
                     self.explorer.browse.set([0.0], now);
                 }
-                // No narrower than its default; dragged down to it, it's the default again (a quarter of whatever
-                // size the window is).
-                self.settings.explorer_width = if w <= self.card_min() { 0.0 } else { w };
+            }
+            None => {
+                self.explorer.stretch = 0.0;
+                if w > card_line {
+                    if !was {
+                        self.settings.explorer_width = card_line;
+                        self.explorer.browse.set([1.0], now);
+                        self.explorer.focused = true;
+                    }
+                    self.settings.browse_share = w / ww;
+                } else {
+                    if was {
+                        self.explorer.browse.set([0.0], now);
+                    }
+                    // No narrower than its default; dragged down to it, it's the default again (a quarter of
+                    // whatever size the window is).
+                    self.settings.explorer_width = if w <= self.card_min() { 0.0 } else { w };
+                }
             }
         }
         if self.browsing() != was {
