@@ -1013,8 +1013,13 @@ impl App {
         }
         let content_h = blocks.iter().map(|b| b.3).sum::<f32>() + 16.0;
         self.explorer.side_max = (content_h - (r.bottom - r.top)).max(0.0);
-        self.explorer.side_scroll = self.explorer.side_scroll.min(self.explorer.side_max);
-        let origin = r.top + 6.0 - self.explorer.side_scroll;
+        // Eased like the list's (it jumped a whole step a notch: Faye, 2026-11-11).
+        let (side_scroll, scrolling) = self.explorer.side_scroll_now();
+        let side_scroll = side_scroll.clamp(0.0, self.explorer.side_max);
+        if !scrolling {
+            self.explorer.side_scroll = side_scroll; // a section folded shut: no scrolling past the end
+        }
+        let origin = r.top + 6.0 - side_scroll;
         let drag = self.explorer.section_drag.as_ref().filter(|d| d.active).map(|d| (d.sec, d.y - d.grab));
         let dragged = drag.and_then(|(sec, _)| blocks.iter().position(|b| b.0 == sec));
         let mut slot = None;
@@ -1054,7 +1059,7 @@ impl App {
             }
         }
         let animate = drag.is_some() || now < self.explorer.section_anim_until;
-        let mut moving = drag.is_some() || folding;
+        let mut moving = drag.is_some() || folding || scrolling;
         let mut ys: Vec<Option<f32>> = vec![None; items.len()];
         let mut bottoms: Vec<f32> = vec![f32::MAX; items.len()];
         // Where a dragged bookmark or collection would land: its slot's top and height.

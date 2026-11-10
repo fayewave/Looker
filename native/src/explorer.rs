@@ -416,7 +416,8 @@ impl SideSection {
         }
     }
 
-    /// The settings' list: the known sections in its order, once each, any missing appended in the default's.
+    /// The settings' list: the known sections in its order, once each. Any missing (one added since the list was
+    /// saved) goes in after the section it follows by default, so Network lands under Places, not at the end.
     pub fn parse_list(s: &str) -> Vec<SideSection> {
         let mut out: Vec<SideSection> = Vec::new();
         for k in s.split(',') {
@@ -426,9 +427,10 @@ impl SideSection {
                 }
             }
         }
-        for x in SideSection::DEFAULT {
+        for (i, x) in SideSection::DEFAULT.into_iter().enumerate() {
             if !out.contains(&x) {
-                out.push(x);
+                let at = SideSection::DEFAULT[..i].iter().rev().find_map(|p| out.iter().position(|o| o == p)).map_or(0, |j| j + 1);
+                out.insert(at, x);
             }
         }
         out
@@ -1119,6 +1121,16 @@ mod tests {
             Row::test("a9.txt", Kind::Other, 2, 20),
             Row::test("Apple", Kind::Folder, 9, 0),
         ]
+    }
+
+    #[test]
+    fn new_sections_land_by_their_default_neighbour() {
+        use SideSection::*;
+        // Saved before Network existed: it goes under Places, wherever Places was dragged.
+        assert_eq!(SideSection::parse_list("bookmarks,collections,places,history"), vec![Bookmarks, Collections, Places, Network, History]);
+        assert_eq!(SideSection::parse_list("places,history,bookmarks,collections"), vec![Places, Network, History, Bookmarks, Collections]);
+        assert_eq!(SideSection::parse_list(""), SideSection::DEFAULT.to_vec());
+        assert_eq!(SideSection::parse_list("history"), vec![Bookmarks, Collections, Places, Network, History]);
     }
 
     #[test]

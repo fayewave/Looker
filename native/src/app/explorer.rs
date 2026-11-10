@@ -289,6 +289,8 @@ pub(super) struct Explorer {
     /// A narrow card shows the sidebar in place of the list.
     pub(super) sidebar_open: bool,
     pub(super) side_scroll: f32,
+    /// The sidebar's scroll easing (from, to, since), as the list's `anim`.
+    pub(super) side_anim: Option<(f32, f32, Instant)>,
     pub(super) side_max: f32,
     /// The trees: listed children by node key, open nodes, and nodes being listed.
     pub(super) children: HashMap<String, Vec<PathBuf>>,
@@ -419,6 +421,7 @@ impl Explorer {
             cut: None,
             sidebar_open: false,
             side_scroll: 0.0,
+            side_anim: None,
             side_max: 0.0,
             children: HashMap::new(),
             expanded: HashSet::new(),
@@ -486,6 +489,18 @@ impl Explorer {
         if t >= 1.0 || !crate::motion::enabled() {
             self.anim = None;
             self.scroll = to;
+            return (to, false);
+        }
+        (from + (to - from) * crate::motion::ease_out(t), true)
+    }
+
+    /// The sidebar's scroll this frame, and whether it's still easing.
+    pub(super) fn side_scroll_now(&mut self) -> (f32, bool) {
+        let Some((from, to, t0)) = self.side_anim else { return (self.side_scroll, false) };
+        let t = (t0.elapsed().as_secs_f32() * 1000.0 / SCROLL_MS).min(1.0);
+        if t >= 1.0 || !crate::motion::enabled() {
+            self.side_anim = None;
+            self.side_scroll = to;
             return (to, false);
         }
         (from + (to - from) * crate::motion::ease_out(t), true)
@@ -1355,7 +1370,11 @@ impl App {
 
     pub(super) fn scroll_sidebar(&mut self, delta: f32) {
         let e = &mut self.explorer;
-        e.side_scroll = (e.side_scroll - delta / 120.0 * SCROLL_STEP).clamp(0.0, e.side_max.max(0.0));
+        let (now, _) = e.side_scroll_now();
+        let target = e.side_anim.map_or(e.side_scroll, |(_, to, _)| to);
+        let to = (target - delta / 120.0 * SCROLL_STEP).clamp(0.0, e.side_max.max(0.0));
+        e.side_scroll = now;
+        e.side_anim = Some((now, to, Instant::now()));
         self.invalidate();
     }
 
