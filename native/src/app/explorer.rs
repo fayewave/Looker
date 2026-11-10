@@ -72,6 +72,8 @@ pub(super) enum SubFor {
     Tree(String),
     /// The crumb popup's listing, by its serial and the folder.
     Popup(usize, PathBuf),
+    /// Computers found on the network, by the search's generation; `done` when that way of looking finished.
+    Network(u64, bool),
 }
 
 pub(super) struct Subfolders {
@@ -124,6 +126,9 @@ pub(super) struct RowDrag {
     /// When it became a drag: the card fades in from then.
     pub opened: Instant,
 }
+
+/// The key the sidebar's Network computers are kept under in `Explorer::children`.
+pub(super) const NET_KEY: &str = "net:";
 
 /// What a sidebar row leads to.
 #[derive(Clone, PartialEq, Debug)]
@@ -373,6 +378,12 @@ pub(super) struct Explorer {
     tags_listed: u64,
     /// The sidebar's Places (the user's folders, the drives), read once and again on F5.
     pub(super) places: Option<(Vec<(String, PathBuf, u16)>, Vec<Row>)>,
+    /// The sidebar's Network: the drives mapped to shares (read with Places). Its computers, found off the UI
+    /// thread, are `children[NET_KEY]`.
+    pub(super) net_drives: Vec<Row>,
+    /// The network search's generation (F5 starts another) and how many of its two ways are still looking.
+    net_gen: u64,
+    pub(super) net_searching: u8,
     /// Undo and redo for file operations (explorer_ops.rs).
     pub(super) undo: Vec<super::explorer_ops::Step>,
     pub(super) redo: Vec<super::explorer_ops::Step>,
@@ -461,6 +472,9 @@ impl Explorer {
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
             places: None,
+            net_drives: Vec::new(),
+            net_gen: 0,
+            net_searching: 0,
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -557,7 +571,12 @@ impl Explorer {
 
 impl App {
     pub(super) fn explorer_shown(&self) -> bool {
-        self.settings.explorer_visible && self.panels_allowed()
+        self.settings.explorer_visible && (self.panels_allowed() || self.home_explorer())
+    }
+
+    /// The home page takes the explorer too, pushing its block aside (Faye, 2026-11-10); not in fullscreen.
+    pub(super) fn home_explorer(&self) -> bool {
+        self.viewer.current.is_none() && !self.slideshow.running && self.fullscreen.is_none()
     }
 
     /// The card's own width (not browsing): as its edge was dragged, else a quarter of the window.
@@ -672,7 +691,7 @@ impl App {
     }
 
     pub(super) fn toggle_explorer(&mut self) {
-        if self.viewer.current.is_none() {
+        if self.viewer.current.is_none() && !self.home_explorer() {
             return;
         }
         self.settings.explorer_visible = !self.settings.explorer_visible;
@@ -693,6 +712,11 @@ impl App {
             // it follows the photo only if the photo has moved to another folder since.
             let before = self.explorer.place.clone();
             self.explorer_follow();
+            // On the home page, with no photo to follow: the folder last listed, else This PC.
+            if self.explorer.place.is_none() {
+                let start = self.settings.visited.first().cloned().map_or(Place::Computer, Place::Folder);
+                self.explorer_go(start, true);
+            }
             let stayed = match (&before, &self.explorer.place) {
                 (Some(a), Some(b)) => a.same(b),
                 _ => false,
@@ -913,6 +937,7 @@ impl App {
         }
         // The open trees list their folders again too, and the drives are read again.
         self.explorer.places = None;
+        self.explorer.children.remove(NET_KEY);
         let open: Vec<String> = self.explorer.expanded.iter().cloned().collect();
         for k in open {
             self.explorer.children.remove(&k);
@@ -1372,7 +1397,7 @@ impl App {
 
     /// Ctrl+F: the filter takes the keys (the explorer comes out if it's hidden), its text selected.
     pub(super) fn explorer_find(&mut self) {
-        if self.viewer.current.is_none() {
+        if self.viewer.current.is_none() && !self.home_explorer() {
             return;
         }
         if !self.settings.explorer_visible {
@@ -1747,21 +1772,82 @@ impl App {
                 }
                 SideSection::Places => {
                     out.push(heading(sec, "Places", 0xE8B7));
-                    if self.explorer.places.is_none() {
-                        self.explorer.places = Some((explorer::known_places(), explorer::drives()));
-                    }
+                    self.read_places();
                     let (known, drives) = self.explorer.places.clone().unwrap_or_default();
                     for (name, path, glyph) in known {
                         self.push_tree(&mut out, "p", &path, name, glyph, 1);
                     }
                     out.push(SideItem { depth: 1, glyph: 0xE7F8, tint: None, label: explorer::COMPUTER_NAME.into(), target: SideTarget::Place(Place::Computer), node: None, expanded: false });
                     for d in drives {
-                        self.push_tree(&mut out, "d", &d.path, d.name.clone(), 0xEDA2, 1);
+                        // Mapped network drives go under Network.
+                        if !self.explorer.net_drives.iter().any(|n| n.path == d.path) {
+                            self.push_tree(&mut out, "d", &d.path, d.name.clone(), 0xEDA2, 1);
+                        }
+                    }
+                }
+                SideSection::Network => {
+                    // As Explorer's Network: the mapped drives, then the computers Windows finds (each opening
+                    // into its shares).
+                    out.push(heading(sec, "Network", 0xE968));
+                    self.read_places();
+                    for d in self.explorer.net_drives.clone() {
+                        self.push_tree(&mut out, "n", &d.path, d.name.clone(), 0xE8CE, 1);
+                    }
+                    if !self.explorer.children.contains_key(NET_KEY) {
+                        self.discover_network();
+                    }
+                    let computers = self.explorer.children.get(NET_KEY).cloned().unwrap_or_default();
+                    for c in &computers {
+                        let name = c.to_string_lossy().trim_start_matches('\\').to_string();
+                        self.push_tree(&mut out, "n", c, name, 0xE977, 1);
+                    }
+                    if self.explorer.net_searching > 0 {
+                        out.push(SideItem { depth: 1, glyph: 0, tint: None, label: "Looking for computers\u{2026}".into(), target: SideTarget::Hint, node: None, expanded: false });
+                    } else if computers.is_empty() && self.explorer.net_drives.is_empty() {
+                        out.push(SideItem { depth: 1, glyph: 0, tint: None, label: "No computers found".into(), target: SideTarget::Hint, node: None, expanded: false });
                     }
                 }
             }
         }
         out
+    }
+
+    /// Places' folders and drives, and the mapped network drives, read once (again after F5).
+    fn read_places(&mut self) {
+        if self.explorer.places.is_none() {
+            let drives = explorer::drives();
+            self.explorer.net_drives = explorer::network_drives_of(&drives);
+            self.explorer.places = Some((explorer::known_places(), drives));
+        }
+    }
+
+    /// Looks for the computers on the network off the UI thread, both ways at once (Explorer's discovery
+    /// takes ~14 s, the old browser service ~10): each arrives as it's found, merged into `children[NET_KEY]`.
+    fn discover_network(&mut self) {
+        let e = &mut self.explorer;
+        e.net_gen += 1;
+        e.net_searching = 2;
+        e.children.insert(NET_KEY.into(), Vec::new());
+        let (hwnd, net_gen) = (self.hwnd.0 as isize, e.net_gen);
+        let post = move |children: Vec<PathBuf>, done: bool| {
+            let ptr = Box::into_raw(Box::new(Subfolders { of: SubFor::Network(net_gen, done), children, files: Vec::new() }));
+            unsafe {
+                if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_SUBFOLDERS, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+                    drop(Box::from_raw(ptr));
+                }
+            }
+        };
+        std::thread::Builder::new()
+            .name("network-shell".into())
+            .spawn(move || {
+                unsafe {
+                    let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+                }
+                explorer::shell_computers(|c| post(vec![c], false));
+                post(Vec::new(), true);
+            })
+            .ok();
+        std::thread::Builder::new().name("network-wnet".into()).spawn(move || post(explorer::browser_computers(), true)).ok();
     }
 
     /// A tree node and, while it's open, its listed children under it (listing them if they aren't).
@@ -1817,6 +1903,17 @@ impl App {
             SubFor::Tree(key) => {
                 self.explorer.tree_pending.remove(&key);
                 self.explorer.children.insert(key, s.children);
+                self.invalidate();
+            }
+            SubFor::Network(net_gen, done) => {
+                let e = &mut self.explorer;
+                if net_gen != e.net_gen {
+                    return;
+                }
+                if done {
+                    e.net_searching = e.net_searching.saturating_sub(1);
+                }
+                explorer::merge_computers(e.children.entry(NET_KEY.into()).or_default(), s.children);
                 self.invalidate();
             }
             SubFor::Popup(serial, dir) => {

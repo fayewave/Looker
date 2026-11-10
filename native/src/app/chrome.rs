@@ -192,7 +192,8 @@ impl App {
             // Nothing to zoom while a file Looker can't open covers the photo.
             Tool::ZoomIn | Tool::ZoomOut | Tool::Fit => has && self.placeholder.is_none(),
             Tool::SaveRotation => !self.saving_rotation,
-            Tool::Info | Tool::Strip | Tool::Explorer => has,
+            Tool::Info | Tool::Strip => has,
+            Tool::Explorer => has || self.home_explorer(),
             _ => has,
         }
     }

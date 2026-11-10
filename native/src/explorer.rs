@@ -40,6 +40,7 @@ const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
 const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x40000;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
 const DRIVE_REMOVABLE: u32 = 2;
+const DRIVE_REMOTE: u32 = 4;
 
 pub const COMPUTER_NAME: &str = "This PC";
 
@@ -103,7 +104,12 @@ impl Place {
     /// One level up: a folder's parent, a drive root's "This PC". Nothing above This PC or a collection.
     pub fn parent(&self) -> Option<Place> {
         match self {
-            Place::Folder(p) => Some(p.parent().map_or(Place::Computer, |q| Place::Folder(q.to_path_buf()))),
+            // A share's root goes up to its computer, the computer to This PC.
+            Place::Folder(p) if is_server(p) => Some(Place::Computer),
+            Place::Folder(p) => Some(match p.parent() {
+                Some(q) => Place::Folder(q.to_path_buf()),
+                None => unc_server(p).map_or(Place::Computer, Place::Folder),
+            }),
             _ => None,
         }
     }
@@ -392,18 +398,20 @@ pub enum SideSection {
     Bookmarks,
     Collections,
     Places,
+    Network,
     History,
 }
 
 impl SideSection {
-    /// History last (Faye, 2026-11-09).
-    pub const DEFAULT: [SideSection; 4] = [SideSection::Bookmarks, SideSection::Collections, SideSection::Places, SideSection::History];
+    /// History last (Faye, 2026-11-09); Network after Places, as Explorer's (2026-11-10).
+    pub const DEFAULT: [SideSection; 5] = [SideSection::Bookmarks, SideSection::Collections, SideSection::Places, SideSection::Network, SideSection::History];
 
     fn key(self) -> &'static str {
         match self {
             SideSection::Bookmarks => "bookmarks",
             SideSection::Collections => "collections",
             SideSection::Places => "places",
+            SideSection::Network => "network",
             SideSection::History => "history",
         }
     }
@@ -609,7 +617,15 @@ pub fn crumbs(place: &Place) -> Vec<Place> {
     }
     let mut out = vec![Place::Computer];
     if let Place::Folder(p) = place {
+        if is_server(p) {
+            out.push(place.clone());
+            return out;
+        }
         let mut chain: Vec<PathBuf> = p.ancestors().map(Path::to_path_buf).filter(|a| !a.as_os_str().is_empty()).collect();
+        // On a network share: its computer before the share.
+        if let Some(server) = unc_server(p) {
+            chain.push(server);
+        }
         chain.reverse();
         out.extend(chain.into_iter().map(Place::Folder));
     }
@@ -741,6 +757,9 @@ pub const DEEP_CAP: usize = 100_000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 fn list_folder(dir: &Path, deep: bool) -> Vec<Row> {
+    if is_server(dir) {
+        return server_shares(dir).into_iter().map(share_row).collect();
+    }
     let mut rows = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), true)];
     while let Some((d, top)) = stack.pop() {
@@ -768,8 +787,17 @@ fn list_folder(dir: &Path, deep: bool) -> Vec<Row> {
     rows
 }
 
-/// A folder's visible subfolders, in natural order (a tree's children, a crumb's menu).
+/// A computer's share as a folder row (nothing read from it: it may be slow or need signing in to).
+fn share_row(path: PathBuf) -> Row {
+    let name = folder_name(&path);
+    Row { name_h: HSTRING::from(name.as_str()), name, path, kind: Kind::Folder, stamp: 0, created: 0, size: 0, cloud: false, custom_icon: false }
+}
+
+/// A folder's visible subfolders, in natural order (a tree's children, a crumb's menu); a computer's shares.
 pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
+    if is_server(dir) {
+        return server_shares(dir);
+    }
     let mut out: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
             .flatten()
@@ -784,6 +812,9 @@ pub fn subfolders(dir: &Path) -> Vec<PathBuf> {
 
 /// A folder's visible subfolders, then the files Looker can open, each in natural order (the crumb popup).
 pub fn entries(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    if is_server(dir) {
+        return (server_shares(dir), Vec::new());
+    }
     let (mut folders, mut files) = (Vec::new(), Vec::new());
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
@@ -825,6 +856,19 @@ pub fn drives() -> Vec<Row> {
         let root = format!("{letter}:\\");
         let root_h = HSTRING::from(root.as_str());
         let kind = unsafe { GetDriveTypeW(&root_h) };
+        if kind == DRIVE_REMOTE {
+            // Explorer's "share (\\server) (Z:)", from the mapping (asking the volume could hang on a host
+            // that's gone).
+            let name = match mapped_to(letter) {
+                Some(unc) => match unc.trim_start_matches('\\').split_once('\\') {
+                    Some((server, share)) => format!("{share} (\\\\{server}) ({letter}:)"),
+                    None => format!("{unc} ({letter}:)"),
+                },
+                None => format!("Network Drive ({letter}:)"),
+            };
+            rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, created: 0, size: 0, cloud: false, custom_icon: false });
+            continue;
+        }
         let mut label = [0u16; 261];
         let ok = unsafe { GetVolumeInformationW(&root_h, Some(&mut label), None, None, None, None).is_ok() };
         let label = if ok { String::from_utf16_lossy(&label[..label.iter().position(|&c| c == 0).unwrap_or(0)]) } else { String::new() };
@@ -833,6 +877,15 @@ pub fn drives() -> Vec<Row> {
         rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, created: 0, size: 0, cloud: false, custom_icon: false });
     }
     rows
+}
+
+/// The share a drive letter is mapped to (`\\server\share`).
+fn mapped_to(letter: char) -> Option<String> {
+    use windows::Win32::NetworkManagement::WNet::WNetGetConnectionW;
+    let mut buf = [0u16; 520];
+    let mut len = buf.len() as u32;
+    let r = unsafe { WNetGetConnectionW(&HSTRING::from(format!("{letter}:")), Some(windows::core::PWSTR(buf.as_mut_ptr())), &mut len) };
+    (r == windows::Win32::Foundation::NO_ERROR).then(|| String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(0)])).filter(|s| !s.is_empty())
 }
 
 /// The user's own folders for the sidebar's Places: name, path, glyph.
@@ -857,6 +910,125 @@ pub fn known_places() -> Vec<(String, PathBuf, u16)> {
         }
     }
     out
+}
+
+// --- Network ----------------------------------------------------------------------------------------
+
+/// `\\server` alone (a computer on the network, no share): listed by its shares, not read as a folder.
+pub fn is_server(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    let s = s.trim_end_matches(['\\', '/']);
+    s.strip_prefix("\\\\").is_some_and(|rest| !rest.is_empty() && !rest.contains(['\\', '/']) && !rest.starts_with(['?', '.']))
+}
+
+/// The computer a UNC path is on (`\\server` of `\\server\share\…`), when it's below that computer.
+pub fn unc_server(p: &Path) -> Option<PathBuf> {
+    let s = p.to_string_lossy();
+    let rest = s.strip_prefix("\\\\")?;
+    if rest.starts_with(['?', '.']) {
+        return None;
+    }
+    let (server, share) = rest.split_once(['\\', '/'])?;
+    (!server.is_empty() && !share.trim_matches(['\\', '/']).is_empty()).then(|| PathBuf::from(format!("\\\\{server}")))
+}
+
+/// A computer's shared folders (`\\server\share`), as Explorer lists them: the disk shares, not the admin
+/// ones (`C$`). Empty when it can't be reached. Slow on an unreachable host: never on the UI thread.
+pub fn server_shares(server: &Path) -> Vec<PathBuf> {
+    use windows::Win32::NetworkManagement::WNet::{NETRESOURCEW, RESOURCE_GLOBALNET, RESOURCETYPE_DISK, WNET_OPEN_ENUM_USAGE};
+    let name = server.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    let mut remote: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let res = NETRESOURCEW { dwScope: RESOURCE_GLOBALNET, dwType: RESOURCETYPE_DISK, lpRemoteName: windows::core::PWSTR(remote.as_mut_ptr()), ..Default::default() };
+    let mut out: Vec<PathBuf> = wnet_enum(RESOURCE_GLOBALNET, WNET_OPEN_ENUM_USAGE(0), Some(&res))
+        .into_iter()
+        .filter(|r| !r.ends_with('$'))
+        .map(PathBuf::from)
+        .collect();
+    out.sort_by(|a, b| natural(&folder_name(a), &folder_name(b)));
+    out.dedup_by(|a, b| same_path(a, b));
+    out
+}
+
+/// The remote names a WNet enumeration returns.
+fn wnet_enum(scope: windows::Win32::NetworkManagement::WNet::NET_RESOURCE_SCOPE, usage: windows::Win32::NetworkManagement::WNet::WNET_OPEN_ENUM_USAGE, under: Option<&windows::Win32::NetworkManagement::WNet::NETRESOURCEW>) -> Vec<String> {
+    use windows::Win32::Foundation::{ERROR_MORE_DATA, NO_ERROR};
+    use windows::Win32::NetworkManagement::WNet::{NETRESOURCEW, RESOURCETYPE_DISK, WNetCloseEnum, WNetEnumResourceW, WNetOpenEnumW};
+    let mut out = Vec::new();
+    unsafe {
+        let mut h = HANDLE::default();
+        if WNetOpenEnumW(scope, RESOURCETYPE_DISK, usage, under.map(|r| r as *const NETRESOURCEW), &mut h) != NO_ERROR {
+            return out;
+        }
+        // 16 KB, as the docs suggest; u64s keep the NETRESOURCEW array aligned.
+        let mut buf = vec![0u64; 2048];
+        loop {
+            let mut count = u32::MAX;
+            let mut size = (buf.len() * 8) as u32;
+            let r = WNetEnumResourceW(h, &mut count, buf.as_mut_ptr() as _, &mut size);
+            if r == ERROR_MORE_DATA {
+                buf = vec![0u64; size as usize / 8 + 1];
+                continue;
+            }
+            if r != NO_ERROR {
+                break;
+            }
+            let items = std::slice::from_raw_parts(buf.as_ptr() as *const NETRESOURCEW, count as usize);
+            for it in items {
+                if !it.lpRemoteName.is_null() {
+                    if let Ok(s) = it.lpRemoteName.to_string() {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+        let _ = WNetCloseEnum(h);
+    }
+    out
+}
+
+/// The computers Explorer's Network folder finds (Windows' own discovery: WSD, NetBIOS), `\\NAME` each,
+/// handed to `found` one by one as the enumeration turns them up. Takes seconds (~14 here): never on the UI
+/// thread. COM must be up on the calling thread.
+pub fn shell_computers(mut found: impl FnMut(PathBuf)) {
+    use windows::Win32::UI::Shell::{BHID_EnumItems, FOLDERID_NetworkFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN_DESKTOPABSOLUTEPARSING};
+    unsafe {
+        let Ok(net) = SHGetKnownFolderItem::<IShellItem>(&FOLDERID_NetworkFolder, KF_FLAG_DEFAULT, None) else { return };
+        let Ok(en) = net.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) else { return };
+        loop {
+            let mut got = [None];
+            let mut n = 0u32;
+            if en.Next(&mut got, Some(&mut n)).is_err() || n == 0 {
+                break;
+            }
+            let Some(item) = got[0].take() else { break };
+            if let Ok(p) = item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING) {
+                let s = p.to_string().unwrap_or_default();
+                windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
+                // Computers parse as \\NAME; media servers and devices as ::{…} (not folders).
+                if is_server(Path::new(&s)) {
+                    found(PathBuf::from(s));
+                }
+            }
+        }
+    }
+}
+
+/// The computers the old browser service lists (the workgroup's), `\\NAME` each. Takes seconds.
+pub fn browser_computers() -> Vec<PathBuf> {
+    use windows::Win32::NetworkManagement::WNet::{RESOURCE_CONTEXT, WNET_OPEN_ENUM_USAGE};
+    wnet_enum(RESOURCE_CONTEXT, WNET_OPEN_ENUM_USAGE(0), None).into_iter().map(PathBuf::from).filter(|p| is_server(p)).collect()
+}
+
+/// Adds computers to a sorted list, by name, once each.
+pub fn merge_computers(list: &mut Vec<PathBuf>, more: Vec<PathBuf>) {
+    list.extend(more);
+    list.sort_by(|a, b| natural(&a.to_string_lossy().to_lowercase(), &b.to_string_lossy().to_lowercase()));
+    list.dedup_by(|a, b| same_path(a, b));
+}
+
+/// Of `drives`, those mapped to network shares (Explorer's "Network locations").
+pub fn network_drives_of(drives: &[Row]) -> Vec<Row> {
+    drives.iter().filter(|d| d.kind == Kind::Drive && unsafe { GetDriveTypeW(&HSTRING::from(d.path.as_os_str())) } == DRIVE_REMOTE).cloned().collect()
 }
 
 /// An image's pixel size from its header (WIC reads only that), for the Dimensions column. COM must be up
@@ -947,6 +1119,48 @@ mod tests {
             Row::test("a9.txt", Kind::Other, 2, 20),
             Row::test("Apple", Kind::Folder, 9, 0),
         ]
+    }
+
+    #[test]
+    fn network_paths() {
+        assert!(is_server(Path::new(r"\\nas")));
+        assert!(is_server(Path::new(r"\\nas\")));
+        assert!(!is_server(Path::new(r"\\nas\photos")));
+        assert!(!is_server(Path::new(r"\\?\C:")));
+        assert!(!is_server(Path::new(r"C:\")));
+        assert_eq!(unc_server(Path::new(r"\\nas\photos\2024")), Some(PathBuf::from(r"\\nas")));
+        assert_eq!(unc_server(Path::new(r"\\nas")), None);
+        let up = Place::Folder(PathBuf::from(r"\\nas\photos\")).parent();
+        assert_eq!(up, Some(Place::Folder(PathBuf::from(r"\\nas"))));
+        assert_eq!(Place::Folder(PathBuf::from(r"\\nas")).parent(), Some(Place::Computer));
+        let c = crumbs(&Place::Folder(PathBuf::from(r"\\nas\photos\2024")));
+        assert_eq!(c[0], Place::Computer);
+        assert_eq!(c[1], Place::Folder(PathBuf::from(r"\\nas")));
+        assert_eq!(c.len(), 4);
+        assert_eq!(crumbs(&Place::Folder(PathBuf::from(r"\\nas"))).len(), 2);
+    }
+
+    /// What the sidebar's Network finds on this machine's network.
+    #[test]
+    #[ignore]
+    fn finds_network() {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
+        let t = std::time::Instant::now();
+        let mut computers = Vec::new();
+        shell_computers(|c| {
+            println!("shell found {} at {:?}", c.display(), t.elapsed());
+            computers.push(c);
+        });
+        let b = browser_computers();
+        println!("browser: {b:?} at {:?}", t.elapsed());
+        merge_computers(&mut computers, b);
+        println!("{} computers in {:?}: {computers:?}", computers.len(), t.elapsed());
+        for c in &computers {
+            println!("{}: {:?}", c.display(), server_shares(c));
+        }
+        println!("mapped: {:?}", network_drives_of(&drives()).iter().map(|d| &d.name).collect::<Vec<_>>());
     }
 
     #[test]

@@ -1090,7 +1090,9 @@ impl<A: Copy> Menu<A> {
                         let on = if hot { rgb(raised.on_accent) } else { faded(rgb(raised.accent), if it.enabled { 1.0 } else { 0.45 }) };
                         g.fill_round(b, 4.0, on);
                         let tick = if hot { rgb(raised.accent) } else { rgb(raised.on_accent) };
-                        g.text(&[0xE73E], &g.fonts.caption_icons, b, tick, Align::Center);
+                        // Drawn, not the font's tick: a heavier stroke (Faye, 2026-11-10).
+                        let (x, y) = (b.left, b.top);
+                        g.polyline(&[(x + 4.2, y + 8.3), (x + 6.9, y + 11.0), (x + 11.9, y + 5.6)], tick, 1.9);
                     }
                     Some(false) => stroke(g, b, 4.0, if hot { rgb(raised.on_accent) } else { rgb(raised.divider) }),
                     None => {}

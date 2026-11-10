@@ -308,6 +308,18 @@ pub(super) fn draw_duration_badge(g: &Gfx, r: D2D_RECT_F, us: i64) {
     g.text_tabular(&wide(&text), &g.fonts.caption, b, gfx::rgba(0xFFFFFF, 0.95), Align::Center);
 }
 
+/// A play badge in the middle of a video's or GIF's thumbnail `r` (Faye, 2026-11-10): a dark disc with a white
+/// triangle, sized to the thumbnail, the triangle nudged right as the click flash's is.
+pub(super) fn draw_play_badge(g: &Gfx, r: D2D_RECT_F) {
+    let d = ((r.bottom - r.top).min(r.right - r.left) * 0.55).clamp(12.0, 28.0);
+    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+    let disc = rect(cx - d / 2.0, cy - d / 2.0, d, d);
+    g.fill_round(disc, d / 2.0, gfx::rgba(0x000000, 0.6));
+    let (w, h) = (d * 0.36, d * 0.42);
+    let left = cx - w * 0.42;
+    g.fill_rounded_polygon(&[(left, cy - h / 2.0), (left + w, cy), (left, cy + h / 2.0)], (d * 0.06).max(0.5), gfx::rgba(0xFFFFFF, 0.95));
+}
+
 fn speed_text(s: f64) -> String {
     let t = format!("{s}");
     format!("{t}\u{00D7}")

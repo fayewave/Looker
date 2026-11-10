@@ -144,6 +144,17 @@ impl App {
                     if y < TITLE_H {
                         return Some(LRESULT(HTCAPTION as isize));
                     }
+                    // The toolbar's empty space between its buttons drags the window too (Faye, 2026-11-10),
+                    // unless something over it takes the click (a menu or dialog closing, Settings).
+                    if y < TITLE_H + TOOLBAR_H
+                        && self.hit(x, y).is_none()
+                        && self.menu.is_none()
+                        && self.dialog.is_none()
+                        && !self.page_open()
+                        && self.explorer.path_edit.is_none()
+                    {
+                        return Some(LRESULT(HTCAPTION as isize));
+                    }
                     Some(LRESULT(HTCLIENT as isize))
                 }
                 WM_NCMOUSEMOVE => {
@@ -604,6 +615,15 @@ impl App {
                     match self.hit(x, y) {
                         // The video bar's times: their Timecode/Frames menu, as a left click opens it (Faye).
                         Some(Hit::VideoTime) => self.video_bar_click(Hit::VideoTime),
+                        // Right-click on a playing waveform stops it, as Transient's (Faye, 2026-11-10); stopped, the
+                        // menu as anywhere else.
+                        Some(Hit::AudioWave) if self.player_ref().is_some_and(|p| p.playing()) => {
+                            self.close_menu();
+                            if let Some(p) = self.player() {
+                                p.set_playing(false);
+                            }
+                            self.invalidate();
+                        }
                         Some(Hit::ExplorerRow(i)) => {
                             self.close_menu();
                             self.explorer_menu(i, x, y);

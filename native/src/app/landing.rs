@@ -162,7 +162,14 @@ impl App {
         if self.landing.entries.is_none() {
             self.check_recents();
         }
-        let v = self.viewport();
+        // Launched onto the home page with the explorer on: it lists the folder last listed, else This PC.
+        if self.explorer_shown() && self.explorer.place.is_none() {
+            let start = self.settings.visited.first().cloned().map_or(crate::explorer::Place::Computer, crate::explorer::Place::Folder);
+            self.explorer_go(start, true);
+        }
+        // Right of the explorer card while it's out, moving with its slide.
+        let mut v = self.viewport();
+        v.left = (v.left + self.left_inset()).min(v.right);
         let entries = self.landing.entries.clone().unwrap_or_default();
         let has_recent = !entries.is_empty();
 

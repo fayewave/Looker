@@ -774,6 +774,8 @@ impl App {
             // A video's length goes on its thumbnail when that's big enough (the meta thread probes it).
             let is_video = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio);
             let badge = is_video && icon_h >= video::BADGE_MIN_H;
+            // Videos and GIFs: a play badge in the thumbnail's middle.
+            let moving_picture = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Gif);
             if r.kind == Kind::Image {
                 self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
                 if lazy_shown || badge {
@@ -809,6 +811,9 @@ impl App {
                         g.fill_round(ib, 2.0, rgb(t.field));
                         th.draw_fit(g, ib);
                         drew = true;
+                        if moving_picture {
+                            video::draw_play_badge(g, ib);
+                        }
                         if let Some(d) = meta.as_ref().and_then(|m| m.duration_us).filter(|_| badge) {
                             video::draw_duration_badge(g, ib, d);
                         }

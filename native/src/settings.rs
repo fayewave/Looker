@@ -585,7 +585,7 @@ mod tests {
                 },
                 crate::explorer::SavedView { path: PathBuf::from(r"D:\"), scope: crate::explorer::Scope::Off, view: crate::explorer::View::default() },
             ],
-            sidebar_order: vec![crate::explorer::SideSection::History, crate::explorer::SideSection::Places, crate::explorer::SideSection::Bookmarks, crate::explorer::SideSection::Collections],
+            sidebar_order: vec![crate::explorer::SideSection::History, crate::explorer::SideSection::Places, crate::explorer::SideSection::Bookmarks, crate::explorer::SideSection::Network, crate::explorer::SideSection::Collections],
             sidebar_closed: vec![crate::explorer::SideSection::Places],
             collection_order: vec![3, 0, 1],
             tabs: vec![r"C:\Users\me\Pictures".into(), "::favourites".into()],
