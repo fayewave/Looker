@@ -2442,6 +2442,13 @@ impl App {
         let (ww, _) = self.size_dip();
         let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
+        // Sticky at the change (Faye, 2026-11-10): the card holds at its widest until the pointer is `STICK` past
+        // it, and browse mode at its narrowest (the card and the sidebar) until it's `STICK` short of that.
+        const STICK: f32 = 48.0;
+        let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
+        let browse_least = self.card_width().min(card_cap) + side + 1.0;
+        let to_browse = if self.browsing() { w >= browse_least - STICK } else { w > card_cap + STICK };
+        let w = if to_browse { w.max(card_cap + 1.0) } else { w.min(card_cap) };
         if w <= card_cap {
             if self.browsing() {
                 self.explorer.browse = Ease::at([0.0]);
