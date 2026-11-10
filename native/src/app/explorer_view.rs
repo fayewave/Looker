@@ -253,6 +253,20 @@ impl App {
         g.text(&[0xE713], &g.fonts.caption_icons, rect(gx - 6.0, gy - 6.0, 12.0, 12.0), fg, Align::Center);
     }
 
+    /// The bookmark button: a pin with a plus at its bottom right, in a notch cut out of it (Faye, 2026-11-10: the
+    /// plain pin is the Bookmarks drop-down's), toggled on while the folder is bookmarked.
+    fn bookmark_button(&mut self, g: &Gfx, r: D2D_RECT_F, marked: bool) {
+        let id = Hit::ExplorerBookmark;
+        self.hits.add(id, r);
+        let st = self.state(id, true);
+        let fg = ui::button_frame(g, r, if marked { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
+        let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+        let pin = rect(cx - 9.0, cy - 9.0, 16.0, 16.0);
+        let (px, py) = (g.snap(cx + 4.5), g.snap(cy + 4.5));
+        g.with_hole(pin, px, py, 6.0, || g.text(&[if marked { 0xE840 } else { 0xE718 }], &g.fonts.body_icons, pin, fg, Align::Center));
+        g.text(&[0xE710], &g.fonts.caption_icons, rect(px - 6.0, py - 6.0, 12.0, 12.0), fg, Align::Center);
+    }
+
     /// The breadcrumb rows: the buttons, then the crumbs under them. Returns where they end.
     /// The tab strip along the top, as Transient's (File Pilot's measurements): tabs 155 wide on a 32-tall strip,
     /// narrowing together to fit; the one in front in the card's colour, outlined, flowing into the card below
@@ -465,7 +479,7 @@ impl App {
             rx -= NAV + 2.0;
             let marked = self.settings.is_bookmarked(&f);
             // Bookmarked: toggled on, as the other buttons are when they're on.
-            self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerBookmark, if marked { 0xE840 } else { 0xE718 }, true, marked);
+            self.bookmark_button(g, rect(rx, y, NAV, NAV), marked);
         }
         rx -= NAV + 2.0;
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
@@ -473,7 +487,7 @@ impl App {
         // The card's Bookmarks and Collections drop-downs, beside it (Faye, 2026-11-10): browse mode has them in its
         // sidebar, so they fade out as that slides in.
         if slide < 1.0 {
-            for (id, glyph, collections) in [(Hit::ExplorerCollections, 0xE734u16, true), (Hit::ExplorerBookmarks, 0xE8A4, false)] {
+            for (id, glyph, collections) in [(Hit::ExplorerCollections, 0xE734u16, true), (Hit::ExplorerBookmarks, 0xE840, false)] {
                 // A very narrow card keeps History and the sidebar button clear of them.
                 if rx - 2.0 * (NAV + 2.0) < left_end {
                     break;

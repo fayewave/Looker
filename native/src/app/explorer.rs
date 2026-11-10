@@ -2589,6 +2589,7 @@ impl App {
         let prev = self.explorer.last_side;
         self.explorer.last_side = w;
         let now = Instant::now();
+        let before = self.explorer_width();
         let mut just_latched = false;
         if self.explorer.latched.is_none() {
             let line = if two { browse_line } else { card_line };
@@ -2632,6 +2633,11 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        // Grabbed by a line (the magnet reaches out up to 88 DIPs): the edge glides onto it, never jumps
+        // (Faye, 2026-11-10).
+        if just_latched {
+            self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
         }
         let from = self.explorer_width();
         let was = self.browsing();
