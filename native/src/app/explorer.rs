@@ -360,6 +360,8 @@ pub(super) struct Explorer {
     /// the pointer was on last (for when it crosses).
     /// Held on a sticky line: the card's widest (false) or browse mode's default (true).
     pub(super) latched: Option<bool>,
+    /// Popping across to that line after a jump, not following the pointer until it gets there.
+    pub(super) coast: Option<bool>,
     pub(super) last_side: f32,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
@@ -451,6 +453,7 @@ impl Explorer {
             stretch: 0.0,
             spring: None,
             latched: None,
+            coast: None,
             last_side: 0.0,
             width_settle: None,
             side_settle: None,
@@ -2553,6 +2556,7 @@ impl App {
             self.explorer.latched = Some(true);
         }
         self.explorer.last_side = w;
+        self.explorer.coast = None;
         self.explorer.drag = Some((x, w));
     }
 
@@ -2591,6 +2595,18 @@ impl App {
         let now = Instant::now();
         let before = self.explorer_width();
         let mut just_latched = false;
+        // After a jump the edge pops to the other line on its own and doesn't follow the pointer until the pointer
+        // has got there too (Faye, 2026-11-10: one long drag still sizes it, without it being tugged back by a
+        // slower hand); then it's held on that line as usual.
+        if let Some(to_browse) = self.explorer.coast {
+            if (to_browse && w >= browse_line) || (!to_browse && w <= card_line) {
+                self.explorer.coast = None;
+                self.explorer.latched = Some(to_browse);
+                just_latched = true;
+            } else {
+                return;
+            }
+        }
         if self.explorer.latched.is_none() {
             let line = if two { browse_line } else { card_line };
             if (prev < card_line) != (w < card_line) || w == card_line || (!two && (prev > card_line) != (w > card_line)) {
@@ -2605,15 +2621,17 @@ impl App {
                 just_latched = true;
             }
         }
-        // Once the hold is overcome (a jump across, or pulled free), the pointer lets go of the edge (Faye,
-        // 2026-11-10: still holding it, it fought the pop): the edge finishes on its own, gliding to the line it
-        // jumped to (or to where it was pulled free) with a bounce, and the rest of this press moves nothing.
+        // A jump across from one line to the other lets go of the edge until the pointer reaches the other line
+        // (`coast`): it finishes the pop on its own, gliding there with a bounce. Pulled free outward, it stays
+        // held, so one pull sizes the card or browse mode.
         let mut let_go = 0.0;
         if !just_latched {
             match self.explorer.latched {
                 Some(false) if w <= card_line - STICK => {
+                    // Pulled free outward: still held, gliding to the pointer and following it.
                     self.explorer.latched = None;
-                    let_go = -1.0;
+                    self.explorer.spring = Some((-BOUNCE, now));
+                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
                 }
                 Some(false) if two && w >= card_line + jump => {
                     self.explorer.latched = Some(true);
@@ -2621,11 +2639,13 @@ impl App {
                 }
                 Some(false) if !two && w >= card_line + STICK => {
                     self.explorer.latched = None;
-                    let_go = 1.0;
+                    self.explorer.spring = Some((BOUNCE, now));
+                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
                 }
                 Some(true) if w >= browse_line + STICK => {
                     self.explorer.latched = None;
-                    let_go = 1.0;
+                    self.explorer.spring = Some((BOUNCE, now));
+                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
                 }
                 Some(true) if w <= browse_line - jump => {
                     self.explorer.latched = Some(false);
@@ -2680,9 +2700,8 @@ impl App {
         if let_go != 0.0 {
             self.explorer.spring = Some((BOUNCE * let_go, now));
             self.explorer.width_settle = Some(crate::motion::Settle::over(from, EDGE_SECS));
+            self.explorer.coast = self.explorer.latched;
             self.explorer.latched = None;
-            self.explorer.drag = None;
-            settings::save(&self.settings);
         }
         if self.browsing() != was {
             self.browse_toast(!was);
