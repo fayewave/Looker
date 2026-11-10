@@ -73,4 +73,16 @@ $i = $manifest.IndexOf($begin); $j = $manifest.IndexOf($end)
 if ($i -lt 0 -or $j -lt $i) { throw "Manifest has no '$begin' ... '$end' markers." }
 $manifest = $manifest.Substring(0, $i + $begin.Length) + "`r`n" + ($sb.ToString() -replace "`r?`n", "`r`n") + '        ' + $manifest.Substring($j)
 Set-Content $manifestPath $manifest -NoNewline
+# A gallery of every icon, self-contained (the PNGs embedded) so it opens anywhere.
+$gallerySizes = '16', '24', '32', '48', '64', '256'
+$png = [ordered]@{}
+foreach ($e in $exts) {
+    $png[$e] = [ordered]@{}
+    foreach ($s in $gallerySizes) { $png[$e][$s] = $data.icons.$e.$s }
+}
+$gallery = (Get-Content (Join-Path $PSScriptRoot 'file-icons\gallery.html') -Raw).
+    Replace('/*ICONS_JS*/', (Get-Content (Join-Path $PSScriptRoot 'file-icons\icons.js') -Raw)).
+    Replace('/*PNG_DATA*/null', ($png | ConvertTo-Json -Compress -Depth 4))
+Set-Content (Join-Path $root 'brand\mockups\file-icons-all.html') $gallery -NoNewline
+
 Write-Host "$($exts.Count) extensions, $((Get-ChildItem $outDir).Count) icons in $outDir; manifest updated."

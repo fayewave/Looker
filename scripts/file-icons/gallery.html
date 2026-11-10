@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Looker file icons: every extension</title>
+<!-- Template: scripts/New-FileIcons.ps1 fills it in as brand/mockups/file-icons-all.html, icons embedded. -->
+<script>/*ICONS_JS*/</script>
+<script>const PNG = /*PNG_DATA*/null;</script>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #101010; color: #e8e8e8; font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 34px 0 10px; }
+  h2 small { color: #8a8a8a; font-weight: 400; font-size: 13px; margin-left: 8px; }
+  p.lead { color: #a8a8a8; margin: 0 0 14px; max-width: 860px; }
+  .bar { position: sticky; top: 0; background: #101010; padding: 10px 0; z-index: 1; display: flex; gap: 8px; }
+  .bar button { background: #262626; color: #ddd; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 12px; font: inherit; cursor: pointer; }
+  .bar button.on { background: #F52524; border-color: #F52524; color: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 12px; }
+  .card { border-radius: 10px; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .dark .card { background: #1c1c1c; }
+  .light .card { background: #f3f3f3; color: #1f1f1f; }
+  .card .big { width: 128px; height: 128px; }
+  .card .row { display: flex; align-items: flex-end; gap: 8px; }
+  .card .name { font-weight: 600; }
+  .card .type { font-size: 12px; color: #8a8a8a; margin-top: -6px; }
+  .light .card .type { color: #666; }
+  .px { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Looker file icons: every extension</h1>
+  <p class="lead">The PNGs actually in the package (<code>native/assets/FileIcons</code>), grouped by kind. Each card: the
+  256 px icon shown at 128, then the 64, 48, 32, 24 and 16 px files at their real size, then the 16 px enlarged 3x.</p>
+  <div class="bar"><button data-bg="dark" class="on">Dark</button><button data-bg="light">Light</button></div>
+  <div id="list" class="dark"></div>
+</main>
+<script>
+const KIND_TITLE = { photo: "Photos", anim: "Animated", icon: "Icons and cursors", vector: "Vector", doc: "Documents",
+  layers: "Layered", raw: "Camera RAW", model: "3D models", material: "Materials", video: "Video" };
+const list = document.getElementById("list");
+const src = (e, s) => PNG[e][s];
+let total = 0;
+for (const [kind, exts] of Object.entries(KIND_OF)) {
+  const all = exts.split(" ");
+  total += all.length;
+  const h = document.createElement("h2");
+  h.innerHTML = `${KIND_TITLE[kind]}<small>${all.length} extension${all.length > 1 ? "s" : ""}</small>`;
+  list.appendChild(h);
+  const g = document.createElement("div"); g.className = "grid"; list.appendChild(g);
+  for (const e of all) {
+    const c = document.createElement("div"); c.className = "card";
+    c.innerHTML = `<img class="big" src="${src(e, 256)}">
+      <div class="row">${[64, 48, 32, 24, 16].map(s => `<img src="${src(e, s)}" width="${s}" height="${s}">`).join("")}
+      <img class="px" src="${src(e, 16)}" width="48" height="48"></div>
+      <div class="name">.${e}</div><div class="type">${TYPE_NAME[kind](e.toUpperCase())}</div>`;
+    g.appendChild(c);
+  }
+}
+document.querySelector("h1").textContent += ` (${total})`;
+for (const b of document.querySelectorAll(".bar button")) b.onclick = () => {
+  document.querySelectorAll(".bar button").forEach(x => x.classList.toggle("on", x === b));
+  list.className = b.dataset.bg;
+};
+</script>
+</body>
+</html>
