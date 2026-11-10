@@ -255,6 +255,8 @@ pub struct Gfx {
     /// The copy of the frame `blur_backdrop` blurs, kept while the size, format and DPI stay.
     backdrop: Option<(ID3D11Texture2D, ID2D1Bitmap1, (u32, u32, i32, u32))>,
     blur_failed: bool,
+    /// Shell icons on the GPU, by icon (its address; the Arc keeps it alive) and tint.
+    icons: std::cell::RefCell<std::collections::HashMap<(usize, Option<u32>), (std::sync::Arc<crate::shell_icons::Icon>, ID2D1Bitmap1)>>,
 }
 
 /// The UI layer under scRGB and the effects that bring it into scRGB.
@@ -328,6 +330,7 @@ impl Gfx {
                 frame: Default::default(),
                 backdrop: None,
                 blur_failed: false,
+                icons: Default::default(),
             };
             g.make_target()?;
             Ok(g)
@@ -346,6 +349,7 @@ impl Gfx {
             self.checker = None;
             self.ui = None;
             self.backdrop = None;
+            self.icons.borrow_mut().clear();
             self.swap = swap;
             self.brush = brush;
             self.dev = dev;
@@ -611,6 +615,30 @@ impl Gfx {
         let k = self.space.white_scale();
         D2D1_COLOR_F { r: colour::srgb_to_linear(c.r) * k, g: colour::srgb_to_linear(c.g) * k, b: colour::srgb_to_linear(c.b) * k, a: c.a }
     }
+    /// A Windows shell icon `dip` DIPs across, centred in `r` and pixel-snapped so it stays crisp: at its own
+    /// size when that's no bigger than needed (drawn 1:1), else scaled down to `dip`. In its own colours, or
+    /// recoloured in `tint`. Made a GPU bitmap on first use.
+    pub fn draw_icon(&self, icon: &std::sync::Arc<crate::shell_icons::Icon>, r: D2D_RECT_F, dip: f32, opacity: f32, tint: Option<u32>) {
+        let key = (std::sync::Arc::as_ptr(icon) as usize, tint);
+        let mut cache = self.icons.borrow_mut();
+        if !cache.contains_key(&key) {
+            let px = match tint {
+                Some(t) => crate::shell_icons::tinted(icon, t),
+                None => icon.bgra.clone(),
+            };
+            let Ok(bmp) = self.bitmap(icon.w, icon.h, &px) else { return };
+            cache.insert(key, (icon.clone(), bmp));
+        }
+        let Some((_, bmp)) = cache.get(&key) else { return };
+        let scale = self.dpi / 96.0;
+        let need = dip * scale;
+        let (w, h) = if icon.w as f32 <= need + 0.5 { (icon.w as f32, icon.h as f32) } else { (need, need * icon.h as f32 / icon.w as f32) };
+        let (w, h) = (w / scale, h / scale);
+        let x = self.snap(r.left + (r.right - r.left - w) / 2.0);
+        let y = self.snap(r.top + (r.bottom - r.top - h) / 2.0);
+        self.draw_bitmap(bmp, rect(x, y, w, h), opacity);
+    }
+
     pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) {
         unsafe {
             self.dev.dc.DrawBitmap(bmp, Some(&dest), opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None);

@@ -11,6 +11,7 @@ use std::time::Instant;
 use super::explorer::{EField, FOLDER_TINT, Meta, SideTarget};
 use super::*;
 use crate::explorer::{self, ColKind, Kind, Place};
+use crate::shell_icons;
 
 const ROW: f32 = 26.0;
 const NAV: f32 = 28.0;
@@ -28,6 +29,38 @@ const ICON_W: f32 = 24.0;
 pub(super) const POPUP_ROW: f32 = 25.0;
 pub(super) const POPUP_ROWS: usize = 12;
 const ICON_H: f32 = 18.0;
+/// Windows' icons are drawn this many DIPs across (the shell's small icon, as Transient's Browser draws them).
+const SHELL_ICON: f32 = 16.0;
+
+/// Windows' own icon for `kind`, centred in `r` (as Transient's Browser tab draws folders, drives and places):
+/// faded by `opacity`, recoloured in `tint`. False when Windows has none (the caller draws its glyph); nothing
+/// is drawn while it loads.
+pub(super) fn shell_icon(g: &Gfx, kind: &shell_icons::Kind, r: D2D_RECT_F, opacity: f32, tint: Option<u32>) -> bool {
+    let px = (SHELL_ICON * g.dpi / 96.0).round() as u32;
+    match shell_icons::get(kind, px) {
+        shell_icons::Lookup::Ready(icon) => {
+            g.draw_icon(&icon, r, SHELL_ICON, opacity, tint);
+            true
+        }
+        shell_icons::Lookup::Pending => true,
+        shell_icons::Lookup::Missing => false,
+    }
+}
+
+/// The icon a listed folder or drive gets: drives and customised folders (Desktop, Downloads, …) their own, by
+/// path; any other folder the one folder icon, never read from disk.
+fn row_icon(r: &explorer::Row) -> shell_icons::Kind {
+    if r.kind == Kind::Drive || r.custom_icon { shell_icons::Kind::Path(r.path.clone()) } else { shell_icons::Kind::Folder }
+}
+
+/// A place's icon (a tab's, a sidebar row's): a folder by path, This PC.
+fn place_icon(p: &Place) -> Option<shell_icons::Kind> {
+    match p {
+        Place::Folder(f) => Some(shell_icons::Kind::Path(f.clone())),
+        Place::Computer => Some(shell_icons::Kind::Computer),
+        Place::Collection(_) => None,
+    }
+}
 
 /// A cell's text (not Name's, which draws its own way).
 pub(super) fn cell_text(r: &explorer::Row, c: ColKind, m: Option<&Meta>) -> String {
@@ -325,8 +358,16 @@ impl App {
                     let col = explorer::COLOURS[*c as usize].1;
                     g.fill_round(rect(ir.left + 4.0, ir.top + (ir.bottom - ir.top - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(col));
                 }
-                Some(Place::Computer) | None => g.text(&[0xE7F8], &g.fonts.small_icons, ir, rgb(t.icon), Align::Center),
-                Some(Place::Folder(_)) => g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center),
+                Some(Place::Computer) | None => {
+                    if !shell_icon(g, &shell_icons::Kind::Computer, ir, 1.0, None) {
+                        g.text(&[0xE7F8], &g.fonts.small_icons, ir, rgb(t.icon), Align::Center);
+                    }
+                }
+                Some(Place::Folder(f)) => {
+                    if !shell_icon(g, &shell_icons::Kind::Path(f.clone()), ir, 1.0, None) {
+                        g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center);
+                    }
+                }
             }
             let title = place.as_ref().map_or_else(|| explorer::COMPUTER_NAME.to_string(), Place::name);
             let tx = body.left + 34.0;
@@ -674,6 +715,10 @@ impl App {
                         }
                     }
                 }
+                if !drew && r.is_folder() {
+                    // Windows' icon; on the solid accent recoloured white, as Transient does a picked folder.
+                    drew = shell_icon(g, &row_icon(&r), ib, if lit { 1.0 } else { faded }, lit.then_some(t.on_accent));
+                }
                 if !drew {
                     let (glyph, tint) = match r.kind {
                         Kind::Drive => (0xEDA2u16, t.icon),
@@ -991,7 +1036,13 @@ impl App {
                         g.text(&[if it.expanded { 0xE70D } else { 0xE76C }], &g.fonts.caption_icons, cr, rgb(t.placeholder), Align::Center);
                     }
                     let ix = x + 18.0;
-                    if it.glyph == 0xEA3B {
+                    // Windows' icons for places, drives, bookmarks and history (by path: Downloads' arrow, a
+                    // drive's own), the one folder icon for the folders opened under them, as Transient's tree.
+                    let shell = if it.depth > 1 { Some(shell_icons::Kind::Folder) } else { place_icon(p) };
+                    let drew = shell.is_some_and(|k| shell_icon(g, &k, rect(ix, row.top, 16.0, ROW), 1.0, None));
+                    if drew {
+                        // Drawn.
+                    } else if it.glyph == 0xEA3B {
                         // A colour collection: its swatch as a dot.
                         let c = it.tint.unwrap_or(t.icon);
                         g.fill_round(rect(ix + 3.0, row.top + (ROW - 10.0) / 2.0, 10.0, 10.0), 5.0, rgb(c));
@@ -1121,14 +1172,24 @@ impl App {
             } else if hover > 0.0 {
                 g.fill_round(row, 4.0, gfx::rgba(raised.hover_fill, hover));
             }
-            let (glyph, tint) = if path.parent().is_none() {
-                (0xEDA2u16, raised.icon)
+            let ir = rect(row.left + 8.0, row.top, 18.0, POPUP_ROW);
+            let shell = if path.parent().is_none() {
+                Some(shell_icons::Kind::Path(path.clone()))
             } else if is_dir {
-                (0xE8D5, FOLDER_TINT)
+                Some(shell_icons::Kind::Folder)
             } else {
-                (0xE91B, raised.icon)
+                None
             };
-            g.text(&[glyph], &g.fonts.body_icons, rect(row.left + 8.0, row.top, 18.0, POPUP_ROW), rgb(tint), Align::Center);
+            if !shell.is_some_and(|k| shell_icon(g, &k, ir, 1.0, None)) {
+                let (glyph, tint) = if path.parent().is_none() {
+                    (0xEDA2u16, raised.icon)
+                } else if is_dir {
+                    (0xE8D5, FOLDER_TINT)
+                } else {
+                    (0xE91B, raised.icon)
+                };
+                g.text(&[glyph], &g.fonts.body_icons, ir, rgb(tint), Align::Center);
+            }
             g.text(&wide(&explorer::folder_name(&path)), &g.fonts.body, rect(row.left + 34.0, row.top, row.right - row.left - 40.0, POPUP_ROW), rgb(raised.text), Align::Left);
         }
         g.pop_clip();
@@ -1217,7 +1278,9 @@ impl App {
         ui::stroke(g, fr, 7.0, rgb(raised.divider));
         let ir = rect(fr.left + 10.0, fr.top + 7.0, 16.0, 16.0);
         if one_dir {
-            g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center);
+            if !shell_icon(g, &shell_icons::Kind::Folder, ir, 1.0, None) {
+                g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center);
+            }
         } else {
             g.text(&[if n == 1 { 0xE91B } else { 0xE8B3 }], &g.fonts.body_icons, ir, rgb(raised.icon), Align::Center);
         }

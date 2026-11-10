@@ -33,6 +33,7 @@ pub const WM_DIMENSIONS: u32 = WM_APP + 21;
 /// Rows dragged out of the window: Windows' own drag takes them (run after the mouse message that saw it).
 pub const WM_DRAG_OUT: u32 = WM_APP + 22;
 
+const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
@@ -174,6 +175,9 @@ pub struct Row {
     pub created: u64,
     pub size: u64,
     pub cloud: bool,
+    /// A folder Windows marks as customised (read-only, as Desktop, Downloads and any folder with a
+    /// `desktop.ini` are) and not a cloud placeholder: its icon is looked up by path (`shell_icons`).
+    pub custom_icon: bool,
 }
 
 impl Row {
@@ -195,7 +199,7 @@ impl Row {
 
     #[cfg(test)]
     fn test(name: &str, kind: Kind, stamp: u64, size: u64) -> Row {
-        Row { path: PathBuf::from(name), name: name.into(), name_h: HSTRING::from(name), kind, stamp, created: 0, size, cloud: false }
+        Row { path: PathBuf::from(name), name: name.into(), name_h: HSTRING::from(name), kind, stamp, created: 0, size, cloud: false, custom_icon: false }
     }
 }
 
@@ -694,6 +698,7 @@ pub fn free_name(folder: &Path, name: &str) -> PathBuf {
 
 fn row_for(path: PathBuf, md: &std::fs::Metadata) -> Row {
     let attrs = md.file_attributes();
+    let cloud = attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
     let name = folder_name(&path);
     let kind = if md.is_dir() {
         Kind::Folder
@@ -709,7 +714,8 @@ fn row_for(path: PathBuf, md: &std::fs::Metadata) -> Row {
         stamp: md.last_write_time(),
         created: md.creation_time(),
         size: if md.is_dir() { 0 } else { md.len() },
-        cloud: attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0,
+        cloud,
+        custom_icon: md.is_dir() && attrs & FILE_ATTRIBUTE_READONLY != 0 && !cloud,
         path,
     }
 }
@@ -822,7 +828,7 @@ pub fn drives() -> Vec<Row> {
         let label = if ok { String::from_utf16_lossy(&label[..label.iter().position(|&c| c == 0).unwrap_or(0)]) } else { String::new() };
         let label = if label.is_empty() { if kind == DRIVE_REMOVABLE { "Removable Disk".into() } else { "Local Disk".into() } } else { label };
         let name = format!("{label} ({letter}:)");
-        rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, created: 0, size: 0, cloud: false });
+        rows.push(Row { name_h: HSTRING::from(name.as_str()), name, path: PathBuf::from(root), kind: Kind::Drive, stamp: 0, created: 0, size: 0, cloud: false, custom_icon: false });
     }
     rows
 }

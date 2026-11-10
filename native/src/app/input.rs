@@ -995,6 +995,10 @@ impl App {
                     self.media_button(wp.0);
                     Some(LRESULT(0))
                 }
+                crate::shell_icons::WM_SHELL_ICONS => {
+                    self.invalidate();
+                    Some(LRESULT(0))
+                }
                 landing::WM_RECENTS => {
                     let list = Box::from_raw(lp.0 as *mut Vec<landing::Recent>);
                     self.on_recents(*list);

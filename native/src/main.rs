@@ -26,6 +26,7 @@ mod motion;
 mod pages;
 mod player;
 mod settings;
+mod shell_icons;
 mod store;
 mod tags;
 mod textedit;
