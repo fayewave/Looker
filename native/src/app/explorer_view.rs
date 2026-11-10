@@ -746,13 +746,15 @@ impl App {
             if vi % 2 == 1 {
                 g.fill_round(row, 4.0, rgb(t.stripe));
             }
+            // The accent fills at 60 %, softer than solid (Faye, 2026-11-10).
+            const SOLID: f32 = 0.6;
             if lit {
-                g.fill_round(row, 4.0, rgb(t.accent));
+                g.fill_round(row, 4.0, gfx::rgba(t.accent, SOLID));
             } else if solid > 0.01 {
                 if solid < 0.99 && selected {
                     g.fill_round(fr, 4.0, rgb(t.selected));
                 }
-                g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid));
+                g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid * SOLID));
             } else if selected || is_target {
                 g.fill_round(row, 4.0, rgb(t.selected));
             } else if hover > 0.0 {

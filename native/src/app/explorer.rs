@@ -714,6 +714,10 @@ impl App {
         if on {
             // Always the card's width plus the sidebar's, not where its edge was last dragged.
             self.settings.browse_share = 0.0;
+        } else {
+            // And off, the card at its default width (Faye, 2026-11-10), not where it was last dragged.
+            self.settings.explorer_width = 0.0;
+            settings::save(&self.settings);
         }
         if on && !self.settings.explorer_visible {
             self.toggle_explorer();
@@ -732,6 +736,8 @@ impl App {
     pub(super) fn leave_browse(&mut self) {
         if self.browsing() {
             self.explorer.browse.set([0.0], Instant::now());
+            self.settings.explorer_width = 0.0;
+            settings::save(&self.settings);
             self.layout_changed();
         }
     }
