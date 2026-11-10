@@ -241,7 +241,7 @@ impl App {
     }
 
     /// A small borderless icon button of the breadcrumb row.
-    fn nav_button(&mut self, g: &Gfx, r: D2D_RECT_F, id: Hit, glyph: u16, enabled: bool, on: bool) {
+    pub(super) fn nav_button(&mut self, g: &Gfx, r: D2D_RECT_F, id: Hit, glyph: u16, enabled: bool, on: bool) {
         self.hits.add(id, r);
         let st = self.state(id, enabled);
         let fg = ui::button_frame(g, r, if on { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
@@ -278,172 +278,28 @@ impl App {
     }
 
     /// The breadcrumb rows: the buttons, then the crumbs under them. Returns where they end.
-    /// The tab strip along the top, as Transient's (File Pilot's measurements): tabs 155 wide on a 32-tall strip,
-    /// narrowing together to fit; the one in front in the card's colour, outlined, flowing into the card below
-    /// (the outline in the accent while the explorer has the keyboard); the others a faint wash on hover, thin
-    /// lines between them; a close button on each while there are two or more; a + after them. A dragged tab
-    /// follows the pointer and the others ease aside around an outlined slot. Returns the strip's bottom, and
+    /// The tab strip along the top (tabstrip.rs, shared with the text editor). Returns the strip's bottom, and
     /// whether the tabs are still moving.
     fn draw_tabs(&mut self, g: &Gfx, main: D2D_RECT_F, inner: D2D_RECT_F) -> (f32, bool) {
+        use super::tabstrip::{StripKind, TabIcon, TabSpec};
         let t = theme::t();
-        let strip = rect(main.left, main.top, main.right - main.left, STRIP_H);
         let n = self.explorer.tabs.len();
-        let front = self.explorer.active_tab;
-        let now = Instant::now();
-        let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
-        // The strip behind the tabs is the browse pane's colour, inactive tabs on it; the tab in front keeps the
-        // card's, joining the list (Faye, 2026-11-10). Inside the card's rounded corners.
-        g.push_clip(strip);
-        g.fill_round(inner, 9.0, rgb(t.pane));
-        g.pop_clip();
-        g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, rgb(t.divider));
-        if lit > 0.0 {
-            g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit));
-        }
-        let plus_w = 34.0;
-        self.explorer.tab_tips.clear();
-        let fit = ((strip.right - strip.left - 12.0 - plus_w) / (155.0 * n as f32)).min(1.0);
-        let tw_target = (155.0 * fit).max(40.0);
-        let x0 = strip.left + 6.0;
-        // The tabs' width eases with their places when one opens or closes (squeezed into a narrow strip, it
-        // changes: it used to snap there, Faye 2026-11-10); a window resize sets it at once.
-        let tab_anim = now < self.explorer.tab_anim_until;
-        if tab_anim {
-            self.explorer.tab_w.set([tw_target], now);
-        } else {
-            self.explorer.tab_w = crate::motion::Ease::at([tw_target]);
-        }
-        let tw = self.explorer.tab_w.value(now)[0];
-        self.explorer.tab_pitch = tw_target;
-        let closable = n > 1;
-        // Draw order: the tabs in their slots (a dragged one leaves its slot to the ghost), then the dragged one.
-        let drag = self.explorer.tab_drag.as_ref().filter(|d| d.active && d.idx < n).map(|d| (d.idx, d.x - d.grab));
-        let mut order: Vec<usize> = (0..n).collect();
-        let mut ghost = None;
-        let mut drag_x = 0.0;
-        if let Some((di, left)) = drag {
-            drag_x = left.clamp(x0, (strip.right - tw - 6.0 - plus_w).max(x0));
-            let slot = (((drag_x - x0) / tw).round().max(0.0) as usize).min(n - 1);
-            order.retain(|&k| k != di);
-            order.insert(slot, di);
-            ghost = Some(slot);
-            if let Some(d) = self.explorer.tab_drag.as_mut() {
-                d.insert = slot;
-            }
-        }
-        let animate = drag.is_some() || now < self.explorer.tab_anim_until;
-        let mut moving = drag.is_some() || self.explorer.tab_w.moving(now);
-        let mut xs: Vec<(usize, f32)> = Vec::new();
-        for (pos, &k) in order.iter().enumerate() {
-            let id = self.explorer.tabs[k].id;
-            let target = (pos as f32) * tw_target;
-            if Some(k) == drag.map(|d| d.0) {
-                // It follows the pointer exactly; dropped, it eases into its slot from there.
-                self.explorer.tab_pos.insert(id, crate::motion::Ease::at([drag_x - x0]));
-                continue;
-            }
-            let e = self.explorer.tab_pos.entry(id).or_insert_with(|| crate::motion::Ease::at([target]));
-            if animate {
-                e.set([target], now);
-            } else {
-                *e = crate::motion::Ease::at([target]);
-            }
-            moving |= e.moving(now);
-            xs.push((k, x0 + e.value(now)[0]));
-        }
-        let lane = D2D_RECT_F { right: strip.right - plus_w, ..strip };
-        g.push_clip(lane);
-        if let (Some(slot), Some((di, _))) = (ghost, drag) {
-            let _ = di;
-            let gb = rect(x0 + slot as f32 * tw + 3.5, strip.top + 4.0, tw - 7.0, STRIP_H - 4.0);
-            g.fill_tab(gb, 7.0, 0.0, gfx::rgba(t.accent, 0.10));
-            g.stroke_tab(D2D_RECT_F { bottom: gb.bottom - 1.0, ..gb }, 7.0, 0.0, rgb(t.accent));
-        }
-        if let Some((di, _)) = drag {
-            xs.push((di, drag_x));
-        }
-        let pos_of = |k: usize| order.iter().position(|&o| o == k).unwrap_or(0);
-        for &(k, x) in &xs {
-            let is_dragged = drag.is_some_and(|d| d.0 == k);
-            let body = rect(x + 3.5, strip.top + 4.0, tw - 7.0, STRIP_H - 4.0);
-            let on = k == front;
-            let id = Hit::Tab(k as u8);
-            if !is_dragged {
-                self.hits.add(id, body);
-            }
-            let cr = rect(body.right - 25.0, body.top + (body.bottom - body.top - 16.0) / 2.0, 16.0, 16.0);
-            if closable {
-                self.hits.add(Hit::TabClose(k as u8), cr);
-            }
-            let close_hot = self.hover == Some(Hit::TabClose(k as u8));
-            let hot = self.explorer.tab_drag.as_ref().is_none_or(|d| !d.active) && (self.hover == Some(id) || close_hot);
-            if on {
-                g.fill_tab(body, 7.0, 4.0, rgb(t.sidebar));
-                g.stroke_tab(body, 7.0, 4.0, rgb(t.divider));
-                if lit > 0.0 {
-                    g.stroke_tab(body, 7.0, 4.0, gfx::rgba(t.accent, lit));
-                }
-            } else if hot || is_dragged {
-                if is_dragged {
-                    ui::shadow(g, body, 6.0);
-                    g.fill_tab(body, 7.0, 0.0, rgb(theme::raised().popup));
-                }
-                g.fill_tab(D2D_RECT_F { bottom: body.bottom - 1.0, ..body }, 7.0, 0.0, gfx::rgba(t.ink, 0.05));
-            }
-            // A line between tabs that aren't in front (none beside the one in front, a hovered one or the slot).
-            let p = pos_of(k);
-            let next = order.get(p + 1).copied();
-            if !is_dragged && !on && !hot && next != Some(front) && ghost != Some(p + 1) && ghost != Some(p) {
-                g.fill(rect(x + tw, strip.top + 10.0, g.px(), STRIP_H - 11.0), rgb(t.divider));
-            }
-            // The icon, the title (cut short with an ellipsis before the close button), the close button.
-            let place = self.tab_place(k);
-            let ir = rect(body.left + 12.0, body.top, 16.0, body.bottom - body.top);
-            match &place {
-                Some(Place::Collection(explorer::Collection::Favourites)) => g.text(&[0xE735], &g.fonts.small_icons, ir, rgb(0xF2C94C), Align::Center),
-                Some(Place::Collection(explorer::Collection::Colour(c))) => {
-                    let col = explorer::COLOURS[*c as usize].1;
-                    g.fill_round(rect(ir.left + 4.0, ir.top + (ir.bottom - ir.top - 8.0) / 2.0, 8.0, 8.0), 4.0, rgb(col));
-                }
-                Some(Place::Computer) | None => {
-                    if !shell_icon(g, &shell_icons::Kind::Computer, ir, 1.0, None) {
-                        g.text(&[0xE7F8], &g.fonts.small_icons, ir, rgb(t.icon), Align::Center);
-                    }
-                }
-                Some(Place::Folder(f)) => {
-                    if !shell_icon(g, &shell_icons::Kind::Path(f.clone()), ir, 1.0, None) {
-                        g.text(&[0xE8D5], &g.fonts.body_icons, ir, rgb(FOLDER_TINT), Align::Center);
-                    }
-                }
-            }
-            let title = place.as_ref().map_or_else(|| explorer::COMPUTER_NAME.to_string(), Place::name);
-            let tx = body.left + 34.0;
-            let text_end = if closable { cr.left - 4.0 } else { body.right - 10.0 };
-            g.text(&wide(&title), &g.fonts.body, rect(tx, body.top, (text_end - tx).max(0.0), body.bottom - body.top), rgb(t.text), Align::Left);
-            // A title cut off: its full text for a tooltip.
-            if self.hover == Some(id) && g.measure(&wide(&title), &g.fonts.body) > (text_end - tx).max(0.0) + 0.5 {
-                self.explorer.tab_tips.push((k as u8, title.clone()));
-            }
-            if closable {
-                if close_hot {
-                    g.fill_round(cr, 4.0, rgb(t.track));
-                }
-                g.text(&[0xE8BB], &g.fonts.caption_icons, cr, rgb(if close_hot { t.text } else { t.label }), Align::Center);
-            }
-        }
-        g.pop_clip();
-        // The +, after the last tab (easing along as tabs come and go).
-        let plus_target = n as f32 * tw_target;
-        let e = self.explorer.tab_pos.entry(u64::MAX).or_insert_with(|| crate::motion::Ease::at([plus_target]));
-        if animate {
-            e.set([plus_target], now);
-        } else {
-            *e = crate::motion::Ease::at([plus_target]);
-        }
-        moving |= e.moving(now);
-        let px = (x0 + e.value(now)[0]).min(strip.right - plus_w);
-        self.nav_button(g, rect(px + 4.0, strip.top + 5.0, 26.0, STRIP_H - 9.0), Hit::TabNew, 0xE710, true, false);
-        (strip.bottom, moving)
+        let specs: Vec<TabSpec> = (0..n)
+            .map(|k| {
+                let place = self.tab_place(k);
+                let icon = match &place {
+                    Some(Place::Collection(explorer::Collection::Favourites)) => TabIcon::Glyph(0xE735, 0xF2C94C),
+                    Some(Place::Collection(explorer::Collection::Colour(c))) => TabIcon::Dot(explorer::COLOURS[*c as usize].1),
+                    Some(Place::Computer) | None => TabIcon::Shell(shell_icons::Kind::Computer, 0xE7F8, t.icon),
+                    Some(Place::Folder(f)) => TabIcon::Shell(shell_icons::Kind::Path(f.clone()), 0xE8D5, FOLDER_TINT),
+                };
+                let title = place.as_ref().map_or_else(|| explorer::COMPUTER_NAME.to_string(), Place::name);
+                TabSpec { id: self.explorer.tabs[k].id, title, icon, dirty: false }
+            })
+            .collect();
+        let strip = rect(main.left, main.top, main.right - main.left, STRIP_H);
+        let (front, focused) = (self.explorer.active_tab, self.explorer.focused);
+        self.draw_tab_strip(g, StripKind::Explorer, strip, inner, 9.0, &specs, front, focused, n > 1)
     }
 
     /// The buttons above the list, and the crumbs. `slide`: how far the sidebar column is in (its button fades out

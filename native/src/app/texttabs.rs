@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use super::textview::{Eol, Encoding, TextAct, TextView};
 use super::*;
 use super::actions::{Choice, DialogKind};
+use crate::shell_icons;
 use crate::ui::{Entry, MenuItem};
 
-const TABS_H: f32 = 34.0;
 const MENUBAR_H: f32 = 30.0;
 
 /// The editor's typeface: family, weight, italic, and size in DIPs.
@@ -61,11 +61,13 @@ pub(super) struct TextDocs {
     next_id: u64,
     /// Windows' spell checker, made the first time it's wanted (None inside: no checker for the language).
     pub(super) spell: Option<Option<crate::spell::Spell>>,
+    /// The tab strip's motion, drag and tooltips: the explorer's own (tabstrip.rs).
+    pub(super) strip: super::tabstrip::TabStrip,
 }
 
 impl TextDocs {
     pub(super) fn new() -> TextDocs {
-        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None }
+        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None, strip: Default::default() }
     }
 
     pub(super) fn cur(&self) -> Option<&TextView> {
@@ -268,6 +270,7 @@ impl App {
         let font = self.font_spec();
         let doc = TextView::untitled(n, id, &font);
         self.text.docs.push(doc);
+        self.text.strip.animate();
         self.text.active = self.text.docs.len() - 1;
         if let Some(tv) = self.text.cur_mut() {
             tv.take_focus();
@@ -275,6 +278,26 @@ impl App {
         self.set_ime(true);
         self.restart_caret();
         self.invalidate();
+    }
+
+    /// A press on a tab: to the front, and moving on drags it.
+    pub(super) fn text_tab_press(&mut self, i: usize, x: f32) {
+        self.text_select_tab(i);
+        self.strip_press(super::tabstrip::StripKind::Text, i, x);
+    }
+
+    /// Let go of a dragged tab: it drops into its slot (the one in front stays in front). True when it was a drag.
+    pub(super) fn text_tab_release(&mut self) -> bool {
+        let Some((from, to)) = self.strip_release(super::tabstrip::StripKind::Text) else { return false };
+        if from < self.text.docs.len() {
+            let front = self.text.docs[self.text.active].id;
+            let d = self.text.docs.remove(from);
+            let to = to.min(self.text.docs.len());
+            self.text.docs.insert(to, d);
+            self.text.active = self.text.docs.iter().position(|d| d.id == front).unwrap_or(0);
+            self.save_session(false);
+        }
+        true
     }
 
     /// A tab clicked: its document up (a file's in the viewer too, so the folder, the strip and the info follow).
@@ -328,7 +351,9 @@ impl App {
     }
 
     fn text_remove_tab(&mut self, i: usize) {
-        self.text.docs.remove(i);
+        let gone = self.text.docs.remove(i);
+        self.text.strip.pos.remove(&gone.id);
+        self.text.strip.animate();
         if self.text.active > i || self.text.active >= self.text.docs.len() {
             self.text.active = self.text.active.saturating_sub(1);
         }
@@ -408,57 +433,28 @@ impl App {
 
     /// The rows above the text: the tabs, then the menu bar. Returns where they end.
     pub(super) fn text_rows_height() -> f32 {
-        TABS_H + MENUBAR_H
+        super::tabstrip::STRIP_H + MENUBAR_H
     }
 
-    pub(super) fn draw_text_rows(&mut self, g: &Gfx, card: D2D_RECT_F) {
+    pub(super) fn draw_text_rows(&mut self, g: &Gfx, card: D2D_RECT_F) -> bool {
+        use super::tabstrip::{STRIP_H, StripKind, TabIcon, TabSpec};
         let t = theme::t();
-        let tabs = rect(card.left, card.top, card.right - card.left, TABS_H);
+        let tabs = rect(card.left, card.top, card.right - card.left, STRIP_H);
         let bar = rect(card.left, tabs.bottom, card.right - card.left, MENUBAR_H);
         g.hline(card.left + 1.0, bar.bottom, card.right - card.left - 2.0, rgb(t.divider));
 
-        // Tabs: as wide as their names (up to 220), sharing the room when there are many.
-        let n = self.text.docs.len();
-        let add_w = 30.0;
-        let room = (tabs.right - tabs.left - 12.0 - add_w - 6.0).max(60.0);
-        let names: Vec<(String, bool)> = self.text.docs.iter().map(|d| (d.title(), d.dirty())).collect();
-        let natural: Vec<f32> = names.iter().map(|(s, _)| (g.measure(&wide(s), &g.fonts.body) + 52.0).clamp(90.0, 220.0)).collect();
-        let total: f32 = natural.iter().sum::<f32>() + 4.0 * n as f32;
-        let k = if total > room { room / total } else { 1.0 };
-        let mut x = tabs.left + 8.0;
-        for (i, ((name, dirty), w)) in names.iter().zip(&natural).enumerate() {
-            let w = (w * k).max(48.0);
-            let r = rect(x, tabs.top + 5.0, w, TABS_H - 5.0);
-            let on = i == self.text.active;
-            let hit = Hit::TextTab(i as u16);
-            self.hits.add(hit, r);
-            let st = self.state(hit, true);
-            if on {
-                g.fill_round(D2D_RECT_F { bottom: r.bottom + 6.0, ..r }, 6.0, rgb(t.field));
-            } else if st.hover > 0.0 {
-                g.fill_round(D2D_RECT_F { bottom: r.bottom - 3.0, ..r }, 6.0, gfx::rgba(t.text, 0.06 * st.hover));
-            }
-            let close = rect(r.right - 26.0, r.top + (r.bottom - r.top - 20.0) / 2.0, 20.0, 20.0);
-            let label = D2D_RECT_F { left: r.left + 10.0, right: close.left - 2.0, ..r };
-            g.text(&wide(name), &g.fonts.body, label, rgb(if on { t.text } else { t.label }), Align::Left);
-            // A dot while it has unsaved edits; the close button on it under the pointer (and on the active tab).
-            let chit = Hit::TextTabClose(i as u16);
-            let over = matches!(self.hover, Some(Hit::TextTab(j) | Hit::TextTabClose(j)) if j == i as u16);
-            if over || (on && !dirty) {
-                self.hits.add(chit, close);
-                let cst = self.state(chit, true);
-                let fg = ui::quiet_frame(g, close, ui::Kind::Standard, &cst);
-                g.text(&[0xE711], &g.fonts.small_icons, close, fg, Align::Center);
-            } else if *dirty {
-                g.fill_round(rect(close.left + 7.0, close.top + 7.0, 6.0, 6.0), 3.0, rgb(t.text));
-            }
-            x += w + 4.0;
-        }
-        let add = rect(x + 2.0, tabs.top + 7.0, add_w - 4.0, TABS_H - 12.0);
-        self.hits.add(Hit::TextTabNew, add);
-        let st = self.state(Hit::TextTabNew, true);
-        let fg = ui::quiet_frame(g, add, ui::Kind::Standard, &st);
-        g.text(&[0xE710], &g.fonts.small_icons, add, fg, Align::Center);
+        // The tabs: the explorer's strip, exactly (Faye, 2026-11-11). Each document's icon is Windows' for its type.
+        let specs: Vec<TabSpec> = self
+            .text
+            .docs
+            .iter()
+            .map(|d| {
+                let ext = d.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "txt".into());
+                TabSpec { id: d.id, title: d.title(), icon: TabIcon::Shell(shell_icons::Kind::Extension(ext), 0xE8A5, t.icon), dirty: d.dirty() }
+            })
+            .collect();
+        let focused = self.text_focused();
+        let (_, moving) = self.draw_tab_strip(g, StripKind::Text, tabs, card, 9.0, &specs, self.text.active, focused, true);
 
         // The menu bar.
         let mut x = bar.left + 8.0;
@@ -480,6 +476,7 @@ impl App {
                 self.text_open_bar_menu(k as u8, r);
             }
         }
+        moving
     }
 
     pub(super) fn text_menubar_click(&mut self, k: u8) {

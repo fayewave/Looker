@@ -310,7 +310,7 @@ pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
     let t = theme::t();
     // Ink, so it reads the same on the cards, the page and the Settings card (Faye, 2026-11-09: brighter).
     let c = rgba(t.ink, if held { 0.55 } else { 0.3 });
-    g.fill_round(r, (r.right - r.left) / 2.0, c);
+    g.fill_round(r, (r.right - r.left).min(r.bottom - r.top) / 2.0, c);
 }
 
 /// A card's resize edge: an ink line on hover, the accent while it's dragged.

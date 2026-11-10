@@ -20,6 +20,7 @@ mod rip;
 mod slideshow;
 mod audio;
 mod subtitles;
+mod tabstrip;
 mod textprint;
 mod texttabs;
 mod textview;

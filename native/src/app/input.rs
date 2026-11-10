@@ -249,8 +249,11 @@ impl App {
                     if self.explorer.section_drag.is_some() {
                         self.section_drag_move(y);
                     }
-                    if self.explorer.tab_drag.is_some() {
+                    if self.explorer.strip.drag.is_some() {
                         self.tab_drag_move(x);
+                    }
+                    if self.text.strip.drag.is_some() {
+                        self.strip_drag_move(tabstrip::StripKind::Text, x);
                     }
                     if self.explorer.col_resize.is_some() {
                         self.col_edge_drag(x);
@@ -479,7 +482,7 @@ impl App {
                         Some(Hit::TextScroll) => self.text_scroll_press(x, y, false),
                         Some(Hit::TextHScroll) => self.text_scroll_press(x, y, true),
                         Some(Hit::TextField(i)) => self.text_field_press(i, x),
-                        Some(Hit::TextTab(i)) => self.text_select_tab(i as usize),
+                        Some(Hit::TextTab(i)) => self.text_tab_press(i as usize, x),
                         _ => {}
                     }
                     if !matches!(h, Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll | Hit::TextBar | Hit::TextField(_) | Hit::TextButton(_) | Hit::TextFoot(_) | Hit::TextTab(_) | Hit::TextTabClose(_) | Hit::TextTabNew | Hit::TextMenuBar(_) | Hit::MenuItem(_) | Hit::MenuSurface)) {
@@ -494,7 +497,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.marquee_release() | self.tab_release();
+                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.marquee_release() | self.tab_release() | self.text_tab_release();
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;

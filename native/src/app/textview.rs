@@ -898,7 +898,9 @@ struct Rects {
 impl App {
     /// The text's lines and characters, for the status row and the info card (a text file has no pixels).
     pub(super) fn text_facts(&self) -> Option<(usize, usize)> {
-        let tv = self.text.cur().filter(|_| self.text_shown())?;
+        // The viewer's file, whichever tab is in front.
+        let path = self.current_path()?;
+        let tv = self.text.docs.iter().find(|d| d.path == path).filter(|_| self.text_shown())?;
         let u = tv.edit.units();
         Some((u.iter().filter(|&&c| c == NL).count() + 1, String::from_utf16_lossy(u).chars().count()))
     }
@@ -920,7 +922,10 @@ impl App {
     fn text_rects(&self) -> Option<Rects> {
         let tv = self.text.cur()?;
         let a = self.image_area();
-        let card = D2D_RECT_F { left: a.left, top: a.top, right: a.right, bottom: a.bottom + self.preview_pad() - 12.0 };
+        // The cards' 12 off the window's edges where no card is beside it (beside one, the area is already its
+        // margin off that card), as every panel keeps (Faye, 2026-11-11).
+        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { 12.0 }, if self.right_inset() > 0.5 { 0.0 } else { 12.0 });
+        let card = D2D_RECT_F { left: a.left + ml, top: a.top, right: a.right - mr, bottom: a.bottom + self.preview_pad() - 12.0 };
         if card.right - card.left < 160.0 || card.bottom - card.top < 120.0 {
             return None;
         }
@@ -1029,10 +1034,12 @@ impl App {
         self.text_spell_lines(spell_lines.0, spell_lines.1);
 
         // The card, as the explorer's and the info card's.
-        g.fill_round(r.card, 8.0, rgb(t.sidebar));
-        ui::stroke(g, r.card, 8.0, rgb(t.divider));
+        g.fill_round(r.card, 9.0, rgb(t.sidebar));
+        ui::stroke(g, r.card, 9.0, rgb(t.divider));
         self.hits.add(Hit::TextView, D2D_RECT_F { left: r.card.left, right: r.track.left - 2.0, top: r.gutter.top - PAD / 2.0, bottom: r.foot.top });
-        self.draw_text_rows(g, r.card);
+        if self.draw_text_rows(g, r.card) {
+            self.invalidate();
+        }
         let spell_on = self.settings.text_spell;
 
         let Some(tv) = self.text.cur_mut() else { return };

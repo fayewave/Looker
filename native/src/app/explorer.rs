@@ -278,19 +278,6 @@ pub(super) struct TabState {
     pub xsort: Option<(ColKind, bool)>,
 }
 
-/// A tab dragged along the strip, as Transient's: it follows the pointer, the others ease aside around an
-/// outlined slot.
-pub(super) struct TabDrag {
-    pub idx: usize,
-    pub start_x: f32,
-    pub x: f32,
-    /// The pointer's offset from the tab's left edge when pressed.
-    pub grab: f32,
-    pub active: bool,
-    /// The slot it would land in (worked out as the strip draws).
-    pub insert: usize,
-}
-
 /// A sidebar section dragged by its heading, as Transient's: the heading follows the pointer, the others make
 /// room, an outlined slot shows where it lands.
 pub(super) struct SectionDrag {
@@ -432,7 +419,6 @@ pub(super) struct Explorer {
     /// and the tabs whose titles are cut off: for full-text tooltips (Faye, 2026-11-10).
     pub(super) cell_tips: Vec<(D2D_RECT_F, String)>,
     pub(super) tip_cell: Option<usize>,
-    pub(super) tab_tips: Vec<(u8, String)>,
     pub(super) row_pos: HashMap<String, Ease<1>>,
     pub(super) row_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
@@ -447,14 +433,8 @@ pub(super) struct Explorer {
     pub(super) active_tab: usize,
     next_tab_id: u64,
     tabs_loaded: bool,
-    pub(super) tab_drag: Option<TabDrag>,
-    /// Each tab's eased left edge (by id), and how long they ease after a drop, a new tab or a close.
-    pub(super) tab_pos: HashMap<u64, Ease<1>>,
-    pub(super) tab_anim_until: Instant,
-    /// The strip's tab width as last laid out (they jump, not ease, when it changes).
-    pub(super) tab_pitch: f32,
-    /// The tabs' width, eased when a tab opening or closing changes it (narrow strips squeeze them).
-    pub(super) tab_w: Ease<1>,
+    /// The tab strip's motion, drag and tooltips (tabstrip.rs).
+    pub(super) strip: super::tabstrip::TabStrip,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -547,7 +527,6 @@ impl Explorer {
             list_geom: None,
             cell_tips: Vec::new(),
             tip_cell: None,
-            tab_tips: Vec::new(),
             row_pos: HashMap::new(),
             row_anim_until: Instant::now(),
             section_open: HashMap::new(),
@@ -558,11 +537,7 @@ impl Explorer {
             active_tab: 0,
             next_tab_id: 1,
             tabs_loaded: false,
-            tab_drag: None,
-            tab_pos: HashMap::new(),
-            tab_anim_until: Instant::now(),
-            tab_pitch: 0.0,
-            tab_w: Ease::at([0.0]),
+            strip: Default::default(),
             side_drag: None,
             browse: Ease::at([0.0]).over(EDGE_SECS),
             reopen_browse: false,
@@ -2469,7 +2444,7 @@ impl App {
         let at = (e.active_tab + 1).min(e.tabs.len());
         e.tabs.insert(at, TabState { id, place: Some(place.clone()), ..TabState::default() });
         e.active_tab = at;
-        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        e.strip.animate();
         e.selected.clear();
         e.cursor = None;
         e.anchor = None;
@@ -2484,9 +2459,9 @@ impl App {
             return;
         }
         let e = &mut self.explorer;
-        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
+        e.strip.animate();
         let id = e.tabs[i].id;
-        e.tab_pos.remove(&id);
+        e.strip.pos.remove(&id);
         if i == e.active_tab {
             // Its right neighbour comes to the front, else its left.
             e.tabs.remove(i);
@@ -2511,7 +2486,7 @@ impl App {
         let id = e.tabs[e.active_tab].id;
         e.tabs.retain(|t| t.id == id);
         e.active_tab = 0;
-        e.tab_pos.retain(|k, _| *k == id);
+        e.strip.pos.retain(|k, _| *k == id);
         self.save_tabs();
         self.invalidate();
     }
@@ -2553,35 +2528,23 @@ impl App {
     /// A press on a tab brings it to the front (Transient's); moving on drags it.
     pub(super) fn tab_press(&mut self, i: usize, x: f32) {
         self.switch_tab(i);
-        let left = self.hits.rect_of(Hit::Tab(i as u8)).map_or(x, |r| r.left);
-        self.explorer.tab_drag = Some(TabDrag { idx: i, start_x: x, x, grab: x - left, active: false, insert: i });
+        self.strip_press(super::tabstrip::StripKind::Explorer, i, x);
     }
 
     pub(super) fn tab_drag_move(&mut self, x: f32) {
-        let Some(d) = self.explorer.tab_drag.as_mut() else { return };
-        d.x = x;
-        if !d.active && (x - d.start_x).abs() > DRAG_START {
-            d.active = true;
-        }
-        if d.active {
-            self.invalidate();
-        }
+        self.strip_drag_move(super::tabstrip::StripKind::Explorer, x);
     }
 
     /// Let go: a dragged tab drops into its slot (the one in front stays in front). True when it was a drag.
     pub(super) fn tab_release(&mut self) -> bool {
-        let Some(d) = self.explorer.tab_drag.take() else { return false };
-        if !d.active {
-            return false;
-        }
+        let Some((from, to)) = self.strip_release(super::tabstrip::StripKind::Explorer) else { return false };
         let e = &mut self.explorer;
-        if d.idx < e.tabs.len() {
+        if from < e.tabs.len() {
             let front = e.tabs[e.active_tab].id;
-            let t = e.tabs.remove(d.idx);
-            e.tabs.insert(d.insert.min(e.tabs.len()), t);
+            let t = e.tabs.remove(from);
+            e.tabs.insert(to.min(e.tabs.len()), t);
             e.active_tab = e.tabs.iter().position(|t| t.id == front).unwrap_or(0);
         }
-        e.tab_anim_until = Instant::now() + std::time::Duration::from_millis(400);
         self.save_tabs();
         self.invalidate();
         true
@@ -3158,7 +3121,7 @@ impl App {
                 let (n0, n1) = self.explorer.list_geom.map_or((0.0, 0.0), |g| g.2);
                 self.explorer.row(i).filter(|r| r.kind == Kind::Other && mx >= n0 && mx <= n1).map(|r| format!("{}: not an image Looker can open", r.name))
             }
-            Hit::Tab(i) => self.explorer.tab_tips.iter().find(|(k, _)| *k == i).map(|(_, t)| t.clone()),
+            Hit::Tab(i) => self.strip_tip(super::tabstrip::StripKind::Explorer, i as usize),
             // A crumb: that folder's own path (a drive's, This PC's name), cut off or not (Faye, 2026-11-11).
             Hit::Crumb(i) => {
                 let place = self.explorer.place.clone()?;
