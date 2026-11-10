@@ -122,6 +122,27 @@ fn trim(v: f64, decimals: usize) -> String {
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
+/// The status row's camera: "Sony ILCE-7M4" (the make left off when the model already names it).
+pub fn camera_label(e: &Exif) -> Option<String> {
+    let model = e.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    let make = e.make.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    match (make, model) {
+        (Some(mk), Some(md)) => {
+            let first = mk.split_whitespace().next().unwrap_or(mk);
+            Some(if md.to_lowercase().starts_with(&first.to_lowercase()) { md.to_string() } else { format!("{first} {md}") })
+        }
+        (None, Some(md)) => Some(md.to_string()),
+        (Some(mk), None) => Some(mk.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// The status row's exposure: "f/2.8, 1/250 sec, ISO 400, 35 mm" (what the file has of it).
+pub fn exposure_label(e: &Exif) -> Option<String> {
+    let parts: Vec<String> = [e.aperture.clone(), e.exposure.clone(), e.iso.as_ref().map(|i| format!("ISO {i}")), e.focal.clone()].into_iter().flatten().collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
 fn exposure_time(t: f64) -> String {
     if t <= 0.0 {
         "0 sec".into()
@@ -272,6 +293,18 @@ impl Histogram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_labels() {
+        let e = Exif { make: Some("SONY".into()), model: Some("ILCE-7M4".into()), aperture: Some("f/2.8".into()), exposure: Some("1/250 sec".into()), iso: Some("400".into()), ..Default::default() };
+        assert_eq!(camera_label(&e).as_deref(), Some("SONY ILCE-7M4"));
+        assert_eq!(exposure_label(&e).as_deref(), Some("f/2.8, 1/250 sec, ISO 400"));
+        let c = Exif { make: Some("Canon".into()), model: Some("Canon EOS R5".into()), ..Default::default() };
+        assert_eq!(camera_label(&c).as_deref(), Some("Canon EOS R5"));
+        let n = Exif { make: Some("NIKON CORPORATION".into()), model: Some("NIKON Z 6".into()), ..Default::default() };
+        assert_eq!(camera_label(&n).as_deref(), Some("NIKON Z 6"));
+        assert_eq!(exposure_label(&Exif::default()), None);
+    }
 
     #[test]
     fn exposure_wording() {

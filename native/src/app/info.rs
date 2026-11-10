@@ -124,8 +124,17 @@ impl App {
         self.invalidate();
     }
 
+    /// The current file's EXIF, once read (None: not yet, or it has none).
+    pub(super) fn current_exif(&self) -> Option<&Exif> {
+        let (path, stamp) = self.viewer.current.as_ref()?;
+        match &self.info_card.exif {
+            Some((p, s, Some(e))) if p == path && s == stamp => Some(e),
+            _ => None,
+        }
+    }
+
     /// Reads the current file's EXIF in the background, once per file.
-    fn request_exif(&mut self) {
+    pub(super) fn request_exif(&mut self) {
         let Some((path, stamp)) = self.viewer.current.clone() else { return };
         let have = |x: &Option<(PathBuf, u64)>| x.as_ref().is_some_and(|(p, s)| *p == path && *s == stamp);
         if have(&self.info_card.exif.as_ref().map(|(p, s, _)| (p.clone(), *s))) || have(&self.info_card.loading) {

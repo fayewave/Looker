@@ -587,6 +587,11 @@ impl App {
         self.video.as_mut().filter(|v| !v.failed).and_then(|v| v.player.as_mut()).filter(|p| p.info.is_some())
     }
 
+    /// The status row's facts about the video playing (frame rate, codec...), once it has opened.
+    pub(super) fn video_status(&self) -> Vec<(u8, String)> {
+        self.player_ref().and_then(|p| p.info.as_ref()).map(crate::imaging::video::status_parts).unwrap_or_default()
+    }
+
     fn player_ref(&self) -> Option<&Player> {
         self.video.as_ref().filter(|v| !v.failed).and_then(|v| v.player.as_ref()).filter(|p| p.info.is_some())
     }
@@ -918,12 +923,13 @@ impl App {
         };
         let pos = self.video.as_ref().map_or(0, |v| v.position());
         let t = theme::t();
-        let raised = theme::raised();
+        // The cards' colours (the explorer's, the info card's), not a popup's lighter greys (Faye, 2026-11-10).
+        let raised = t;
         // Hits only while it's (mostly) there: a click on a fading bar is meant for the video.
         let live = a > 0.5;
         g.push_fade(a, 1.0, 0.0, 0.0);
         ui::shadow(g, l.bar, l.radius);
-        g.fill_round(l.bar, l.radius, rgb(raised.popup));
+        g.fill_round(l.bar, l.radius, rgb(t.sidebar));
         ui::stroke(g, l.bar, l.radius, rgb(raised.divider));
         if live {
             self.hits.add(Hit::VideoBar, l.bar);
@@ -976,17 +982,8 @@ impl App {
 
         let vol = self.settings.video_volume;
         let muted = self.video_muted();
-        let glyph = if muted {
-            0xE74F
-        } else if vol <= 0.0 {
-            0xE992
-        } else if vol < 0.34 {
-            0xE993
-        } else if vol < 0.67 {
-            0xE994
-        } else {
-            0xE995
-        };
+        // The full speaker whatever the level, crossed out when muted (Faye, 2026-11-10: the slider shows the level).
+        let glyph = if muted { 0xE74F } else { 0xE995 };
         if let Some(r) = l.mute {
             let fg = button(self, Hit::VideoMute, r, ui::Kind::Standard);
             // 16 px: the speaker glyphs sit smaller in their box than play's at 14 (Faye: the same size).

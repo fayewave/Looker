@@ -267,7 +267,19 @@ impl App {
             }
             let (w, h) = self.current_dims().unwrap_or((c.native_w, c.native_h));
             parts.push((1, format!("{w} × {h}")));
-            if c.pages == 0 {
+            // A video: its frame rate, codec, HDR, length and bit rate instead of megapixels (Faye, 2026-11-10).
+            if c.format == format::Format::Video {
+                parts.extend(self.video_status());
+            } else if let Some(e) = self.current_exif() {
+                // A photo: the camera and its exposure, when the file says.
+                if let Some(s) = crate::metadata::exposure_label(e) {
+                    parts.push((4, s));
+                }
+                if let Some(s) = crate::metadata::camera_label(e) {
+                    parts.push((5, s));
+                }
+            }
+            if c.pages == 0 && c.format != format::Format::Video {
                 // a page's 96-dpi size is not a pixel count
                 parts.push((5, format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0)));
             }
@@ -313,7 +325,7 @@ impl App {
             if with_link && !can_link {
                 continue;
             }
-            for keep_below in (1..=7).rev() {
+            for keep_below in (1..=8).rev() {
                 let text = join(keep_below);
                 let tw = g.measure_tabular(&wide(&text), &g.fonts.caption);
                 let need = tw + if with_link { 16.0 + lw } else { 0.0 };
@@ -463,6 +475,10 @@ impl App {
 
     pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
+        // A photo's camera and exposure come from its EXIF (read once per file, as the info card does).
+        if self.placeholder.is_none() && self.viewer.current_entry().is_some_and(|c| !matches!(c.format, format::Format::Video | format::Format::Model)) {
+            self.request_exif();
+        }
         // Centred in the whole row (an inset box sat the text 1.5 px high).
         let y = h - STATUS_H;
         let row_h = STATUS_H;

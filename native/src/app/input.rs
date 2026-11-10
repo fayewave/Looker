@@ -236,7 +236,7 @@ impl App {
                     } else if self.drag.is_some() && self.drag_moves_window() {
                         // Nothing to pan: past a few DIPs (a click still plays a video), the drag moves the window,
                         // handed to Windows as a drag on the title bar (snapping and all).
-                        if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() > 4.0 {
+                        if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() > self.click_slop() {
                             self.drag = None;
                             self.pressed = None;
                             let _ = ReleaseCapture();
@@ -393,7 +393,8 @@ impl App {
                         _ => {}
                     }
                     self.press_at = (x, y);
-                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
+                    // Dragging the view cube orbits as the model itself does (a click without moving snaps).
+                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) || h == Some(Hit::ModelCube) && self.model_active() {
                         self.drag = Some((x, y));
                     }
                     self.invalidate();
@@ -421,7 +422,7 @@ impl App {
                     }
                     let h = self.hit(x, y);
                     // A click on the video (not a pan) plays or pauses it.
-                    if pressed == Some(Hit::Viewport) && h == pressed && self.video_shown() && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 {
+                    if pressed == Some(Hit::Viewport) && h == pressed && self.video_shown() && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= self.click_slop() {
                         self.video_click();
                     }
                     if pressed.is_some() && pressed == h && !dropped {
@@ -487,7 +488,7 @@ impl App {
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
                             Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSpeed | Hit::VideoLoop | Hit::VideoFullscreen)) => self.video_bar_click(h),
-                            Some(Hit::ModelCube) => self.view_cube_click(x, y),
+                            Some(Hit::ModelCube) if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 => self.view_cube_click(x, y),
                             _ => {}
                         }
                     }
@@ -502,6 +503,7 @@ impl App {
                     if self.dialog.is_none() && self.menu.is_none() && !self.page_open() && self.hit(x, y) == Some(Hit::Viewport) && self.model_active() {
                         SetCapture(self.hwnd);
                         self.pan_drag = Some((x, y, false));
+                        self.model_pan_start();
                         return Some(LRESULT(0));
                     }
                     None
@@ -525,11 +527,11 @@ impl App {
                     if self.dialog.is_some() || self.page_open() {
                         return Some(LRESULT(0));
                     }
-                    // A right-drag that panned a model: no menu.
+                    // A right-drag that panned a model, or a hold to see its orbit centre: no menu.
                     if let Some((_, _, moved)) = self.pan_drag.take() {
+                        let held = self.model_pan_end();
                         let _ = ReleaseCapture();
-                        self.model_pan_end();
-                        if moved {
+                        if moved || held {
                             return Some(LRESULT(0));
                         }
                     }
@@ -642,7 +644,9 @@ impl App {
                     self.explorer.thumb_drag = None;
                     self.col_edge_release();
                     self.sidebar_grip_release();
-                    self.pan_drag = None;
+                    if self.pan_drag.take().is_some() {
+                        self.model_pan_end();
+                    }
                     self.info_grip_release();
                     self.strip_grip_release();
                     self.explorer_grip_release();

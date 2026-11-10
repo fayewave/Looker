@@ -562,6 +562,13 @@ impl App {
         self.fullscreen.is_none() && self.video_shown() && self.view.at_fit_position()
     }
 
+    /// How far (DIPs, across plus down) a press on the video may move and still be a click that plays or pauses:
+    /// where a drag would move the window it takes a real pull (Faye, 2026-11-10: a click that wobbled a few
+    /// pixels moved the window instead of pausing).
+    pub(super) fn click_slop(&self) -> f32 {
+        if self.drag_moves_window() { 14.0 } else { 4.0 }
+    }
+
     /// The photo is on screen to zoom and pan: there is one, and no file Looker can't open covers it.
     pub(super) fn photo_up(&self) -> bool {
         self.view.has_content() && self.placeholder.is_none()

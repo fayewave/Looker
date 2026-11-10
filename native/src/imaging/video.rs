@@ -122,7 +122,7 @@ pub fn codec_label(codec: &str, profile: &str) -> String {
 }
 
 /// "25", "29.97", "23.976".
-fn fps_text(fps: f64) -> String {
+pub fn fps_text(fps: f64) -> String {
     let s = format!("{fps:.3}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -132,6 +132,31 @@ pub fn duration_text(us: i64) -> String {
     let s = (us.max(0) as f64 / 1e6).round() as i64;
     let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// The status row's video parts, each with how soon it goes when the row is narrow (as `App::status_parts`):
+/// "50 fps", "HEVC Main 10", "HDR (PQ)", "2:14", "45.2 Mbit/s".
+pub fn status_parts(i: &Info) -> Vec<(u8, String)> {
+    let mut out = Vec::new();
+    if let Some(f) = i.fps() {
+        out.push((1, format!("{} fps", fps_text(f))));
+    }
+    let codec = codec_label(&i.codec(), &i.profile());
+    if !codec.is_empty() {
+        out.push((4, codec));
+    }
+    match i.transfer {
+        16 => out.push((3, "HDR (PQ)".into())),
+        18 => out.push((3, "HDR (HLG)".into())),
+        _ => {}
+    }
+    if i.duration_us > 0 {
+        out.push((2, duration_text(i.duration_us)));
+    }
+    if i.bit_rate > 0 {
+        out.push((7, format!("{:.1} Mbit/s", i.bit_rate as f64 / 1e6)));
+    }
+    out
 }
 
 /// The info card's Video rows.

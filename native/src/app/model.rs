@@ -3,9 +3,9 @@
 //! is in, the viewport draws the model on the window's own device instead: drag to orbit, right- or Shift+drag
 //! to pan, the wheel (or the zoom buttons) to move in and out, double-click or Fit to go back to the start.
 //!
-//! Panning (a right-drag) shows the orbit centre as a 3D cross inside the model, fading out once let go. A view
-//! cube in the top right turns with the model; a click on one of its faces turns the model to look at that side
-//! (Faye, 2026-11-10, after Blender's).
+//! Holding the right button (to pan) shows the orbit centre as a 3D cross inside the model, fading out once let
+//! go. A view cube in the top right turns with the model; a click on one of its faces turns the model to look at
+//! that side, a drag on it orbits (Faye, 2026-11-10, after Blender's).
 
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,8 @@ pub(super) struct ModelView {
     /// The orbit centre is being moved (the cross shows), or when it was let go (the cross fades).
     panning: bool,
     pan_released: Option<Instant>,
+    /// When the right button went down on the model (held still, the cross shows without moving it).
+    pan_pressed: Option<Instant>,
     /// A view cube click turning the model: from where, to which yaw and pitch, since when.
     snap: Option<(Camera, (f32, f32), Instant)>,
 }
@@ -121,6 +123,7 @@ impl App {
             drawn: None,
             panning: false,
             pan_released: None,
+            pan_pressed: None,
             snap: None,
         });
         let hwnd = self.hwnd.0 as isize;
@@ -244,18 +247,32 @@ impl App {
                 m.pan_released = None;
             }
         } else {
+            m.snap = None; // a drag takes over from a view cube turn
             m.camera.orbit(dx, dy);
         }
         self.invalidate();
     }
 
-    /// The pan let go: the pivot cross fades out.
-    pub(super) fn model_pan_end(&mut self) {
-        if let Some(m) = self.model.as_mut().filter(|m| m.panning) {
-            m.panning = false;
-            m.pan_released = Some(Instant::now());
+    /// The right button went down on the model: the pivot cross shows at once, so holding it still shows where
+    /// the orbit centre is (Faye, 2026-11-10).
+    pub(super) fn model_pan_start(&mut self) {
+        if let Some(m) = self.model.as_mut().filter(|m| m.mesh.is_some()) {
+            m.panning = true;
+            m.pan_released = None;
+            m.pan_pressed = Some(Instant::now());
             self.invalidate();
         }
+    }
+
+    /// The pan let go: the pivot cross fades out. True when the button was held long enough to look at the cross
+    /// (no context menu then, as after a pan).
+    pub(super) fn model_pan_end(&mut self) -> bool {
+        let Some(m) = self.model.as_mut().filter(|m| m.panning) else { return false };
+        m.panning = false;
+        m.pan_released = Some(Instant::now());
+        let held = m.pan_pressed.take().is_some_and(|t| t.elapsed() >= Duration::from_millis(350));
+        self.invalidate();
+        held
     }
 
     /// The pivot cross is fading, or the view cube is turning the model: draw again next vsync.
@@ -304,7 +321,8 @@ impl App {
             let pts: Vec<(f32, f32)> = q.to_vec();
             // Neutral greys, lighter the more squarely a face looks at you; the one under the pointer in the accent.
             let fill = if Some(*i) == over { theme::mix(raised.popup, t.accent, 0.55) } else { theme::mix(raised.popup, raised.text, 0.06 + 0.16 * facing) };
-            g.fill_polygon(&pts, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: 0.94, ..fill });
+            // A little see-through (Faye, 2026-11-10): the model shows behind it.
+            g.fill_polygon(&pts, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: 0.72, ..fill });
             let mut ring = pts.clone();
             ring.push(pts[0]);
             g.polyline(&ring, rgb(raised.divider), 1.0);
