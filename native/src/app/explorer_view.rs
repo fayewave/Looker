@@ -539,7 +539,7 @@ impl App {
     fn draw_list(&mut self, g: &Gfx, body: D2D_RECT_F) -> bool {
         let t = theme::t();
         let wide_footer = body.right - body.left >= 420.0;
-        let footer_h = if wide_footer { FILTER_H + 16.0 } else { FILTER_H + 16.0 + 20.0 };
+        let footer_h = FILTER_H + 16.0; // one line always
         let list_left = body.left + 6.0;
         let list_right = body.right - 6.0;
         // The columns stop short of the scrollbar (8 wide now, always: 2 more than its old resting width).
@@ -823,11 +823,16 @@ impl App {
     fn draw_footer(&mut self, g: &Gfx, body: D2D_RECT_F, top: f32, wide_footer: bool) {
         let t = theme::t();
         g.hline(body.left, g.snap(top), body.right - body.left, rgb(t.divider));
+        let _ = wide_footer;
         let status = self.explorer_status();
         let fy = body.bottom - 8.0 - FILTER_H;
-        let fw = if wide_footer { (body.right - body.left - 16.0) * 0.5 } else { body.right - body.left - 16.0 };
-        let fr = rect(body.left + 8.0, fy, fw.min(320.0).max(fw.min(180.0)), FILTER_H);
-        let fr = if wide_footer { fr } else { rect(body.left + 8.0, fy, fw, FILTER_H) };
+        // One line (Faye, 2026-11-10): the counts at the right as wide as they are, the filter stretching from the
+        // left up to them; short of room the counts give way, the filter keeping at least 120.
+        let widths: Vec<f32> = status.iter().map(|(glyph, text)| if glyph.is_some() { 20.0 } else { 0.0 } + g.measure_tabular(&wide(text), &g.fonts.body).ceil() + 1.0).collect();
+        let total = widths.iter().sum::<f32>() + 16.0 * widths.len().saturating_sub(1) as f32;
+        let room = body.right - body.left - 16.0;
+        let fw = (room - total - 12.0).max(120.0_f32.min(room));
+        let fr = rect(body.left + 8.0, fy, fw, FILTER_H);
         self.hits.add(Hit::ExplorerFilter, fr);
         let focused = self.explorer.field == Some(EField::Filter);
         let hover = self.state(Hit::ExplorerFilter, true).hover;
@@ -851,11 +856,9 @@ impl App {
                 self.caret_rect = caret;
             }
         }
-        let sr = if wide_footer { rect(fr.right + 12.0, fy, body.right - 10.0 - fr.right - 12.0, FILTER_H) } else { rect(body.left + 10.0, fy - 22.0, body.right - body.left - 20.0, 20.0) };
-        // Each part: an icon, then its text; right-aligned beside a wide footer's filter, else left.
-        let widths: Vec<f32> = status.iter().map(|(glyph, text)| if glyph.is_some() { 20.0 } else { 0.0 } + g.measure_tabular(&wide(text), &g.fonts.body).ceil() + 1.0).collect();
-        let total = widths.iter().sum::<f32>() + 16.0 * widths.len().saturating_sub(1) as f32;
-        let mut x = if wide_footer { (sr.right - total).max(sr.left) } else { sr.left };
+        let sr = rect(fr.right + 12.0, fy, (body.right - 8.0 - fr.right - 12.0).max(0.0), FILTER_H);
+        // Each part: an icon, then its text, right-aligned beside the filter.
+        let mut x = (sr.right - total).max(sr.left);
         g.push_clip(sr);
         for ((glyph, text), w) in status.iter().zip(widths) {
             let mut tx = x;
