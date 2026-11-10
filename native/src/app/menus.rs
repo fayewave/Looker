@@ -31,6 +31,8 @@ pub(super) enum Action {
     Choose(usize),
     /// The video bar's Settings menu: loop on/off.
     ToggleVideoLoop,
+    /// The context menu: play this audio stream of the video.
+    AudioTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
     /// The strip's menu: list the folder's other files in it too.
@@ -89,22 +91,39 @@ impl App {
         let image = has && self.placeholder.is_none();
         let file = has || self.placeholder.is_some();
         let rotate = image && self.can_rotate();
-        vec![
+        // Set as wallpaper for photos only (not videos, documents or 3D models: Faye, 2026-11-10).
+        let photo = image
+            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Pdf | format::Format::Model | format::Format::Mtl));
+        let mut e = vec![
             item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
             item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),
             Entry::Separator,
-            item(Action::CopyImage, 0xE8C8, "Copy image", Some("Ctrl+C"), image),
+            item(Action::CopyImage, 0xE8C8, "Copy", Some("Ctrl+C"), image),
             item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), file),
             item(Action::Rename, 0xE8AC, "Rename", Some("F2"), file),
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
             Entry::Separator,
-            item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, image),
-            item(Action::Reveal, 0xEC50, "Reveal in File Explorer", Some("Ctrl+Shift+E"), file),
+        ];
+        if photo {
+            e.push(item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, true));
+        }
+        e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", Some("Ctrl+Shift+E"), file));
+        // A video with more than one audio stream: which one plays.
+        let tracks = self.video_audio_tracks();
+        if !tracks.is_empty() {
+            e.push(Entry::Separator);
+            e.push(Entry::Heading("Audio track".into()));
+            for (stream, label, playing) in tracks {
+                e.push(check(Action::AudioTrack(stream), &label, playing));
+            }
+        }
+        e.extend([
             Entry::Separator,
             item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("Ctrl+E"), has),
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), has),
             item(Action::ToggleInfo, 0xE946, "Info panel", Some("Ctrl+I"), has),
-        ]
+        ]);
+        e
     }
 
     fn sort_entries(&self) -> Vec<Entry<Action>> {
@@ -290,6 +309,7 @@ impl App {
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::ToggleStripOther => self.toggle_strip_other(),
             Action::ToggleExplorerOther => self.toggle_explorer_other(),
+            Action::AudioTrack(s) => self.set_audio_track(s),
             _ => {}
         }
     }

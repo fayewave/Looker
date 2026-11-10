@@ -20,7 +20,8 @@ it keeps itself up to date.
 
 ## File explorer
 
-- Beside the photo, or across the window with the photo as a preview (`B`).
+- Beside the photo, or across the window with the photo as a preview (`Ctrl+B`).
+- Windows' own folder and drive icons; type a letter to jump to a name.
 - Tabs, and a sidebar of Bookmarks, Collections, History and Places.
 - Sortable, resizable columns: date taken, camera, lens, dimensions and more.
 - Thumbnails at any row height, subfolders listed flat, a saved view per folder.
@@ -37,6 +38,9 @@ it keeps itself up to date.
 - Rotate, rename, copy, set as wallpaper, show in File Explorer.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
+- Videos play, HDR and 4K60 included, with frame stepping, frame-accurate scrubbing, a timecode or frame count,
+  and the media keys and taskbar progress.
+- Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
 
 <img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
 
@@ -46,6 +50,7 @@ it keeps itself up to date.
   PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI
 - **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
   KDC, ERF, MEF
+- **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, MPG/MPEG, 3GP
 - **Documents:** PDF
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries
 
@@ -61,6 +66,7 @@ it keeps itself up to date.
 | `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab` | New tab, close tab, next tab |
 | `Ctrl+F`, `Ctrl+Z` | Filter the folder, undo |
 | `F11`, `F5`, `Space` | Fullscreen, slideshow, pause |
+| `,` `.`, `J` `K` `L`, `M` | Video: previous / next frame, slower / pause / faster, mute |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |
 | `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+Shift+E` | Copy image, copy path, show in File Explorer |
@@ -76,4 +82,4 @@ pwsh scripts/Publish-Native.ps1                # install the build as the Looker
 pwsh scripts/Build-NativePackage.ps1 -Store    # Microsoft Store upload
 ```
 
-Native Rust: Direct2D and DirectWrite, images through WIC, 3D through Direct3D 11.
+Native Rust: Direct2D and DirectWrite, images through WIC, video through FFmpeg, 3D through Direct3D 11.

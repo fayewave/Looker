@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 7;
+const API: c_int = 8;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -249,7 +249,6 @@ struct Lib {
     still: StillFn,
     free: unsafe extern "C" fn(*mut c_void),
     error: unsafe extern "C" fn(c_int, *mut c_char, c_int),
-    open: unsafe extern "C" fn(*const u16, *mut c_void, c_int, *mut Info, *mut *mut c_void) -> c_int,
     next: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     next_audio: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> c_int,
@@ -257,6 +256,8 @@ struct Lib {
     resume: unsafe extern "C" fn(*mut c_void),
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
     frame_times: unsafe extern "C" fn(*const c_void, *mut *const i64) -> c_int,
+    open_audio: unsafe extern "C" fn(*const u16, *mut c_void, c_int, c_int, *mut Info, *mut *mut c_void) -> c_int,
+    audio_tracks: unsafe extern "C" fn(*const c_void, *mut *const Track) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
     tempo_open: unsafe extern "C" fn(f64, *mut *mut c_void) -> c_int,
@@ -288,7 +289,6 @@ fn load() -> Result<Lib, String> {
             still: sym!("looker_video_still"),
             free: sym!("looker_video_free"),
             error: sym!("looker_video_error"),
-            open: sym!("lv_open"),
             next: sym!("lv_next"),
             next_audio: sym!("lv_next_audio"),
             seek: sym!("lv_seek"),
@@ -296,6 +296,8 @@ fn load() -> Result<Lib, String> {
             resume: sym!("lv_resume"),
             hw: sym!("lv_hw"),
             frame_times: sym!("lv_frame_times"),
+            open_audio: sym!("lv_open_audio"),
+            audio_tracks: sym!("lv_audio_tracks"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
             tempo_open: sym!("lv_tempo_open"),
@@ -368,6 +370,72 @@ pub struct LvFrame {
     pub samples: *const f32,
     pub nb_samples: c_int,
     opaque: *mut c_void,
+}
+
+/// One of a video's audio streams (`LvTrack` in looker_video.c), for the track menu.
+#[repr(C)]
+#[derive(Clone)]
+pub struct Track {
+    /// Its stream index: what `Decoder::open_audio` takes.
+    pub stream: c_int,
+    pub channels: c_int,
+    pub is_default: c_int,
+    /// The one being played.
+    pub playing: c_int,
+    lang: [c_char; 16],
+    title: [c_char; 64],
+    codec: [c_char; 32],
+}
+
+impl Track {
+    /// How the menu names it: its title, else its language, then what it is ("Commentary · English · AAC 2.0").
+    pub fn label(&self, n: usize) -> String {
+        let (title, lang, codec) = (text(&self.title), text(&self.lang), text(&self.codec));
+        // Muxers' boilerplate handler names ("SoundHandle", "Core Media Audio", "GPAC ISO Audio Handler") aren't titles.
+        let low = title.to_ascii_lowercase();
+        let title = if ["handle", "core media", "iso media", "media handler"].iter().any(|b| low.contains(b)) { String::new() } else { title };
+        let lang = language_name(&lang);
+        let ch = match self.channels {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            6 => "5.1".to_string(),
+            8 => "7.1".to_string(),
+            0 => String::new(),
+            c => format!("{c} channels"),
+        };
+        let what = [codec_name(&codec).to_uppercase(), ch].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+        let head = match (title.is_empty(), lang.is_empty()) {
+            (false, false) => format!("{title} · {lang}"),
+            (false, true) => title,
+            (true, false) => lang,
+            (true, true) => format!("Track {n}"),
+        };
+        if what.is_empty() { head } else { format!("{head} ({what})") }
+    }
+}
+
+/// A language tag (ISO 639-2, as containers write them) as its English name, the common ones; else the tag.
+fn language_name(tag: &str) -> String {
+    let n = match tag.to_ascii_lowercase().as_str() {
+        "eng" | "en" => "English",
+        "jpn" | "ja" => "Japanese",
+        "spa" | "es" => "Spanish",
+        "fre" | "fra" | "fr" => "French",
+        "ger" | "deu" | "de" => "German",
+        "ita" | "it" => "Italian",
+        "por" | "pt" => "Portuguese",
+        "rus" | "ru" => "Russian",
+        "chi" | "zho" | "zh" => "Chinese",
+        "kor" | "ko" => "Korean",
+        "hin" | "hi" => "Hindi",
+        "ara" | "ar" => "Arabic",
+        "dut" | "nld" | "nl" => "Dutch",
+        "swe" | "sv" => "Swedish",
+        "pol" | "pl" => "Polish",
+        "tur" | "tr" => "Turkish",
+        _ => return tag.to_string(),
+    };
+    n.to_string()
 }
 
 /// A decoded picture, freed (its decoder surface given back) on drop.
@@ -465,11 +533,16 @@ impl Decoder {
     /// null for the CPU. `keyframes` (the seek bar's previews): no sound, and only keyframes, each handed out as
     /// soon as it's decoded.
     pub fn open(path: &Path, d3d11: *mut c_void, keyframes: bool) -> Result<(Decoder, Info), String> {
+        Decoder::open_audio(path, d3d11, keyframes, None)
+    }
+
+    /// open, playing the audio stream udio (a Track::stream), else the best one.
+    pub fn open_audio(path: &Path, d3d11: *mut c_void, keyframes: bool, audio: Option<i32>) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
         let mut p = std::ptr::null_mut();
         let flags = if keyframes { LV_NO_AUDIO | LV_KEYFRAMES } else { 0 };
-        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, flags, &mut info, &mut p) };
+        let r = unsafe { (l.open_audio)(wide(path).as_ptr(), d3d11, flags, audio.unwrap_or(-1), &mut info, &mut p) };
         if r < 0 || p.is_null() {
             return Err(error(l, r));
         }
@@ -499,6 +572,17 @@ impl Decoder {
         let Ok(l) = lib() else { return Vec::new() };
         let mut t: *const i64 = std::ptr::null();
         let n = unsafe { (l.frame_times)(self.0, &mut t) };
+        if n <= 0 || t.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(t, n as usize) }.to_vec()
+    }
+
+    /// The file's audio streams, the one playing marked.
+    pub fn audio_tracks(&self) -> Vec<Track> {
+        let Ok(l) = lib() else { return Vec::new() };
+        let mut t: *const Track = std::ptr::null();
+        let n = unsafe { (l.audio_tracks)(self.0, &mut t) };
         if n <= 0 || t.is_null() {
             return Vec::new();
         }

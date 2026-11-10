@@ -409,26 +409,60 @@ fn format_time(ft: FILETIME) -> String {
     }
 }
 
-/// How the explorer's date columns read: the date, the time, a two-digit year (bits 1, 2, 4).
-static DATE_COLUMNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
+/// How the explorer's date columns read: the date, the time, a two-digit year, leading zeros (bits 1, 2, 4, 8).
+static DATE_COLUMNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3 | 8);
 
-pub(super) fn set_date_columns(date: bool, time: bool, yy: bool) {
-    DATE_COLUMNS.store(date as u8 | (time as u8) << 1 | (yy as u8) << 2, std::sync::atomic::Ordering::Relaxed);
+pub(super) fn set_date_columns(date: bool, time: bool, yy: bool, pad: bool) {
+    DATE_COLUMNS.store(date as u8 | (time as u8) << 1 | (yy as u8) << 2 | (pad as u8) << 3, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+#[test]
+fn date_pictures_pad_and_shorten() {
+    assert_eq!(date_picture("d/M/yyyy", true, false), "dd/MM/yyyy");
+    assert_eq!(date_picture("d/M/yyyy", true, true), "dd/MM/yy");
+    assert_eq!(date_picture("dd-MMM-yy", true, false), "dd-MMM-yy");
+    assert_eq!(date_picture("M/d/yyyy", false, false), "M/d/yyyy");
+    assert_eq!(date_picture("yyyy-MM-dd", true, true), "yy-MM-dd");
+}
+
+/// A short-date picture with its day and month padded to two digits ("d/M/yyyy" to "dd/MM/yyyy"), and its year
+/// cut to two if `yy`.
+fn date_picture(picture: &str, pad: bool, yy: bool) -> String {
+    let mut out = String::new();
+    let cs: Vec<char> = picture.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        let mut n = 1;
+        while i + n < cs.len() && cs[i + n] == c {
+            n += 1;
+        }
+        let run: String = std::iter::repeat_n(c, n).collect();
+        out += &match (c, n) {
+            ('d' | 'M', 1) if pad => std::iter::repeat_n(c, 2).collect(),
+            ('y', 4) if yy => "yy".to_string(),
+            _ => run,
+        };
+        i += n;
+    }
+    out
 }
 
 /// A local time as the explorer's date columns show it: the user's short date (its year cut to two digits if
 /// asked) and short time, either left out if asked (never both: then the date).
 fn format_column(local: &SYSTEMTIME) -> String {
     let bits = DATE_COLUMNS.load(std::sync::atomic::Ordering::Relaxed);
-    let (time, yy) = (bits & 2 != 0, bits & 4 != 0);
+    let (time, yy, pad) = (bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
     let date = bits & 1 != 0 || !time;
     unsafe {
         let mut out = Vec::new();
         if date {
-            // The locale's short-date picture with "yyyy" cut to "yy" (Windows' own pictures use y's).
+            // The locale's short-date picture, its day and month padded (01/01: Faye, 2026-11-10) and its year cut
+            // to two digits if asked (Windows' own pictures use d's, M's and y's).
             let mut pic = [0u16; 80];
-            let pn = if yy { GetLocaleInfoEx(PCWSTR::null(), LOCALE_SSHORTDATE, Some(&mut pic)) } else { 0 };
-            let picture = (pn > 1).then(|| String::from_utf16_lossy(&pic[..(pn - 1) as usize]).replace("yyyy", "yy"));
+            let pn = if yy || pad { GetLocaleInfoEx(PCWSTR::null(), LOCALE_SSHORTDATE, Some(&mut pic)) } else { 0 };
+            let picture = (pn > 1).then(|| date_picture(&String::from_utf16_lossy(&pic[..(pn - 1) as usize]), pad, yy));
             let picture_w = picture.map(|p| HSTRING::from(p.as_str()));
             let mut d = [0u16; 64];
             let flags = if picture_w.is_some() { Default::default() } else { DATE_SHORTDATE };
@@ -1215,7 +1249,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         theme::set_accent(settings.accent);
         theme::set_custom(settings.accent_custom);
         theme::set(settings.theme);
-        set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year);
+        set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year, settings.date_pad);
         page::apply_frame_colours(hwnd);
         crate::trace::mark("window created");
         crate::shell_icons::init(hwnd);

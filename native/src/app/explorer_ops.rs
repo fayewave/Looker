@@ -450,7 +450,7 @@ impl App {
             e.push(item(Action::Bookmark, if marked { 0xE840 } else { 0xE718 }, if marked { "Remove bookmark" } else { "Bookmark" }, None, true));
         }
         e.push(item(Action::CopyPath, 0xE71B, "Copy path", None, single));
-        e.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+        e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", None, true));
         e.push(item(Action::Properties, 0xE946, "Properties", None, single));
         e.push(Entry::Separator);
         e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.explorer.look.other_files));
@@ -493,7 +493,7 @@ impl App {
             e.push(item(Action::PasteInto, 0xE77F, "Paste into this folder", None, clipboard_has_files()));
             e.push(Entry::Separator);
             e.push(item(Action::CopyPath, 0xE71B, "Copy path", None, true));
-            e.push(item(Action::Reveal, 0xEC50, "Reveal in File Explorer", None, true));
+            e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", None, true));
             e.push(item(Action::Properties, 0xE946, "Properties", None, true));
         }
         self.show_menu(MenuKind::Side(p), e, x, y);
@@ -596,7 +596,7 @@ impl App {
             if kinds.contains(&ColKind::Modified) {
                 e.push(Entry::Separator);
                 let s = &self.settings;
-                for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year)] {
+                for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year), (3, "Leading zeros (01/01)", s.date_pad)] {
                     // The date can't go while the time is off (something has to show), nor the year without the date.
                     let enabled = match i {
                         0 => s.date_show_time,
@@ -695,9 +695,10 @@ impl App {
                 match i {
                     0 => s.date_show_date = !s.date_show_date,
                     1 => s.date_show_time = !s.date_show_time,
-                    _ => s.date_two_digit_year = !s.date_two_digit_year,
+                    2 => s.date_two_digit_year = !s.date_two_digit_year,
+                    _ => s.date_pad = !s.date_pad,
                 }
-                super::set_date_columns(s.date_show_date, s.date_show_time, s.date_two_digit_year);
+                super::set_date_columns(s.date_show_date, s.date_show_time, s.date_two_digit_year, s.date_pad);
                 settings::save(&self.settings);
                 self.invalidate();
             }

@@ -205,6 +205,9 @@ impl App {
                     if self.explorer.side_row_drag.is_some() {
                         self.side_row_drag_move(y);
                     }
+                    if self.explorer.marquee.is_some() {
+                        self.marquee_move(x, y);
+                    }
                     if self.explorer.section_drag.is_some() {
                         self.section_drag_move(y);
                     }
@@ -369,7 +372,9 @@ impl App {
                         self.field_press(x, false);
                     }
                     match h {
+                        Some(Hit::ExplorerRow(_)) if self.marquee_starts_at(x, true) => self.marquee_press(x, y),
                         Some(Hit::ExplorerRow(i)) => self.explorer_row_press(i, x, y),
+                        Some(Hit::ExplorerList) => self.marquee_press(x, y),
                         Some(Hit::ColHeader(i)) => self.header_press(i as usize, x),
                         Some(Hit::ColEdge(i)) => self.col_edge_press(i as usize, x),
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
@@ -413,7 +418,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONUP => {
-                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.tab_release();
+                    let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.marquee_release() | self.tab_release();
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;

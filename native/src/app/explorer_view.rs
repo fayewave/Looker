@@ -192,6 +192,10 @@ impl App {
             let side_w = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
             let shown = g.snap(side_w * slide);
             let side = D2D_RECT_F { left: inner.left + shown - side_w, right: inner.left + shown, ..inner };
+            // Its own fill, a step further from the page than the list's (theme `pane`), inside the card's corners.
+            g.push_clip(D2D_RECT_F { right: side.right, ..inner });
+            g.fill_round(inner, 9.0, rgb(theme::t().pane));
+            g.pop_clip();
             moving |= self.draw_sidebar(g, side);
             g.fill(rect(side.right, inner.top, g.px(), inner.bottom - inner.top), rgb(theme::t().divider));
             // Its edge resizes it: a line in the accent while held, the ink on hover.
@@ -603,6 +607,9 @@ impl App {
         // under it (Faye, 2026-11-10).
         let list = D2D_RECT_F { left: list_left, top: hy + HEADER + 2.0, right: list_right - 10.0, bottom: body.bottom - footer_h };
         self.hits.add(Hit::ExplorerList, D2D_RECT_F { left: body.left, right: body.right, ..list });
+        // For the selection rectangle: where the list is, its rows' height, and the Name column's span.
+        let name_span = cols.iter().find(|c| c.kind == ColKind::Name).map_or((list.left, list.right), |c| (c.x, c.x + c.w));
+        self.explorer.list_geom = Some((list, rh, name_span));
         let view_h = (list.bottom - list.top).max(1.0);
         let n = self.explorer.view.len();
         let content_h = n as f32 * rh;
@@ -764,6 +771,16 @@ impl App {
         g.pop_clip();
         if !lazy_wanted.is_empty() {
             self.want_meta(&lazy_wanted);
+        }
+        // The selection rectangle, from its press (scrolled with the list) to the pointer, inside the list.
+        if let Some(m) = self.explorer.marquee.as_ref().filter(|m| m.active) {
+            let (x0, y0) = (m.start.0, m.start.1 - scroll + list.top);
+            let (x1, y1) = m.pointer;
+            let r = D2D_RECT_F { left: x0.min(x1).max(list.left), top: y0.min(y1).max(list.top), right: x0.max(x1).min(list.right), bottom: y0.max(y1).min(list.bottom) };
+            if r.right > r.left && r.bottom > r.top {
+                g.fill(r, gfx::rgba(t.accent, 0.14));
+                g.outline_round(r, 0.0, rgb(t.accent), g.px());
+            }
         }
 
         // The scrollbar, whenever the list overflows: drag the thumb, or press the track to jump there.

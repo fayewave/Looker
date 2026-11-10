@@ -29,8 +29,8 @@ pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
 const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
-/// Browse mode leaves the photo at least this much of the window (or 30 % of it), by default.
-const PREVIEW_MIN: f32 = 360.0;
+/// Browse mode's share of the window by default.
+const BROWSE_SHARE: f32 = 0.5;
 /// Dragging browse mode's edge leaves the photo at least this much.
 const PREVIEW_DRAGGED_MIN: f32 = 200.0;
 /// Changes on disk often come in bursts (a copy writes, renames, sets times): re-list once they settle.
@@ -177,6 +177,18 @@ pub(super) struct SectionDrag {
     pub insert: usize,
 }
 
+/// A rectangle dragged over the list to select the rows it crosses, as Transient's and Windows' details view
+/// (Faye, 2026-11-10): from where it was pressed (in the list's own coordinates, so it scrolls with it) to the
+/// pointer; with Ctrl the rows it crosses join the selection there was.
+pub(super) struct Marquee {
+    /// The press, x in DIPs and y down the list's content (scroll included).
+    pub start: (f32, f32),
+    pub pointer: (f32, f32),
+    pub active: bool,
+    pub add: bool,
+    pub before: Vec<PathBuf>,
+}
+
 /// A bookmark or a collection dragged up or down its section (Faye, 2026-11-10), as a section is by its heading:
 /// the row (with its open tree) follows the pointer, the others ease aside round an outlined slot.
 pub(super) struct EntryDrag {
@@ -283,6 +295,10 @@ pub(super) struct Explorer {
     /// A bookmark or collection being dragged into another place, the entries' eased tops in their section (by
     /// key), and until when they ease after a drop.
     pub(super) side_row_drag: Option<EntryDrag>,
+    /// The selection rectangle being dragged, and where the list was drawn last (its rect, row height and Name
+    /// column's span), for it.
+    pub(super) marquee: Option<Marquee>,
+    pub(super) list_geom: Option<(D2D_RECT_F, f32, (f32, f32))>,
     pub(super) row_pos: HashMap<String, Ease<1>>,
     pub(super) row_anim_until: Instant,
     /// How open each section is (1 open, 0 folded to its heading), eased.
@@ -370,6 +386,8 @@ impl Explorer {
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
             side_row_drag: None,
+            marquee: None,
+            list_geom: None,
             row_pos: HashMap::new(),
             row_anim_until: Instant::now(),
             section_open: HashMap::new(),
@@ -501,14 +519,14 @@ impl App {
         card + (wide - card) * k
     }
 
-    /// Browse mode's width: all but a preview of 360 DIPs (or 30 %), and never less than the card and the sidebar
-    /// side by side, so the list keeps at least its width beside the sidebar (Faye, 2026-11-10); while its edge
-    /// is dragged in browse mode, where it's dragged. The photo keeps at least 200 DIPs.
+    /// Browse mode's width: half the window (Faye, 2026-11-10), and never less than the card and the sidebar side
+    /// by side, so the list keeps at least its width beside the sidebar; while its edge is dragged in browse mode,
+    /// where it's dragged. The photo keeps at least 200 DIPs.
     fn browse_width(&self) -> f32 {
         let (w, _) = self.size_dip();
         let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
         let least = self.settings.explorer_width + side + 1.0;
-        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { (w - PREVIEW_MIN.max(w * 0.3)).max(least) };
+        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { (w * BROWSE_SHARE).max(least) };
         wide.min(w - PREVIEW_DRAGGED_MIN).max(self.settings.explorer_width)
     }
 
@@ -2459,6 +2477,77 @@ impl App {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
         let paths = if self.explorer.is_selected(&r.path) { self.explorer.targets() } else { vec![r.path] };
         self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None, target_rect: None, opened: Instant::now() });
+    }
+
+    /// Whether a press at (x, y) on the list starts a selection rectangle rather than a drag of rows: on empty
+    /// space, or on a row away from its Name column (Windows' details view, Transient's).
+    pub(super) fn marquee_starts_at(&self, x: f32, row: bool) -> bool {
+        let Some((_, _, (n0, n1))) = self.explorer.list_geom else { return false };
+        !row || x < n0 || x > n1
+    }
+
+    pub(super) fn marquee_press(&mut self, x: f32, y: f32) {
+        let Some((list, _, _)) = self.explorer.list_geom else { return };
+        let (scroll, _) = self.explorer.scroll_now();
+        let add = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
+        let before = if add { self.explorer.targets() } else { Vec::new() };
+        self.explorer.marquee = Some(Marquee { start: (x, y - list.top + scroll), pointer: (x, y), active: false, add, before });
+    }
+
+    /// The pointer moved with the rectangle held: past a few DIPs it selects what it crosses (scrolling the list
+    /// when it's dragged past its top or bottom).
+    pub(super) fn marquee_move(&mut self, x: f32, y: f32) {
+        let Some((list, rh, _)) = self.explorer.list_geom else { return };
+        let (scroll, _) = self.explorer.scroll_now();
+        let Some(m) = &mut self.explorer.marquee else { return };
+        m.pointer = (x, y);
+        let (sx, sy) = m.start;
+        if !m.active {
+            let py = y - list.top + scroll;
+            if (x - sx).abs() + (py - sy).abs() <= DRAG_START {
+                return;
+            }
+            m.active = true;
+        }
+        // Past the list's top or bottom: it scrolls, as far as the pointer is out.
+        let out = if y < list.top { y - list.top } else if y > list.bottom { y - list.bottom } else { 0.0 };
+        if out != 0.0 {
+            let e = &mut self.explorer;
+            let (now, _) = e.scroll_now();
+            e.anim = None;
+            e.scroll = (now + out * 0.5).clamp(0.0, e.max_scroll.max(0.0));
+        }
+        let (scroll, _) = self.explorer.scroll_now();
+        let Some(m) = &self.explorer.marquee else { return };
+        let py = y.clamp(list.top, list.bottom) - list.top + scroll;
+        let (top, bottom) = (sy.min(py), sy.max(py));
+        let n = self.explorer.view.len();
+        let first = (top / rh).floor().max(0.0) as usize;
+        let last = ((bottom / rh).floor().max(0.0) as usize).min(n.saturating_sub(1));
+        let mut picked: Vec<PathBuf> = if m.add { m.before.clone() } else { Vec::new() };
+        if n > 0 && first < n && bottom >= 0.0 {
+            for vi in first..=last {
+                if let Some(r) = self.explorer.row(vi) {
+                    picked.push(r.path.clone());
+                }
+            }
+        }
+        let cursor = (n > 0 && first < n).then(|| self.explorer.row(if py >= sy { last } else { first }).map(|r| r.path.clone())).flatten();
+        let e = &mut self.explorer;
+        e.selected = picked.iter().map(|p| explorer::norm(p)).collect();
+        if let Some(c) = cursor {
+            e.cursor = Some(c);
+        }
+        self.invalidate();
+    }
+
+    /// Let go of the rectangle: true when it selected (not a click, which picks or clears as before).
+    pub(super) fn marquee_release(&mut self) -> bool {
+        let active = self.explorer.marquee.take().is_some_and(|m| m.active);
+        if active {
+            self.invalidate();
+        }
+        active
     }
 
     /// The mouse moved with a row pressed: past a few DIPs it's a drag, and the folder under it the target.

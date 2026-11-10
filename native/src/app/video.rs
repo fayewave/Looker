@@ -82,6 +82,8 @@ pub(super) struct VideoView {
     failed: bool,
     /// Where to reopen after a device change: the time, and whether it was playing.
     resume: Option<(i64, bool)>,
+    /// The audio stream picked from the context menu (a `Track::stream`), None: the file's best.
+    audio_track: Option<i32>,
     /// Whether the loop setting makes this one loop, once the player has opened (its length decides).
     auto_loop: Option<bool>,
     scrub: Option<Scrub>,
@@ -360,6 +362,7 @@ impl App {
             bitmap: None,
             failed: false,
             resume: None,
+            audio_track: None,
             auto_loop: None,
             scrub: None,
             preview: None,
@@ -477,7 +480,7 @@ impl App {
                     None => (0, autoplay),
                 },
             };
-            let mut p = Player::open(&v.path, gfx::Sendable(dev), play, volume, muted);
+            let mut p = Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.audio_track);
             if at > 0 {
                 p.seek(at, true);
             }
@@ -1187,6 +1190,36 @@ impl App {
         let Some(r) = self.bar_layout(g).and_then(|l| l.volume) else { return };
         let v = (x - r.left - 6.0) / (r.right - r.left - 12.0);
         self.set_video_volume(v, false);
+        self.invalidate();
+    }
+
+    /// The playing video's audio tracks for the context menu: (stream, label, playing). Empty without a choice.
+    pub(super) fn video_audio_tracks(&self) -> Vec<(i32, String, bool)> {
+        let Some(p) = self.player_ref().filter(|_| self.video_shown()) else { return Vec::new() };
+        let t = p.audio_tracks();
+        if t.len() < 2 {
+            return Vec::new();
+        }
+        t.iter().enumerate().map(|(n, tr)| (tr.stream, tr.label(n + 1), tr.playing != 0)).collect()
+    }
+
+    /// Plays the video's audio stream `stream` (Faye, 2026-11-10): the player opens again on it, where it was and
+    /// playing if it was.
+    pub(super) fn set_audio_track(&mut self, stream: i32) {
+        let label = self.video_audio_tracks().into_iter().find(|t| t.0 == stream).map(|t| t.1);
+        let Some(v) = self.video.as_mut() else { return };
+        let Some(p) = v.player.as_ref() else { return };
+        if p.audio_tracks().iter().any(|t| t.stream == stream && t.playing != 0) {
+            return;
+        }
+        let at = v.position();
+        let playing = p.playing();
+        v.audio_track = Some(stream);
+        v.resume = Some((at, playing));
+        v.player = None;
+        if let Some(l) = label {
+            self.show_video_toast(l);
+        }
         self.invalidate();
     }
 
