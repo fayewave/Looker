@@ -1049,12 +1049,6 @@ impl App {
         }
     }
 
-    pub(super) fn toggle_explorer_other(&mut self) {
-        self.explorer.look.other_files = !self.explorer.look.other_files;
-        self.store_view();
-        self.relist();
-    }
-
     /// Include subfolders: every file under the folder, listed flat.
     pub(super) fn toggle_subfolders(&mut self) {
         self.explorer.look.subfolders = !self.explorer.look.subfolders;

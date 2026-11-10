@@ -302,8 +302,8 @@ pub fn parse(text: &str) -> Settings {
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
-            "strip_other_files" => s.strip_other_files = v != "0",
-            "explorer_other_files" => s.explorer_other_files = v != "0",
+            // Both always on since 2026-11-10 (their toggles went): an old "off" reads as on.
+            "strip_other_files" | "explorer_other_files" => {}
             "default_hint_dismissed" => s.default_hint_dismissed = v == "1",
             "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
             "bookmark" if !v.is_empty() => s.bookmarks.push(PathBuf::from(v)),
@@ -555,7 +555,7 @@ mod tests {
             strip_visible: true,
             strip_height: 160.0,
             strip_other_files: true,
-            explorer_other_files: false,
+            explorer_other_files: true,
             slideshow_seconds: 9,
             default_hint_dismissed: true,
             bookmarks: vec![PathBuf::from(r"S:\SFX Library"), PathBuf::from(r"C:\Users\me\Pictures")],
@@ -570,7 +570,7 @@ mod tests {
                 crate::explorer::SavedView {
                     path: PathBuf::from(r"C:\Users\me\Pictures; odd"),
                     scope: crate::explorer::Scope::Tree,
-                    view: crate::explorer::View { group: crate::explorer::Group::FilesFirst, subfolders: true, other_files: false, height: 2, columns: crate::explorer::ColKind::defaults() },
+                    view: crate::explorer::View { group: crate::explorer::Group::FilesFirst, subfolders: true, other_files: true, height: 2, columns: crate::explorer::ColKind::defaults() },
                 },
                 crate::explorer::SavedView { path: PathBuf::from(r"D:\"), scope: crate::explorer::Scope::Off, view: crate::explorer::View::default() },
             ],

@@ -35,10 +35,6 @@ pub(super) enum Action {
     AudioTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
-    /// The strip's menu: list the folder's other files in it too.
-    ToggleStripOther,
-    /// The explorer card's: the same for its rows.
-    ToggleExplorerOther,
     // The explorer's (explorer_ops.rs).
     OpenInViewer,
     Cut,
@@ -170,10 +166,7 @@ impl App {
 
     /// The thumbnail strip's menu.
     pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
-        let other = self.settings.strip_other_files;
         let entries = vec![
-            check(Action::ToggleStripOther, "Show files Looker can't open", other),
-            Entry::Separator,
             item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), true),
         ];
         let Some(g) = &self.gfx else { return };
@@ -309,8 +302,6 @@ impl App {
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
-            Action::ToggleStripOther => self.toggle_strip_other(),
-            Action::ToggleExplorerOther => self.toggle_explorer_other(),
             Action::AudioTrack(s) => self.set_audio_track(s),
             _ => {}
         }

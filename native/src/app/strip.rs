@@ -236,13 +236,6 @@ impl App {
         }
     }
 
-    pub(super) fn toggle_strip_other(&mut self) {
-        self.settings.strip_other_files = !self.settings.strip_other_files;
-        self.strip.centered = None;
-        settings::save(&self.settings);
-        self.invalidate();
-    }
-
     pub(super) fn toggle_strip(&mut self) {
         if self.viewer.current.is_none() {
             return;

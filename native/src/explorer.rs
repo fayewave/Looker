@@ -519,7 +519,8 @@ impl SavedView {
         let view = View {
             group: Group::parse(f[1]).unwrap_or_default(),
             subfolders: f[2] == "1",
-            other_files: f[3] != "0",
+            // Always on since 2026-11-10 (the toggle went): an old "off" reads as on.
+            other_files: true,
             height: f[4].parse::<u8>().map_or(1, |h| h.clamp(1, HEIGHT_MAX)),
             columns: ColKind::parse_list(f[5]),
         };

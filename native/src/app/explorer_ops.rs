@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 
 use super::explorer::{EField, SideTarget};
-use super::menus::{Action, MenuKind, check};
+use super::menus::{Action, MenuKind};
 use super::*;
 use crate::explorer::{self, ColKind, Group, Kind, Place, Scope};
 use crate::fileops::{self, Done, Origin, Transfer};
@@ -452,8 +452,6 @@ impl App {
         e.push(item(Action::CopyPath, 0xE71B, "Copy path", None, single));
         e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", None, true));
         e.push(item(Action::Properties, 0xE946, "Properties", None, single));
-        e.push(Entry::Separator);
-        e.push(check(Action::ToggleExplorerOther, "Show files Looker can't open", self.explorer.look.other_files));
         self.show_menu(MenuKind::Rows(paths), e, x, y);
     }
 
@@ -472,8 +470,6 @@ impl App {
             Entry::Separator,
             item(Action::SelectAll, 0xE8B3, "Select all", Some("Ctrl+A"), !self.explorer.view.is_empty()),
             item(Action::Refresh, 0xE72C, "Refresh", Some("F5"), true),
-            Entry::Separator,
-            check(Action::ToggleExplorerOther, "Show files Looker can't open", self.explorer.look.other_files),
         ];
         e.shrink_to_fit();
         self.show_menu(MenuKind::ExplorerBg, e, x, y);
@@ -571,7 +567,6 @@ impl App {
         }
         e.push(Entry::Separator);
         e.push(ticked(Action::ToggleSubfolders, 0xE8B7, "Include subfolders", v.subfolders, folder));
-        e.push(ticked(Action::ToggleExplorerOther, 0xE7C3, "Unsupported files", v.other_files, true));
         let h = v.height;
         e.push(Entry::Stepper(crate::ui::Stepper {
             label: "Height".into(),
@@ -724,7 +719,6 @@ impl App {
             (Action::ColToggle(k), _) => self.col_toggle(k),
             (Action::Undo, _) => self.explorer_undo(),
             (Action::Redo, _) => self.explorer_redo(),
-            (Action::ToggleExplorerOther, _) => self.toggle_explorer_other(),
             (Action::ToggleSubfolders, _) => self.toggle_subfolders(),
             (Action::DateOption(i), _) => {
                 let s = &mut self.settings;
