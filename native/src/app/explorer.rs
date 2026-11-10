@@ -336,6 +336,8 @@ pub(super) struct Explorer {
     pub(super) tab_anim_until: Instant,
     /// The strip's tab width as last laid out (they jump, not ease, when it changes).
     pub(super) tab_pitch: f32,
+    /// The tabs' width, eased when a tab opening or closing changes it (narrow strips squeeze them).
+    pub(super) tab_w: Ease<1>,
     /// The sidebar's edge being dragged: where the press was, and its width then.
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
@@ -423,6 +425,7 @@ impl Explorer {
             tab_pos: HashMap::new(),
             tab_anim_until: Instant::now(),
             tab_pitch: 0.0,
+            tab_w: Ease::at([0.0]),
             side_drag: None,
             browse: Ease::at([0.0]),
             reopen_browse: false,

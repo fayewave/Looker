@@ -272,10 +272,18 @@ impl App {
         }
         let plus_w = 34.0;
         let fit = ((strip.right - strip.left - 12.0 - plus_w) / (155.0 * n as f32)).min(1.0);
-        let tw = (155.0 * fit).max(40.0);
+        let tw_target = (155.0 * fit).max(40.0);
         let x0 = strip.left + 6.0;
-        let snap = (self.explorer.tab_pitch - tw).abs() > 0.5;
-        self.explorer.tab_pitch = tw;
+        // The tabs' width eases with their places when one opens or closes (squeezed into a narrow strip, it
+        // changes: it used to snap there, Faye 2026-11-10); a window resize sets it at once.
+        let tab_anim = now < self.explorer.tab_anim_until;
+        if tab_anim {
+            self.explorer.tab_w.set([tw_target], now);
+        } else {
+            self.explorer.tab_w = crate::motion::Ease::at([tw_target]);
+        }
+        let tw = self.explorer.tab_w.value(now)[0];
+        self.explorer.tab_pitch = tw_target;
         let closable = n > 1;
         // Draw order: the tabs in their slots (a dragged one leaves its slot to the ghost), then the dragged one.
         let drag = self.explorer.tab_drag.as_ref().filter(|d| d.active && d.idx < n).map(|d| (d.idx, d.x - d.grab));
@@ -293,18 +301,18 @@ impl App {
             }
         }
         let animate = drag.is_some() || now < self.explorer.tab_anim_until;
-        let mut moving = drag.is_some();
+        let mut moving = drag.is_some() || self.explorer.tab_w.moving(now);
         let mut xs: Vec<(usize, f32)> = Vec::new();
         for (pos, &k) in order.iter().enumerate() {
             let id = self.explorer.tabs[k].id;
-            let target = (pos as f32) * tw;
+            let target = (pos as f32) * tw_target;
             if Some(k) == drag.map(|d| d.0) {
                 // It follows the pointer exactly; dropped, it eases into its slot from there.
                 self.explorer.tab_pos.insert(id, crate::motion::Ease::at([drag_x - x0]));
                 continue;
             }
             let e = self.explorer.tab_pos.entry(id).or_insert_with(|| crate::motion::Ease::at([target]));
-            if animate && !snap {
+            if animate {
                 e.set([target], now);
             } else {
                 *e = crate::motion::Ease::at([target]);
@@ -390,9 +398,9 @@ impl App {
         }
         g.pop_clip();
         // The +, after the last tab (easing along as tabs come and go).
-        let plus_target = n as f32 * tw;
+        let plus_target = n as f32 * tw_target;
         let e = self.explorer.tab_pos.entry(u64::MAX).or_insert_with(|| crate::motion::Ease::at([plus_target]));
-        if animate && !snap {
+        if animate {
             e.set([plus_target], now);
         } else {
             *e = crate::motion::Ease::at([plus_target]);
