@@ -78,7 +78,10 @@ fn layout(dw: &IDWriteFactory, fmt: &IDWriteTextFormat, text: &[u16]) -> Result<
 }
 
 pub fn open(path: &Path) -> Result<TextDoc, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // A thumbnail shows the start: the first 64 KB is plenty, however long the file.
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(64 << 10).read_to_end(&mut bytes)).map_err(|e| e.to_string())?;
     let mut s = decode_text(&bytes).replace("\r\n", "\n").replace('\r', "\n");
     if s.len() > MAX_CHARS {
         let mut cut = MAX_CHARS;

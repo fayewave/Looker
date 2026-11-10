@@ -22,11 +22,21 @@ enum Kind {
     Other,
 }
 
+/// One edit: at `at`, `removed` went and `inserted` came in its place.
 #[derive(Clone)]
-struct Snapshot {
-    text: Vec<u16>,
-    caret: usize,
-    anchor: usize,
+struct Change {
+    at: usize,
+    removed: Vec<u16>,
+    inserted: Vec<u16>,
+}
+
+/// An undo step: its edits in order, and the caret and anchor before and after (a run of typing is one step).
+/// Only what changed is kept, so a big text's undo costs what was typed, not a copy of the text a step.
+#[derive(Clone)]
+struct Step {
+    changes: Vec<Change>,
+    before: (usize, usize),
+    after: (usize, usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,8 +67,8 @@ pub struct TextEdit {
     text: Vec<u16>,
     caret: usize,
     anchor: usize,
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     last: Kind,
 }
 
@@ -196,9 +206,9 @@ impl TextEdit {
     }
 
     fn remember(&mut self, kind: Kind) {
-        if kind != self.last || kind == Kind::Other {
-            self.undo.push(Snapshot { text: self.text.clone(), caret: self.caret, anchor: self.anchor });
-            if self.undo.len() > 100 {
+        if kind != self.last || kind == Kind::Other || self.undo.is_empty() {
+            self.undo.push(Step { changes: Vec::new(), before: (self.caret, self.anchor), after: (self.caret, self.anchor) });
+            if self.undo.len() > 1000 {
                 self.undo.remove(0);
             }
         }
@@ -206,10 +216,68 @@ impl TextEdit {
         self.last = kind;
     }
 
+    /// `a..b` becomes `with`, the caret after it; recorded in the open undo step.
     fn replace(&mut self, a: usize, b: usize, with: &[u16]) {
-        self.text.splice(a..b, with.iter().copied());
+        let removed: Vec<u16> = self.text.splice(a..b, with.iter().copied()).collect();
         self.caret = a + with.len();
         self.anchor = self.caret;
+        if let Some(step) = self.undo.last_mut() {
+            step.changes.push(Change { at: a, removed, inserted: with.to_vec() });
+            step.after = (self.caret, self.anchor);
+        }
+    }
+
+    /// `a..b` replaced by `with` as an undo step of its own, then selected (Replace).
+    pub fn replace_range(&mut self, a: usize, b: usize, with: &str) {
+        let units: Vec<u16> = with.encode_utf16().collect();
+        self.remember(Kind::Other);
+        self.replace(a, b, &units);
+        self.anchor = a;
+        if let Some(step) = self.undo.last_mut() {
+            step.after = (self.caret, self.anchor);
+        }
+    }
+
+    /// Every range (sorted, apart) replaced by `with`, as one undo step (Replace all). The caret goes after the
+    /// last one.
+    pub fn replace_all(&mut self, ranges: &[(usize, usize)], with: &str) {
+        if ranges.is_empty() {
+            return;
+        }
+        let units: Vec<u16> = with.encode_utf16().collect();
+        self.remember(Kind::Other);
+        let mut shift: isize = 0;
+        for &(a, b) in ranges {
+            let (a, b) = ((a as isize + shift) as usize, (b as isize + shift) as usize);
+            self.replace(a, b, &units);
+            shift += units.len() as isize - (b - a) as isize;
+        }
+        self.last = Kind::Other;
+    }
+
+    /// The selection moved (or copied) to `to`, as one undo step, and selected there (a drag of the text).
+    pub fn move_selection(&mut self, to: usize, copy: bool) {
+        let (a, b) = self.selection();
+        if a == b || (!copy && to >= a && to <= b) {
+            return;
+        }
+        let moved = self.text[a..b].to_vec();
+        self.remember(Kind::Other);
+        let at = if copy || to < a {
+            to
+        } else {
+            to - (b - a)
+        };
+        if !copy {
+            self.replace(a, b, &[]);
+        }
+        self.replace(at, at, &moved);
+        self.anchor = at;
+        self.caret = at + moved.len();
+        if let Some(step) = self.undo.last_mut() {
+            step.after = (self.caret, self.anchor);
+        }
+        self.last = Kind::Other;
     }
 
     /// Typed or pasted text, replacing the selection. A single-line box keeps only the first line, and
@@ -287,24 +355,25 @@ impl TextEdit {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(s) = self.undo.pop() else { return false };
-        self.redo.push(Snapshot { text: self.text.clone(), caret: self.caret, anchor: self.anchor });
-        self.restore(s);
+        let Some(step) = self.undo.pop() else { return false };
+        for c in step.changes.iter().rev() {
+            self.text.splice(c.at..c.at + c.inserted.len(), c.removed.iter().copied());
+        }
+        (self.caret, self.anchor) = step.before;
+        self.redo.push(step);
+        self.last = Kind::Other;
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(s) = self.redo.pop() else { return false };
-        self.undo.push(Snapshot { text: self.text.clone(), caret: self.caret, anchor: self.anchor });
-        self.restore(s);
-        true
-    }
-
-    fn restore(&mut self, s: Snapshot) {
-        self.text = s.text;
-        self.caret = s.caret;
-        self.anchor = s.anchor;
+        let Some(step) = self.redo.pop() else { return false };
+        for c in &step.changes {
+            self.text.splice(c.at..c.at + c.removed.len(), c.inserted.iter().copied());
+        }
+        (self.caret, self.anchor) = step.after;
+        self.undo.push(step);
         self.last = Kind::Other;
+        true
     }
 }
 
@@ -316,6 +385,22 @@ mod tests {
         for u in s.encode_utf16() {
             t.type_unit(u);
         }
+    }
+
+    #[test]
+    fn replace_all_and_moves_undo_in_one_step() {
+        let mut t = TextEdit::new("a cat, a cat");
+        t.replace_all(&[(2, 5), (9, 12)], "dog");
+        assert_eq!(t.text(), "a dog, a dog");
+        t.select(2, 5);
+        t.move_selection(12, false);
+        assert_eq!(t.text(), "a , a dogdog");
+        assert!(t.undo());
+        assert_eq!(t.text(), "a dog, a dog");
+        assert!(t.undo());
+        assert_eq!(t.text(), "a cat, a cat");
+        assert!(t.redo());
+        assert_eq!(t.text(), "a dog, a dog");
     }
 
     #[test]

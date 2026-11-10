@@ -275,7 +275,7 @@ impl App {
                     }
                     match self.pressed {
                         Some(Hit::TextView) => self.text_drag(x, y),
-                        Some(Hit::TextScroll) => self.text_scroll_drag(y),
+                        Some(Hit::TextScroll | Hit::TextHScroll) => self.text_scroll_drag(x, y),
                         _ => {}
                     }
                     if let Some((px, py, moved)) = self.pan_drag {
@@ -337,7 +337,7 @@ impl App {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
-                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView) => IDC_IBEAM,
+                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_)) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
                             Hit::Reveal
@@ -359,6 +359,8 @@ impl App {
                             | Hit::DefaultHintClose
                             | Hit::PagePrevious
                             | Hit::PageNext
+                            | Hit::TextButton(_)
+                            | Hit::TextFoot(_)
                             | Hit::VideoPlay
                             | Hit::VideoStop
                             | Hit::AudioPrev
@@ -469,11 +471,13 @@ impl App {
                         Some(Hit::VideoVolume) => self.volume_at(x),
                         Some(Hit::AudioWave) => self.audio_press(x),
                         Some(Hit::AudioScroll) => self.audio_scroll_press(x),
-                        Some(Hit::TextView) => self.text_press(x, y, 1),
-                        Some(Hit::TextScroll) => self.text_scroll_press(y),
+                        Some(Hit::TextView) => self.text_press(x, y, false),
+                        Some(Hit::TextScroll) => self.text_scroll_press(x, y, false),
+                        Some(Hit::TextHScroll) => self.text_scroll_press(x, y, true),
+                        Some(Hit::TextField(i)) => self.text_field_press(i, x),
                         _ => {}
                     }
-                    if !matches!(h, Some(Hit::TextView | Hit::TextScroll)) {
+                    if !matches!(h, Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll | Hit::TextBar | Hit::TextField(_) | Hit::TextButton(_) | Hit::TextFoot(_) | Hit::MenuItem(_) | Hit::MenuSurface)) {
                         self.text_blur();
                     }
                     self.press_at = (x, y);
@@ -504,8 +508,11 @@ impl App {
                     if matches!(pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_release();
                     }
-                    if matches!(pressed, Some(Hit::TextView | Hit::TextScroll)) {
+                    if pressed == Some(Hit::TextView) {
                         self.text_release();
+                    }
+                    if matches!(pressed, Some(Hit::TextScroll | Hit::TextHScroll)) {
+                        self.text_scroll_release();
                     }
                     if pressed == Some(Hit::VideoVolume) {
                         settings::save(&self.settings);
@@ -587,7 +594,9 @@ impl App {
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
-                            Some(h @ (Hit::VideoPlay | Hit::VideoStop | Hit::AudioPrev | Hit::AudioNext | Hit::AudioLoop | Hit::VideoMute | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)) => self.video_bar_click(h),
+                            Some(Hit::TextButton(i)) => self.text_bar_button(i),
+                        Some(Hit::TextFoot(i)) => self.text_foot_click(i),
+                        Some(h @ (Hit::VideoPlay | Hit::VideoStop | Hit::AudioPrev | Hit::AudioNext | Hit::AudioLoop | Hit::VideoMute | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)) => self.video_bar_click(h),
                             Some(Hit::ModelCube) if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 => self.view_cube_click(x, y),
                             _ => {}
                         }
@@ -651,6 +660,10 @@ impl App {
                         Some(Hit::ExplorerRow(i)) => {
                             self.close_menu();
                             self.explorer_menu(i, x, y);
+                        }
+                        Some(Hit::TextView) => {
+                            self.close_menu();
+                            self.text_menu(x, y);
                         }
                         Some(Hit::RecentRow(i)) => {
                             self.close_menu();
@@ -727,7 +740,7 @@ impl App {
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
                     if self.hit(x, y) == Some(Hit::TextView) {
-                        self.text_press(x, y, 2);
+                        self.text_press(x, y, true);
                     } else if self.hit(x, y) == Some(Hit::AudioWave) {
                         self.audio_double_click();
                     } else if self.hit(x, y) == Some(Hit::AudioScroll) {
@@ -770,6 +783,15 @@ impl App {
                     self.explorer_grip_release();
                     self.page_thumb_release();
                     None
+                }
+                // A sideways wheel (or a touchpad's sideways swipe) over a text file scrolls it sideways.
+                WM_MOUSEHWHEEL => {
+                    let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f32;
+                    let (x, y) = self.screen_to_dip(lp);
+                    if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextHScroll)) {
+                        self.text_hwheel(delta);
+                    }
+                    Some(LRESULT(0))
                 }
                 WM_MOUSEWHEEL => {
                     if self.dialog.is_some() {
@@ -822,8 +844,8 @@ impl App {
                         self.video_volume_by(delta as f32 / 120.0 * 0.05);
                         return Some(LRESULT(0));
                     }
-                    if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextScroll)) {
-                        self.text_wheel(delta as f32, GetKeyState(VK_CONTROL.0 as i32) < 0);
+                    if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll)) {
+                        self.text_wheel(delta as f32, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
                     }
                     if matches!(self.hit(x, y), Some(Hit::AudioWave | Hit::AudioScroll)) {
@@ -891,6 +913,10 @@ impl App {
                     }
                     self.hide_tooltip();
                     if self.text_focused() && !self.page_open() && self.text_key(vk, shift, ctrl) {
+                        return Some(LRESULT(0));
+                    }
+                    // Over a text file the zoom keys size its text (the still under it isn't shown).
+                    if ctrl && self.text_shown() && !self.page_open() && self.text_zoom_key(vk) {
                         return Some(LRESULT(0));
                     }
                     if !self.page_open() {
@@ -983,6 +1009,7 @@ impl App {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
                         TIMER_CARET => self.blink_caret(),
+                        textview::TIMER_TEXT => self.text_poll(),
                         TIMER_EXPLORER => self.explorer_refresh(),
                         TIMER_FOLDER => self.refresh_folder(),
                         slideshow::TIMER_SLIDESHOW => self.on_slideshow_timer(),

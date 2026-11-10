@@ -279,6 +279,10 @@ impl App {
     }
 
     pub(super) fn blink_caret(&mut self) {
+        // The text editor (or its find bar) has the keyboard: its caret.
+        if !self.picker_live() && self.dialog.is_none() && self.text_blink() {
+            return;
+        }
         let field = if self.picker_live() {
             self.picker_field()
         } else if self.dialog.is_some() {

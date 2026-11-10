@@ -81,6 +81,8 @@ pub(super) enum Action {
     ColFitAll,
     ColRestore,
     ColToggle(crate::explorer::ColKind),
+    /// The text editor's right-click menu and foot (textview.rs).
+    Text(super::textview::TextAct),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -319,6 +321,11 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::Text) => {
+                if let Action::Text(a) = action {
+                    self.text_action(a);
+                }
+            }
             Some(MenuKind::VideoTime) => {
                 if let Action::VideoFrames(on) = action {
                     self.set_video_frames(on);
@@ -439,4 +446,6 @@ pub(super) enum MenuKind {
     VideoSettings,
     /// The menu off the video bar's times: Timecode or Frames.
     VideoTime,
+    /// The text editor's right-click menu, and its foot's encodings and line endings.
+    Text,
 }

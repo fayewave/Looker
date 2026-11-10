@@ -266,6 +266,13 @@ enum Hit {
     /// A text file's editor (textview.rs), and its scrollbar.
     TextView,
     TextScroll,
+    TextHScroll,
+    /// The text editor's find bar, its boxes (Find, Replace, Go to line) and buttons, and the foot's buttons
+    /// (encoding, line endings, Word wrap).
+    TextBar,
+    TextField(u8),
+    TextButton(u8),
+    TextFoot(u8),
     /// The audio bar's previous and next file, and Loop.
     AudioPrev,
     AudioNext,
