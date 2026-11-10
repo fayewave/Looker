@@ -144,7 +144,10 @@ impl App {
         let right: Vec<Tool> = RIGHT_TOOLS.iter().map(|&(t, _)| t).collect();
         let room = w - SIDE_PAD * 2.0 - run(&right, width) - 16.0;
         let left_of = |dropped: usize| {
-            let mut v: Vec<Tool> = LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|t| !DROP[..dropped].contains(t)).collect();
+            // No Sort while the explorer is open: its columns sort (Faye, 2026-11-10).
+            let explorer = self.explorer_shown();
+            let mut v: Vec<Tool> =
+                LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|t| !DROP[..dropped].contains(t) && !(explorer && *t == Tool::Sort)).collect();
             if self.turns != 0 {
                 v.push(Tool::SaveRotation);
             }

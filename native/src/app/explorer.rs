@@ -287,6 +287,8 @@ pub(super) struct Explorer {
     pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
     pub(super) browse: Ease<1>,
+    /// Browse mode was on when the explorer was closed: it opens in it again.
+    pub(super) reopen_browse: bool,
     pub(super) tags: crate::tags::Tags,
     /// The tags' version the listed collection was listed at.
     tags_listed: u64,
@@ -359,6 +361,7 @@ impl Explorer {
             tab_pitch: 0.0,
             side_drag: None,
             browse: Ease::at([0.0]),
+            reopen_browse: false,
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
             places: None,
@@ -510,10 +513,25 @@ impl App {
             self.explorer.watcher = None;
             self.explorer.focused = false;
             self.explorer_blur_field();
+            // Opened again, it comes back as it was: browse mode (at its width) or the card (Faye, 2026-11-10).
+            self.explorer.reopen_browse = self.browsing();
             self.explorer.browse = Ease::at([0.0]);
         } else {
-            self.explorer.photo_folder = None;
+            if std::mem::take(&mut self.explorer.reopen_browse) {
+                self.explorer.browse = Ease::at([1.0]);
+                self.explorer.focused = true;
+            }
+            // Where it was left, scrolled as it was (it used to go back to the photo's folder, losing the place):
+            // it follows the photo only if the photo has moved to another folder since.
+            let before = self.explorer.place.clone();
             self.explorer_follow();
+            let stayed = match (&before, &self.explorer.place) {
+                (Some(a), Some(b)) => a.same(b),
+                _ => false,
+            };
+            if stayed {
+                self.relist(); // what changed while it was shut, and the watcher again
+            }
         }
         self.slide_panels();
     }
