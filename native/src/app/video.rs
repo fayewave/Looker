@@ -94,6 +94,8 @@ pub(super) struct VideoView {
     sdr: bool,
     /// A click's play/pause glyph in the middle, and when it was clicked.
     flash: Option<(u16, Instant)>,
+    /// The pointer is hidden (fullscreen, playing, the bar gone).
+    cursor_hidden: bool,
     stats: Stats,
 }
 
@@ -323,6 +325,7 @@ impl App {
             looping: None,
             sdr: true,
             flash: None,
+            cursor_hidden: false,
             stats: Stats::default(),
         });
     }
@@ -470,7 +473,9 @@ impl App {
         if let Some(s) = &mut v.scrub {
             let refine = s.sent == Some(s.at) && !s.exact; // a keyframe seek landed: now the exact picture
             if (s.sent != Some(s.at) || refine) && (s.sent.is_none() || p.settled()) {
-                let exact = refine || (s.at - p.position()).abs() < SCRUB_EXACT_US;
+                // Exact while it's close and quick (forward, cached, a CPU decoder); else the keyframe at once and
+                // the exact picture once the pointer rests.
+                let exact = refine || ((s.at - p.position()).abs() < SCRUB_EXACT_US && p.exact_is_quick(s.at));
                 p.seek(s.at, exact);
                 s.sent = Some(s.at);
                 s.exact = exact;
@@ -629,7 +634,7 @@ impl App {
         }
     }
 
-    /// A click on the video: plays or pauses, and flashes which in the middle.
+    /// A click on the video, or Space: plays or pauses, and flashes which in the middle.
     pub(super) fn video_click(&mut self) {
         self.video_toggle_play();
         let playing = self.player_ref().map(|p| p.playing());
@@ -717,7 +722,7 @@ impl App {
             }
             VK_UP if !explorer => self.video_volume_by(0.05),
             VK_DOWN if !explorer => self.video_volume_by(-0.05),
-            VK_SPACE if self.player().is_some() => self.video_toggle_play(),
+            VK_SPACE if self.player().is_some() => self.video_click(),
             _ => {
                 let Some(p) = self.player() else {
                     // Not open yet: the keys that would act on it are still taken, not passed to the photo keys.
@@ -880,6 +885,19 @@ impl App {
         }
         let wanted = self.bar_wanted();
         let a = self.fades.get(Hit::VideoBar, wanted);
+        // The pointer goes with the bar in fullscreen, as it fades: Windows only asks for the cursor when the mouse
+        // moves, so a pointer held still stayed up.
+        let hide = a <= 0.0 && self.video_hides_cursor() && self.hover.is_none_or(|h| h == Hit::Viewport || is_bar_hit(h));
+        if let Some(v) = self.video.as_mut() {
+            if hide != v.cursor_hidden {
+                unsafe {
+                    // Back with the bar at once too (the next WM_SETCURSOR would be a move later).
+                    let arrow = if hide { None } else { LoadCursorW(None, IDC_ARROW).ok() };
+                    SetCursor(arrow);
+                }
+            }
+            v.cursor_hidden = hide;
+        }
         if a <= 0.0 {
             return;
         }
@@ -928,19 +946,19 @@ impl App {
         let over = self.hover == Some(Hit::VideoSeek) || scrubbing;
         let k = self.fades.get(Hit::VideoSeek, over);
         let grow = SLIDER_GROW / 2.0 * k;
+        // Square ends, the red's too: where it stops reads exactly (Faye, 2026-11-10).
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
-        let rad = (line.bottom - line.top) / 2.0;
-        g.fill_round(line, rad, rgb(raised.track));
+        g.fill(line, rgb(raised.track));
         let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
         let px = line.left + (line.right - line.left) * frac;
-        if px > line.left + 0.5 {
-            g.fill_round(D2D_RECT_F { right: px, ..line }, rad, rgb(t.accent));
+        if px > line.left {
+            g.fill(D2D_RECT_F { right: px, ..line }, rgb(t.accent));
         }
         // Over the red too (Faye: the whole way to the pointer).
         if k > 0.0 && !scrubbing {
             let mx = self.mouse.0.clamp(line.left, line.right);
-            if mx > line.left + 0.5 {
-                g.fill_round(D2D_RECT_F { right: mx, ..line }, rad, gfx::rgba(raised.text, 0.28 * k));
+            if mx > line.left {
+                g.fill(D2D_RECT_F { right: mx, ..line }, gfx::rgba(raised.text, 0.28 * k));
             }
         }
 

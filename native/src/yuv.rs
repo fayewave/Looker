@@ -363,6 +363,50 @@ impl Uploader {
         Ok(Uploader { device: device.clone(), ctx, pool: Arc::new(Mutex::new(Vec::new())) })
     }
 
+    /// A copy of a GPU picture (a slice of the decoder's texture array) in a texture of its own, `reuse`d when it
+    /// matches: kept for scrubbing back (player.rs). The copy is queued on the GPU; the decoder's surface can go.
+    pub fn copy_surface(&self, f: &LvFrame, reuse: Option<ID3D11Texture2D>) -> Result<ID3D11Texture2D, String> {
+        let src = unsafe { ID3D11Texture2D::from_raw_borrowed(&f.texture) }.ok_or("no texture")?;
+        let mut d = D3D11_TEXTURE2D_DESC::default();
+        unsafe { src.GetDesc(&mut d) };
+        let fits = |t: &ID3D11Texture2D| {
+            let mut e = D3D11_TEXTURE2D_DESC::default();
+            unsafe { t.GetDesc(&mut e) };
+            (e.Width, e.Height, e.Format) == (d.Width, d.Height, d.Format)
+        };
+        let dst = match reuse.filter(fits) {
+            Some(t) => t,
+            None => {
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: d.Width,
+                    Height: d.Height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: d.Format,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: 0,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+                let mut t = None;
+                unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut t)) }.map_err(err)?;
+                t.ok_or("no texture")?
+            }
+        };
+        unsafe { self.ctx.CopySubresourceRegion(&dst, 0, 0, 0, 0, src, f.texture_index.max(0) as u32, None) };
+        Ok(dst)
+    }
+
+    /// The bytes a copy of `f` takes on the GPU.
+    pub fn surface_bytes(f: &LvFrame) -> usize {
+        let Some(src) = (unsafe { ID3D11Texture2D::from_raw_borrowed(&f.texture) }) else { return 0 };
+        let mut d = D3D11_TEXTURE2D_DESC::default();
+        unsafe { src.GetDesc(&mut d) };
+        let per = if d.Format == DXGI_FORMAT_P010 { 2 } else { 1 };
+        d.Width as usize * d.Height as usize * per * 3 / 2
+    }
+
     /// `f`'s planes (a PLANAR or RGBA picture) in textures of their own.
     pub fn upload(&self, f: &LvFrame) -> Result<Uploaded, String> {
         let specs = plane_specs(f)?;

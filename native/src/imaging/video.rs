@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 5;
+const API: c_int = 6;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -229,6 +229,7 @@ struct Lib {
     next_audio: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> c_int,
     interrupt: unsafe extern "C" fn(*mut c_void),
+    resume: unsafe extern "C" fn(*mut c_void),
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
@@ -266,6 +267,7 @@ fn load() -> Result<Lib, String> {
             next_audio: sym!("lv_next_audio"),
             seek: sym!("lv_seek"),
             interrupt: sym!("lv_interrupt"),
+            resume: sym!("lv_resume"),
             hw: sym!("lv_hw"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
@@ -354,6 +356,13 @@ impl std::ops::Deref for Picture {
 }
 
 impl Picture {
+    /// A picture that isn't the decoder's (a copy on the GPU, player.rs's scrub cache): freeing it frees nothing,
+    /// and whatever `f` points at must outlive it.
+    pub fn detached(mut f: LvFrame) -> Picture {
+        f.opaque = std::ptr::null_mut();
+        Picture(f)
+    }
+
     /// Lets the CPU planes go (they're on the GPU now): only the picture's facts stay.
     pub fn release(&mut self) {
         if let Ok(l) = lib() {
@@ -438,6 +447,13 @@ impl Decoder {
             return Err(error(l, r));
         }
         Ok((Decoder(p), info))
+    }
+
+    /// Clears an interrupt that came too late to matter (no newer seek is waiting): `next` decodes on.
+    pub fn resume(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.resume)(self.0) };
+        }
     }
 
     /// A handle that stops `next` from another thread.

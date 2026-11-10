@@ -11,7 +11,7 @@
 //! Every seek bumps an epoch: what the decode thread had queued is thrown away, and the first picture of the new
 //! epoch is shown at once, playing or paused (scrubbing and frame steps show where they landed).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -20,10 +20,136 @@ use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Interrupter, Item, LvFram
 use crate::yuv::{Uploaded, Uploader};
 
 /// A picture in the queue: the decoder's frame, and its planes on the GPU when the decode thread uploaded them
-/// (its CPU planes are let go then).
+/// (its CPU planes are let go then), or a copy from the scrub cache (`keep` is the texture it points at).
 pub struct Frame {
     pub picture: Picture,
     pub uploaded: Option<Uploaded>,
+    /// Held, not read: the texture a cached picture points at.
+    _keep: Option<Texture>,
+}
+
+impl Frame {
+    fn decoded(picture: Picture, uploaded: Option<Uploaded>) -> Frame {
+        Frame { picture, uploaded, _keep: None }
+    }
+}
+
+/// A texture held across threads.
+#[derive(Clone)]
+struct Texture(windows::Win32::Graphics::Direct3D11::ID3D11Texture2D);
+// SAFETY: D3D11 resources are free-threaded; the device is multithread-protected.
+unsafe impl Send for Texture {}
+
+// --- Scrubbing back: copies of what the GPU decoded ---
+
+/// GPU memory the scrub cache may hold: ~60 pictures of 2.7K, ~30 of 4K 10-bit.
+const CACHE_BYTES: usize = 384 << 20;
+
+/// The facts of a cached picture (an LvFrame's, without its pointers).
+#[derive(Clone, Copy)]
+struct Head {
+    pts_us: i64,
+    duration_us: i64,
+    width: i32,
+    height: i32,
+    bit_depth: i32,
+    shift: i32,
+    chroma_w_shift: i32,
+    chroma_h_shift: i32,
+    matrix: i32,
+    full_range: i32,
+    transfer: i32,
+    primaries: i32,
+}
+
+struct Cached {
+    tex: Texture,
+    head: Head,
+    bytes: usize,
+}
+
+/// Copies of pictures the GPU decoded while paused (and those an exact seek decoded on its way to its target), by
+/// time. H.264/HEVC only decode forwards from a keyframe, so each step back on the seek bar cost a decode from the
+/// keyframe (~300 ms on 2.7K drone footage with keyframes 2.4 s apart); from here, a step back into what was
+/// decoded is a copy on screen. Within `CACHE_BYTES`, the ones furthest from where the seek bar is go first.
+#[derive(Default)]
+struct Cache {
+    frames: BTreeMap<i64, Cached>,
+    bytes: usize,
+    /// Where the seek bar was last: what's furthest from it is let go first.
+    focus: i64,
+    spare: Vec<Texture>,
+}
+
+impl Cache {
+    /// The cached picture showing at `us`, as a frame for the queue.
+    fn frame_at(&mut self, us: i64) -> Option<Frame> {
+        let (_, c) = self.frames.range(..=us).next_back()?;
+        if us >= c.head.pts_us + c.head.duration_us.max(1) {
+            return None;
+        }
+        self.focus = us;
+        let h = c.head;
+        let mut f: LvFrame = unsafe { std::mem::zeroed() };
+        f.kind = crate::imaging::video::VIDEO;
+        f.layout = TEXTURE;
+        f.pts_us = h.pts_us;
+        f.duration_us = h.duration_us;
+        f.width = h.width;
+        f.height = h.height;
+        f.bit_depth = h.bit_depth;
+        f.shift = h.shift;
+        f.chroma_w_shift = h.chroma_w_shift;
+        f.chroma_h_shift = h.chroma_h_shift;
+        f.nplanes = 2;
+        f.matrix = h.matrix;
+        f.full_range = h.full_range;
+        f.transfer = h.transfer;
+        f.primaries = h.primaries;
+        f.texture = windows::core::Interface::as_raw(&c.tex.0);
+        f.texture_index = 0;
+        Some(Frame { picture: Picture::detached(f), uploaded: None, _keep: Some(c.tex.clone()) })
+    }
+
+    /// Keeps a copy of GPU picture `p` (when it isn't kept already). `focus`: where the seek bar is (an exact
+    /// seek's target while it decodes towards it), else `p` itself: what's furthest from it goes first.
+    fn insert(&mut self, up: &Uploader, p: &LvFrame, focus: Option<i64>) {
+        self.focus = focus.unwrap_or(p.pts_us);
+        if p.layout != TEXTURE || self.frames.contains_key(&p.pts_us) {
+            return;
+        }
+        let bytes = Uploader::surface_bytes(p);
+        if bytes == 0 || bytes > CACHE_BYTES / 4 {
+            return;
+        }
+        while self.bytes + bytes > CACHE_BYTES && !self.frames.is_empty() {
+            let (first, last) = (*self.frames.keys().next().unwrap(), *self.frames.keys().next_back().unwrap());
+            let gone = if (self.focus - first).abs() >= (last - self.focus).abs() { first } else { last };
+            if let Some(c) = self.frames.remove(&gone) {
+                self.bytes -= c.bytes;
+                if self.spare.len() < 4 {
+                    self.spare.push(c.tex);
+                }
+            }
+        }
+        let Ok(tex) = up.copy_surface(p, self.spare.pop().map(|t| t.0)) else { return };
+        let head = Head {
+            pts_us: p.pts_us,
+            duration_us: p.duration_us,
+            width: p.width,
+            height: p.height,
+            bit_depth: p.bit_depth,
+            shift: p.shift,
+            chroma_w_shift: p.chroma_w_shift,
+            chroma_h_shift: p.chroma_h_shift,
+            matrix: p.matrix,
+            full_range: p.full_range,
+            transfer: p.transfer,
+            primaries: p.primaries,
+        };
+        self.bytes += bytes;
+        self.frames.insert(p.pts_us, Cached { tex: Texture(tex), head, bytes });
+    }
 }
 
 impl std::ops::Deref for Frame {
@@ -88,6 +214,11 @@ struct State {
     steered: bool,
     /// The first picture of this epoch is on screen: the sound waits for it, so both start together.
     picture_up: bool,
+    /// The picture on screen came from the scrub cache: the decoder is still where it was, and goes to this time
+    /// (exactly) only when more pictures are wanted (playing, a frame step).
+    hold: Option<i64>,
+    /// A frame step wants the next picture (the decoder leaves its hold for it).
+    need_next: bool,
     /// The audio thread should drop what the device holds (a seek).
     audio_reset: bool,
     /// No device or no stream: the wall clock it is.
@@ -163,6 +294,21 @@ struct Shared {
     /// Stops the decoder mid-decode for a seek (an exact one decodes from its keyframe up to its target). Set
     /// while the decoder lives: the decode thread takes it away before the decoder is closed.
     interrupt: Mutex<Option<Interrupter>>,
+    cache: Mutex<Cache>,
+    /// The decoder is the GPU's (long-GOP codecs: an exact seek back decodes from the keyframe).
+    gpu: std::sync::atomic::AtomicBool,
+}
+
+impl Shared {
+    fn cache(&self) -> MutexGuard<'_, Cache> {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn interrupt(&self) {
+        if let Some(i) = self.interrupt.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            i.interrupt();
+        }
+    }
 }
 
 /// Takes the interrupter away when the decode thread ends (declared after the decoder, so dropped before it).
@@ -231,6 +377,8 @@ impl Player {
                 audio_clock: None,
                 steered: false,
                 picture_up: false,
+                hold: None,
+                need_next: false,
                 audio_reset: false,
                 audio_dead: false,
                 audio_ended: false,
@@ -239,6 +387,8 @@ impl Player {
             }),
             wake: Condvar::new(),
             interrupt: Mutex::new(None),
+            cache: Mutex::new(Cache::default()),
+            gpu: std::sync::atomic::AtomicBool::new(false),
         });
         let opened = Arc::new(Mutex::new(None));
         let (s, p, o) = (shared.clone(), path.to_path_buf(), opened.clone());
@@ -419,21 +569,31 @@ impl Player {
         self.jump = false;
         st.clear();
         st.epoch = st.epoch.wrapping_add(1);
-        st.seek = Some((us, exact));
         st.set_anchor(us, now);
+        // Paused and exact, and a copy of that picture is cached (scrubbing back): on screen at once, and the
+        // decoder stays put until more pictures are wanted.
+        let cached = if exact && !st.playing { self.shared.cache().frame_at(us) } else { None };
+        if let Some(f) = cached {
+            st.hold = Some(f.pts_us + f.duration_us.max(1));
+            st.seek = None;
+            st.pictures.push_back(f);
+        } else {
+            st.hold = None;
+            st.seek = Some((us, exact));
+        }
         drop(st);
         self.target = Some(us);
         self.shared.wake.notify_all();
         // A decode still on its way to an older target gives up.
-        if let Some(i) = self.shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            i.interrupt();
-        }
+        self.shared.interrupt();
     }
 
     /// Pauses and shows the next picture (at the next `due`).
     pub fn step_forward(&mut self) {
         self.set_playing(false);
         self.step = true;
+        self.shared.lock().need_next = true;
+        self.shared.wake.notify_all();
     }
 
     /// Paused: the picture before the one on screen. Aims at the middle of it: a picture's time is rounded to
@@ -449,6 +609,13 @@ impl Player {
 
     pub fn speed(&self) -> f64 {
         self.shared.lock().speed
+    }
+
+    /// Whether an exact seek to `us` is quick: forward of the picture on screen (the decoder carries on), into the
+    /// scrub cache, or on a CPU decoder (ProRes and DNx pictures stand alone). Back on the GPU past the cache it
+    /// decodes from the keyframe (a few hundred ms on 2.7K drone footage): scrubbing goes to the keyframe first then.
+    pub fn exact_is_quick(&self, us: i64) -> bool {
+        us >= self.position() || !self.shared.gpu.load(std::sync::atomic::Ordering::Relaxed) || self.shared.cache().frame_at(us).is_some()
     }
 
     /// The picture for the last seek is on screen (scrubbing waits for it before seeking again).
@@ -520,6 +687,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 *o = Some(Ok(info));
             }
             *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
+            shared.gpu.store(d.hardware(), std::sync::atomic::Ordering::Relaxed);
             d
         }
         Err(e) => {
@@ -532,9 +700,13 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
         }
     };
     let _gone = InterruptGone(&shared);
+    // Where the decoder is: the end of the last picture it gave (None right after a seek). Exact seeks on the GPU
+    // just ahead of it decode on from here instead of from the keyframe.
+    let mut dec_pos: Option<i64> = None;
+    let gpu = dec.hardware();
     loop {
         // A seek or quit first; then wait while the queues are full (or at the end).
-        let (pending, sound_only) = {
+        let (pending, sound_only, paused) = {
             let mut st = shared.lock();
             let mut sound_only = false;
             loop {
@@ -543,6 +715,14 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 }
                 if st.seek.is_some() {
                     break;
+                }
+                // Showing a cached picture: the decoder moves only when more pictures are wanted.
+                if st.hold.is_some() {
+                    if st.playing || st.need_next {
+                        break;
+                    }
+                    st = shared.wake.wait_timeout(st, Duration::from_millis(100)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+                    continue;
                 }
                 let n = st.pictures.len();
                 let audio_full = st.audio_frames >= MAX_AUDIO;
@@ -561,11 +741,20 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 }
                 st = shared.wake.wait_timeout(st, Duration::from_millis(100)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
             }
-            (st.seek.take().map(|s| (s, st.epoch)), sound_only)
+            let held = st.hold.take().map(|h| (h, true));
+            if held.is_some() {
+                st.need_next = false;
+            }
+            (st.seek.take().or(held).map(|s| (s, st.epoch)), sound_only, !st.playing)
         };
-        if let Some(((us, exact), _)) = pending {
-            if let Err(e) = dec.seek(us, exact) {
-                crate::trace::mark(format!("video: seek: {e}"));
+        if let Some(((us, exact), epoch)) = pending {
+            if exact && gpu {
+                exact_on_gpu(&mut dec, &shared, us, epoch, &mut dec_pos, uploader.as_ref());
+            } else {
+                if let Err(e) = dec.seek(us, exact) {
+                    crate::trace::mark(format!("video: seek: {e}"));
+                }
+                dec_pos = None;
             }
             continue;
         }
@@ -589,6 +778,15 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             continue;
         }
         let mut item = dec.next();
+        if let Ok(Item::Picture(p)) = &item {
+            dec_pos = Some(p.pts_us + p.duration_us.max(1));
+            // Paused: what's decoded ahead is kept for scrubbing back.
+            if paused && p.layout == TEXTURE {
+                if let Some(u) = &uploader {
+                    shared.cache().insert(u, p, None);
+                }
+            }
+        }
         let mut uploaded = None;
         if let (Ok(Item::Picture(p)), Some(u)) = (&mut item, &uploader) {
             if p.layout != TEXTURE && !upload_failed {
@@ -613,7 +811,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
         }
         match item {
             Ok(Item::Picture(p)) => {
-                st.pictures.push_back(Frame { picture: p, uploaded });
+                st.pictures.push_back(Frame::decoded(p, uploaded));
                 st.audio_exhausted = false; // a picture further on: the sound may be in reach again
             }
             Ok(Item::Audio(pts, samples)) => {
@@ -623,11 +821,98 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 }
             }
             Ok(Item::End) => st.end = true,
-            Ok(Item::Interrupted) => {} // a seek is waiting: taken at the top
+            Ok(Item::Interrupted) => {
+                // A seek or a cached picture is waiting (taken at the top); else the interrupt came too late.
+                if st.seek.is_none() && st.hold.is_none() {
+                    drop(st);
+                    dec.resume();
+                }
+            }
             Err(e) => {
                 crate::trace::mark(format!("video: decode: {e}"));
                 st.error = Some(e);
                 st.end = true;
+            }
+        }
+    }
+}
+
+/// An exact seek on the GPU, done here rather than in the decoder so every picture on the way is cached (stepping
+/// back to them is then instant): to the keyframe before `us` (or, when the decoder is just before `us`, on from
+/// where it is), then decoding forwards; the last picture at or before `us` is the one shown. Gives up when a newer
+/// seek comes (epoch `epoch` is over).
+fn exact_on_gpu(dec: &mut Decoder, shared: &Shared, us: i64, epoch: u32, dec_pos: &mut Option<i64>, up: Option<&Uploader>) {
+    let near = dec_pos.is_some_and(|d| us >= d && us - d <= 2_000_000);
+    if !near {
+        if let Err(e) = dec.seek(us, false) {
+            crate::trace::mark(format!("video: seek: {e}"));
+        }
+        *dec_pos = None;
+    }
+    let mut best: Option<Picture> = None;
+    loop {
+        {
+            let st = shared.lock();
+            if st.quit || st.seek.is_some() || st.epoch != epoch {
+                return;
+            }
+        }
+        match dec.next() {
+            Ok(Item::Picture(p)) => {
+                *dec_pos = Some(p.pts_us + p.duration_us.max(1));
+                if p.pts_us > us {
+                    let Some(b) = best.take() else {
+                        // The keyframe landed past the target (an index that's off): the decoder's own exact seek.
+                        drop(p);
+                        let _ = dec.seek(us, true);
+                        *dec_pos = None;
+                        return;
+                    };
+                    let mut st = shared.lock();
+                    if st.seek.is_none() && st.epoch == epoch {
+                        st.pictures.push_back(Frame::decoded(b, None));
+                        st.pictures.push_back(Frame::decoded(p, None));
+                        st.audio_exhausted = false;
+                    }
+                    return;
+                }
+                if let Some(u) = up {
+                    shared.cache().insert(u, &p, Some(us));
+                }
+                best = Some(p);
+            }
+            Ok(Item::Audio(pts, samples)) => {
+                let end = pts + (samples.len() / 2) as i64 * 1_000_000 / AUDIO_RATE as i64;
+                let mut st = shared.lock();
+                if end > us && !st.audio_dead && !samples.is_empty() && st.epoch == epoch {
+                    st.audio_frames += samples.len() / 2;
+                    st.audio.push_back(Chunk { pts, samples, read: 0 });
+                }
+            }
+            Ok(Item::End) => {
+                let mut st = shared.lock();
+                if st.epoch == epoch {
+                    if let Some(b) = best.take() {
+                        st.pictures.push_back(Frame::decoded(b, None));
+                    }
+                    st.end = true;
+                }
+                return;
+            }
+            Ok(Item::Interrupted) => {
+                // For a newer seek, the top of the loop leaves; else it came too late to matter.
+                let st = shared.lock();
+                if !(st.quit || st.seek.is_some() || st.epoch != epoch) {
+                    drop(st);
+                    dec.resume();
+                }
+            }
+            Err(e) => {
+                crate::trace::mark(format!("video: decode: {e}"));
+                let mut st = shared.lock();
+                st.error = Some(e);
+                st.end = true;
+                return;
             }
         }
     }
@@ -1096,6 +1381,62 @@ mod tests {
             println!("preview at {at} us: {}x{} in {ms:.0} ms", s.width, s.height);
         }
         println!("worst {worst:.0} ms");
+    }
+
+    /// How long exact seeks take for the ways the seek bar gets dragged, on the GPU as in the app
+    /// (`LOOKER_TEST_HW=1`) or the CPU: slow forward and back (a frame a step), medium (a fifth of a second), jumps.
+    /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture scrub_latency`
+    #[test]
+    #[ignore]
+    fn scrub_latency() {
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let device = std::env::var_os("LOOKER_TEST_HW").map(|_| unsafe {
+            use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+            use windows::Win32::Graphics::Direct3D11::*;
+            use windows::core::Interface;
+            let mut d = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, Default::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d), None, None).unwrap();
+            let d: ID3D11Device = d.unwrap();
+            let _ = d.cast::<ID3D11Multithread>().unwrap().SetMultithreadProtected(true);
+            d
+        });
+        let raw = device.as_ref().map_or(std::ptr::null_mut(), |d| windows::core::Interface::as_raw(d));
+        let mut p = Player::open(&path, crate::gfx::Sendable(raw), false, 0.0, true);
+        let t = Instant::now();
+        while p.poll_open().is_none() {
+            assert!(t.elapsed() < Duration::from_secs(3), "never opened");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let info = p.info.clone().unwrap();
+        let frame = (1e6 * info.fps_den as f64 / info.fps_num as f64) as i64;
+        next_due(&mut p).expect("first picture");
+        let mid = info.duration_us / 2;
+        let mut run = |name: &str, targets: Vec<i64>, p: &mut Player| {
+            let (mut worst, mut total) = (0.0f64, 0.0f64);
+            for &target in &targets {
+                let t = Instant::now();
+                p.seek(target, true);
+                let got = next_due(p);
+                if std::env::var_os("LOOKER_SCRUB_TRACE").is_some() {
+                    let st = p.shared.lock();
+                    println!("  {name} {target}: {got:?} in {:.0} ms; queue {} hold {:?} seek {:?} epoch {} shown {:?}", t.elapsed().as_secs_f64() * 1000.0, st.pictures.len(), st.hold, st.seek, st.epoch, p.shown);
+                }
+                if got.is_none() {
+                    continue; // the picture on screen already covers it
+                }
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                worst = worst.max(ms);
+                total += ms;
+            }
+            println!("{name:>14}: {:.1} ms average, {worst:.0} worst ({} seeks)", total / targets.len() as f64, targets.len());
+        };
+        p.seek(mid, true);
+        next_due(&mut p);
+        run("slow forward", (1..=30).map(|i| mid + i * frame + frame / 2).collect(), &mut p);
+        let here = p.position();
+        run("slow back", (1..=30).map(|i| here - i * frame + frame / 2).collect(), &mut p);
+        run("medium", (1..=20).map(|i| (i * 200_000 + frame / 2).min(info.duration_us - frame)).collect(), &mut p);
+        run("jumps", (0..12).map(|i| info.duration_us * ((i * 7) % 12) / 12 + frame / 2).collect(), &mut p);
     }
 
     /// Opens `LOOKER_DECODE` on the CPU, paused, and checks the first picture, frame steps and exact seeks.

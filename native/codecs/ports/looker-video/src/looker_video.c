@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 5
+#define LOOKER_VIDEO_API 6
 
 typedef struct LvInfo
 {
@@ -1242,6 +1242,14 @@ EXPORT void lv_interrupt(LvPlayer *p)
 {
     if (p)
         InterlockedExchange(&p->interrupt, 1);
+}
+
+// Clears an lv_interrupt that came too late to matter (the seek it was for had already been taken): decoding goes
+// on from where it is.
+EXPORT void lv_resume(LvPlayer *p)
+{
+    if (p)
+        InterlockedExchange(&p->interrupt, 0);
 }
 
 EXPORT int lv_next(LvPlayer *p, LvFrame *out)

@@ -267,7 +267,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
-                    if self.hover == Some(Hit::Viewport) && self.video_hides_cursor() {
+                    if matches!(self.hover, Some(Hit::Viewport)) && self.video_hides_cursor() {
                         SetCursor(None);
                         return Some(LRESULT(1));
                     }
