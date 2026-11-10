@@ -746,7 +746,8 @@ impl App {
     /// B: browse mode, the explorer across most of the window with the photo as a preview; B again (or
     /// opening an image from it) goes back to the card.
     pub(super) fn toggle_browse(&mut self) {
-        if self.viewer.current.is_none() {
+        // The home page too (Faye, 2026-11-11: its browse button did nothing).
+        if self.viewer.current.is_none() && !self.home_explorer() {
             return;
         }
         let on = !self.browsing();
@@ -3188,7 +3189,7 @@ impl App {
     /// Keys for the explorer: Ctrl+F, Ctrl+Z / Ctrl+Y and B anywhere; the rest while it has the keys (a click
     /// went into it). None for keys it doesn't use.
     pub(super) fn explorer_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<LRESULT> {
-        let has = self.viewer.current.is_some();
+        let has = self.viewer.current.is_some() || self.home_explorer();
         match vk {
             VK_F if ctrl && has => {
                 self.explorer_find();
