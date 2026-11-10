@@ -558,11 +558,15 @@ impl App {
 
     /// The card's own width (not browsing): as its edge was dragged, else a quarter of the window.
     pub(super) fn card_width(&self) -> f32 {
-        if self.settings.explorer_width > 0.0 {
-            return self.settings.explorer_width;
-        }
+        self.settings.explorer_width.max(self.card_min())
+    }
+
+    /// The card's default width, a quarter of the window, is also its narrowest (Faye, 2026-11-10); never past the
+    /// sticky line, so a small window still has room for the photo.
+    pub(super) fn card_min(&self) -> f32 {
         let (w, _) = self.size_dip();
-        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX)
+        let cap = INFO_MAX.min((w - MIN_IMAGE_W).max(EXPLORER_MIN));
+        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX).min(cap)
     }
 
     /// The card's width now: its own, eased out to browse mode's while that's on, stretched or bouncing at the
@@ -2605,7 +2609,9 @@ impl App {
                 if was {
                     self.explorer.browse.set([0.0], now);
                 }
-                self.settings.explorer_width = w;
+                // No narrower than its default; dragged down to it, it's the default again (a quarter of whatever
+                // size the window is).
+                self.settings.explorer_width = if w <= self.card_min() { 0.0 } else { w };
             }
         }
         if self.browsing() != was {
