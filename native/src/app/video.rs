@@ -40,9 +40,9 @@ pub(super) const BAR_ROOM: f32 = BAR_H + 16.0;
 const BAR_BTN: f32 = 32.0;
 const VOLUME_W: f32 = 76.0;
 /// The seek bar's and the volume slider's thickness, and how much each grows while the pointer is on it or it's
-/// held (no knob on either: Faye, 2026-11-10).
-const SLIDER_H: f32 = 6.0;
-const SLIDER_GROW: f32 = 2.0;
+/// held (no knob on either; always the hovered thickness, no growing: Faye, 2026-11-10).
+const SLIDER_H: f32 = 8.0;
+const SLIDER_GROW: f32 = 0.0;
 const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
 const PREVIEW_W: f32 = 160.0;
@@ -229,6 +229,15 @@ struct BarLayout {
     looped: Option<D2D_RECT_F>,
     /// Fullscreen, at the far right: kept as long as the speaker is.
     full: Option<D2D_RECT_F>,
+}
+
+/// The bar's timecode: minutes, seconds and the picture within the second, "01:05:12", or "1:02:03:12" for a video
+/// an hour or longer (Faye, 2026-11-10: to see each picture while stepping through). `fps` 0: no pictures part.
+pub(super) fn timecode(us: i64, fps: f64, hours: bool) -> String {
+    let us = us.max(0);
+    let s = (us / 1_000_000) as u64;
+    let f = if fps > 0.0 { ((us % 1_000_000) as f64 * fps / 1e6 + 1e-3).floor() as u64 } else { 0 };
+    if hours { format!("{}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, f) } else { format!("{:02}:{:02}:{:02}", s / 60, s % 60, f) }
 }
 
 /// "1:05", "12:40", "1:02:03" (hours when the video is that long).
@@ -779,7 +788,8 @@ impl App {
         let Some(p) = self.player_ref() else { return false };
         let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _)));
         let over = matches!(self.hover, Some(h) if is_bar_hit(h));
-        !p.playing() || using || over || (self.tracking && self.video_moved.elapsed() < BAR_IDLE)
+        // Out of fullscreen it stays (Faye, 2026-11-10): only fullscreen is the video alone.
+        self.fullscreen.is_none() || !p.playing() || using || over || (self.tracking && self.video_moved.elapsed() < BAR_IDLE)
     }
 
     /// While a video plays fullscreen with its bar away, the pointer hides too.
@@ -819,7 +829,7 @@ impl App {
         let bar = rect(x, g.snap(a.bottom - margin - h), w, h);
         let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
-        let tw = g.measure_tabular(&wide(if long { "0:00:00" } else { "00:00" }), &g.fonts.caption).ceil() + 2.0;
+        let tw = g.measure_tabular(&wide(if long { "0:00:00:00" } else { "00:00:00" }), &g.fonts.caption).ceil() + 2.0;
         // As it narrows the loop button goes first, then the volume slider, the speed (each while the seek bar
         // would stay 160 wide), then the times, the speaker with fullscreen, and play (while it would stay 48): the
         // seek bar stays.
@@ -927,14 +937,16 @@ impl App {
         };
         let glyph = if ended { 0xE72C } else if playing { 0xE769 } else { 0xE768 };
         if let Some(r) = l.play {
-            let fg = button(self, Hit::VideoPlay, r, ui::Kind::Subtle);
+            // The app's boxed buttons and toggles, as the toolbar's (Faye, 2026-11-10).
+            let fg = button(self, Hit::VideoPlay, r, ui::Kind::Standard);
             g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
         }
 
         let long = dur >= 3_600_000_000;
+        let fps = self.player_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
         if let Some((elapsed, total)) = l.times {
-            g.text_tabular(&wide(&clock_text(pos, long)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
-            g.text_tabular(&wide(&clock_text(dur, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
+            g.text_tabular(&wide(&timecode(pos, fps, long)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
+            g.text_tabular(&wide(&timecode(dur, fps, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
         }
 
         // The seek bar: the line, a grey fill up to the pointer while it's on it (where a click would put the
@@ -976,7 +988,7 @@ impl App {
             0xE995
         };
         if let Some(r) = l.mute {
-            let fg = button(self, Hit::VideoMute, r, ui::Kind::Subtle);
+            let fg = button(self, Hit::VideoMute, r, ui::Kind::Standard);
             // 16 px: the speaker glyphs sit smaller in their box than play's at 14 (Faye: the same size).
             g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
         }
@@ -987,26 +999,34 @@ impl App {
             let held = self.pressed == Some(Hit::VideoVolume);
             let k = self.fades.get(Hit::VideoVolume, self.hover == Some(Hit::VideoVolume) || held);
             let cy = (r.top + r.bottom) / 2.0;
+            // Square, as the seek bar.
             let h = SLIDER_H + SLIDER_GROW * k;
             let line = rect(r.left + 6.0, cy - h / 2.0, r.right - r.left - 12.0, h);
-            g.fill_round(line, h / 2.0, rgb(raised.track));
+            g.fill(line, rgb(raised.track));
             let shown = if muted { 0.0 } else { vol };
             let px = line.left + (line.right - line.left) * shown;
             if shown > 0.0 {
-                g.fill_round(D2D_RECT_F { right: px, ..line }, h / 2.0, rgb(if muted { raised.label } else { raised.text }));
+                g.fill(D2D_RECT_F { right: px, ..line }, rgb(if muted { raised.label } else { raised.text }));
+            }
+            // The seek bar's light fill up to the pointer while it's on it.
+            if k > 0.0 && !held {
+                let mx = self.mouse.0.clamp(line.left, line.right);
+                if mx > line.left {
+                    g.fill(D2D_RECT_F { right: mx, ..line }, gfx::rgba(raised.text, 0.28 * k));
+                }
             }
         }
         if let Some(r) = l.speed {
             let open = matches!(self.menu, Some((menus::MenuKind::VideoSpeed, _)));
-            let fg = button(self, Hit::VideoSpeed, r, if open { ui::Kind::Toggle(true) } else { ui::Kind::Subtle });
+            let fg = button(self, Hit::VideoSpeed, r, ui::Kind::Toggle(open));
             g.text_tabular(&wide(&speed_text(speed)), &g.fonts.body, r, fg, Align::Center);
         }
         if let Some(r) = l.looped {
-            let fg = button(self, Hit::VideoLoop, r, if looping { ui::Kind::Toggle(true) } else { ui::Kind::Subtle });
+            let fg = button(self, Hit::VideoLoop, r, ui::Kind::Toggle(looping));
             g.text(&[0xE8EE], &g.fonts.body_icons, r, fg, Align::Center);
         }
         if let Some(r) = l.full {
-            let fg = button(self, Hit::VideoFullscreen, r, ui::Kind::Subtle);
+            let fg = button(self, Hit::VideoFullscreen, r, ui::Kind::Standard);
             // Segoe's back-to-window in fullscreen, full screen otherwise.
             let glyph = if self.fullscreen.is_some() { 0xE73F } else { 0xE740 };
             g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
@@ -1035,7 +1055,8 @@ impl App {
             p.want(at);
         }
         let raised = theme::raised();
-        let label = clock_text(at, long);
+        let fps = v.player.as_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
+        let label = timecode(at, fps, long);
         let lw = g.measure_tabular(&wide(&label), &g.fonts.caption).ceil();
         let (iw, ih) = match &v.still {
             Some((_, _, w, h)) => {
@@ -1158,6 +1179,10 @@ mod tests {
         assert_eq!(clock_text(65_400_000, false), "1:05");
         assert_eq!(clock_text(760_000_000, false), "12:40");
         assert_eq!(clock_text(3_723_000_000, true), "1:02:03");
+        assert_eq!(timecode(65_400_000, 25.0, false), "01:05:10");
+        assert_eq!(timecode(65_983_000, 60.0, false), "01:05:58");
+        assert_eq!(timecode(3_723_040_000, 25.0, true), "1:02:03:01");
+        assert_eq!(timecode(5_000_000, 0.0, false), "00:05:00");
         assert_eq!(speed_text(0.25), "0.25\u{00D7}");
         assert_eq!(speed_text(2.0), "2\u{00D7}");
     }

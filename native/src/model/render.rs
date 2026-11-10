@@ -179,6 +179,9 @@ struct Eye {
     right: [f32; 3],
     up: [f32; 3],
     back: [f32; 3],
+    /// The orbit centre, and the eye's distance from it.
+    target: [f32; 3],
+    dist: f32,
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -204,8 +207,9 @@ impl Camera {
         if aspect >= 1.0 { FOV } else { 2.0 * ((FOV / 2.0).tan() / aspect).atan() }
     }
 
-    /// Unit vectors from the orbit centre to the eye, to its right, and up the screen.
-    fn axes(&self) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    /// Unit vectors from the orbit centre to the eye, to its right, and up the screen (the view cube draws from
+    /// them).
+    pub fn axes(&self) -> ([f32; 3], [f32; 3], [f32; 3]) {
         let back = [self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()];
         let right = normalized(cross([0.0, 1.0, 0.0], back));
         (back, right, cross(back, right))
@@ -251,7 +255,7 @@ impl Camera {
             row[0] = row[0] * place.scale[0] + row[3] * place.offset[0];
             row[1] = row[1] * place.scale[1] + row[3] * place.offset[1];
         }
-        Eye { view_proj: m, eye, right, up, back }
+        Eye { view_proj: m, eye, right, up, back, target, dist }
     }
 
     /// Turns the model under a drag of `dx`, `dy` DIPs.
@@ -269,6 +273,19 @@ impl Camera {
         let per_dip = 2.0 * self.distance(mesh, aspect) * (Self::fovy(aspect) / 2.0).tan() / view_h.max(1.0);
         for i in 0..3 {
             self.pan[i] += (-dx * right[i] + dy * up[i]) * per_dip;
+        }
+    }
+
+    /// The yaw and pitch that look straight at the side of the model facing `normal` (a unit axis): the view
+    /// cube's faces. Straight up and down stop just short of the poles, as orbiting does, keeping the yaw.
+    pub fn facing(&self, normal: [f32; 3]) -> (f32, f32) {
+        const POLE: f32 = 89.0 * std::f32::consts::PI / 180.0;
+        if normal[1] > 0.5 {
+            (self.yaw, POLE)
+        } else if normal[1] < -0.5 {
+            (self.yaw, -POLE)
+        } else {
+            (normal[0].atan2(normal[2]), 0.0)
         }
     }
 
@@ -304,6 +321,16 @@ pub struct Renderer {
     no_colour: ID3D11BlendState,
     depth_write: ID3D11DepthStencilState,
     depth_read: ID3D11DepthStencilState,
+    /// Passes only behind what's drawn: the part of the pivot cross inside the model.
+    depth_behind: ID3D11DepthStencilState,
+}
+
+/// The cross marking the orbit centre while it's moved (a right-drag): `alpha` (it fades after), and one DIP in the
+/// target's pixels (its arms are a fixed size on screen).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pivot {
+    pub alpha: f32,
+    pub dip: f32,
 }
 
 struct GpuMaterial {
@@ -409,17 +436,18 @@ impl Renderer {
                 device.CreateBlendState(&d, Some(&mut b)).map_err(err)?;
                 b.ok_or_else(|| "no blend state".into())
             };
-            let depth_state = |write: bool| -> Result<ID3D11DepthStencilState, String> {
+            let depth_func = |write: bool, func: D3D11_COMPARISON_FUNC| -> Result<ID3D11DepthStencilState, String> {
                 let d = D3D11_DEPTH_STENCIL_DESC {
                     DepthEnable: true.into(),
                     DepthWriteMask: if write { D3D11_DEPTH_WRITE_MASK_ALL } else { D3D11_DEPTH_WRITE_MASK_ZERO },
-                    DepthFunc: D3D11_COMPARISON_LESS_EQUAL,
+                    DepthFunc: func,
                     ..Default::default()
                 };
                 let mut s = None;
                 device.CreateDepthStencilState(&d, Some(&mut s)).map_err(err)?;
                 s.ok_or_else(|| "no depth state".into())
             };
+            let depth_state = |write: bool| depth_func(write, D3D11_COMPARISON_LESS_EQUAL);
             Ok(Renderer {
                 device: device.clone(),
                 ctx,
@@ -435,6 +463,7 @@ impl Renderer {
                 no_colour: blend_state(false, 0)?,
                 depth_write: depth_state(true)?,
                 depth_read: depth_state(false)?,
+                depth_behind: depth_func(false, D3D11_COMPARISON_GREATER)?,
             })
         }
     }
@@ -549,8 +578,8 @@ impl Renderer {
         }
     }
 
-    /// Draws `mesh` seen by `camera` into `target`, on a transparent background.
-    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, place: &Place, out: Output) {
+    /// Draws `mesh` seen by `camera` into `target`, on a transparent background, with the `pivot` cross.
+    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, place: &Place, out: Output, pivot: Option<Pivot>) {
         let e = camera.eye(mesh, place);
         // Lights hang off the camera: the key above left and in front, a dim fill from the right.
         let key = normalized(mix(e.right, -0.5, e.up, 0.7, e.back, 0.6));
@@ -609,12 +638,61 @@ impl Renderer {
                     ctx.DrawIndexed(p.count, p.start, 0);
                 }
             }
+            if let Some(p) = pivot.filter(|p| p.alpha > 0.0) {
+                self.draw_pivot(&e, camera, target, place, p);
+            }
             if let Some((t, _)) = &target.msaa {
                 ctx.ResolveSubresource(&target.texture, 0, t, 0, target.format);
             }
             // Leave nothing bound that Direct2D will read.
             ctx.OMSetRenderTargets(None, None);
             ctx.PSSetShaderResources(0, Some(&[None, None]));
+        }
+    }
+}
+
+impl Renderer {
+    /// The orbit centre as a 3D cross (red X, green Y, blue Z, lit like the model), 36 DIPs each way: solid where
+    /// it's in front of the model, faint where the model hides it, so it reads as sitting inside.
+    fn draw_pivot(&self, e: &Eye, camera: &Camera, target: &Target, place: &Place, p: Pivot) {
+        let per_px = 2.0 * e.dist * (Camera::fovy(place.aspect) / 2.0).tan() / (target.height as f32 * place.scale[1]).max(1.0);
+        let (len, half) = (36.0 * p.dip * per_px, (0.9 * p.dip).max(1.0) * per_px);
+        let c = e.target;
+        let _ = camera;
+        const COLOURS: [[f32; 3]; 3] = [[0.86, 0.26, 0.26], [0.40, 0.76, 0.24], [0.24, 0.50, 0.92]];
+        unsafe {
+            let ctx = &self.ctx;
+            for axis in 0..3 {
+                // A box along the axis: ±len on it, ±half across.
+                let ext: [f32; 3] = std::array::from_fn(|i| if i == axis { len } else { half });
+                let corner = |k: usize| -> [f32; 3] { std::array::from_fn(|i| c[i] + if k >> i & 1 == 1 { ext[i] } else { -ext[i] }) };
+                // Six faces: (the axis, the side) with their corners in order.
+                let mut verts: Vec<Vertex> = Vec::with_capacity(36);
+                for f in 0..3 {
+                    for side in 0..2 {
+                        let (u, v) = ((f + 1) % 3, (f + 2) % 3);
+                        let at = |a: usize, b: usize| -> usize { (side << f) | (a << u) | (b << v) };
+                        let mut normal = [0.0f32; 3];
+                        normal[f] = if side == 1 { 1.0 } else { -1.0 };
+                        let quad = [at(0, 0), at(1, 0), at(1, 1), at(0, 0), at(1, 1), at(0, 1)];
+                        for k in quad {
+                            verts.push(Vertex { pos: corner(k), normal, uv: [0.0; 2], colour: [1.0; 3] });
+                        }
+                    }
+                }
+                let Ok(vb) = buffer(&self.device, D3D11_BIND_VERTEX_BUFFER, as_bytes(&verts)) else { continue };
+                let stride = std::mem::size_of::<Vertex>() as u32;
+                ctx.IASetVertexBuffers(0, 1, Some(&Some(vb)), Some(&stride), Some(&0));
+                ctx.PSSetShaderResources(0, Some(&[None, None]));
+                let col = COLOURS[axis];
+                for (depth, alpha) in [(&self.depth_read, p.alpha), (&self.depth_behind, p.alpha * 0.3)] {
+                    let consts = [col[0], col[1], col[2], alpha, 0.0, 0.0, 0.0, 1.0, col[0] * 0.45, col[1] * 0.45, col[2] * 0.45, 0.0, 0.0, 0.0, 0.0, 1.0];
+                    ctx.UpdateSubresource(&self.material_cb, 0, None, consts.as_ptr() as _, 0, 0);
+                    ctx.OMSetBlendState(&self.blend, None, u32::MAX);
+                    ctx.OMSetDepthStencilState(depth, 0);
+                    ctx.Draw(verts.len() as u32, 0);
+                }
+            }
         }
     }
 }
@@ -652,19 +730,23 @@ fn warp_renderer<R>(f: impl FnOnce(&Renderer) -> Result<R, String>) -> Result<R,
 /// The still's aspect (thumbnails and the first frame, before the live view takes over).
 const STILL_ASPECT: f32 = 4.0 / 3.0;
 
-/// A still of the model from the default camera, fitted to the box, for the decode pool.
+/// A still of the model from the default camera, fitted to the box, for the decode pool. The viewer asks with the
+/// photo area's size: drawn at that aspect, the model sits exactly where the live view then draws it (at 4:3 the
+/// distance that fits it differed, and it jumped as the live view took over). Square boxes (thumbnails) stay 4:3.
 pub fn still(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let mesh = super::load(f, path)?;
     let (bw, bh) = if box_w == 0 || box_h == 0 { (2048, 1536) } else { (box_w.min(VECTOR_MAX_EDGE), box_h.min(VECTOR_MAX_EDGE)) };
-    let w = (bw as f32).min(bh as f32 * STILL_ASPECT).round().max(16.0) as u32;
-    let h = (w as f32 / STILL_ASPECT).round().max(12.0) as u32;
+    let aspect = if box_w > 0 && box_h > 0 && box_w != box_h { box_w as f32 / box_h as f32 } else { STILL_ASPECT };
+    let w = (bw as f32).min(bh as f32 * aspect).round().max(16.0) as u32;
+    let h = (w as f32 / aspect).round().max(12.0) as u32;
     let pixels = warp_renderer(|r| {
         let gpu = r.upload(&mesh)?;
         let target = r.target(w, h, DXGI_FORMAT_B8G8R8A8_UNORM)?;
-        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb);
+        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb, None);
         read_back(r, &target)
     })?;
-    let mut d = Decoded::still(w, h, pixels, 1600, 1200, None);
+    // Native size: the render's own (the view shows it at fit, 1:1 when it was asked at the area's size).
+    let mut d = Decoded::still(w, h, pixels, w, h, None);
     d.vector = true;
     Ok(d)
 }

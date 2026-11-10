@@ -41,6 +41,8 @@ pub struct View {
     /// pages, and fitting means fitting the current page. Pan and clamp still use the whole content, so the
     /// neighbouring pages stay reachable. `None` = the whole content (every image).
     focus: Option<Rect>,
+    /// Fit enlarges past 100 % too: a video fills its area (and the screen in fullscreen), as a player does.
+    pub upscale: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -75,7 +77,7 @@ impl View {
             target: Pose { scale: 1.0, x: 0.0, y: 0.0 },
             from: Pose::default(),
             anim_start: None,
-            focus: None,
+            focus: None, upscale: false,
         }
     }
 
@@ -98,9 +100,9 @@ impl View {
     pub fn actual_scale(&self) -> f64 {
         1.0 / self.raster
     }
-    /// Shrink to fit, but never blow a small image up past 100%.
+    /// Shrink to fit, but never blow a small image up past 100% (a video, `upscale`, fills the area).
     pub fn default_scale(&self) -> f64 {
-        self.fit_scale().min(self.actual_scale())
+        if self.upscale { self.fit_scale() } else { self.fit_scale().min(self.actual_scale()) }
     }
     fn min_scale(&self) -> f64 {
         self.fit_scale().min(self.actual_scale()) * MIN_SCALE_FACTOR

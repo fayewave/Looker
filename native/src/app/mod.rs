@@ -230,6 +230,8 @@ enum Hit {
     VideoSpeed,
     VideoLoop,
     VideoFullscreen,
+    /// The 3D view's cube (which face: worked out from the point).
+    ModelCube,
     /// A document's page bar: the pill, and its two buttons.
     PageBar,
     PagePrevious,
@@ -655,6 +657,8 @@ impl App {
     /// Fit a new image (or the current one, turned by the rotation preview).
     fn reset_view(&mut self, nw: u32, nh: u32) {
         let (vw, vh) = self.view_size();
+        self.view.upscale = self.placeholder.is_none()
+            && self.current_path().is_some_and(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video);
         // A document opens on its first page: the strip is the content, the page the fit reference.
         if let Some(e) = self.viewer.shown.clone().filter(|e| e.layout.is_some()) {
             let l = e.layout.as_ref().unwrap();

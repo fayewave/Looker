@@ -354,6 +354,7 @@ impl App {
         let strip_moving = self.draw_strip(&g);
         if self.viewer.current.is_some() && self.placeholder.is_none() {
             self.draw_page_bar(&g);
+            self.draw_view_cube(&g);
             self.draw_video_flash(&g);
             self.draw_video_bar(&g);
         }
@@ -372,7 +373,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -470,7 +471,8 @@ impl App {
             return;
         }
         let rank = self.status_rank();
-        let label = rgb(theme::t().label);
+        // The title bar's colour (dimmed with it when the window isn't active).
+        let label = if self.active { rgb(theme::t().text) } else { rgb(theme::t().placeholder) };
         let counter_w = rank.as_ref().map_or(0.0, |s| g.measure_tabular(&wide(s), &g.fonts.caption) + 24.0);
         g.text_tabular(&wide(&text), &g.fonts.caption, rect(SIDE_PAD, y, (w - SIDE_PAD * 2.0 - counter_w).max(0.0), row_h), label, Align::Left);
         if let Some(r) = link {

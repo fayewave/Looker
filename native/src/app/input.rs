@@ -305,6 +305,7 @@ impl App {
                             | Hit::VideoSpeed
                             | Hit::VideoLoop
                             | Hit::VideoFullscreen
+                            | Hit::ModelCube
                             | Hit::ExplorerBack
                             | Hit::ExplorerForward
                             | Hit::Crumb(_)
@@ -486,6 +487,7 @@ impl App {
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
                             Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSpeed | Hit::VideoLoop | Hit::VideoFullscreen)) => self.video_bar_click(h),
+                            Some(Hit::ModelCube) => self.view_cube_click(x, y),
                             _ => {}
                         }
                     }
@@ -526,6 +528,7 @@ impl App {
                     // A right-drag that panned a model: no menu.
                     if let Some((_, _, moved)) = self.pan_drag.take() {
                         let _ = ReleaseCapture();
+                        self.model_pan_end();
                         if moved {
                             return Some(LRESULT(0));
                         }
