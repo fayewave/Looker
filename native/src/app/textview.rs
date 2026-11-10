@@ -1174,6 +1174,7 @@ impl App {
         if focused_text {
             self.place_ime();
         }
+        self.uia_sync();
     }
 
     /// The find bar: Find (and Replace) or Go to line, with their buttons.
@@ -2555,5 +2556,67 @@ impl App {
             self.show_toast(format!("Couldn't print: {e}"), false);
         }
         self.print_devmode = dm;
+    }
+}
+
+// --- Screen readers ---------------------------------------------------------------------------------
+
+impl App {
+    /// WM_GETOBJECT for the window's root while a text file is up: the editor as a Document (uia.rs).
+    pub(super) fn text_uia_object(&mut self, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+        if lp.0 as i32 != windows::Win32::UI::Accessibility::UiaRootObjectId || !self.text_shown() {
+            return None;
+        }
+        if self.uia.is_none() {
+            self.uia = Some(super::uia::Uia::new(self.hwnd));
+        }
+        self.uia_sync();
+        self.uia.as_ref().map(|u| u.answer(self.hwnd, wp, lp))
+    }
+
+    /// Hands the reader the text, selection and focus when they've changed, and says so.
+    fn uia_sync(&mut self) {
+        if self.uia.is_none() || !super::uia::Uia::listening() {
+            return;
+        }
+        let focused = self.text.cur().is_some_and(|d| d.focus == Focus::Text) && self.text_shown();
+        let Some(u) = self.uia.as_mut() else { return };
+        let Some(tv) = self.text.cur() else { return };
+        let sel = tv.edit.selection();
+        let (id, version) = (tv.id, tv.version);
+        if u.synced == (id, version, sel, focused) {
+            return;
+        }
+        let text_changed = u.synced.0 != id || u.synced.1 != version;
+        let focus_gained = focused && !u.synced.3;
+        {
+            let mut d = u.shared.lock().unwrap();
+            if text_changed {
+                d.text = tv.edit.units().to_vec();
+            }
+            d.sel = sel;
+            d.name = format!("{} - Text editor", tv.title());
+            d.focused = focused;
+        }
+        u.synced = (id, version, sel, focused);
+        use windows::Win32::UI::Accessibility::*;
+        if focus_gained {
+            u.raise(UIA_AutomationFocusChangedEventId);
+        }
+        if text_changed {
+            u.raise(UIA_Text_TextChangedEventId);
+        }
+        u.raise(UIA_Text_TextSelectionChangedEventId);
+    }
+
+    /// A reader selected text.
+    pub(super) fn text_uia_select(&mut self) {
+        let Some(sel) = self.uia.as_ref().and_then(|u| u.shared.lock().unwrap().select.take()) else { return };
+        if let Some(tv) = self.text.cur_mut() {
+            let n = tv.edit.units().len();
+            tv.edit.select(sel.0.min(n), sel.1.min(n));
+            tv.reveal = true;
+        }
+        self.invalidate();
     }
 }

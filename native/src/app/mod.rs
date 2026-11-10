@@ -23,6 +23,7 @@ mod subtitles;
 mod textprint;
 mod texttabs;
 mod textview;
+mod uia;
 mod video;
 
 use std::os::windows::fs::MetadataExt;
@@ -597,6 +598,8 @@ pub struct App {
     text: texttabs::TextDocs,
     /// The printer and paper last picked (Print, Page setup): the dialogs' DEVMODE and DEVNAMES.
     print_devmode: (HGLOBAL, HGLOBAL),
+    /// Screen readers' view of the text editor (uia.rs), made the first time one asks.
+    uia: Option<uia::Uia>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
     dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
@@ -1361,6 +1364,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             menus_out: Vec::new(),
             text: texttabs::TextDocs::new(),
             print_devmode: (HGLOBAL::default(), HGLOBAL::default()),
+            uia: None,
             tooltip: None,
             dialog: None,
             toast: None,

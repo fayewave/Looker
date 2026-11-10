@@ -202,6 +202,8 @@ impl App {
     pub(super) fn tooltip_for(&mut self, h: Hit) -> Option<String> {
         match h {
             Hit::StripCell(i) => self.strip_tooltip(i),
+            // A text tab: its file's path (an untitled one, its name).
+            Hit::TextTab(i) => self.text.docs.get(i as usize).map(|d| if d.untitled > 0 { d.title() } else { d.path.to_string_lossy().into_owned() }),
             Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
             Hit::ExplorerRow(_)
             | Hit::Crumb(_)

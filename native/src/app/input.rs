@@ -631,6 +631,7 @@ impl App {
                         Some(Hit::ColHeader(i)) => self.col_close(i as usize),
                         // Middle-click: a tab closes; a folder opens in a new tab.
                         Some(Hit::Tab(i) | Hit::TabClose(i)) => self.close_tab(i as usize),
+                        Some(Hit::TextTab(i) | Hit::TextTabClose(i)) => self.text_close_tab(i as usize),
                         Some(Hit::ExplorerRow(i)) => {
                             if let Some(r) = self.explorer.row(i).filter(|r| r.is_folder()).cloned() {
                                 self.new_tab(Some(crate::explorer::Place::Folder(r.path)));
@@ -1283,6 +1284,12 @@ impl App {
                         self.apply_theme();
                     }
                     None
+                }
+                // Screen readers asking for the window: the text editor's Document while it's up.
+                WM_GETOBJECT => self.text_uia_object(wp, lp),
+                uia::WM_UIA_SELECT => {
+                    self.text_uia_select();
+                    Some(LRESULT(0))
                 }
                 WM_CLOSE => {
                     self.close_text(); // unsaved edits are saved, as when moving to another file
