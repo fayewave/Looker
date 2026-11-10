@@ -2560,10 +2560,14 @@ impl App {
         const STICK: f32 = 96.0;
         let d = w - card_cap;
         let crossed = self.explorer.last_side != 0.0 && (self.explorer.last_side > 0.0) != (d > 0.0);
+        // In browse mode, narrowing towards the line, it's a magnet: within the radius it takes to pull free, the line
+        // grabs the edge (Faye, 2026-11-10). A few DIPs inside it, so a pointer shaking on the radius doesn't flick
+        // between held and free.
+        let magnet = self.browsing() && d > 0.0 && d < self.explorer.last_side && d <= STICK - 8.0;
         self.explorer.last_side = if d == 0.0 { self.explorer.last_side } else { d };
         let now = Instant::now();
         let mut just_latched = false;
-        if !self.explorer.latched && (crossed || d == 0.0) {
+        if !self.explorer.latched && (crossed || magnet || d == 0.0) {
             self.explorer.latched = true;
             just_latched = true;
         }
