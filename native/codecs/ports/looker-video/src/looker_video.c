@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 4
+#define LOOKER_VIDEO_API 5
 
 typedef struct LvInfo
 {
@@ -705,7 +705,8 @@ enum
 };
 enum
 {
-    LV_NO_AUDIO = 1, // lv_open: pictures only (the seek bar's previews)
+    LV_NO_AUDIO = 1, // lv_open: pictures only
+    LV_KEYFRAMES = 2, // lv_open: keyframes only, each handed out as soon as it's decoded (the seek bar's previews)
 };
 enum
 {
@@ -758,6 +759,8 @@ typedef struct LvPlayer
     int vq_head, vq_n, vq_cap;
     long long vq_bytes;
     int v_flush; // the end was reached by lv_next_audio: the video decoder still needs its flush after vq
+    volatile LONG interrupt; // lv_interrupt: the decode in progress gives up (a newer seek is waiting)
+    int keyframes;           // LV_KEYFRAMES: pictures go to the CPU even from the GPU (lv_frame_rgba fits them)
 } LvPlayer;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
@@ -852,7 +855,9 @@ static enum AVPixelFormat pick_format(AVCodecContext *c, const enum AVPixelForma
     return AV_PIX_FMT_NONE;
 }
 
-static int open_decoder(AVStream *st, const AVCodec *codec, AVBufferRef *hw, AVCodecContext **out)
+// `keyframes`: only keyframes are decoded (the rest are dropped unread by the decoder), on slice threads so each
+// comes out as soon as it's decoded.
+static int open_decoder(AVStream *st, const AVCodec *codec, AVBufferRef *hw, int keyframes, AVCodecContext **out)
 {
     *out = NULL;
     AVCodecContext *c = avcodec_alloc_context3(codec);
@@ -864,6 +869,18 @@ static int open_decoder(AVStream *st, const AVCodec *codec, AVBufferRef *hw, AVC
         c->pkt_timebase = st->time_base;
         c->thread_count = 0;
         c->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        // Frame threads hold a picture back until a picture per thread is in flight (~16): after every seek, 16
+        // pictures were decoded for the one shown (4K ProRes: 115 ms a seek). Codecs whose every picture stands
+        // alone (ProRes, DNx, MJPEG) and that split a picture across threads decode one picture at a time on all
+        // of them instead: the picture after a seek is the first decoded, and playback keeps up.
+        const AVCodecDescriptor *d = avcodec_descriptor_get(codec->id);
+        int intra = d && (d->props & AV_CODEC_PROP_INTRA_ONLY);
+        if ((keyframes || intra) && (codec->capabilities & AV_CODEC_CAP_SLICE_THREADS))
+            c->thread_type = FF_THREAD_SLICE;
+        else if (keyframes)
+            c->thread_count = 1; // no slice threads: one picture at a time all the same
+        if (keyframes)
+            c->skip_frame = AVDISCARD_NONKEY;
         if (hw)
         {
             c->hw_device_ctx = av_buffer_ref(hw);
@@ -898,7 +915,7 @@ EXPORT void lv_close(LvPlayer *p)
 }
 
 // Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
-// decodes on that GPU where it can. `flags`: LV_NO_AUDIO.
+// decodes on that GPU where it can. `flags`: LV_NO_AUDIO, LV_KEYFRAMES.
 EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, LvPlayer **out)
 {
     *out = NULL;
@@ -961,16 +978,17 @@ EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, Lv
             break;
         can_hw = (c->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && c->device_type == AV_HWDEVICE_TYPE_D3D11VA;
     }
-    if ((r = open_decoder(vs, vc, can_hw ? hw : NULL, &p->vdec)) < 0)
+    if ((r = open_decoder(vs, vc, can_hw ? hw : NULL, (flags & LV_KEYFRAMES) != 0, &p->vdec)) < 0)
         goto fail;
     p->hw = can_hw;
+    p->keyframes = (flags & LV_KEYFRAMES) != 0;
     if (p->ai >= 0 && (flags & LV_NO_AUDIO))
         p->ai = -1;
     if (p->ai >= 0)
     {
         AVStream *as = fmt->streams[p->ai];
         const AVCodec *ac = avcodec_find_decoder(as->codecpar->codec_id);
-        if (ac && open_decoder(as, ac, NULL, &p->adec) >= 0)
+        if (ac && open_decoder(as, ac, NULL, 0, &p->adec) >= 0)
             as->discard = AVDISCARD_DEFAULT;
         else
             p->ai = -1; // plays silent rather than not at all
@@ -1083,7 +1101,7 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
     if (f->format == AV_PIX_FMT_D3D11 && f->hw_frames_ctx)
     {
         enum AVPixelFormat sw = ((AVHWFramesContext *)f->hw_frames_ctx->data)->sw_format;
-        if (sw == AV_PIX_FMT_NV12 || sw == AV_PIX_FMT_P010)
+        if ((sw == AV_PIX_FMT_NV12 || sw == AV_PIX_FMT_P010) && !p->keyframes)
         {
             out->layout = LV_TEXTURE;
             out->texture = f->data[0];
@@ -1095,7 +1113,7 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
             out->opaque = f;
             return 1;
         }
-        // 4:2:2 / 4:4:4 surfaces: read back and take the CPU path.
+        // 4:2:2 / 4:4:4 surfaces, and previews (fitted on the CPU): read back and take the CPU path.
         AVFrame *cpu = av_frame_alloc();
         if (cpu == NULL || av_hwframe_transfer_data(cpu, f, 0) < 0 || av_frame_copy_props(cpu, f) < 0)
         {
@@ -1217,10 +1235,21 @@ static int audio_out(LvPlayer *p, AVFrame *f, LvFrame *out)
 }
 
 // The next picture or block of audio in file order: 0 with `out` filled, AVERROR_EOF at the end of both streams.
+// Any thread: lv_next or lv_next_audio, running or next called, returns AVERROR_EXIT at its next step, until
+// lv_seek. An exact seek decodes from the keyframe to its target inside lv_next (a long GOP: hundreds of pictures),
+// and a newer seek no longer waits for that.
+EXPORT void lv_interrupt(LvPlayer *p)
+{
+    if (p)
+        InterlockedExchange(&p->interrupt, 1);
+}
+
 EXPORT int lv_next(LvPlayer *p, LvFrame *out)
 {
     for (;;)
     {
+        if (p->interrupt)
+            return AVERROR_EXIT;
         if (p->pending)
         {
             AVFrame *f = p->pending;
@@ -1318,6 +1347,8 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
 // that keyframe and dropping what comes before).
 EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
 {
+    // Cleared first: a seek that fails leaves the player usable.
+    InterlockedExchange(&p->interrupt, 0);
     AVStream *vs = p->in.fmt->streams[p->vi];
     // Rounded down: rounded to the nearest, a time in the second half of a frame named the next one, which may be a
     // keyframe past the target.
@@ -1506,6 +1537,8 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
 {
     for (;;)
     {
+        if (p->interrupt)
+            return AVERROR_EXIT;
         if (p->a_done)
             return AVERROR_EOF;
         AVFrame *f = av_frame_alloc();

@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 4;
+const API: c_int = 5;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -228,6 +228,7 @@ struct Lib {
     next: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     next_audio: unsafe extern "C" fn(*mut c_void, *mut LvFrame) -> c_int,
     seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> c_int,
+    interrupt: unsafe extern "C" fn(*mut c_void),
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
@@ -264,6 +265,7 @@ fn load() -> Result<Lib, String> {
             next: sym!("lv_next"),
             next_audio: sym!("lv_next_audio"),
             seek: sym!("lv_seek"),
+            interrupt: sym!("lv_interrupt"),
             hw: sym!("lv_hw"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
@@ -393,6 +395,28 @@ pub enum Item {
     /// Interleaved stereo samples and the time of the first.
     Audio(i64, Vec<f32>),
     End,
+    /// `Interrupter::interrupt` stopped it: a seek is waiting.
+    Interrupted,
+}
+
+/// AVERROR_EXIT, FFERRTAG('E','X','I','T'): what lv_next says after lv_interrupt.
+const INTERRUPTED: c_int = -0x5449_5845;
+const LV_NO_AUDIO: c_int = 1;
+const LV_KEYFRAMES: c_int = 2;
+
+/// Stops a decoder's `next` from another thread (it hands back `Item::Interrupted` until its next `seek`).
+pub struct Interrupter(*mut c_void);
+// SAFETY: lv_interrupt only sets a flag atomically; the owner keeps the decoder alive while this exists (player.rs
+// drops it first).
+unsafe impl Send for Interrupter {}
+unsafe impl Sync for Interrupter {}
+
+impl Interrupter {
+    pub fn interrupt(&self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.interrupt)(self.0) };
+        }
+    }
 }
 
 /// An open video, decoding in file order (looker_video.c's LvPlayer). One thread at a time.
@@ -402,16 +426,23 @@ unsafe impl Send for Decoder {}
 
 impl Decoder {
     /// Opens `path`; `d3d11` is the window's ID3D11Device (made with video support) to decode on its GPU, or
-    /// null for the CPU. `pictures_only` leaves the sound out (the seek bar's previews).
-    pub fn open(path: &Path, d3d11: *mut c_void, pictures_only: bool) -> Result<(Decoder, Info), String> {
+    /// null for the CPU. `keyframes` (the seek bar's previews): no sound, and only keyframes, each handed out as
+    /// soon as it's decoded.
+    pub fn open(path: &Path, d3d11: *mut c_void, keyframes: bool) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
         let mut p = std::ptr::null_mut();
-        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, pictures_only as c_int, &mut info, &mut p) };
+        let flags = if keyframes { LV_NO_AUDIO | LV_KEYFRAMES } else { 0 };
+        let r = unsafe { (l.open)(wide(path).as_ptr(), d3d11, flags, &mut info, &mut p) };
         if r < 0 || p.is_null() {
             return Err(error(l, r));
         }
         Ok((Decoder(p), info))
+    }
+
+    /// A handle that stops `next` from another thread.
+    pub fn interrupter(&self) -> Interrupter {
+        Interrupter(self.0)
     }
 
     /// Whether pictures come from the GPU's decoder.
@@ -426,6 +457,9 @@ impl Decoder {
         const EOF: c_int = -541478725; // AVERROR_EOF, FFERRTAG('E','O','F',' ')
         if r == EOF {
             return Ok(Item::End);
+        }
+        if r == INTERRUPTED {
+            return Ok(Item::Interrupted);
         }
         if r < 0 {
             return Err(error(l, r));
@@ -451,6 +485,9 @@ impl Decoder {
         const EAGAIN: c_int = -11;
         if r == EOF || r == EAGAIN {
             return Ok(None);
+        }
+        if r == INTERRUPTED {
+            return Ok(Some(Item::Interrupted));
         }
         if r < 0 {
             return Err(error(l, r));
@@ -613,7 +650,7 @@ mod tests {
                     n += 1;
                 }
                 Item::Audio(t, _) => println!("after seek {to}: audio {t}"),
-                Item::End => break,
+                Item::End | Item::Interrupted => break,
             }
         }
     }

@@ -37,7 +37,6 @@ const BAR_H: f32 = 44.0;
 /// What the bar takes from the bottom of the photo's area, its margin included (toasts go above it).
 pub(super) const BAR_ROOM: f32 = BAR_H + 16.0;
 const BAR_BTN: f32 = 32.0;
-const BAR_MAX_W: f32 = 760.0;
 const VOLUME_W: f32 = 76.0;
 const SPEED_W: f32 = 48.0;
 /// The hover preview's box, in DIPs.
@@ -163,6 +162,7 @@ impl VideoView {
         self.conv = None;
         self.bitmap = None;
         self.still = None;
+        self.preview = None; // its decoder is on the old device too
         if let Some(p) = self.player.take() {
             self.resume = Some((p.position(), p.playing()));
         }
@@ -535,7 +535,9 @@ impl App {
 
     /// Whether the sound is off. Browse mode doesn't change it (Faye, 2026-11-10).
     pub(super) fn video_muted(&self) -> bool {
-        self.settings.video_muted
+        // LOOKER_MUTE=1: test runs stay silent whatever the volume setting.
+        static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        self.settings.video_muted || *FORCED.get_or_init(|| std::env::var_os("LOOKER_MUTE").is_some())
     }
 
     fn set_video_volume(&mut self, v: f32, toast: bool) {
@@ -698,7 +700,8 @@ impl App {
         let compact = aw < 360.0;
         let (margin, h, btn) = if compact { (8.0, 30.0, 24.0) } else { (16.0, BAR_H, BAR_BTN) };
         let pad = (h - btn) / 2.0;
-        let w = (aw - 2.0 * margin).min(BAR_MAX_W);
+        // As wide as the photo's area (Faye, 2026-11-10: the seek bar the full width of the preview).
+        let w = aw - 2.0 * margin;
         if w < 40.0 || a.bottom - a.top < h + 2.0 * margin {
             return None;
         }
@@ -885,7 +888,8 @@ impl App {
         if v.preview.is_none() {
             let rotation = v.player.as_ref().and_then(|p| p.info.as_ref()).map_or(0, |i| i.rotation);
             let s = g.dpi / 96.0;
-            v.preview = Some(Preview::open(&v.path, rotation, (PREVIEW_W * s) as u32, (PREVIEW_H * s) as u32));
+            let dev = if g.is_warp() { std::ptr::null_mut() } else { g.d3d().as_raw() };
+            v.preview = Some(Preview::open(&v.path, rotation, (PREVIEW_W * s) as u32, (PREVIEW_H * s) as u32, gfx::Sendable(dev)));
         }
         // A wish a pixel's worth of time apart at most: only the newest is decoded.
         if let Some(p) = &v.preview {

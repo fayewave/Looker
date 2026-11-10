@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Item, LvFrame, Picture, TEXTURE, Tempo};
+use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Interrupter, Item, LvFrame, Picture, TEXTURE, Tempo};
 use crate::yuv::{Uploaded, Uploader};
 
 /// A picture in the queue: the decoder's frame, and its planes on the GPU when the decode thread uploaded them
@@ -160,6 +160,18 @@ struct Shared {
     state: Mutex<State>,
     /// Wakes the decode thread (room in the queue, a seek, quit).
     wake: Condvar,
+    /// Stops the decoder mid-decode for a seek (an exact one decodes from its keyframe up to its target). Set
+    /// while the decoder lives: the decode thread takes it away before the decoder is closed.
+    interrupt: Mutex<Option<Interrupter>>,
+}
+
+/// Takes the interrupter away when the decode thread ends (declared after the decoder, so dropped before it).
+struct InterruptGone<'a>(&'a Shared);
+
+impl Drop for InterruptGone<'_> {
+    fn drop(&mut self) {
+        *self.0.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 impl Shared {
@@ -178,6 +190,8 @@ pub struct Player {
     pub info: Option<Info>,
     /// The epoch and time of the picture on screen.
     shown: Option<(u32, i64, i64)>,
+    /// Where the last seek is going, until its picture is up: the bar shows it at once, and jumps add up.
+    target: Option<i64>,
     /// Loops instead of stopping at the end (short clips).
     pub looping: bool,
     /// A frame step waiting for its picture.
@@ -222,6 +236,7 @@ impl Player {
                 audio_exhausted: false,
             }),
             wake: Condvar::new(),
+            interrupt: Mutex::new(None),
         });
         let opened = Arc::new(Mutex::new(None));
         let (s, p, o) = (shared.clone(), path.to_path_buf(), opened.clone());
@@ -233,7 +248,7 @@ impl Player {
                 decode_thread(s, &p, device.0, o)
             })
             .ok();
-        Player { shared, info: None, shown: None, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -274,6 +289,7 @@ impl Player {
             if let Some(p) = st.pictures.pop_front() {
                 st.set_anchor(p.pts_us, now);
                 st.picture_up = true;
+                self.target = None;
                 pick = Some(p);
             }
         } else {
@@ -348,9 +364,9 @@ impl Player {
         self.shared.wake.notify_all();
     }
 
-    /// The time of the picture on screen (or where a seek is going).
+    /// Where a seek is going, else the time of the picture on screen.
     pub fn position(&self) -> i64 {
-        self.shown.map_or(0, |(_, pts, _)| pts)
+        self.target.unwrap_or_else(|| self.shown.map_or(0, |(_, pts, _)| pts))
     }
 
     pub fn duration(&self) -> i64 {
@@ -367,7 +383,13 @@ impl Player {
         st.epoch = st.epoch.wrapping_add(1);
         st.seek = Some((us, exact));
         st.set_anchor(us, now);
+        drop(st);
+        self.target = Some(us);
         self.shared.wake.notify_all();
+        // A decode still on its way to an older target gives up.
+        if let Some(i) = self.shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            i.interrupt();
+        }
     }
 
     /// Pauses and shows the next picture (at the next `due`).
@@ -459,6 +481,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             if let Ok(mut o) = opened.lock() {
                 *o = Some(Ok(info));
             }
+            *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
             d
         }
         Err(e) => {
@@ -470,6 +493,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             return;
         }
     };
+    let _gone = InterruptGone(&shared);
     loop {
         // A seek or quit first; then wait while the queues are full (or at the end).
         let (pending, sound_only) = {
@@ -561,6 +585,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 }
             }
             Ok(Item::End) => st.end = true,
+            Ok(Item::Interrupted) => {} // a seek is waiting: taken at the top
             Err(e) => {
                 crate::trace::mark(format!("video: decode: {e}"));
                 st.error = Some(e);
@@ -600,11 +625,18 @@ pub struct Preview {
 }
 
 impl Preview {
-    /// Opens `path` for pictures fitted into `box_w × box_h`, turned `rotation` degrees.
-    pub fn open(path: &Path, rotation: i32, box_w: u32, box_h: u32) -> Preview {
+    /// Opens `path` for pictures fitted into `box_w × box_h`, turned `rotation` degrees, decoded on `d3d11`'s GPU
+    /// where it can (null: the CPU; a 4K HEVC keyframe took ~150 ms there, on one thread).
+    pub fn open(path: &Path, rotation: i32, box_w: u32, box_h: u32, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>) -> Preview {
         let shared = Arc::new(PreviewShared { state: Mutex::new(PreviewState::default()), wake: Condvar::new() });
         let (s, p) = (shared.clone(), path.to_path_buf());
-        std::thread::Builder::new().name("video-preview".into()).spawn(move || preview_thread(&s, &p, rotation, box_w, box_h)).ok();
+        std::thread::Builder::new()
+            .name("video-preview".into())
+            .spawn(move || {
+                let d3d11 = d3d11;
+                preview_thread(&s, &p, rotation, box_w, box_h, d3d11.0)
+            })
+            .ok();
         Preview { shared }
     }
 
@@ -640,9 +672,9 @@ impl Drop for Preview {
     }
 }
 
-fn preview_thread(shared: &PreviewShared, path: &Path, rotation: i32, box_w: u32, box_h: u32) {
+fn preview_thread(shared: &PreviewShared, path: &Path, rotation: i32, box_w: u32, box_h: u32, d3d11: *mut std::ffi::c_void) {
     let lock = || shared.state.lock().unwrap_or_else(|e| e.into_inner());
-    let mut dec = match Decoder::open(path, std::ptr::null_mut(), true) {
+    let mut dec = match Decoder::open(path, d3d11, true) {
         Ok((d, _)) => d,
         Err(e) => {
             crate::trace::mark(format!("video preview: {e}"));
@@ -986,6 +1018,48 @@ mod tests {
         None
     }
 
+    /// The seek bar's previews of `LOOKER_DECODE`: each wish answered, and how fast.
+    /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture preview_latency`
+    #[test]
+    #[ignore]
+    fn preview_latency() {
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let dur = crate::imaging::video::probe(&path).unwrap().duration_us;
+        // LOOKER_TEST_HW: on a hardware device, as the app does.
+        let device = std::env::var_os("LOOKER_TEST_HW").map(|_| unsafe {
+            use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+            use windows::Win32::Graphics::Direct3D11::*;
+            use windows::core::Interface;
+            let mut d = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, Default::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d), None, None).unwrap();
+            let d: ID3D11Device = d.unwrap();
+            let _ = d.cast::<ID3D11Multithread>().unwrap().SetMultithreadProtected(true);
+            d
+        });
+        let raw = device.as_ref().map_or(std::ptr::null_mut(), |d| windows::core::Interface::as_raw(d));
+        let p = Preview::open(&path, 0, 192, 108, crate::gfx::Sendable(raw));
+        let mut worst = 0.0f64;
+        for i in 0..12 {
+            let at = dur * ((i * 7) % 12) / 12;
+            let t = Instant::now();
+            p.want(at);
+            let got = loop {
+                if let Some(s) = p.take() {
+                    break Some(s);
+                }
+                if t.elapsed() > Duration::from_secs(3) {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            worst = worst.max(ms);
+            let s = got.unwrap_or_else(|| panic!("no preview for {at} us"));
+            println!("preview at {at} us: {}x{} in {ms:.0} ms", s.width, s.height);
+        }
+        println!("worst {worst:.0} ms");
+    }
+
     /// Opens `LOOKER_DECODE` on the CPU, paused, and checks the first picture, frame steps and exact seeks.
     /// `LOOKER_CODECS=%LOCALAPPDATA%\Looker\codecs LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture steps_and_seeks`
     #[test]
@@ -1019,6 +1093,15 @@ mod tests {
             println!("seek {target} -> {got} in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
             assert!(got <= target && target - got < 2 * frame, "seek {target} landed on {got}");
         }
+        // An exact seek overtaken by another at once (the first is interrupted mid-decode): the second wins.
+        let far = (info.duration_us * 9 / 10).max(frame);
+        p.seek(far, true);
+        p.seek(400_000, true);
+        let got = next_due(&mut p).expect("overtaken seek");
+        println!("seek {far} then 400000 -> {got}");
+        assert!(got <= 400_000 && 400_000 - got < 2 * frame, "landed on {got}");
+        let next = next_due(&mut p);
+        assert!(next.is_none() || next.is_some_and(|n| n < far / 2), "a picture of the first seek showed: {next:?}");
         assert!(!p.playing());
     }
 }
