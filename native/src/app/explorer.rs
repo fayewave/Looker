@@ -34,13 +34,6 @@ const MIN_IMAGE_W: f32 = 480.0;
 const BOUNCE: f32 = 14.0;
 const SPRING_SECS: f32 = 0.45;
 
-/// A pull of `d` DIPs into the sticky zone as the edge shows it: it gives less the further it's pulled, up to
-/// about 16 DIPs at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
-fn rubber(d: f32) -> f32 {
-    let (c, k) = (0.55, 40.0);
-    (1.0 - 1.0 / (d.max(0.0) * c / k + 1.0)) * k
-}
-
 /// Motion is on (Windows' "Animation effects").
 fn motion_on() -> bool {
     crate::motion::enabled()
@@ -353,8 +346,6 @@ pub(super) struct Explorer {
     /// it springs back with (from how far, since when).
     pub(super) stretch: f32,
     pub(super) spring: Option<(f32, Instant)>,
-    /// This drag came out of browse mode: the card holds at its widest a while before following the pointer in.
-    pub(super) left_browse: bool,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
     pub(super) side_settle: Option<crate::motion::Settle>,
@@ -444,7 +435,6 @@ impl Explorer {
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
-            left_browse: false,
             width_settle: None,
             side_settle: None,
             ahead: (String::new(), None),
@@ -2524,7 +2514,6 @@ impl App {
         // From where the edge rests: a bounce still swinging would shift where the sticky zone starts.
         self.explorer.spring = None;
         self.explorer.stretch = 0.0;
-        self.explorer.left_browse = false;
         self.explorer.drag = Some((x, self.explorer_width()));
     }
 
@@ -2535,35 +2524,20 @@ impl App {
         let (ww, _) = self.size_dip();
         let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // Sticky at the change, with give (Faye, 2026-11-10). The zone is on the card's side of its widest: dragged
-        // out, the card holds there on a rubber band until the pointer is `STICK` past it, then snaps into browse
-        // mode with a bounce; dragged back, browse mode gives way to the card as soon as the edge reaches the card's
-        // widest (its sidebar goes there). One point each way, so it can't flip to and fro. Out of the zone the edge
-        // is where the pointer is, in browse mode too (the list makes room for the sidebar).
+        // The card's widest is a sticky line, from either side and in either mode (Faye, 2026-11-10): within
+        // `STICK` of it the edge lags the pointer on a curve that's flat at the line and catches up at the zone's
+        // ends (no jump anywhere), so it takes a deliberate pull to move off it. Browse mode comes on halfway out
+        // past the line and goes halfway back (apart, so it can't flicker while the edge sits at the line). Out of
+        // the zone the edge is where the pointer is, in browse mode too (the list makes room for the sidebar).
         const STICK: f32 = 96.0;
+        let d = w - card_cap;
+        let off = if d.abs() < STICK { d.signum() * STICK * (d.abs() / STICK).powi(3) } else { d };
+        let edge = card_cap + off;
         let was = self.browsing();
-        let to_browse = if was { w >= card_cap } else { w > card_cap + STICK };
-        // A fast flick that jumps the zone in one move still lands in it first (its stretch shows for that move).
-        let w = if !was && to_browse && self.explorer.stretch == 0.0 { card_cap + STICK * 0.5 } else { w };
-        let to_browse = if was { to_browse } else { w > card_cap + STICK };
-        // Narrowed out of browse mode, the card holds at its widest on the rubber band until the pointer is `STICK`
-        // further in, then follows it (Faye, 2026-11-10: sticky that way too).
-        if was && !to_browse {
-            self.explorer.left_browse = true;
-        }
-        if !to_browse && w <= card_cap - STICK {
-            self.explorer.left_browse = false;
-        }
-        let hold = !to_browse && self.explorer.left_browse && w < card_cap;
-        self.explorer.stretch = match (was, to_browse) {
-            (false, false) if w > card_cap => rubber(w - card_cap),
-            (_, false) if hold => -rubber(card_cap - w),
-            _ => 0.0,
-        };
-        let w = if hold { card_cap } else { w };
+        let to_browse = if was { d > -STICK * 0.5 } else { d > STICK * 0.5 };
         let now = Instant::now();
         if was != to_browse {
-            // The snap: a little overshoot the way it went, swinging back.
+            // The change: a small overshoot the way it went, swinging back, as the sidebar slides.
             self.explorer.spring = Some((if to_browse { BOUNCE } else { -BOUNCE }, now));
         }
         if to_browse {
@@ -2572,12 +2546,16 @@ impl App {
                 self.explorer.browse.set([1.0], now);
                 self.explorer.focused = true;
             }
-            self.settings.browse_share = w.max(card_cap) / ww;
+            // Browse mode is at least the card's widest: short of it, the rest shows as stretch.
+            self.settings.browse_share = edge.max(card_cap) / ww;
+            self.explorer.stretch = (edge - card_cap).min(0.0);
         } else {
             if was {
                 self.explorer.browse.set([0.0], now);
             }
-            self.settings.explorer_width = w.min(card_cap);
+            // The card is at most its widest: past it, the rest shows as stretch.
+            self.settings.explorer_width = edge.min(card_cap);
+            self.explorer.stretch = (edge - card_cap).max(0.0);
         }
         self.layout_changed();
     }
