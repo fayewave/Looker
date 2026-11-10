@@ -235,8 +235,15 @@ struct BarLayout {
 /// an hour or longer (Faye, 2026-11-10: to see each picture while stepping through). `fps` 0: no pictures part.
 pub(super) fn timecode(us: i64, fps: f64, hours: bool) -> String {
     let us = us.max(0);
-    let s = (us / 1_000_000) as u64;
-    let f = if fps > 0.0 { ((us % 1_000_000) as f64 * fps / 1e6 + 1e-3).floor() as u64 } else { 0 };
+    let mut s = (us / 1_000_000) as u64;
+    // The nearest picture, not the one before: screen recordings (NVIDIA's) stamp pictures 7.5 to 9 ms apart at
+    // 120 fps, and rounding down gave two pictures one number and skipped the next (Faye, 2026-11-10: a step
+    // that didn't move the timecode, then one that moved it two). Rounding up to a whole second carries.
+    let mut f = if fps > 0.0 { ((us % 1_000_000) as f64 * fps / 1e6).round() as u64 } else { 0 };
+    if fps > 0.0 && f >= fps.ceil() as u64 {
+        s += 1;
+        f = 0;
+    }
     // Always as many picture digits as the rate needs: "00:00:091" at 120 fps, never "91" then "100" (Faye).
     let d = frame_digits(fps);
     if hours { format!("{}:{:02}:{:02}:{:0d$}", s / 3600, s / 60 % 60, s % 60, f) } else { format!("{:02}:{:02}:{:0d$}", s / 60, s % 60, f) }
@@ -1218,12 +1225,19 @@ mod tests {
         assert_eq!(clock_text(760_000_000, false), "12:40");
         assert_eq!(clock_text(3_723_000_000, true), "1:02:03");
         assert_eq!(timecode(65_400_000, 25.0, false), "01:05:10");
-        assert_eq!(timecode(65_983_000, 60.0, false), "01:05:58");
+        assert_eq!(timecode(65_983_000, 60.0, false), "01:05:59"); // picture 59 starts at .98333, stored as .983
         assert_eq!(timecode(3_723_040_000, 25.0, true), "1:02:03:01");
         assert_eq!(timecode(5_000_000, 0.0, false), "00:05:00");
         assert_eq!(timecode(760_000, 120.0, false), "00:00:091");
-        assert_eq!(timecode(1_840_000, 120.0, false), "00:01:100");
+        assert_eq!(timecode(1_833_334, 120.0, false), "00:01:100");
         assert_eq!(timecode(1_000_000, 119.88, false), "00:01:000");
+        // Late in a second, nearest is the next second's first picture.
+        assert_eq!(timecode(1_999_000, 120.0, false), "00:02:000");
+        // An NVIDIA capture's pictures (7.5 to 9 ms apart at 120 fps), stepped through: each one number on.
+        let pts = [3_091_178, 3_100_222, 3_108_244, 3_115_778, 3_124_800, 3_132_500, 3_141_011, 3_150_044, 3_157_856];
+        let got: Vec<String> = pts.iter().map(|&t| timecode(t, 120.008, false)).collect();
+        let want: Vec<String> = (11..=19).map(|f| format!("00:03:{f:03}")).collect();
+        assert_eq!(got, want);
         assert_eq!(timecode_template(30.0, false), "00:00:00");
         assert_eq!(timecode_template(100.0, false), "00:00:00");
         assert_eq!(timecode_template(120.0, true), "0:00:00:000");
