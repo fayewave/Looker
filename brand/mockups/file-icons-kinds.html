@@ -74,10 +74,18 @@ function whiteMark(x, y, s) {
     <path d="${MARK}" fill="${INK}" fill-rule="evenodd"/></g>`;
 }
 
+// The real width of `t` at `size` (with the 2 % letter spacing), measured in Segoe UI.
+const measureCtx = document.createElement("canvas").getContext("2d");
+function textWidth(t, size, weight = 800) {
+  measureCtx.font = `${weight} ${size}px ${FONT}`;
+  return measureCtx.measureText(t).width + t.length * size * 0.02;
+}
+
 function fitText(t, x, y, maxW, size, fill, weight = 800) {
-  const est = t.length * size * 0.62;
-  const s = est > maxW ? size * maxW / est : size;
-  return `<text x="${x}" y="${y}" font-family="${FONT}" font-weight="${weight}" font-size="${s.toFixed(2)}" fill="${fill}" text-anchor="middle" dominant-baseline="central" letter-spacing="${(s * 0.02).toFixed(2)}">${t}</text>`;
+  const w = textWidth(t, size, weight);
+  const s = w > maxW ? size * maxW / w : size;
+  // Extensions are all capitals: centre the cap height (0.7 em in Segoe UI) on y, not the em box.
+  return `<text x="${x}" y="${(y + s * 0.35).toFixed(2)}" font-family="${FONT}" font-weight="${weight}" font-size="${s.toFixed(2)}" fill="${fill}" text-anchor="middle" letter-spacing="${(s * 0.02).toFixed(2)}">${t}</text>`;
 }
 
 // Mountains and sun inside a box (x, y, w, h), for photo-like icons.
@@ -157,8 +165,9 @@ const BY = Object.fromEntries(KINDS.map(k => [k.key, k]));
 
 // The extension tag, bottom right, at 48 px and up.
 function tag(ext) {
-  const w = Math.max(96, ext.length * 34 + 30);
-  return `<rect x="${250 - w}" y="178" width="${w}" height="72" rx="16" fill="#141414" stroke="#ffffff" stroke-width="5"/>` + fitText(ext, 250 - w / 2, 215, w - 20, 50, "#fff");
+  // As wide as the text plus even padding (the text shrinks only if it would pass 242).
+  const w = Math.min(242, textWidth(ext, 50) + 44);
+  return `<rect x="${250 - w}" y="178" width="${w}" height="72" rx="16" fill="#141414" stroke="#ffffff" stroke-width="5"/>` + fitText(ext, 250 - w / 2, 214, w - 44, 50, "#fff");
 }
 
 function svg(kind, ext, size, tagged) {

@@ -32,6 +32,8 @@ function New-NativeLayout([string]$Root, [string]$OutDir, [int]$Revision = -1, [
     New-Item -ItemType Directory (Join-Path $OutDir 'Assets') | Out-Null
     Copy-Item $exe (Join-Path $OutDir 'Looker.exe')
     Copy-Item (Join-Path $Root 'native\assets\*.png') (Join-Path $OutDir 'Assets')
+    # Per-extension file type icons (scripts/New-FileIcons.ps1).
+    Copy-Item (Join-Path $Root 'native\assets\FileIcons') (Join-Path $OutDir 'Assets\FileIcons') -Recurse
 
     # HEIC/AVIF fallback decoders and their licences (loaded only when WIC can't decode a file).
     $codecs = Join-Path $env:LOCALAPPDATA 'Looker\codecs'

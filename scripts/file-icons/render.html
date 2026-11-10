@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>render</title><script src="icons.js"></script></head>
+<body><pre id="out"></pre>
+<script>
+// Rendered by New-FileIcons.ps1 through headless Edge (--dump-dom): every extension at every target size, as PNG
+// data URLs, plus each extension's Explorer type name, in #out as JSON.
+const SIZES = [16, 20, 24, 32, 40, 48, 64, 256];
+const exts = Object.values(KIND_OF).flatMap(l => l.split(" "));
+const load = src => new Promise((ok, err) => { const i = new Image(); i.onload = () => ok(i); i.onerror = err; i.src = src; });
+(async () => {
+  await document.fonts.ready;
+  const out = { icons: {}, names: {} };
+  for (const e of exts) {
+    out.names[e] = TYPE_NAME[kindOf(e)](e.toUpperCase());
+    out.icons[e] = {};
+    for (const s of SIZES) {
+      const img = await load("data:image/svg+xml;charset=utf-8," + encodeURIComponent(iconSvg(e, s)));
+      const c = document.createElement("canvas");
+      c.width = s; c.height = s;
+      c.getContext("2d").drawImage(img, 0, 0, s, s);
+      out.icons[e][s] = c.toDataURL("image/png");
+    }
+  }
+  document.getElementById("out").textContent = JSON.stringify(out);
+})().catch(e => { document.getElementById("out").textContent = "ERROR " + e; });
+</script></body></html>

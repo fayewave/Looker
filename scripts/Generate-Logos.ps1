@@ -203,8 +203,7 @@ foreach ($t in $targets) {
     Render-Icon $t $t $t (Join-Path $OutDir "Square44x44Logo.targetsize-$t.png")
     Render-Icon $t $t $t (Join-Path $OutDir "Square44x44Logo.targetsize-${t}_altform-unplated.png")
     Render-Icon $t $t $t (Join-Path $OutDir "Square44x44Logo.targetsize-${t}_altform-lightunplated.png")
-    # File-type association icon shown by Explorer on associated files.
-    Render-Icon $t $t $t (Join-Path $OutDir "FileIcon.targetsize-$t.png")
+    # (File-type icons are per extension: scripts/New-FileIcons.ps1.)
 }
 
 # --- AppIcon.ico (window/taskbar icon via AppWindow.SetIcon): PNG-compressed frames ------------------
