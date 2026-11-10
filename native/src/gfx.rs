@@ -127,8 +127,21 @@ pub fn init_text() -> Result<Text> {
 
 impl Text {
     /// The family holding `weight`: SemiBold's from 600 up, else Medium's.
-    fn family(&self, weight: DWRITE_FONT_WEIGHT) -> PCWSTR {
+    pub fn family(&self, weight: DWRITE_FONT_WEIGHT) -> PCWSTR {
         PCWSTR(if weight.0 >= DWRITE_FONT_WEIGHT_SEMI_BOLD.0 { self.inter_strong.as_ptr() } else { self.inter_family.as_ptr() })
+    }
+
+    /// Subtitles' text: Inter Medium at `size` DIPs (bold is SemiBold, set per range by the caller), wrapping at
+    /// words, centred; scripts Inter lacks fall back to Windows' fonts.
+    pub fn subtitle_format(&self, size: f32) -> Result<IDWriteTextFormat> {
+        unsafe {
+            let weight = DWRITE_FONT_WEIGHT_MEDIUM;
+            let f = self.dwrite.CreateTextFormat(self.family(weight), &self.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
+            f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+            Ok(f)
+        }
     }
 
     /// A one-line Inter format, ellipsis-trimmed, vertically centred (for drawing outside the UI, e.g. mtl.rs).
@@ -526,6 +539,74 @@ impl Gfx {
             }
             self.dev.dc.EndDraw(None, None)?;
             self.swap.Present(1, DXGI_PRESENT(0)).ok()
+        }
+    }
+
+    /// A subtitle's text as a picture, made outside a frame (Direct2D isn't mid-draw): `layout` (DIPs; white where
+    /// it has no colour of its own) over a dark outline `outline` DIPs wide and a soft shadow below it, so it reads
+    /// on any picture. Premultiplied BGRA at the display's DPI; returns it with its size in DIPs and where the
+    /// layout's origin sits in it (the margin the outline and shadow take).
+    pub fn outlined_text(&self, layout: &IDWriteTextLayout, outline: f32) -> Result<(ID2D1Bitmap1, f32, f32, f32)> {
+        unsafe {
+            let dc = &self.dev.dc;
+            let mut m = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut m)?;
+            let blur = outline.max(1.0) * 1.2;
+            let pad = (outline + blur * 3.0 + 2.0).ceil();
+            // The layout's whole width (its text is aligned within it), and its lines' height.
+            let (w, h) = (m.layoutWidth + 2.0 * pad, m.height + 2.0 * pad);
+            let origin_x = pad;
+            let k = self.dpi / 96.0;
+            let (pw, ph) = (((w * k).ceil() as u32).clamp(1, self.max_bitmap_size()), ((h * k).ceil() as u32).clamp(1, self.max_bitmap_size()));
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: self.dpi,
+                dpiY: self.dpi,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let out = dc.CreateBitmap(D2D_SIZE_U { width: pw, height: ph }, None, 0, &props)?;
+            let prev = dc.GetTarget().ok();
+            let (mut dx, mut dy) = (0.0f32, 0.0f32);
+            dc.GetDpi(&mut dx, &mut dy);
+            let mut world = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut world);
+            let white = dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
+            let at = windows_numerics::Vector2 { X: origin_x, Y: pad };
+            // The text's shape alone, for the outline and shadow to grow from.
+            let shape = dc.CreateCommandList()?;
+            dc.SetTarget(&shape);
+            dc.SetDpi(self.dpi, self.dpi);
+            dc.BeginDraw();
+            dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+            dc.DrawTextLayout(at, layout, &white, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            let drew = dc.EndDraw(None, None);
+            let closed = shape.Close();
+            let r = drew.and(closed).and_then(|_| {
+                dc.SetTarget(&out);
+                dc.SetDpi(self.dpi, self.dpi);
+                dc.BeginDraw();
+                dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+                dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+                let grown = dc.CreateEffect(&CLSID_D2D1Morphology)?;
+                grown.SetInput(0, &shape, true);
+                set_u32(&grown, D2D1_MORPHOLOGY_PROP_MODE.0 as u32, D2D1_MORPHOLOGY_MODE_DILATE.0 as u32)?;
+                let kernel = ((2.0 * outline * k).round() as u32 + 1).clamp(1, 99);
+                e_u32(&grown, D2D1_MORPHOLOGY_PROP_WIDTH.0 as u32, kernel)?;
+                e_u32(&grown, D2D1_MORPHOLOGY_PROP_HEIGHT.0 as u32, kernel)?;
+                // The outline: the grown shape, its edge softened a little; the shadow: blurred further, lower.
+                let edge = shadow(dc, &grown.GetOutput()?, (0.45 * k).max(0.5), 0.92)?;
+                let drop = shadow(dc, &grown.GetOutput()?, blur, 0.55)?;
+                let below = windows_numerics::Vector2 { X: outline * 0.3, Y: outline * 0.9 };
+                dc.DrawImage(&drop.GetOutput()?, Some(&below), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                dc.DrawImage(&edge.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                dc.DrawTextLayout(at, layout, &white, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                dc.EndDraw(None, None).map(|_| ())
+            });
+            dc.SetTarget(prev.as_ref());
+            dc.SetDpi(dx, dy);
+            dc.SetTransform(&world);
+            r.map(|_| (out, pw as f32 / k, ph as f32 / k, pad))
         }
     }
 
@@ -1484,6 +1565,24 @@ fn bake(dc: &ID2D1DeviceContext, image: &ID2D1Image, width: u32, height: u32) ->
         dc.SetTarget(prev.as_ref());
         r.map(|_| out)
     }
+}
+
+/// A shadow of `src`'s alpha: black at `alpha`, blurred by `deviation` DIPs.
+fn shadow(dc: &ID2D1DeviceContext, src: &ID2D1Image, deviation: f32, alpha: f32) -> Result<ID2D1Effect> {
+    unsafe {
+        let fx = dc.CreateEffect(&CLSID_D2D1Shadow)?;
+        fx.SetInput(0, src, true);
+        set_f32(&fx, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION.0 as u32, deviation)?;
+        let c: [f32; 4] = [0.0, 0.0, 0.0, alpha];
+        let bytes: Vec<u8> = c.iter().flat_map(|v| v.to_le_bytes()).collect();
+        fx.SetValue(D2D1_SHADOW_PROP_COLOR.0 as u32, D2D1_PROPERTY_TYPE_VECTOR4, &bytes)?;
+        Ok(fx)
+    }
+}
+
+/// An effect's UINT32 property (`set_u32` is for enums).
+fn e_u32(e: &ID2D1Effect, index: u32, v: u32) -> Result<()> {
+    unsafe { e.SetValue(index, D2D1_PROPERTY_TYPE_UINT32, &v.to_le_bytes()) }
 }
 
 fn set_u32(e: &ID2D1Effect, index: u32, v: u32) -> Result<()> {

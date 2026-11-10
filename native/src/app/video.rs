@@ -78,7 +78,7 @@ pub(super) struct VideoView {
     pub path: PathBuf,
     /// An audio file (app/audio.rs draws it): its engine plays sound only.
     pub audio: bool,
-    player: Option<Engine>,
+    pub(super) player: Option<Engine>,
     /// On the current device; dropped when it changes.
     conv: Option<Converter>,
     bitmap: Option<ID2D1Bitmap1>,
@@ -106,6 +106,10 @@ pub(super) struct VideoView {
     /// The pointer is hidden (fullscreen, playing, the bar gone).
     cursor_hidden: bool,
     stats: Stats,
+    /// Its subtitles (subtitles.rs).
+    pub(super) subs: super::subtitles::SubView,
+    /// The controls bar's top and how far it has faded in, as last drawn (subtitles keep clear of it).
+    pub(super) bar_top: Option<(f32, f32)>,
 }
 
 /// How the UI thread kept up while it played, for the trace.
@@ -194,6 +198,7 @@ impl VideoView {
         self.bitmap = None;
         self.still = None;
         self.preview = None; // its decoder is on the old device too
+        self.subs.device_lost();
         if let Some(p) = self.player.take() {
             self.resume = Some((p.position(), p.playing()));
         }
@@ -382,6 +387,8 @@ impl App {
             flash: None,
             cursor_hidden: false,
             stats: Stats::default(),
+            subs: Default::default(),
+            bar_top: None,
         });
     }
 
@@ -452,7 +459,7 @@ impl App {
     /// Frames are moving, the player is still coming up, or a preview is on its way: draw again next vsync.
     pub(super) fn video_animating(&self) -> bool {
         self.video.as_ref().is_some_and(|v| {
-            !v.failed && (v.flash.is_some() || v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at) || !s.exact) || v.preview.as_ref().is_some_and(|p| p.busy()))
+            !v.failed && (v.flash.is_some() || v.subs.busy || v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at) || !s.exact) || v.preview.as_ref().is_some_and(|p| p.busy()))
         })
     }
 
@@ -800,6 +807,10 @@ impl App {
             VK_UP if !explorer => self.video_volume_by(0.05),
             VK_DOWN if !explorer => self.video_volume_by(-0.05),
             VK_SPACE if self.player().is_some() => self.video_click(),
+            // VLC's: G earlier, H later, V the next subtitle track.
+            VK_G if self.player().is_some() => self.subtitle_delay(-1),
+            VK_H if self.player().is_some() => self.subtitle_delay(1),
+            VK_V if self.player().is_some() => self.cycle_subtitles(),
             _ => {
                 let Some(p) = self.player() else {
                     // Not open yet: the keys that would act on it are still taken, not passed to the photo keys.
@@ -1004,10 +1015,11 @@ impl App {
             }
             v.cursor_hidden = hide;
         }
-        if a <= 0.0 {
-            return;
+        let layout = if a > 0.0 { self.bar_layout(g) } else { None };
+        if let Some(v) = self.video.as_mut() {
+            v.bar_top = layout.as_ref().map(|l| (l.bar.top, a));
         }
-        let Some(l) = self.bar_layout(g) else { return };
+        let Some(l) = layout else { return };
         let (dur, playing, ended) = {
             let p = self.player_ref().unwrap();
             (p.duration(), p.playing(), p.at_end())
@@ -1522,6 +1534,14 @@ impl Engine {
     }
     pub(super) fn video_tracks(&self) -> &[Track] {
         if let Engine::Video(p) = self { p.video_tracks() } else { &[] }
+    }
+    /// The video's subtitle streams (none for an audio file).
+    pub(super) fn sub_tracks(&self) -> &[Track] {
+        if let Engine::Video(p) = self { p.sub_tracks() } else { &[] }
+    }
+    /// The video stream's start, which the player's clock counts from.
+    pub(super) fn start_us(&self) -> i64 {
+        if let Engine::Video(p) = self { p.start_us() } else { 0 }
     }
     fn step_forward(&mut self) {
         if let Engine::Video(p) = self {

@@ -379,6 +379,7 @@ impl App {
         self.prepare_model(&g);
         self.prepare_video(&g);
         self.prepare_audio(&g);
+        self.prepare_subtitles(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g);
@@ -607,6 +608,9 @@ impl App {
         }
         self.draw_placeholder(g);
         self.draw_scrims(g, bg);
+        if self.placeholder.is_none() {
+            self.draw_subtitles(g, bg);
+        }
     }
 
     /// Gradients behind the bars, so they read on a bright photo (black in the dark themes, the page colour in

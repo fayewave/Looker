@@ -1,0 +1,26 @@
+{
+  "name": "libass",
+  "version": "0.17.5",
+  "port-version": 100,
+  "description": "libass is a portable subtitle renderer for the ASS/SSA (Advanced Substation Alpha/Substation Alpha) subtitle format. Looker's overlay: FreeType without its optional compression and PNG libraries, fonts from DirectWrite.",
+  "homepage": "https://github.com/libass/libass",
+  "license": "ISC",
+  "dependencies": [
+    {
+      "name": "freetype",
+      "default-features": false
+    },
+    "fribidi",
+    {
+      "name": "harfbuzz",
+      "default-features": false,
+      "features": [
+        "freetype"
+      ]
+    },
+    {
+      "name": "vcpkg-tool-meson",
+      "host": true
+    }
+  ]
+}

@@ -16,6 +16,7 @@
         "swscale"
       ]
     },
+    "libass",
     {
       "name": "vcpkg-cmake",
       "host": true

@@ -119,7 +119,12 @@ pub struct Settings {
     pub video_resume: bool,
     /// Audio files show their spectrogram instead of the waveform.
     pub audio_spectrum: bool,
+    /// Subtitles' text size, percent of normal (`SUBTITLE_SIZES`).
+    pub subtitle_size: u32,
 }
+
+/// The sizes the Subtitles menu offers, percent.
+pub const SUBTITLE_SIZES: [u32; 5] = [75, 100, 125, 150, 200];
 
 /// The loop lengths the Settings page offers, in seconds.
 pub const LOOP_CHOICES: [u32; 6] = [0, 5, 10, 30, 60, u32::MAX];
@@ -146,7 +151,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, subtitle_size: 100 }
     }
 }
 
@@ -292,6 +297,7 @@ pub fn parse(text: &str) -> Settings {
             "video_loop" => s.video_loop_secs = if v == "always" { u32::MAX } else { v.parse().unwrap_or(10) },
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
+            "subtitle_size" => s.subtitle_size = v.parse().unwrap_or(100).clamp(25, 400),
             "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Black),
             "theme_follow" => s.theme_follow = v != "0",
             "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Black),
@@ -361,6 +367,7 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("video_start_muted={}\n", s.video_start_muted as i32));
     out.push_str(&format!("video_resume={}\n", s.video_resume as i32));
+    out.push_str(&format!("subtitle_size={}\n", s.subtitle_size));
     out.push_str(&format!("theme={}\n", s.theme.name().to_lowercase()));
     out.push_str(&format!("theme_follow={}\n", s.theme_follow as i32));
     out.push_str(&format!("theme_dark={}\n", s.theme_dark.name().to_lowercase()));
@@ -596,6 +603,7 @@ mod tests {
             video_start_muted: true,
             video_resume: false,
             audio_spectrum: true,
+            subtitle_size: 150,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

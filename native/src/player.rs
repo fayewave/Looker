@@ -331,6 +331,10 @@ pub struct Due {
     pub picture: Frame,
 }
 
+/// What the decode thread hands over once the file is open: its facts, every picture's time, its audio, video and
+/// subtitle streams, and the zero of the clock in the file (`Decoder::start_us`).
+type Opened = (Info, Vec<i64>, Vec<Track>, Vec<Track>, Vec<Track>, i64);
+
 pub struct Player {
     shared: Arc<Shared>,
     pub info: Option<Info>,
@@ -350,13 +354,16 @@ pub struct Player {
     tracks: Vec<Track>,
     /// Its video streams (`Decoder::video_tracks`), the one showing marked.
     vtracks: Vec<Track>,
+    /// Its subtitle streams (`Decoder::sub_tracks`), and the clock's zero in the file (for reading them).
+    stracks: Vec<Track>,
+    start_us: i64,
     /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
     /// such wait counted once), for the trace.
     shown_count: u64,
     dropped: u64,
     starved: u64,
     waiting: bool,
-    opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>, Vec<Track>), String>>>>,
+    opened: Arc<Mutex<Option<Result<Opened, String>>>>,
 }
 
 impl Player {
@@ -413,7 +420,7 @@ impl Player {
                 decode_thread(s, &p, device.0, o, video, audio)
             })
             .ok();
-        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), vtracks: Vec::new(), shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), vtracks: Vec::new(), stracks: Vec::new(), start_us: 0, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -422,10 +429,12 @@ impl Player {
             return Some(Ok(()));
         }
         let r = self.opened.lock().ok()?.take()?;
-        Some(r.map(|(i, frames, tracks, vtracks)| {
+        Some(r.map(|(i, frames, tracks, vtracks, stracks, start_us)| {
             self.frames = frames;
             self.tracks = tracks;
             self.vtracks = vtracks;
+            self.stracks = stracks;
+            self.start_us = start_us;
             // Short clips loop, like an animated image.
             self.looping = i.duration_us > 0 && i.duration_us < 10_000_000;
             if i.audio_channels > 0 {
@@ -561,6 +570,17 @@ impl Player {
     /// The file's audio streams, the one playing marked (empty until it has opened, or without sound).
     pub fn audio_tracks(&self) -> &[Track] {
         &self.tracks
+    }
+
+    /// The file's subtitle streams (empty until it has opened).
+    pub fn sub_tracks(&self) -> &[Track] {
+        &self.stracks
+    }
+
+    /// Where the clock's zero (the video stream's start) is in the file, in µs: subtitle streams read on their own
+    /// are put on the clock with it.
+    pub fn start_us(&self) -> i64 {
+        self.start_us
     }
 
     /// The file's video streams, the one showing marked (empty until it has opened).
@@ -722,7 +742,7 @@ fn frame_number_in(frames: &[i64], us: i64) -> Option<usize> {
     })
 }
 
-fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>, Vec<Track>), String>>>>, video: Option<i32>, audio: Option<i32>) {
+fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<Opened, String>>>>, video: Option<i32>, audio: Option<i32>) {
     let t = Instant::now();
     // CPU pictures go on the window's device from here, so the UI thread only draws them.
     let uploader = unsafe { <windows::Win32::Graphics::Direct3D11::ID3D11Device as windows::core::Interface>::from_raw_borrowed(&d3d11) }.and_then(|d| Uploader::new(d).ok());
@@ -736,7 +756,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 t.elapsed().as_secs_f64() * 1000.0
             ));
             if let Ok(mut o) = opened.lock() {
-                *o = Some(Ok((info, d.frame_times(), d.audio_tracks(), d.video_tracks())));
+                *o = Some(Ok((info, d.frame_times(), d.audio_tracks(), d.video_tracks(), d.sub_tracks(), d.start_us())));
             }
             *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
             shared.gpu.store(d.hardware(), std::sync::atomic::Ordering::Relaxed);

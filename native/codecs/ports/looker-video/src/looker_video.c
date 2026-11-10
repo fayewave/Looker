@@ -29,6 +29,9 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
+#include <ass/ass.h>
+
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +40,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 10
+#define LOOKER_VIDEO_API 11
 
 typedef struct LvInfo
 {
@@ -58,7 +61,8 @@ typedef struct LvInfo
     char audio_codec[32];
 } LvInfo;
 
-// One of a file's audio or video streams, for the track menus (lv_audio_tracks, lv_video_tracks).
+// One of a file's audio, video or subtitle streams, for the track menus (lv_audio_tracks, lv_video_tracks,
+// lv_sub_tracks).
 typedef struct LvTrack
 {
     int stream;       // its stream index: what lv_open_streams takes
@@ -70,7 +74,17 @@ typedef struct LvTrack
     char codec[32];   // FFmpeg's short codec name
     int width;        // a video track's picture size (0 for audio)
     int height;
+    int flags;        // LV_TRACK_*: a subtitle track's kind and dispositions
 } LvTrack;
+
+enum
+{
+    LV_TRACK_FORCED = 1,           // the container's forced flag: shown even with subtitles off
+    LV_TRACK_HEARING_IMPAIRED = 2, // SDH / captions
+    LV_TRACK_TEXT = 4,             // plain text (SubRip, WebVTT, mov_text...): Looker lays it out itself
+    LV_TRACK_ASS = 8,              // ASS/SSA: drawn by libass
+    LV_TRACK_BITMAP = 16,          // pictures (PGS, VobSub, DVB)
+};
 
 // ---- file input -----------------------------------------------------------------------------------------------
 
@@ -791,6 +805,8 @@ typedef struct LvPlayer
     int n_tracks;
     LvTrack *vtracks;        // its video streams, cover art left out (lv_video_tracks)
     int n_vtracks;
+    LvTrack *stracks;        // its subtitle streams (lv_sub_tracks)
+    int n_stracks;
 } LvPlayer;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
@@ -944,6 +960,7 @@ EXPORT void lv_close(LvPlayer *p)
     free(p->frame_us);
     free(p->tracks);
     free(p->vtracks);
+    free(p->stracks);
     free(p);
 }
 
@@ -1009,6 +1026,62 @@ static void list_video_tracks(LvPlayer *p)
             snprintf(t->title, sizeof t->title, "%s", e->value);
         snprintf(t->codec, sizeof t->codec, "%s", avcodec_get_name(s->codecpar->codec_id));
     }
+}
+
+static int sub_kind(enum AVCodecID id)
+{
+    if (id == AV_CODEC_ID_ASS || id == AV_CODEC_ID_SSA)
+        return LV_TRACK_ASS;
+    const AVCodecDescriptor *d = avcodec_descriptor_get(id);
+    return d && (d->props & AV_CODEC_PROP_BITMAP_SUB) ? LV_TRACK_BITMAP : LV_TRACK_TEXT;
+}
+
+// The file's subtitle streams that something here decodes (a stream with no decoder isn't offered).
+static void list_sub_tracks(LvPlayer *p)
+{
+    AVFormatContext *fmt = p->in.fmt;
+    int n = 0;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+        n += fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE;
+    if (n == 0 || (p->stracks = calloc((size_t)n, sizeof *p->stracks)) == NULL)
+        return;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        const AVStream *s = fmt->streams[i];
+        if (s->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE)
+            continue;
+        int kind = sub_kind(s->codecpar->codec_id);
+        if (kind != LV_TRACK_ASS && avcodec_find_decoder(s->codecpar->codec_id) == NULL)
+            continue;
+        LvTrack *t = &p->stracks[p->n_stracks++];
+        t->stream = (int)i;
+        t->is_default = (s->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        t->flags = kind | ((s->disposition & AV_DISPOSITION_FORCED) ? LV_TRACK_FORCED : 0) |
+                   ((s->disposition & AV_DISPOSITION_HEARING_IMPAIRED) ? LV_TRACK_HEARING_IMPAIRED : 0);
+        const AVDictionaryEntry *e = av_dict_get(s->metadata, "language", NULL, 0);
+        if (e && strcmp(e->value, "und") != 0)
+            snprintf(t->lang, sizeof t->lang, "%s", e->value);
+        e = av_dict_get(s->metadata, "title", NULL, 0);
+        if (e == NULL)
+            e = av_dict_get(s->metadata, "handler_name", NULL, 0);
+        if (e && strstr(e->value, "Handler") == NULL && strstr(e->value, "handler") == NULL)
+            snprintf(t->title, sizeof t->title, "%s", e->value);
+        snprintf(t->codec, sizeof t->codec, "%s", avcodec_get_name(s->codecpar->codec_id));
+    }
+}
+
+// The file's subtitle streams; valid until lv_close.
+EXPORT int lv_sub_tracks(const LvPlayer *p, const LvTrack **out)
+{
+    *out = p ? p->stracks : NULL;
+    return p ? p->n_stracks : 0;
+}
+
+// The zero of the player's clock: the video stream's start time in the file, in microseconds (lv_subs_open takes
+// it so a subtitle stream's times line up with the pictures').
+EXPORT long long lv_start_us(const LvPlayer *p)
+{
+    return p ? p->start_us : 0;
 }
 
 // The file's video streams (cover art left out); valid until lv_close.
@@ -1133,6 +1206,7 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
     }
     list_tracks(p);
     list_video_tracks(p);
+    list_sub_tracks(p);
 
     if (d3d11)
     {
@@ -2118,5 +2192,668 @@ EXPORT int la_seek(LaReader *r, long long frame)
     r->eof = 0;
     r->pos = from;
     r->want = frame;
+    return 0;
+}
+
+// ---- subtitles --------------------------------------------------------------------------------------------------
+// A subtitle stream read on its own: a video's embedded stream through a demuxer of its own (so it can read ahead
+// of the pictures, and back from before a seek, without touching the player), or a sidecar file. Looker's reader
+// thread pulls events with lv_subs_next and keeps them; the UI thread draws them. Text events come as the ASS text
+// FFmpeg's decoders make of every text format; ASS/SSA goes to libass, which the UI thread asks for a picture of
+// any moment (lv_subs_render); bitmap subtitles come as BGRA pictures placed on their canvas. Times are
+// microseconds on the player's clock (the video stream's start is 0).
+
+enum
+{
+    LV_SUB_TEXT = 1,
+    LV_SUB_ASS = 2,
+    LV_SUB_BITMAP = 3,
+};
+
+typedef struct LvSubInfo
+{
+    int kind;     // LV_SUB_*
+    int stream;   // the stream read
+    int fonts;    // fonts the file carries (Matroska attachments), handed to libass
+    int canvas_w; // a bitmap stream's canvas as the headers give it (0 when unknown: events carry their own)
+    int canvas_h;
+    char codec[32];
+} LvSubInfo;
+
+typedef struct LvSubRect
+{
+    int x, y, w, h; // on the event's canvas
+    int stride;
+    const unsigned char *bgra; // premultiplied
+} LvSubRect;
+
+typedef struct LvSubEvent
+{
+    long long start_us;
+    long long end_us;  // -1: until the next event (PGS shows a picture until the next display set)
+    long long read_us; // where the reader is: the time of the packet this came from
+    const char *text;  // text: the ASS dialogue's text field; ASS: the whole packet (ReadOrder,Layer,...,Text)
+    int n_rects;
+    const LvSubRect *rects;
+    int canvas_w, canvas_h; // what a bitmap event's rects are placed on
+    int read_order;         // ASS: the event's ReadOrder
+} LvSubEvent;
+
+typedef struct LvSubImage
+{
+    int x, y, w, h; // in the frame lv_subs_render was asked for
+    int stride;
+    const unsigned char *bgra; // premultiplied, NULL when nothing shows
+} LvSubImage;
+
+typedef struct LvSubs
+{
+    HANDLE file;
+    AVFormatContext *fmt;
+    AVIOContext *io;
+    const unsigned char *mem; // lv_subs_open_mem: the text, owned here
+    int64_t mem_size, mem_pos;
+    volatile LONG interrupt;
+    int si;
+    int kind;
+    long long zero_us;
+    AVCodecContext *dec;
+    AVPacket *pkt;
+    AVSubtitle sub;
+    int has_sub;
+    char *text;
+    size_t text_cap;
+    LvSubRect *rects;
+    unsigned char **rect_px;
+    int n_rects, rects_cap;
+    // libass: the reader adds events, the UI thread renders; `lock` keeps them apart.
+    CRITICAL_SECTION lock;
+    ASS_Library *ass;
+    ASS_Renderer *renderer;
+    ASS_Track *track;
+    int fonts;
+    unsigned char *img;
+    size_t img_cap;
+    LvSubImage last;
+    int last_w, last_h;
+    double last_scale;
+} LvSubs;
+
+static int subs_read(void *opaque, uint8_t *buf, int size)
+{
+    LvSubs *s = opaque;
+    if (s->interrupt)
+        return AVERROR_EXIT;
+    if (s->mem)
+    {
+        int64_t left = s->mem_size - s->mem_pos;
+        if (left <= 0)
+            return AVERROR_EOF;
+        int n = (int)(left < size ? left : size);
+        memcpy(buf, s->mem + s->mem_pos, (size_t)n);
+        s->mem_pos += n;
+        return n;
+    }
+    return io_read(s->file, buf, size);
+}
+
+static int64_t subs_seek_io(void *opaque, int64_t offset, int whence)
+{
+    LvSubs *s = opaque;
+    if (!s->mem)
+        return io_seek(s->file, offset, whence);
+    if (whence & AVSEEK_SIZE)
+        return s->mem_size;
+    int64_t to = offset;
+    switch (whence & ~AVSEEK_FORCE)
+    {
+    case SEEK_CUR:
+        to = s->mem_pos + offset;
+        break;
+    case SEEK_END:
+        to = s->mem_size + offset;
+        break;
+    }
+    if (to < 0 || to > s->mem_size)
+        return AVERROR(EINVAL);
+    s->mem_pos = to;
+    return to;
+}
+
+static void subs_clear_event(LvSubs *s)
+{
+    if (s->has_sub)
+        avsubtitle_free(&s->sub);
+    s->has_sub = 0;
+    for (int i = 0; i < s->n_rects; i++)
+        free(s->rect_px[i]);
+    s->n_rects = 0;
+    if (s->text)
+        s->text[0] = 0;
+}
+
+EXPORT void lv_subs_close(LvSubs *s)
+{
+    if (s == NULL)
+        return;
+    subs_clear_event(s);
+    free(s->rects);
+    free(s->rect_px);
+    free(s->text);
+    free(s->img);
+    av_packet_free(&s->pkt);
+    avcodec_free_context(&s->dec);
+    if (s->track)
+        ass_free_track(s->track);
+    if (s->renderer)
+        ass_renderer_done(s->renderer);
+    if (s->ass)
+        ass_library_done(s->ass);
+    if (s->fmt)
+        avformat_close_input(&s->fmt);
+    if (s->io)
+    {
+        av_freep(&s->io->buffer);
+        avio_context_free(&s->io);
+    }
+    if (s->file != INVALID_HANDLE_VALUE && s->file)
+        CloseHandle(s->file);
+    free((void *)s->mem);
+    DeleteCriticalSection(&s->lock);
+    free(s);
+}
+
+// Any thread: the read in progress (or the next) gives up with AVERROR_EXIT, until lv_subs_seek. For closing
+// while the reader is deep in a long stretch of a Matroska file with no subtitles.
+EXPORT void lv_subs_interrupt(LvSubs *s)
+{
+    if (s)
+        InterlockedExchange(&s->interrupt, 1);
+}
+
+static int is_font(const AVStream *st)
+{
+    if (st->codecpar->codec_type != AVMEDIA_TYPE_ATTACHMENT || st->codecpar->extradata_size <= 0)
+        return 0;
+    const AVDictionaryEntry *m = av_dict_get(st->metadata, "mimetype", NULL, 0);
+    if (m && (strstr(m->value, "font") || strstr(m->value, "truetype") || strstr(m->value, "opentype")))
+        return 1;
+    const AVDictionaryEntry *f = av_dict_get(st->metadata, "filename", NULL, 0);
+    if (f)
+    {
+        const char *dot = strrchr(f->value, '.');
+        if (dot && (_stricmp(dot, ".ttf") == 0 || _stricmp(dot, ".otf") == 0 || _stricmp(dot, ".ttc") == 0 || _stricmp(dot, ".otc") == 0))
+            return 1;
+    }
+    return 0;
+}
+
+// The stream picked, its decoder or libass, the fonts. `stream` < 0: the first subtitle stream (a sidecar).
+// libass's messages: Looker's builds keep FFmpeg quiet too (av_log_set_level(AV_LOG_QUIET)).
+static void ass_quiet(int level, const char *fmt, va_list args, void *data)
+{
+    (void)level;
+    (void)fmt;
+    (void)args;
+    (void)data;
+}
+
+static int subs_setup(LvSubs *s, int stream, LvSubInfo *info)
+{
+    AVFormatContext *fmt = s->fmt;
+    s->si = -1;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        fmt->streams[i]->discard = AVDISCARD_ALL;
+        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE && (stream < 0 ? s->si < 0 : (int)i == stream))
+            s->si = (int)i;
+    }
+    if (s->si < 0)
+        return AVERROR_STREAM_NOT_FOUND;
+    AVStream *st = fmt->streams[s->si];
+    st->discard = AVDISCARD_DEFAULT;
+    int kind = sub_kind(st->codecpar->codec_id);
+    s->kind = kind == LV_TRACK_ASS ? LV_SUB_ASS : kind == LV_TRACK_BITMAP ? LV_SUB_BITMAP : LV_SUB_TEXT;
+    if ((s->pkt = av_packet_alloc()) == NULL)
+        return AVERROR(ENOMEM);
+    if (s->kind == LV_SUB_ASS)
+    {
+        if ((s->ass = ass_library_init()) == NULL)
+            return AVERROR(ENOMEM);
+        ass_set_message_cb(s->ass, ass_quiet, NULL);
+        ass_set_extract_fonts(s->ass, 1); // an .ass file's own [Fonts]
+        for (unsigned i = 0; i < fmt->nb_streams; i++)
+        {
+            const AVStream *a = fmt->streams[i];
+            if (!is_font(a))
+                continue;
+            const AVDictionaryEntry *f = av_dict_get(a->metadata, "filename", NULL, 0);
+            ass_add_font(s->ass, f ? f->value : "font", (const char *)a->codecpar->extradata, a->codecpar->extradata_size);
+            s->fonts++;
+        }
+        if ((s->renderer = ass_renderer_init(s->ass)) == NULL || (s->track = ass_new_track(s->ass)) == NULL)
+            return AVERROR(ENOMEM);
+        // After the fonts are added, so the embedded ones join DirectWrite's. Arial when a style's font is nowhere.
+        ass_set_fonts(s->renderer, NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+        ass_set_shaper(s->renderer, ASS_SHAPING_COMPLEX);
+        if (st->codecpar->extradata_size > 0)
+            ass_process_codec_private(s->track, (char *)st->codecpar->extradata, st->codecpar->extradata_size);
+    }
+    else
+    {
+        const AVCodec *c = avcodec_find_decoder(st->codecpar->codec_id);
+        if (c == NULL)
+            return AVERROR_DECODER_NOT_FOUND;
+        if ((s->dec = avcodec_alloc_context3(c)) == NULL)
+            return AVERROR(ENOMEM);
+        int r = avcodec_parameters_to_context(s->dec, st->codecpar);
+        if (r < 0)
+            return r;
+        s->dec->pkt_timebase = st->time_base;
+        if ((r = avcodec_open2(s->dec, c, NULL)) < 0)
+            return r;
+    }
+    memset(info, 0, sizeof *info);
+    info->kind = s->kind;
+    info->stream = s->si;
+    info->fonts = s->fonts;
+    info->canvas_w = s->dec && s->dec->width > 0 ? s->dec->width : st->codecpar->width;
+    info->canvas_h = s->dec && s->dec->height > 0 ? s->dec->height : st->codecpar->height;
+    snprintf(info->codec, sizeof info->codec, "%s", avcodec_get_name(st->codecpar->codec_id));
+    return 0;
+}
+
+static LvSubs *subs_alloc(void)
+{
+    LvSubs *s = calloc(1, sizeof *s);
+    if (s == NULL)
+        return NULL;
+    s->file = INVALID_HANDLE_VALUE;
+    InitializeCriticalSection(&s->lock);
+    return s;
+}
+
+static int subs_open_io(LvSubs *s, const char *name, double fps)
+{
+    const int size = 1 << 16;
+    unsigned char *buf = av_malloc(size);
+    if (!buf)
+        return AVERROR(ENOMEM);
+    s->io = avio_alloc_context(buf, size, 0, s, subs_read, NULL, subs_seek_io);
+    if (!s->io)
+    {
+        av_free(buf);
+        return AVERROR(ENOMEM);
+    }
+    if ((s->fmt = avformat_alloc_context()) == NULL)
+        return AVERROR(ENOMEM);
+    s->fmt->pb = s->io;
+    s->fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+    AVDictionary *opts = NULL;
+    if (fps > 0)
+    {
+        // MicroDVD counts frames: the video's rate when the file doesn't say.
+        char rate[48];
+        AVRational q = av_d2q(fps, 1001000);
+        snprintf(rate, sizeof rate, "%d/%d", q.num, q.den);
+        av_dict_set(&opts, "subfps", rate, 0);
+    }
+    int r = avformat_open_input(&s->fmt, name, NULL, &opts);
+    av_dict_free(&opts);
+    return r; // on failure avformat_open_input freed the context
+}
+
+// A video's embedded subtitle stream `stream` (an LvTrack::stream from lv_sub_tracks), through a demuxer of its
+// own; or with `stream` < 0 a binary sidecar file (VobSub's .idx, which opens its .sub itself). `zero_us`: the
+// player's lv_start_us (0 for a sidecar). `fps`: the video's frame rate (MicroDVD), or 0.
+EXPORT int lv_subs_open(const wchar_t *path, int stream, long long zero_us, double fps, LvSubs **out, LvSubInfo *info)
+{
+    quiet_once();
+    *out = NULL;
+    LvSubs *s = subs_alloc();
+    if (s == NULL)
+        return AVERROR(ENOMEM);
+    s->zero_us = zero_us;
+    char name[1024] = "";
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, name, sizeof name, NULL, NULL);
+    int r;
+    if (stream >= 0)
+    {
+        s->file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+        r = s->file == INVALID_HANDLE_VALUE ? AVERROR(ENOENT) : subs_open_io(s, name, fps);
+    }
+    else
+    {
+        r = avformat_open_input(&s->fmt, name, NULL, NULL);
+        if (r >= 0)
+            r = avformat_find_stream_info(s->fmt, NULL);
+    }
+    if (r >= 0)
+        r = subs_setup(s, stream, info);
+    if (r < 0)
+    {
+        lv_subs_close(s);
+        return r;
+    }
+    *out = s;
+    return 0;
+}
+
+// A text sidecar file Looker has read and turned into UTF-8 (`data`, `size` bytes, copied): `name` (the file's
+// name) helps the probe pick the format by its extension.
+EXPORT int lv_subs_open_mem(const unsigned char *data, int size, const wchar_t *name, double fps, LvSubs **out, LvSubInfo *info)
+{
+    quiet_once();
+    *out = NULL;
+    LvSubs *s = subs_alloc();
+    if (s == NULL)
+        return AVERROR(ENOMEM);
+    unsigned char *copy = malloc((size_t)size + 1);
+    if (copy == NULL)
+    {
+        lv_subs_close(s);
+        return AVERROR(ENOMEM);
+    }
+    memcpy(copy, data, (size_t)size);
+    copy[size] = 0;
+    s->mem = copy;
+    s->mem_size = size;
+    char n8[1024] = "";
+    WideCharToMultiByte(CP_UTF8, 0, name, -1, n8, sizeof n8, NULL, NULL);
+    int r = subs_open_io(s, n8, fps);
+    if (r >= 0)
+        r = subs_setup(s, -1, info);
+    if (r < 0)
+    {
+        lv_subs_close(s);
+        return r;
+    }
+    *out = s;
+    return 0;
+}
+
+// Reading goes on from `us` (the player's clock): the keyframe at or before it, as the container's index has it.
+EXPORT int lv_subs_seek(LvSubs *s, long long us)
+{
+    InterlockedExchange(&s->interrupt, 0);
+    int64_t ts = us + s->zero_us;
+    if (ts < 0)
+        ts = 0;
+    int r = avformat_seek_file(s->fmt, -1, INT64_MIN, ts, ts, 0);
+    if (r < 0)
+        r = av_seek_frame(s->fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
+    if (r < 0)
+        return r;
+    if (s->dec)
+        avcodec_flush_buffers(s->dec);
+    return 0;
+}
+
+// Appends `t` to the event's text, lines joined by ASS's \N.
+static int text_append(LvSubs *s, const char *t, size_t add)
+{
+    size_t have = s->text ? strlen(s->text) : 0;
+    size_t need = have + add + 3;
+    if (need > s->text_cap)
+    {
+        char *b = realloc(s->text, need * 2);
+        if (b == NULL)
+            return AVERROR(ENOMEM);
+        if (s->text == NULL)
+            b[0] = 0;
+        s->text = b;
+        s->text_cap = need * 2;
+    }
+    if (have > 0)
+    {
+        memcpy(s->text + have, "\\N", 2);
+        have += 2;
+    }
+    memcpy(s->text + have, t, add);
+    s->text[have + add] = 0;
+    return 0;
+}
+
+// An ASS dialogue line as FFmpeg's decoders make it ("ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,
+// Text"): its text, the part after the eighth comma.
+static const char *dialogue_text(const char *line)
+{
+    const char *p = line;
+    for (int commas = 0; commas < 8; commas++)
+    {
+        p = strchr(p, ',');
+        if (p == NULL)
+            return line;
+        p++;
+    }
+    return p;
+}
+
+static int add_rect(LvSubs *s, const AVSubtitleRect *r)
+{
+    if (r->w <= 0 || r->h <= 0 || r->data[0] == NULL || r->data[1] == NULL)
+        return 0;
+    if (s->n_rects == s->rects_cap)
+    {
+        int cap = s->rects_cap ? s->rects_cap * 2 : 4;
+        LvSubRect *a = realloc(s->rects, sizeof *a * cap);
+        if (a == NULL)
+            return AVERROR(ENOMEM);
+        s->rects = a;
+        unsigned char **b = realloc(s->rect_px, sizeof *b * cap);
+        if (b == NULL)
+            return AVERROR(ENOMEM);
+        s->rect_px = b;
+        s->rects_cap = cap;
+    }
+    unsigned char *px = malloc((size_t)r->w * r->h * 4);
+    if (px == NULL)
+        return AVERROR(ENOMEM);
+    const uint32_t *pal = (const uint32_t *)r->data[1]; // 0xAARRGGBB
+    for (int y = 0; y < r->h; y++)
+    {
+        const uint8_t *src = r->data[0] + (size_t)y * r->linesize[0];
+        unsigned char *dst = px + (size_t)y * r->w * 4;
+        for (int x = 0; x < r->w; x++)
+        {
+            uint32_t c = pal[src[x]];
+            unsigned a = c >> 24;
+            dst[4 * x + 0] = (unsigned char)((c & 0xFF) * a / 255);
+            dst[4 * x + 1] = (unsigned char)(((c >> 8) & 0xFF) * a / 255);
+            dst[4 * x + 2] = (unsigned char)(((c >> 16) & 0xFF) * a / 255);
+            dst[4 * x + 3] = (unsigned char)a;
+        }
+    }
+    LvSubRect *o = &s->rects[s->n_rects];
+    s->rect_px[s->n_rects] = px;
+    s->n_rects++;
+    o->x = r->x;
+    o->y = r->y;
+    o->w = r->w;
+    o->h = r->h;
+    o->stride = r->w * 4;
+    o->bgra = px;
+    return 0;
+}
+
+// The next event: 0 with `out` filled (valid until the next call), AVERROR_EOF at the end, AVERROR_EXIT after
+// lv_subs_interrupt. Packets that make no event (a decoder still collecting, an empty text) are read past.
+EXPORT int lv_subs_next(LvSubs *s, LvSubEvent *out)
+{
+    memset(out, 0, sizeof *out);
+    for (;;)
+    {
+        subs_clear_event(s);
+        int r = av_read_frame(s->fmt, s->pkt);
+        if (r < 0)
+            return r == AVERROR(EIO) ? AVERROR_EOF : r;
+        AVPacket *pkt = s->pkt;
+        if (pkt->stream_index != s->si)
+        {
+            av_packet_unref(pkt);
+            continue;
+        }
+        AVStream *st = s->fmt->streams[s->si];
+        int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+        long long at = ts != AV_NOPTS_VALUE ? av_rescale_q(ts, st->time_base, AV_TIME_BASE_Q) - s->zero_us : 0;
+        long long dur = pkt->duration > 0 ? av_rescale_q(pkt->duration, st->time_base, AV_TIME_BASE_Q) : 0;
+        out->read_us = at;
+        if (s->kind == LV_SUB_ASS)
+        {
+            // Matroska's ASS packets (and FFmpeg's ASS demuxer's) are what libass takes: ReadOrder,Layer,...,Text.
+            // libass drops a ReadOrder it already has, so reading a stretch again after a seek adds nothing.
+            if (pkt->size > 0)
+            {
+                EnterCriticalSection(&s->lock);
+                ass_process_chunk(s->track, (char *)pkt->data, pkt->size, at / 1000, dur / 1000);
+                LeaveCriticalSection(&s->lock);
+                text_append(s, (const char *)pkt->data, (size_t)pkt->size);
+                out->read_order = atoi(s->text);
+            }
+            av_packet_unref(pkt);
+            out->start_us = at;
+            out->end_us = at + (dur > 0 ? dur : 5000000);
+            out->text = s->text ? s->text : "";
+            return 0;
+        }
+        int got = 0;
+        r = avcodec_decode_subtitle2(s->dec, &s->sub, &got, pkt);
+        av_packet_unref(pkt);
+        if (r < 0 || !got)
+            continue;
+        s->has_sub = 1;
+        AVSubtitle *sub = &s->sub;
+        long long base = sub->pts != AV_NOPTS_VALUE ? sub->pts - s->zero_us : at;
+        out->start_us = base + (long long)sub->start_display_time * 1000;
+        if (sub->end_display_time > sub->start_display_time && sub->end_display_time < 0x7FFFFFFF)
+            out->end_us = base + (long long)sub->end_display_time * 1000;
+        else if (s->kind == LV_SUB_TEXT && dur > 0)
+            out->end_us = at + dur;
+        else
+            out->end_us = -1;
+        for (unsigned i = 0; i < sub->num_rects; i++)
+        {
+            const AVSubtitleRect *rc = sub->rects[i];
+            if (rc->type == SUBTITLE_BITMAP)
+                add_rect(s, rc);
+            else if (rc->type == SUBTITLE_ASS && rc->ass)
+            {
+                const char *t = dialogue_text(rc->ass);
+                text_append(s, t, strlen(t));
+            }
+            else if (rc->type == SUBTITLE_TEXT && rc->text)
+                text_append(s, rc->text, strlen(rc->text));
+        }
+        // A text event with nothing to say is nothing; an empty bitmap one ends what shows (PGS's clear).
+        if (s->kind == LV_SUB_TEXT && (s->text == NULL || s->text[0] == 0))
+            continue;
+        out->text = s->text ? s->text : "";
+        out->n_rects = s->n_rects;
+        out->rects = s->rects;
+        out->canvas_w = s->dec->width;
+        out->canvas_h = s->dec->height;
+        return 0;
+    }
+}
+
+// libass's picture of moment `us` in a frame `w` x `h` pixels showing a video stored `video_w` x `video_h`, its
+// text scaled by `scale`: the part with ink, composited into one premultiplied BGRA image (`out`, valid until the
+// next call). `*changed`: 0 when it's the same as the last call's (and `out` is that image again). UI thread.
+EXPORT int lv_subs_render(LvSubs *s, long long us, int w, int h, int video_w, int video_h, double scale, int *changed,
+                          LvSubImage *out)
+{
+    memset(out, 0, sizeof *out);
+    *changed = 1;
+    if (s->kind != LV_SUB_ASS || w <= 0 || h <= 0)
+        return AVERROR(EINVAL);
+    if (scale <= 0)
+        scale = 1.0;
+    EnterCriticalSection(&s->lock);
+    ass_set_frame_size(s->renderer, w, h);
+    ass_set_storage_size(s->renderer, video_w > 0 ? video_w : w, video_h > 0 ? video_h : h);
+    ass_set_font_scale(s->renderer, scale);
+    int ch = 0;
+    ASS_Image *img = ass_render_frame(s->renderer, s->track, us / 1000, &ch);
+    if (ch == 0 && s->last_w == w && s->last_h == h && s->last_scale == scale)
+    {
+        *changed = 0;
+        *out = s->last;
+        LeaveCriticalSection(&s->lock);
+        return 0;
+    }
+    s->last_w = w;
+    s->last_h = h;
+    s->last_scale = scale;
+    int x0 = INT_MAX, y0 = INT_MAX, x1 = INT_MIN, y1 = INT_MIN;
+    for (ASS_Image *i = img; i; i = i->next)
+    {
+        if (i->w <= 0 || i->h <= 0)
+            continue;
+        x0 = min(x0, i->dst_x);
+        y0 = min(y0, i->dst_y);
+        x1 = max(x1, i->dst_x + i->w);
+        y1 = max(y1, i->dst_y + i->h);
+    }
+    x0 = max(x0, 0);
+    y0 = max(y0, 0);
+    x1 = min(x1, w);
+    y1 = min(y1, h);
+    memset(&s->last, 0, sizeof s->last);
+    if (x1 <= x0 || y1 <= y0)
+    {
+        *out = s->last;
+        LeaveCriticalSection(&s->lock);
+        return 0;
+    }
+    int bw = x1 - x0, bh = y1 - y0;
+    size_t need = (size_t)bw * bh * 4;
+    if (need > s->img_cap)
+    {
+        free(s->img);
+        s->img = malloc(need);
+        s->img_cap = s->img ? need : 0;
+        if (s->img == NULL)
+        {
+            LeaveCriticalSection(&s->lock);
+            return AVERROR(ENOMEM);
+        }
+    }
+    memset(s->img, 0, need);
+    // Source over, premultiplied BGRA: libass's colour is RGBT (T: transparency), each image an alpha mask.
+    for (ASS_Image *i = img; i; i = i->next)
+    {
+        unsigned r = (i->color >> 24) & 0xFF, g = (i->color >> 16) & 0xFF, b = (i->color >> 8) & 0xFF;
+        unsigned opacity = 255 - (i->color & 0xFF);
+        for (int y = 0; y < i->h; y++)
+        {
+            int dy = i->dst_y + y;
+            if (dy < y0 || dy >= y1)
+                continue;
+            const unsigned char *m = i->bitmap + (size_t)y * i->stride;
+            unsigned char *d = s->img + (size_t)(dy - y0) * bw * 4;
+            for (int x = 0; x < i->w; x++)
+            {
+                int dx = i->dst_x + x;
+                if (dx < x0 || dx >= x1 || m[x] == 0)
+                    continue;
+                unsigned a = m[x] * opacity / 255;
+                unsigned char *p = d + (size_t)(dx - x0) * 4;
+                unsigned k = 255 - a;
+                p[0] = (unsigned char)((b * a + p[0] * k + 127) / 255);
+                p[1] = (unsigned char)((g * a + p[1] * k + 127) / 255);
+                p[2] = (unsigned char)((r * a + p[2] * k + 127) / 255);
+                p[3] = (unsigned char)(a + (p[3] * k + 127) / 255);
+            }
+        }
+    }
+    s->last.x = x0;
+    s->last.y = y0;
+    s->last.w = bw;
+    s->last.h = bh;
+    s->last.stride = bw * 4;
+    s->last.bgra = s->img;
+    *out = s->last;
+    LeaveCriticalSection(&s->lock);
     return 0;
 }

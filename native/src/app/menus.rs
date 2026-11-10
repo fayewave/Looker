@@ -37,6 +37,14 @@ pub(super) enum Action {
     VideoTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
+    /// The context menu's Subtitles: none, one of the video's streams, a sidecar (by its place in the list), a
+    /// file picked by hand, the delay (-1 earlier, +1 later, 0 none), the text's size (percent).
+    SubOff,
+    SubStream(i32),
+    SubFile(usize),
+    SubAdd,
+    SubDelay(i32),
+    SubSize(u16),
     // The explorer's (explorer_ops.rs).
     OpenInViewer,
     Cut,
@@ -124,9 +132,11 @@ impl App {
             if !pictures.is_empty() {
                 e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
             }
-            // An audio file plays its one stream: no menu of them.
+            // An audio file plays its one stream: no menu of them, and no subtitles.
             if !self.player_ref().is_some_and(video::Engine::is_audio) {
                 e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
+                // Subtitles beside them: off, the video's own, the files beside it, one picked by hand; delay, size.
+                e.push(Entry::Sub(Some(0xE7F0), "Subtitles".into(), self.subtitle_entries()));
             }
         }
         e.extend([
@@ -319,6 +329,16 @@ impl App {
             Action::AudioTrack(s) => self.set_audio_track(s),
             Action::VideoTrack(s) => self.set_video_track(s),
             Action::ToggleVideoLoop => self.toggle_video_loop(),
+            Action::SubOff => self.set_subtitles(crate::subs::Choice::Off),
+            Action::SubStream(s) => self.set_subtitles(crate::subs::Choice::Stream(s)),
+            Action::SubFile(i) => {
+                if let Some(p) = self.video.as_ref().and_then(|v| v.subs.sidecars.get(i)).map(|s| s.path.clone()) {
+                    self.set_subtitles(crate::subs::Choice::File(p));
+                }
+            }
+            Action::SubAdd => self.add_subtitle_file(),
+            Action::SubDelay(d) => self.subtitle_delay(d),
+            Action::SubSize(s) => self.subtitle_size(s as u32),
             _ => {}
         }
     }

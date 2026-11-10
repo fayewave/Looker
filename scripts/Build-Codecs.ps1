@@ -13,7 +13,9 @@
     libavif from one (native/codecs/ports/libavif) built without libyuv, which would bring libjpeg-turbo along.
     Video: FFmpeg from an overlay port (native/codecs/ports/ffmpeg, vcpkg's with --disable-everything and only the
     containers and codecs Looker plays, LGPL only) and looker_video.dll, Looker's own entry points into it
-    (native/codecs/ports/looker-video), sharing dav1d.
+    (native/codecs/ports/looker-video), sharing dav1d. Subtitles: libass from an overlay port (native/codecs/ports/libass:
+    FreeType without its optional zlib/PNG/brotli/bzip2, fonts from DirectWrite), with HarfBuzz and FriBidi, each a
+    DLL (libass ISC, FreeType FTL, HarfBuzz MIT, FriBidi LGPL-2.1).
     Only the DLLs Looker loads (and theirs) are collected, whatever else the dependency graph left in bin\.
 
     vcpkg itself lives in %LOCALAPPDATA%\Looker\vcpkg (cloned and bootstrapped on first run). NativeLayout.ps1
@@ -53,8 +55,10 @@ if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
     --x-install-root $installRoot --clean-after-build
 if ($LASTEXITCODE -ne 0) { throw "vcpkg install libavif failed ($LASTEXITCODE)" }
 # Video: looker_video.dll pulls in the trimmed FFmpeg.
-& (Join-Path $Vcpkg 'vcpkg.exe') remove "looker-video:$triplet" "ffmpeg:$triplet" --x-install-root $installRoot --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') | Out-Null
-& (Join-Path $Vcpkg 'vcpkg.exe') install 'looker-video' --triplet $triplet `
+& (Join-Path $Vcpkg 'vcpkg.exe') remove "looker-video:$triplet" "ffmpeg:$triplet" "libass:$triplet" --x-install-root $installRoot --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') | Out-Null
+# FreeType and HarfBuzz named with [core]: classic mode would otherwise build their default features (zlib, PNG,
+# brotli, bzip2 beside FreeType) whatever libass asks for.
+& (Join-Path $Vcpkg 'vcpkg.exe') install 'looker-video' 'freetype[core]' 'harfbuzz[core,freetype]' --triplet $triplet `
     --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
     --x-install-root $installRoot --clean-after-build
 if ($LASTEXITCODE -ne 0) { throw "vcpkg install looker-video failed ($LASTEXITCODE)" }
@@ -76,10 +80,15 @@ foreach ($dll in 'heif.dll', 'libde265.dll', 'dav1d.dll', 'avif.dll') {
 }
 Copy-Item (Join-Path $rawInstalled 'bin\raw_r.dll') $OutDir
 Copy-Item (Join-Path $installed 'bin\looker_video.dll') $OutDir
+# libass and what it needs (ass-9.dll: its soname's number).
+Get-ChildItem (Join-Path $installed 'bin\ass-*.dll') | Copy-Item -Destination $OutDir
+foreach ($dll in 'freetype.dll', 'harfbuzz.dll', 'fribidi-0.dll') {
+    Copy-Item (Join-Path $installed "bin\$dll") $OutDir
+}
 foreach ($lib in 'avformat', 'avcodec', 'avfilter', 'avutil', 'swresample', 'swscale') {
     Get-ChildItem (Join-Path $installed "bin\$lib-*.dll") | Copy-Item -Destination $OutDir
 }
-foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg') {
+foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi') {
     Copy-Item (Join-Path $installed "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
 }
 foreach ($port in 'libraw', 'lcms', 'jasper', 'zlib') {
