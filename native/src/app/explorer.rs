@@ -34,6 +34,13 @@ const MIN_IMAGE_W: f32 = 480.0;
 const BOUNCE: f32 = 14.0;
 const SPRING_SECS: f32 = 0.45;
 
+/// A pull of `d` DIPs off the sticky line as the edge shows it: it gives less the further it's pulled, about 23 DIPs
+/// at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
+fn rubber(d: f32) -> f32 {
+    let (c, k) = (0.55, 40.0);
+    (1.0 - 1.0 / (d.max(0.0) * c / k + 1.0)) * k
+}
+
 /// Motion is on (Windows' "Animation effects").
 fn motion_on() -> bool {
     crate::motion::enabled()
@@ -346,6 +353,10 @@ pub(super) struct Explorer {
     /// it springs back with (from how far, since when).
     pub(super) stretch: f32,
     pub(super) spring: Option<(f32, Instant)>,
+    /// The edge is held on the sticky line (the card's widest) until pulled `STICK` off it; and which side of the line
+    /// the pointer was on last (for when it crosses).
+    pub(super) latched: bool,
+    pub(super) last_side: f32,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
     pub(super) side_settle: Option<crate::motion::Settle>,
@@ -435,6 +446,8 @@ impl Explorer {
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
+            latched: false,
+            last_side: 0.0,
             width_settle: None,
             side_settle: None,
             ahead: (String::new(), None),
@@ -2514,7 +2527,13 @@ impl App {
         // From where the edge rests: a bounce still swinging would shift where the sticky zone starts.
         self.explorer.spring = None;
         self.explorer.stretch = 0.0;
-        self.explorer.drag = Some((x, self.explorer_width()));
+        let w = self.explorer_width();
+        // Resting on the sticky line: it holds there whichever way it's pulled.
+        let (ww, _) = self.size_dip();
+        let cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
+        self.explorer.latched = (w - cap).abs() < 1.5;
+        self.explorer.last_side = w - cap;
+        self.explorer.drag = Some((x, w));
     }
 
     /// One drag covers both widths: the card up to its widest, then past that it becomes browse mode and goes
@@ -2524,38 +2543,49 @@ impl App {
         let (ww, _) = self.size_dip();
         let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // The card's widest is a sticky line, from either side and in either mode (Faye, 2026-11-10): within
-        // `STICK` of it the edge lags the pointer on a curve that's flat at the line and catches up at the zone's
-        // ends (no jump anywhere), so it takes a deliberate pull to move off it. Browse mode comes on halfway out
-        // past the line and goes halfway back (apart, so it can't flicker while the edge sits at the line). Out of
-        // the zone the edge is where the pointer is, in browse mode too (the list makes room for the sidebar).
+        // The card's widest is a sticky line (Faye, 2026-11-10): whenever the edge reaches it, from either side, or a
+        // drag starts on it, it latches there and stretches on a rubber band whichever way it's pulled, until the
+        // pointer is `STICK` off it; then it lets go with a bounce, into browse mode past it or back to the card short
+        // of it. On the line it's the card (coming in from browse mode, the sidebar goes there). Off it, the edge is
+        // where the pointer is, in browse mode too (the list makes room for the sidebar).
         const STICK: f32 = 96.0;
         let d = w - card_cap;
-        let off = if d.abs() < STICK { d.signum() * STICK * (d.abs() / STICK).powi(3) } else { d };
-        let edge = card_cap + off;
-        let was = self.browsing();
-        let to_browse = if was { d > -STICK * 0.5 } else { d > STICK * 0.5 };
+        let crossed = self.explorer.last_side != 0.0 && (self.explorer.last_side > 0.0) != (d > 0.0);
+        self.explorer.last_side = if d == 0.0 { self.explorer.last_side } else { d };
         let now = Instant::now();
-        if was != to_browse {
-            // The change: a small overshoot the way it went, swinging back, as the sidebar slides.
-            self.explorer.spring = Some((if to_browse { BOUNCE } else { -BOUNCE }, now));
+        let mut just_latched = false;
+        if !self.explorer.latched && (crossed || d == 0.0) {
+            self.explorer.latched = true;
+            just_latched = true;
         }
-        if to_browse {
-            if !was {
-                self.settings.explorer_width = card_cap;
-                self.explorer.browse.set([1.0], now);
-                self.explorer.focused = true;
-            }
-            // Browse mode is at least the card's widest: short of it, the rest shows as stretch.
-            self.settings.browse_share = edge.max(card_cap) / ww;
-            self.explorer.stretch = (edge - card_cap).min(0.0);
-        } else {
+        // Pulled far enough off the line: it lets go (not in the move that latched it: a flick still shows the hold).
+        if self.explorer.latched && !just_latched && d.abs() >= STICK {
+            self.explorer.latched = false;
+            self.explorer.spring = Some((if d > 0.0 { BOUNCE } else { -BOUNCE }, now));
+        }
+        let was = self.browsing();
+        if self.explorer.latched {
+            let pull = if just_latched { d.clamp(-STICK * 0.5, STICK * 0.5) } else { d };
+            self.explorer.stretch = pull.signum() * rubber(pull.abs());
             if was {
                 self.explorer.browse.set([0.0], now);
             }
-            // The card is at most its widest: past it, the rest shows as stretch.
-            self.settings.explorer_width = edge.min(card_cap);
-            self.explorer.stretch = (edge - card_cap).max(0.0);
+            self.settings.explorer_width = card_cap;
+        } else {
+            self.explorer.stretch = 0.0;
+            if d > 0.0 {
+                if !was {
+                    self.settings.explorer_width = card_cap;
+                    self.explorer.browse.set([1.0], now);
+                    self.explorer.focused = true;
+                }
+                self.settings.browse_share = w / ww;
+            } else {
+                if was {
+                    self.explorer.browse.set([0.0], now);
+                }
+                self.settings.explorer_width = w;
+            }
         }
         self.layout_changed();
     }
