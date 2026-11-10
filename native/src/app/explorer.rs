@@ -32,7 +32,10 @@ const MIN_IMAGE_W: f32 = 480.0;
 /// The explorer edge's sticky change between the card and browse mode: how far a snap overshoots, and how long a
 /// bounce swings.
 const BOUNCE: f32 = 14.0;
-const SPRING_SECS: f32 = 0.45;
+const SPRING_SECS: f32 = 0.62;
+/// Browse mode coming in or out and the edge gliding to its place: slower than the app's 190 ms, so the explorer
+/// moves with some weight (Faye, 2026-11-10).
+pub(super) const EDGE_SECS: f32 = 0.30;
 
 /// A pull of `d` DIPs off the sticky line as the edge shows it: it gives less the further it's pulled, about 23 DIPs
 /// at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
@@ -442,7 +445,7 @@ impl Explorer {
             tab_pitch: 0.0,
             tab_w: Ease::at([0.0]),
             side_drag: None,
-            browse: Ease::at([0.0]),
+            browse: Ease::at([0.0]).over(EDGE_SECS),
             reopen_browse: false,
             stretch: 0.0,
             spring: None,
@@ -598,7 +601,7 @@ impl App {
                 if t >= SPRING_SECS {
                     0.0
                 } else {
-                    from * (-t / 0.11).exp() * (std::f32::consts::TAU * t / 0.26).cos()
+                    from * (-t / 0.15).exp() * (std::f32::consts::TAU * t / 0.34).cos()
                 }
             }
             _ => 0.0,
@@ -667,10 +670,10 @@ impl App {
             self.explorer_blur_field();
             // Opened again, it comes back as it was: browse mode (at its width) or the card (Faye, 2026-11-10).
             self.explorer.reopen_browse = self.browsing();
-            self.explorer.browse = Ease::at([0.0]);
+            self.explorer.browse.jump([0.0]);
         } else {
             if std::mem::take(&mut self.explorer.reopen_browse) {
-                self.explorer.browse = Ease::at([1.0]);
+                self.explorer.browse.jump([1.0]);
                 self.explorer.focused = true;
             }
             // Where it was left, scrolled as it was (it used to go back to the photo's folder, losing the place):
@@ -2578,7 +2581,7 @@ impl App {
             if d < 0.0 {
                 // Back to the card: it glides from the line to the pointer on the app's curve, as going into browse
                 // mode does (it jumped there: Faye, 2026-11-10).
-                self.explorer.width_settle = Some(crate::motion::Settle::from(self.explorer_width()));
+                self.explorer.width_settle = Some(crate::motion::Settle::over(self.explorer_width(), EDGE_SECS));
             }
         }
         let was = self.browsing();
@@ -2628,7 +2631,7 @@ impl App {
     pub(super) fn explorer_grip_reset(&mut self) {
         self.explorer.drag = None;
         // It eases from where it is to its default (Faye, 2026-11-10).
-        self.explorer.width_settle = Some(crate::motion::Settle::from(self.explorer_width()));
+        self.explorer.width_settle = Some(crate::motion::Settle::over(self.explorer_width(), EDGE_SECS));
         if self.browsing() {
             self.settings.browse_share = 0.0;
             settings::save(&self.settings);

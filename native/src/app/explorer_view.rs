@@ -184,7 +184,7 @@ impl App {
         // The sidebar comes with browse mode (Faye, 2026-11-10: never the card alone), sliding in from the left and
         // back out on the app's one curve and length (it popped in), given room for a list beside it.
         let side_room = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) + 240.0;
-        let slide = self.fades.get(Hit::SidebarColumn, self.browsing() && w >= side_room.min(SIDEBAR_AT));
+        let slide = self.fades.get_over(Hit::SidebarColumn, self.browsing() && w >= side_room.min(SIDEBAR_AT), super::explorer::EDGE_SECS);
         let column_sidebar = slide > 0.0;
         g.push_clip(inner);
         let mut moving = slide > 0.0 && slide < 1.0;

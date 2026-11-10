@@ -129,9 +129,14 @@ impl<T: Copy + Eq + Hash> Fades<T> {
 
     /// Eased both ways (a switch's knob, an edge fade). A new id starts at its target.
     pub fn get(&mut self, id: T, on: bool) -> f32 {
+        self.get_over(id, on, crate::motion::EASE)
+    }
+
+    /// The same over `secs` (the sidebar sliding with browse mode, at the explorer edge's pace).
+    pub fn get_over(&mut self, id: T, on: bool, secs: f32) -> f32 {
         let target = on as u8 as f32;
         let now = Instant::now();
-        let e = self.map.entry(id).or_insert_with(|| Ease::at([target]));
+        let e = self.map.entry(id).or_insert_with(|| Ease::at([target]).over(secs));
         e.set([target], now);
         if e.moving(now) {
             self.moving = true;

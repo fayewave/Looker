@@ -39,25 +39,28 @@ pub fn enabled() -> bool {
 pub struct Settle {
     from: f32,
     at: Instant,
+    secs: f32,
 }
 
 impl Settle {
     pub fn from(v: f32) -> Settle {
-        Settle { from: v, at: Instant::now() }
+        Settle { from: v, at: Instant::now(), secs: EASE }
+    }
+
+    /// The same, over `secs` (the explorer's edge, which moves with more weight).
+    pub fn over(v: f32, secs: f32) -> Settle {
+        Settle { from: v, at: Instant::now(), secs }
     }
 
     /// The size now, on its way to `target`.
     pub fn value(&self, target: f32) -> f32 {
-        self.from + (target - self.from) * ease_out(progress_secs(self.at) / EASE)
+        let t = if enabled() { self.at.elapsed().as_secs_f32() } else { self.secs };
+        self.from + (target - self.from) * ease_out(t / self.secs)
     }
 
     pub fn moving(&self) -> bool {
-        enabled() && self.at.elapsed().as_secs_f32() < EASE
+        enabled() && self.at.elapsed().as_secs_f32() < self.secs
     }
-}
-
-fn progress_secs(at: Instant) -> f32 {
-    if enabled() { at.elapsed().as_secs_f32() } else { EASE }
 }
 
 /// How far (0..1, eased) something that started at `since` has come.
@@ -74,16 +77,28 @@ pub struct Ease<const N: usize> {
     from: [f32; N],
     to: [f32; N],
     start: Option<Instant>,
+    secs: f32,
 }
 
 impl<const N: usize> Ease<N> {
     pub fn at(v: [f32; N]) -> Self {
-        Ease { from: v, to: v, start: None }
+        Ease { from: v, to: v, start: None, secs: EASE }
+    }
+
+    /// Runs its curve over `secs` instead of the app's 190 ms.
+    pub fn over(mut self, secs: f32) -> Self {
+        self.secs = secs;
+        self
+    }
+
+    /// Jumps to `v` (no easing), keeping its duration.
+    pub fn jump(&mut self, v: [f32; N]) {
+        *self = Ease::at(v).over(self.secs);
     }
 
     pub fn value(&self, now: Instant) -> [f32; N] {
         let Some(start) = self.start else { return self.to };
-        let k = ease_out(now.saturating_duration_since(start).as_secs_f32() / EASE);
+        let k = ease_out(now.saturating_duration_since(start).as_secs_f32() / self.secs);
         std::array::from_fn(|i| self.from[i] + (self.to[i] - self.from[i]) * k)
     }
 
@@ -97,7 +112,7 @@ impl<const N: usize> Ease<N> {
             return;
         }
         if !enabled() {
-            *self = Ease::at(v);
+            self.jump(v);
             return;
         }
         self.from = self.value(now);
@@ -106,7 +121,7 @@ impl<const N: usize> Ease<N> {
     }
 
     pub fn moving(&self, now: Instant) -> bool {
-        self.start.is_some_and(|s| now.saturating_duration_since(s).as_secs_f32() < EASE)
+        self.start.is_some_and(|s| now.saturating_duration_since(s).as_secs_f32() < self.secs)
     }
 
     /// True once, on the first call after the curve has run its course.
