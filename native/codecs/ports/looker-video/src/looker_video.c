@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 7
+#define LOOKER_VIDEO_API 8
 
 typedef struct LvInfo
 {
@@ -57,6 +57,18 @@ typedef struct LvInfo
     char pix_fmt[32];
     char audio_codec[32];
 } LvInfo;
+
+// One of a file's audio streams, for the track menu (lv_audio_tracks).
+typedef struct LvTrack
+{
+    int stream;       // its stream index: what lv_open_audio takes
+    int channels;
+    int is_default;   // the container's default track
+    int playing;      // the one this player plays
+    char lang[16];    // its language tag ("eng"), or ""
+    char title[64];   // its title, or ""
+    char codec[32];   // FFmpeg's short codec name
+} LvTrack;
 
 // ---- file input -----------------------------------------------------------------------------------------------
 
@@ -763,6 +775,8 @@ typedef struct LvPlayer
     int keyframes;           // LV_KEYFRAMES: pictures go to the CPU even from the GPU (lv_frame_rgba fits them)
     long long *frame_us;     // every picture's time from the container's index, sorted (lv_frame_times)
     int n_frames;            // 0 when the container doesn't list every picture (Matroska: keyframes only)
+    LvTrack *tracks;         // the file's audio streams (lv_audio_tracks)
+    int n_tracks;
 } LvPlayer;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
@@ -914,7 +928,47 @@ EXPORT void lv_close(LvPlayer *p)
     input_close(&p->in);
     av_free(p->abuf);
     free(p->frame_us);
+    free(p->tracks);
     free(p);
+}
+
+// The file's audio streams, the one playing marked (before the decoder is opened: `ai` is the pick).
+static void list_tracks(LvPlayer *p)
+{
+    AVFormatContext *fmt = p->in.fmt;
+    int n = 0;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+        n += fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
+    if (n == 0 || (p->tracks = calloc((size_t)n, sizeof *p->tracks)) == NULL)
+        return;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        const AVStream *s = fmt->streams[i];
+        if (s->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            continue;
+        LvTrack *t = &p->tracks[p->n_tracks++];
+        t->stream = (int)i;
+        t->channels = s->codecpar->ch_layout.nb_channels;
+        t->is_default = (s->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        t->playing = (int)i == p->ai;
+        const AVDictionaryEntry *e = av_dict_get(s->metadata, "language", NULL, 0);
+        if (e && strcmp(e->value, "und") != 0)
+            snprintf(t->lang, sizeof t->lang, "%s", e->value);
+        e = av_dict_get(s->metadata, "title", NULL, 0);
+        if (e == NULL)
+            e = av_dict_get(s->metadata, "handler_name", NULL, 0);
+        // MP4's handler names are often the muxer's boilerplate: those aren't titles.
+        if (e && strstr(e->value, "Handler") == NULL && strstr(e->value, "handler") == NULL)
+            snprintf(t->title, sizeof t->title, "%s", e->value);
+        snprintf(t->codec, sizeof t->codec, "%s", avcodec_get_name(s->codecpar->codec_id));
+    }
+}
+
+// The file's audio streams (0 when it has none); valid until lv_close.
+EXPORT int lv_audio_tracks(const LvPlayer *p, const LvTrack **out)
+{
+    *out = p ? p->tracks : NULL;
+    return p ? p->n_tracks : 0;
 }
 
 static int cmp_ll(const void *a, const void *b)
@@ -969,9 +1023,18 @@ EXPORT int lv_frame_times(const LvPlayer *p, const long long **out)
     return p ? p->n_frames : 0;
 }
 
+EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_stream, LvInfo *info, LvPlayer **out);
+
 // Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
 // decodes on that GPU where it can. `flags`: LV_NO_AUDIO, LV_KEYFRAMES.
 EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, LvPlayer **out)
+{
+    return lv_open_audio(path, d3d11, flags, -1, info, out);
+}
+
+// lv_open playing the audio stream `audio_stream` (an index lv_audio_tracks gave), or the best one when it's -1
+// or not an audio stream.
+EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_stream, LvInfo *info, LvPlayer **out)
 {
     *out = NULL;
     LvPlayer *p = calloc(1, sizeof *p);
@@ -1002,6 +1065,12 @@ EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, Lv
     vs->discard = AVDISCARD_DEFAULT;
     fill_info(fmt, vs, p->ai >= 0 ? fmt->streams[p->ai] : NULL, info);
     p->start_us = vs->start_time != AV_NOPTS_VALUE ? av_rescale_q(vs->start_time, vs->time_base, AV_TIME_BASE_Q) : 0;
+    if (audio_stream >= 0 && (unsigned)audio_stream < fmt->nb_streams && fmt->streams[audio_stream]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+    {
+        p->ai = audio_stream;
+        fill_info(fmt, vs, fmt->streams[p->ai], info);
+    }
+    list_tracks(p);
 
     if (d3d11)
     {
