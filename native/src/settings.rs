@@ -40,8 +40,8 @@ pub struct Settings {
     pub theme_follow: bool,
     pub theme_dark: crate::theme::ThemeId,
     pub theme_light: crate::theme::ThemeId,
-    /// The title bar and status row filled with the theme's page colour instead of floating see-through on the
-    /// photo.
+    /// The status row filled with the theme's bar colour instead of floating see-through on the photo (the key
+    /// keeps its first name: it covered the title bar too at first).
     pub bars_opaque: bool,
     /// The checkerboard behind the image (default on); off, the viewport is the theme's plain background.
     pub checkerboard: bool,

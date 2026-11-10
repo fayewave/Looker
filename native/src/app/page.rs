@@ -644,7 +644,7 @@ impl App {
         } else {
             self.theme_chips(g, rows, "Theme", CHIPS_ANY, open);
         }
-        let r = rows.row(g, "Solid title bar and status row", "Filled with the theme's colour. Off: see-through over the photo");
+        let r = rows.row(g, "Solid status row", "Filled with the theme's colour. Off: see-through over the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
         let r = rows.row(g, "Checkerboard background", "Shows where a photo is transparent. Off: plain");
         self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);

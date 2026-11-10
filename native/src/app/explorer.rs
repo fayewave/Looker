@@ -29,6 +29,9 @@ pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
 const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
+/// The card's widest: a hair short of the width the sidebar needs (`SIDEBAR_AT` inside, plus the margins and the
+/// border), so the sidebar only ever comes with browse mode; dragged wider, the card becomes it (Faye, 2026-11-10).
+const CARD_MAX: f32 = super::explorer_view::SIDEBAR_AT + 2.0 * MARGIN + 2.0 - 1.0;
 /// Browse mode leaves the photo at least this much of the window (or 30 % of it), by default.
 const PREVIEW_MIN: f32 = 360.0;
 /// Dragging browse mode's edge leaves the photo at least this much.
@@ -466,12 +469,13 @@ impl App {
 
     /// The card's width now: its own, eased out to browse mode's while that's on.
     pub(super) fn explorer_width(&self) -> f32 {
+        let card = self.settings.explorer_width.min(CARD_MAX);
         let k = self.explorer.browse.value(Instant::now())[0];
         if k <= 0.0 {
-            return self.settings.explorer_width;
+            return card;
         }
         let wide = self.browse_width();
-        self.settings.explorer_width + (wide - self.settings.explorer_width) * k
+        card + (wide - card) * k
     }
 
     /// Browse mode's width: as its edge was last dragged, else all but a preview of 360 DIPs (or 30 %).
@@ -2268,7 +2272,7 @@ impl App {
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
-        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
+        let card_cap = INFO_MAX.min(CARD_MAX).min((ww - MIN_IMAGE_W).max(INFO_MIN));
         let w = (w0 + (x - x0)).round().clamp(INFO_MIN, (ww - PREVIEW_DRAGGED_MIN).max(INFO_MIN));
         if w <= card_cap {
             if self.browsing() {

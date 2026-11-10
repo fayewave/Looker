@@ -455,7 +455,7 @@ impl App {
         for (tool, glyph, r) in self.tool_rects() {
             // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
             // looking the same whatever is behind.
-            g.fill_round(r, 5.0, rgb(if self.settings.bars_opaque { t.bar } else { t.content }));
+            g.fill_round(r, 5.0, rgb(t.content));
             let enabled = self.tool_enabled(tool);
             let id = Hit::Tool(tool);
             self.hits.add(id, r);
@@ -606,14 +606,13 @@ impl App {
         // Fading from the window's edge all the way: alpha falls as (1 - t)^1.5 over the gradient.
         let edge_out: Vec<_> =
             [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&k| (k, gfx::rgba(colour, alpha * (1.0 - k).powf(1.5)))).collect();
-        // Solid bars (Appearance): the title bar with the toolbar, and the status row, filled with the theme's
-        // card colour (neutral: the page's tint, Garnet's wine, read as the accent on them; Faye, 2026-11-10); no
-        // gradient under them.
+        // Solid status row (Appearance): filled with the theme's bar colour (neutral, Black's black) and no
+        // gradient under it; the title bar and toolbar keep theirs (Faye, 2026-11-10: the status row only).
         let solid = self.chrome() && self.settings.bars_opaque;
         if solid {
-            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.bar));
             g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.bar));
-        } else if self.chrome() {
+        }
+        if self.chrome() {
             let buttons_bottom = Self::toolbar_y() + BUTTON_H;
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
         }

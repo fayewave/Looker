@@ -20,7 +20,7 @@ const STRIP_H: f32 = 32.0;
 pub(super) const SIDEBAR_MIN: f32 = 150.0;
 pub(super) const SIDEBAR_MAX: f32 = 420.0;
 /// From this inner width the sidebar is a column of its own; narrower, it's behind a toggle.
-const SIDEBAR_AT: f32 = 600.0;
+pub(super) const SIDEBAR_AT: f32 = 600.0;
 const HEADER: f32 = 26.0;
 const FILTER_H: f32 = 28.0;
 const ICON_W: f32 = 24.0;

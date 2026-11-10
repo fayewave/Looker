@@ -202,9 +202,10 @@ impl VideoView {
 }
 
 /// The bar's margin, height and button size for a photo area `area_w` wide: a small one (browse mode's preview)
-/// gets a compact bar on tighter margins.
+/// gets a compact bar on tighter margins. 12: the cards' margin, so the bar's bottom lines up with theirs (Faye,
+/// 2026-11-10).
 fn bar_metrics(area_w: f32) -> (f32, f32, f32) {
-    if area_w < 360.0 { (8.0, 30.0, 24.0) } else { (16.0, BAR_H, BAR_BTN) }
+    if area_w < 360.0 { (12.0, 30.0, 24.0) } else { (12.0, BAR_H, BAR_BTN) }
 }
 
 /// The band at the bottom of a photo area `area_w` wide that a video keeps clear for its bar: the bar and a margin
