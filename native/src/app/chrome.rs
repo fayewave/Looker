@@ -255,6 +255,8 @@ impl App {
             Hit::TextButton(7) => "Replace (Ctrl+H)",
             Hit::TextFoot(0) => "Encoding",
             Hit::TextFoot(1) => "Line endings",
+            Hit::TextTabNew => "New tab (Ctrl+N)",
+            Hit::TextTabClose(_) => "Close tab (Ctrl+W)",
             Hit::AudioPrev => "Previous file (\u{2190})",
             Hit::AudioNext => "Next file (\u{2192})",
             Hit::AudioLoop => "Loop",

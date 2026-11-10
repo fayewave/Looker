@@ -121,6 +121,18 @@ pub struct Settings {
     pub audio_spectrum: bool,
     /// The text editor wraps long lines to its width (Word wrap).
     pub text_wrap: bool,
+    /// The text editor's font (family, weight, italic, points), and View's switches: the status bar, line
+    /// numbers, spell check, autocorrect, formatted Markdown. Print margins in thousandths of an inch.
+    pub text_font: String,
+    pub text_font_weight: i32,
+    pub text_font_italic: bool,
+    pub text_font_pt: f32,
+    pub text_status: bool,
+    pub text_numbers: bool,
+    pub text_spell: bool,
+    pub text_autocorrect: bool,
+    pub text_markdown: bool,
+    pub text_margins: [i32; 4],
     /// Subtitles' text size, percent of normal (`SUBTITLE_SIZES`).
     pub subtitle_size: u32,
 }
@@ -153,7 +165,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, subtitle_size: 100 }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100 }
     }
 }
 
@@ -295,6 +307,21 @@ pub fn parse(text: &str) -> Settings {
             "video_muted" => s.video_muted = v == "1",
             "audio_spectrum" => s.audio_spectrum = v == "1",
             "text_wrap" => s.text_wrap = v != "0",
+            "text_font" if !v.trim().is_empty() => s.text_font = v.trim().to_string(),
+            "text_font_weight" => s.text_font_weight = v.parse::<i32>().map_or(400, |w| w.clamp(100, 900)),
+            "text_font_italic" => s.text_font_italic = v == "1",
+            "text_font_pt" => s.text_font_pt = v.parse::<f32>().map_or(10.5, |p| p.clamp(6.0, 96.0)),
+            "text_status" => s.text_status = v != "0",
+            "text_numbers" => s.text_numbers = v != "0",
+            "text_spell" => s.text_spell = v != "0",
+            "text_autocorrect" => s.text_autocorrect = v != "0",
+            "text_markdown" => s.text_markdown = v != "0",
+            "text_margins" => {
+                let m: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if m.len() == 4 {
+                    s.text_margins = [m[0], m[1], m[2], m[3]];
+                }
+            }
             "video_autoplay" => s.video_autoplay = v != "0",
             "video_frames" => s.video_frames = v != "0",
             "video_loop" => s.video_loop_secs = if v == "always" { u32::MAX } else { v.parse().unwrap_or(10) },
@@ -362,6 +389,17 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("video_muted={}\n", s.video_muted as i32));
     out.push_str(&format!("audio_spectrum={}\n", s.audio_spectrum as i32));
     out.push_str(&format!("text_wrap={}\n", s.text_wrap as i32));
+    out.push_str(&format!("text_font={}\n", s.text_font));
+    out.push_str(&format!("text_font_weight={}\n", s.text_font_weight));
+    out.push_str(&format!("text_font_italic={}\n", s.text_font_italic as i32));
+    out.push_str(&format!("text_font_pt={}\n", s.text_font_pt));
+    out.push_str(&format!("text_status={}\n", s.text_status as i32));
+    out.push_str(&format!("text_numbers={}\n", s.text_numbers as i32));
+    out.push_str(&format!("text_spell={}\n", s.text_spell as i32));
+    out.push_str(&format!("text_autocorrect={}\n", s.text_autocorrect as i32));
+    out.push_str(&format!("text_markdown={}\n", s.text_markdown as i32));
+    let m = s.text_margins;
+    out.push_str(&format!("text_margins={},{},{},{}\n", m[0], m[1], m[2], m[3]));
     out.push_str(&format!("video_autoplay={}\n", s.video_autoplay as i32));
     out.push_str(&format!("video_frames={}\n", s.video_frames as i32));
     if s.video_loop_secs == u32::MAX {
@@ -608,6 +646,16 @@ mod tests {
             video_resume: false,
             audio_spectrum: true,
             text_wrap: false,
+            text_font: "Cascadia Mono".into(),
+            text_font_weight: 700,
+            text_font_italic: true,
+            text_font_pt: 12.0,
+            text_status: false,
+            text_numbers: false,
+            text_spell: false,
+            text_autocorrect: false,
+            text_markdown: false,
+            text_margins: [500, 600, 700, 800],
             subtitle_size: 150,
         };
         assert_eq!(parse(&format(&s)), s);

@@ -361,6 +361,10 @@ impl App {
                             | Hit::PageNext
                             | Hit::TextButton(_)
                             | Hit::TextFoot(_)
+                            | Hit::TextTab(_)
+                            | Hit::TextTabClose(_)
+                            | Hit::TextTabNew
+                            | Hit::TextMenuBar(_)
                             | Hit::VideoPlay
                             | Hit::VideoStop
                             | Hit::AudioPrev
@@ -475,9 +479,10 @@ impl App {
                         Some(Hit::TextScroll) => self.text_scroll_press(x, y, false),
                         Some(Hit::TextHScroll) => self.text_scroll_press(x, y, true),
                         Some(Hit::TextField(i)) => self.text_field_press(i, x),
+                        Some(Hit::TextTab(i)) => self.text_select_tab(i as usize),
                         _ => {}
                     }
-                    if !matches!(h, Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll | Hit::TextBar | Hit::TextField(_) | Hit::TextButton(_) | Hit::TextFoot(_) | Hit::MenuItem(_) | Hit::MenuSurface)) {
+                    if !matches!(h, Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll | Hit::TextBar | Hit::TextField(_) | Hit::TextButton(_) | Hit::TextFoot(_) | Hit::TextTab(_) | Hit::TextTabClose(_) | Hit::TextTabNew | Hit::TextMenuBar(_) | Hit::MenuItem(_) | Hit::MenuSurface)) {
                         self.text_blur();
                     }
                     self.press_at = (x, y);
@@ -596,6 +601,9 @@ impl App {
                             Some(Hit::PageNext) => self.turn_page(1),
                             Some(Hit::TextButton(i)) => self.text_bar_button(i),
                         Some(Hit::TextFoot(i)) => self.text_foot_click(i),
+                        Some(Hit::TextTabClose(i)) => self.text_close_tab(i as usize),
+                        Some(Hit::TextTabNew) => self.text_new_tab(),
+                        Some(Hit::TextMenuBar(k)) => self.text_menubar_click(k),
                         Some(h @ (Hit::VideoPlay | Hit::VideoStop | Hit::AudioPrev | Hit::AudioNext | Hit::AudioLoop | Hit::VideoMute | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)) => self.video_bar_click(h),
                             Some(Hit::ModelCube) if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= 4.0 => self.view_cube_click(x, y),
                             _ => {}
@@ -1069,6 +1077,15 @@ impl App {
                             self.explorer_type_ahead(c);
                         }
                     }
+                    Some(LRESULT(0))
+                }
+                WM_SYSKEYDOWN if self.dialog.is_none() && self.menu.is_none() && self.text_focused() && matches!(VIRTUAL_KEY(wp.0 as u16), VK_F | VK_E | VK_V) => {
+                    let k = match VIRTUAL_KEY(wp.0 as u16) {
+                        VK_F => 0,
+                        VK_E => 1,
+                        _ => 2,
+                    };
+                    self.text_menubar_click(k);
                     Some(LRESULT(0))
                 }
                 WM_SYSKEYDOWN if self.dialog.is_none() && self.menu.is_none() && self.explorer_shown() && self.explorer.focused => {

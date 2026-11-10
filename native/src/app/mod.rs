@@ -20,6 +20,8 @@ mod rip;
 mod slideshow;
 mod audio;
 mod subtitles;
+mod textprint;
+mod texttabs;
 mod textview;
 mod video;
 
@@ -273,6 +275,11 @@ enum Hit {
     TextField(u8),
     TextButton(u8),
     TextFoot(u8),
+    /// The text editor's tabs, their close buttons, New tab, and the menu bar's File, Edit and View.
+    TextTab(u16),
+    TextTabClose(u16),
+    TextTabNew,
+    TextMenuBar(u8),
     /// The audio bar's previous and next file, and Loop.
     AudioPrev,
     AudioNext,
@@ -586,8 +593,10 @@ pub struct App {
     menu: Option<(menus::MenuKind, ui::Menu<menus::Action>)>,
     /// Menus closing (`retire_menu`), drawn until they've shrunk away.
     menus_out: Vec<ui::Menu<menus::Action>>,
-    /// The text file on screen, read and edited in place (textview.rs).
-    text_view: Option<textview::TextView>,
+    /// The text editor's documents, one a tab (texttabs.rs, textview.rs).
+    text: texttabs::TextDocs,
+    /// The printer and paper last picked (Print, Page setup): the dialogs' DEVMODE and DEVNAMES.
+    print_devmode: (HGLOBAL, HGLOBAL),
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
     dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
@@ -1178,6 +1187,7 @@ impl App {
         if let Some(a) = &mut self.audio_view {
             a.device_lost();
         }
+        self.text.device_lost();
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
         if let Some(g) = &self.gfx {
@@ -1349,7 +1359,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             fades: ui::Fades::new(),
             menu: None,
             menus_out: Vec::new(),
-            text_view: None,
+            text: texttabs::TextDocs::new(),
+            print_devmode: (HGLOBAL::default(), HGLOBAL::default()),
             tooltip: None,
             dialog: None,
             toast: None,

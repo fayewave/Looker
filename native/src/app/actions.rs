@@ -16,6 +16,8 @@ use crate::viewer::Removed;
 pub(super) enum Choice {
     Confirm,
     Cancel,
+    /// The text editor's "Don't save".
+    Discard,
 }
 
 pub(super) enum DialogKind {
@@ -27,6 +29,8 @@ pub(super) enum DialogKind {
     /// Rip DVD's dialog, and a message with only OK.
     Rip(Box<super::rip::RipSetup>),
     Notice,
+    /// Closing a text tab with unsaved edits: Save, Don't save, Cancel (the tab's id).
+    TextClose(u64),
 }
 
 impl App {
@@ -431,10 +435,14 @@ impl App {
             let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
         }
         self.invalidate();
+        if let DialogKind::TextClose(id) = kind {
+            return self.text_close_answer(id, choice);
+        }
         if choice != Choice::Confirm {
             return;
         }
         match kind {
+            DialogKind::TextClose(_) => {}
             DialogKind::Notice => {}
             DialogKind::Rip(setup) => {
                 let (title, mp4) = (d.picked(0), d.picked(1) == 1);

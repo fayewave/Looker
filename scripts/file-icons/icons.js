@@ -13,7 +13,7 @@ const KIND_OF = {
   anim: "gif apng heics avifs",
   icon: "ico cur",
   vector: "svg",
-  doc: "pdf txt vmt",
+  doc: "pdf txt vmt md markdown log ini cfg vdf qc",
   layers: "psd psb xcf",
   raw: "cr2 cr3 crw nef nrw arw sr2 srf dng orf raf rw2 pef srw 3fr fff rwl iiq mrw dcr kdc erf mef",
   model: "obj stl ply 3mf gltf glb vmf",
@@ -23,7 +23,7 @@ const KIND_OF = {
 };
 const TYPE_NAME = {
   photo: e => `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
-  vector: () => "SVG image", doc: e => e === "TXT" ? "Text document" : e === "VMT" ? "VMT Source material" : "PDF document", layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
+  vector: () => "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => e === "VMF" ? "VMF Hammer map" : `${e} 3D model`,
   material: () => "MTL material library", video: e => `${e} video`,
   audio: e => `${e} audio`,

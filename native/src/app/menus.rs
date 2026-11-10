@@ -321,7 +321,7 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
-            Some(MenuKind::Text) => {
+            Some(MenuKind::Text | MenuKind::TextBar(_)) => {
                 if let Action::Text(a) = action {
                     self.text_action(a);
                 }
@@ -448,4 +448,6 @@ pub(super) enum MenuKind {
     VideoTime,
     /// The text editor's right-click menu, and its foot's encodings and line endings.
     Text,
+    /// The text editor's menu bar: File, Edit or View.
+    TextBar(u8),
 }

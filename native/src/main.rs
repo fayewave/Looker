@@ -30,6 +30,7 @@ mod pages;
 mod player;
 mod settings;
 mod shell_icons;
+mod spell;
 mod store;
 mod subs;
 mod tags;

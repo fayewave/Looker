@@ -92,8 +92,8 @@ pub const EXTENSIONS: &[&str] = &[
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
     // Source engine: Hammer maps and materials.
     "vmf", "vmt", "vtf",
-    // Text.
-    "txt",
+    // Text: plain, Markdown, logs and settings, Source's configs and model scripts.
+    "txt", "md", "markdown", "log", "ini", "cfg", "vdf", "qc",
     // Video.
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
     // Audio.
@@ -135,7 +135,7 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "qoi" => Format::Qoi,
         "mtl" => Format::Mtl,
         // Source materials are KeyValues text: read and edited as text (Faye, 2026-11-11).
-        "txt" | "vmt" => Format::Text,
+        "txt" | "vmt" | "md" | "markdown" | "log" | "ini" | "cfg" | "vdf" | "qc" => Format::Text,
         "vtf" => Format::Vtf,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
@@ -333,7 +333,11 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         Format::Qoi => "QOI",
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
-        Format::Text => if ext == "VMT" { "VMT" } else { "Text" },
+        Format::Text => match ext.as_str() {
+            "TXT" | "" => "Text",
+            "MD" | "MARKDOWN" => "Markdown",
+            e => return Some(e.to_string()),
+        },
         Format::Vtf => "VTF",
         Format::Mtl => "MTL",
         Format::Model => match ext.as_str() {
