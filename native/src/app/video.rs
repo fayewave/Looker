@@ -628,7 +628,7 @@ impl App {
         self.player_ref().and_then(|p| p.info.as_ref()).map(crate::imaging::video::status_parts).unwrap_or_default()
     }
 
-    fn player_ref(&self) -> Option<&Player> {
+    pub(super) fn player_ref(&self) -> Option<&Player> {
         self.video.as_ref().filter(|v| !v.failed).and_then(|v| v.player.as_ref()).filter(|p| p.info.is_some())
     }
 
@@ -1193,13 +1193,10 @@ impl App {
         self.invalidate();
     }
 
-    /// The playing video's audio tracks for the context menu: (stream, label, playing). Empty without a choice.
+    /// The playing video's audio tracks for the context menu: (stream, label, playing). Empty without sound.
     pub(super) fn video_audio_tracks(&self) -> Vec<(i32, String, bool)> {
         let Some(p) = self.player_ref().filter(|_| self.video_shown()) else { return Vec::new() };
         let t = p.audio_tracks();
-        if t.len() < 2 {
-            return Vec::new();
-        }
         t.iter().enumerate().map(|(n, tr)| (tr.stream, tr.label(n + 1), tr.playing != 0)).collect()
     }
 

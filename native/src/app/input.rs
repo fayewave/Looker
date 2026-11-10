@@ -54,16 +54,41 @@ impl App {
 
     /// Keys while a menu is open: it has them all (arrows, Enter, Escape), like a WinUI flyout.
     fn menu_key(&mut self, vk: VIRTUAL_KEY) {
+        let (w, h) = self.size_dip();
+        let in_sub = self.menu.as_ref().is_some_and(|(_, m)| m.sub.as_ref().is_some_and(|(_, s)| s.cursor.is_some()));
         match vk {
+            // Escape or Left closes an open submenu first.
+            VK_ESCAPE | VK_LEFT if in_sub => {
+                if let Some((_, m)) = &mut self.menu {
+                    m.sub = None;
+                }
+                self.invalidate();
+            }
             VK_ESCAPE => self.close_menu(),
             VK_UP | VK_DOWN => {
                 if let Some((_, m)) = &mut self.menu {
-                    m.move_cursor(vk == VK_DOWN);
+                    match &mut m.sub {
+                        Some((_, s)) if in_sub => s.move_cursor(vk == VK_DOWN),
+                        _ => m.move_cursor(vk == VK_DOWN),
+                    }
+                }
+                self.invalidate();
+            }
+            // Right (or Enter) on a submenu row opens it with its first row picked.
+            VK_RIGHT | VK_RETURN | VK_SPACE if !in_sub && self.menu.as_ref().is_some_and(|(_, m)| m.cursor.is_some_and(|c| m.is_sub(c))) => {
+                if let (Some((_, m)), Some(g)) = (&mut self.menu, &self.gfx) {
+                    if let Some(c) = m.cursor {
+                        m.open_sub(g, c, rect(0.0, 0.0, w, h));
+                        if let Some((_, s)) = &mut m.sub {
+                            s.move_cursor(true);
+                        }
+                    }
                 }
                 self.invalidate();
             }
             VK_RETURN | VK_SPACE => {
-                if let Some(i) = self.menu.as_ref().and_then(|(_, m)| m.cursor) {
+                let pick = self.menu.as_ref().and_then(|(_, m)| if in_sub { m.sub.as_ref().and_then(|(_, s)| s.cursor).map(|c| ui::MENU_SUB + c) } else { m.cursor });
+                if let Some(i) = pick {
                     self.activate_menu(i);
                 }
             }

@@ -692,6 +692,23 @@ impl App {
                 ui::ToastPhase::Done => self.toast = None,
             }
         }
+        // A submenu row under the pointer opens its menu beside it; another row of the menu closes it.
+        let hovered = match self.hover {
+            Some(Hit::MenuItem(i)) => Some(i),
+            _ => None,
+        };
+        let (w, h) = self.size_dip();
+        if let Some((_, m)) = &mut self.menu {
+            match hovered {
+                Some(i) if i < ui::MENU_SUB && m.is_sub(i) => {
+                    if m.sub.as_ref().map(|s| s.0) != Some(i) {
+                        m.open_sub(g, i, rect(0.0, 0.0, w, h));
+                    }
+                }
+                Some(i) if i < ui::MENU_SUB => m.sub = None,
+                _ => {}
+            }
+        }
         if let Some((_, m)) = &self.menu {
             self.hits.add(Hit::MenuSurface, m.bounds());
             for (i, r) in m.item_rects() {
@@ -700,16 +717,23 @@ impl App {
             for (i, k, r) in m.swatch_rects() {
                 self.hits.add(Hit::MenuSwatch(i, k), r);
             }
-            let hover = match self.hover {
-                Some(Hit::MenuItem(i)) => Some(i),
-                _ => None,
-            };
+            if let Some((_, s)) = &m.sub {
+                self.hits.add(Hit::MenuSurface, s.bounds());
+                for (i, r) in s.item_rects() {
+                    self.hits.add(Hit::MenuItem(ui::MENU_SUB + i), r);
+                }
+            }
+            let hover = hovered.filter(|&i| i < ui::MENU_SUB);
             let swatch = match self.hover {
                 Some(Hit::MenuSwatch(i, k)) => Some((i, k)),
                 _ => None,
             };
             m.draw(g, hover, swatch);
             moving |= m.moving();
+            if let Some((_, s)) = &m.sub {
+                s.draw(g, hovered.filter(|&i| i >= ui::MENU_SUB).map(|i| i - ui::MENU_SUB), None);
+                moving |= s.moving();
+            }
         }
         if self.dialog.is_some() {
             let (w, h) = self.size_dip();

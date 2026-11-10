@@ -704,6 +704,7 @@ const MENU_LABEL_X: f32 = 14.0;
 const MENU_LABEL_X_ICONS: f32 = 35.0;
 const MENU_ICON_X: f32 = 12.0;
 
+#[derive(Clone)]
 pub struct MenuItem<A> {
     pub action: A,
     /// A Segoe Fluent glyph in the icon column.
@@ -720,6 +721,7 @@ pub struct MenuItem<A> {
 
 /// A value with a minus and a plus (Transient's "Height  [-  1 row  +]"): each button an action, None when
 /// it's at its limit. Pressing one leaves the menu open.
+#[derive(Clone)]
 pub struct Stepper<A> {
     pub label: String,
     pub value: String,
@@ -730,6 +732,7 @@ pub struct Stepper<A> {
 const STEPPER_W: f32 = 104.0;
 const STEPPER_H: f32 = 21.0;
 
+#[derive(Clone)]
 pub enum Entry<A> {
     Item(MenuItem<A>),
     Separator,
@@ -738,14 +741,20 @@ pub enum Entry<A> {
     /// A group's heading, not clickable (the column menu's File, Date and time, Image).
     Heading(String),
     Stepper(Stepper<A>),
+    /// A row with a chevron that opens a menu of its own beside it (the video's Audio track): its glyph, label
+    /// and entries.
+    Sub(Option<u16>, String, Vec<Entry<A>>),
 }
+
+/// A submenu's rows are hit as `Hit::MenuItem(MENU_SUB + i)`, its menu's entry `i`.
+pub const MENU_SUB: usize = 1000;
 
 const MENU_SWATCHES: f32 = 30.0;
 const SWATCH_CELL: f32 = 24.0;
 
 fn entry_h<A>(e: &Entry<A>) -> f32 {
     match e {
-        Entry::Item(_) => MENU_ROW,
+        Entry::Item(_) | Entry::Sub(..) => MENU_ROW,
         Entry::Separator => MENU_SEP,
         Entry::Swatches(_) => MENU_SWATCHES,
         Entry::Heading(_) | Entry::Stepper(_) => MENU_ROW,
@@ -767,11 +776,13 @@ pub struct Menu<A> {
     /// The corner it grows from.
     origin: (f32, f32),
     opened: Instant,
+    /// A submenu open beside it: the entry it hangs off, and its menu.
+    pub sub: Option<(usize, Box<Menu<A>>)>,
 }
 
 impl<A: Copy> Menu<A> {
     fn natural_width(g: &Gfx, entries: &[Entry<A>]) -> f32 {
-        let icons = entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()));
+        let icons = entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()) || matches!(e, Entry::Sub(Some(_), ..)));
         let checks = entries.iter().any(|e| matches!(e, Entry::Item(i) if i.check.is_some()));
         let label_x = if icons { MENU_LABEL_X_ICONS } else { MENU_LABEL_X };
         let mut w = MENU_MIN_W;
@@ -784,12 +795,37 @@ impl<A: Copy> Menu<A> {
             if let Entry::Stepper(s) = e {
                 w = w.max(label_x + g.measure(&wide(&s.label), &g.fonts.body) + 16.0 + STEPPER_W + 11.0);
             }
+            if let Entry::Sub(_, l, _) = e {
+                w = w.max(label_x + g.measure(&wide(l), &g.fonts.body) + 40.0);
+            }
         }
         w.ceil()
     }
 
     fn make(entries: Vec<Entry<A>>, x: f32, y: f32, width: f32, origin: (f32, f32)) -> Menu<A> {
-        Menu { entries, x, y, width, cursor: None, origin, opened: Instant::now() }
+        Menu { entries, x, y, width, cursor: None, origin, opened: Instant::now(), sub: None }
+    }
+
+    /// Entry `i` opens a submenu.
+    pub fn is_sub(&self, i: usize) -> bool {
+        matches!(self.entries.get(i), Some(Entry::Sub(..)))
+    }
+
+    /// Opens entry `i`'s submenu beside its row (to the right, else the left), inside `bounds`.
+    pub fn open_sub(&mut self, g: &Gfx, i: usize, bounds: D2D_RECT_F) {
+        let Some(Entry::Sub(_, _, entries)) = self.entries.get(i) else { return };
+        let Some((_, row)) = self.item_rects().into_iter().find(|(k, _)| *k == i) else { return };
+        let entries = entries.clone();
+        let width = Self::natural_width(g, &entries);
+        let h = Self::height_of(&entries);
+        let panel = self.bounds();
+        let (mut x, mut ox) = (panel.right - 2.0, panel.right - 2.0);
+        if x + width > bounds.right - 4.0 {
+            x = (panel.left + 2.0 - width).max(bounds.left + 4.0);
+            ox = x + width;
+        }
+        let y = (row.top - MENU_PAD_TOP).min(bounds.bottom - 4.0 - h).max(bounds.top + 4.0);
+        self.sub = Some((i, Box::new(Self::make(entries, x, y, width, (ox, y)))));
     }
 
     /// A menu with its top-left at (x, y) (the pointer), flipped to stay inside `bounds`.
@@ -849,7 +885,7 @@ impl<A: Copy> Menu<A> {
         let mut out = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             match e {
-                Entry::Item(_) => {
+                Entry::Item(_) | Entry::Sub(..) => {
                     out.push((i, rect(self.x + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW)));
                     y += MENU_ROW;
                 }
@@ -907,7 +943,11 @@ impl<A: Copy> Menu<A> {
         matches!(self.entries.get(i), Some(Entry::Stepper(_)))
     }
 
+    /// The action of entry `index`, or of the open submenu's entry `index - MENU_SUB`.
     pub fn action_at(&self, index: usize) -> Option<A> {
+        if index >= MENU_SUB {
+            return self.sub.as_ref()?.1.action_at(index - MENU_SUB);
+        }
         match self.entries.get(index) {
             Some(Entry::Item(i)) if i.enabled => Some(i.action),
             _ => None,
@@ -920,7 +960,7 @@ impl<A: Copy> Menu<A> {
             .entries
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| matches!(e, Entry::Item(it) if it.enabled).then_some(i))
+            .filter_map(|(i, e)| (matches!(e, Entry::Item(it) if it.enabled) || matches!(e, Entry::Sub(..))).then_some(i))
             .collect();
         if items.is_empty() {
             return;
@@ -944,12 +984,29 @@ impl<A: Copy> Menu<A> {
         shadow(g, panel, 8.0);
         g.fill_round(panel, 8.0, rgb(raised.popup));
         stroke(g, panel, 8.0, rgb(raised.divider));
-        let icons = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()));
+        let icons = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.glyph.is_some()) || matches!(e, Entry::Sub(Some(_), ..)));
         let checks = self.entries.iter().any(|e| matches!(e, Entry::Item(i) if i.check.is_some()));
         let label_x = if icons { MENU_LABEL_X_ICONS } else { MENU_LABEL_X };
         let mut y = panel.top + MENU_PAD_TOP;
         for (i, en) in self.entries.iter().enumerate() {
             let it = match en {
+                Entry::Sub(glyph, text, _) => {
+                    // Lit while the pointer's on it or its submenu is open; a chevron at the right.
+                    let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW);
+                    let open = self.sub.as_ref().is_some_and(|(k, _)| *k == i);
+                    let hot = hover == Some(i) || open || (hover.is_none() && self.cursor == Some(i));
+                    if hot {
+                        g.fill_round(row, 4.0, rgb(raised.accent));
+                    }
+                    let fg = if hot { rgb(raised.on_accent) } else { rgb(raised.text) };
+                    if let Some(glyph) = glyph {
+                        g.text(&[*glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), if hot { fg } else { rgb(raised.icon) }, Align::Center);
+                    }
+                    label(g, text, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 30.0, MENU_ROW), fg, Align::Left);
+                    g.text(&[0xE76C], &g.fonts.caption_icons, rect(panel.right - 27.0, y, 16.0, MENU_ROW), fg, Align::Center);
+                    y += MENU_ROW;
+                    continue;
+                }
                 Entry::Separator => {
                     g.hline(panel.left + 1.0, g.snap((y + MENU_SEP / 2.0).floor()), self.width - 2.0, rgb(raised.divider));
                     y += MENU_SEP;

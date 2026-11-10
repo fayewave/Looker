@@ -27,7 +27,8 @@ pub struct Settings {
     /// The info card's width in DIPs, its 12 px margins included (what the image fit leaves free).
     pub info_width: f32,
     pub explorer_visible: bool,
-    /// The file explorer card's width in DIPs, margins included (the info card's range).
+    /// The file explorer card's width in DIPs, margins included, as its edge was dragged; 0 for the default, a
+    /// quarter of the window (Faye, 2026-11-10; the old default, 320, reads as 0).
     pub explorer_width: f32,
     /// The mouse wheel over the image steps through the folder instead of zooming (Ctrl+wheel still zooms).
     pub wheel_navigates: bool,
@@ -141,7 +142,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -276,7 +277,7 @@ pub fn parse(text: &str) -> Settings {
             "info_visible" => s.info_visible = v == "1",
             "info_width" => s.info_width = v.parse::<f32>().map_or(INFO_WIDTH, |w| w.clamp(INFO_MIN, INFO_MAX)),
             "explorer_visible" => s.explorer_visible = v == "1",
-            "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(EXPLORER_WIDTH, |w| w.clamp(EXPLORER_MIN, INFO_MAX)),
+            "explorer_width" => s.explorer_width = v.parse::<f32>().map_or(0.0, |w| if w <= 0.0 || w == EXPLORER_WIDTH { 0.0 } else { w.clamp(EXPLORER_MIN, INFO_MAX) }),
             "wheel" => s.wheel_navigates = v == "navigate",
             "zoom_anchor" => s.zoom_center = v == "center",
             "video_volume" => s.video_volume = v.parse::<f32>().map_or(0.8, |x| x.clamp(0.0, 1.0)),
@@ -483,7 +484,7 @@ pub fn from_legacy(get: impl Fn(&str) -> Option<Legacy>) -> Settings {
     s.info_visible = flag("InfoVisible").unwrap_or(false);
     s.info_width = int("InfoWidth").map_or(INFO_WIDTH, |w| (w as f32).clamp(INFO_MIN, INFO_MAX));
     s.explorer_visible = flag("ExplorerVisible").unwrap_or(false);
-    s.explorer_width = int("ExplorerWidth").map_or(EXPLORER_WIDTH, |w| (w as f32).clamp(EXPLORER_MIN, INFO_MAX));
+    s.explorer_width = int("ExplorerWidth").map_or(0.0, |w| if w as f32 == EXPLORER_WIDTH { 0.0 } else { (w as f32).clamp(EXPLORER_MIN, INFO_MAX) });
     s.slideshow_seconds = int("SlideshowSeconds").map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120) as u32);
     s.cache_mb = int("CacheBudgetMB").map_or(CACHE_MB, |m| m.clamp(128, 2048) as u32);
     s.wheel_navigates = int("WheelMode") == Some(1);

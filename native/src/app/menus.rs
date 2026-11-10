@@ -108,14 +108,16 @@ impl App {
             e.push(item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, true));
         }
         e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", Some("Ctrl+Shift+E"), file));
-        // A video with more than one audio stream: which one plays.
-        let tracks = self.video_audio_tracks();
-        if !tracks.is_empty() {
+        // A video: which audio stream plays, in a submenu, there even with one (Faye, 2026-11-10).
+        if self.video_shown() && self.player_ref().is_some() {
+            let tracks = self.video_audio_tracks();
+            let rows: Vec<Entry<Action>> = if tracks.is_empty() {
+                vec![Entry::Item(MenuItem { action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
+            } else {
+                tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
+            };
             e.push(Entry::Separator);
-            e.push(Entry::Heading("Audio track".into()));
-            for (stream, label, playing) in tracks {
-                e.push(check(Action::AudioTrack(stream), &label, playing));
-            }
+            e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
         }
         e.extend([
             Entry::Separator,

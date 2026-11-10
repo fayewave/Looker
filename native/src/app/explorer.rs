@@ -21,7 +21,7 @@ use std::time::Instant;
 use super::*;
 use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, SideSection, Watcher};
 use crate::motion::Ease;
-use crate::settings::{EXPLORER_MIN, EXPLORER_WIDTH, INFO_MAX};
+use crate::settings::{EXPLORER_MIN, INFO_MAX};
 use crate::textedit::TextEdit;
 use crate::ui::TextField;
 
@@ -508,9 +508,18 @@ impl App {
         self.settings.explorer_visible && self.panels_allowed()
     }
 
+    /// The card's own width (not browsing): as its edge was dragged, else a quarter of the window.
+    pub(super) fn card_width(&self) -> f32 {
+        if self.settings.explorer_width > 0.0 {
+            return self.settings.explorer_width;
+        }
+        let (w, _) = self.size_dip();
+        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX)
+    }
+
     /// The card's width now: its own, eased out to browse mode's while that's on.
     pub(super) fn explorer_width(&self) -> f32 {
-        let card = self.settings.explorer_width;
+        let card = self.card_width();
         let k = self.explorer.browse.value(Instant::now())[0];
         if k <= 0.0 {
             return card;
@@ -525,9 +534,9 @@ impl App {
     fn browse_width(&self) -> f32 {
         let (w, _) = self.size_dip();
         let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
-        let least = self.settings.explorer_width + side + 1.0;
+        let least = self.card_width() + side + 1.0;
         let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { (w * BROWSE_SHARE).max(least) };
-        wide.min(w - PREVIEW_DRAGGED_MIN).max(self.settings.explorer_width)
+        wide.min(w - PREVIEW_DRAGGED_MIN).max(self.card_width())
     }
 
     pub(super) fn browsing(&self) -> bool {
@@ -2465,7 +2474,7 @@ impl App {
             self.layout_changed();
             return;
         }
-        self.settings.explorer_width = EXPLORER_WIDTH;
+        self.settings.explorer_width = 0.0; // back to a quarter of the window
         settings::save(&self.settings);
         self.layout_changed();
     }
