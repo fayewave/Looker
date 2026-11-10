@@ -24,6 +24,11 @@ const CARD_MAX_W: f32 = 960.0;
 const CARD_MAX_H: f32 = 900.0;
 const CARD_SHARE_W: f32 = 0.72;
 const CARD_SHARE_H: f32 = 0.85;
+/// Which theme a chip picks (its `Hit::ThemeChip` code's high bits): the one in use, or with Match Windows on, the
+/// one for when Windows is dark or light.
+const CHIPS_ANY: u8 = 0x00;
+const CHIPS_DARK: u8 = 0x10;
+const CHIPS_LIGHT: u8 = 0x20;
 const PANE_LEFT: f32 = 28.0;
 const PANE_RIGHT: f32 = 24.0;
 const PANE_HEAD: f32 = 64.0;
@@ -42,6 +47,8 @@ pub(super) enum Setting {
     Recents,
     Window,
     Checkerboard,
+    ThemeFollow,
+    BarsOpaque,
     VideoAutoplay,
     VideoLoop,
     VideoMuted,
@@ -367,6 +374,22 @@ impl App {
                 }
             }
             Setting::Checkerboard => s.checkerboard = !s.checkerboard,
+            Setting::BarsOpaque => s.bars_opaque = !s.bars_opaque,
+            Setting::ThemeFollow => {
+                s.theme_follow = !s.theme_follow;
+                // The theme in use becomes the pick for its side, so nothing changes until Windows does (Snapper's).
+                if s.theme_follow {
+                    if s.theme.theme().dark {
+                        s.theme_dark = s.theme;
+                    } else {
+                        s.theme_light = s.theme;
+                    }
+                    s.follow_windows();
+                }
+                settings::save(&self.settings);
+                self.apply_theme();
+                return;
+            }
             Setting::VideoAutoplay => s.video_autoplay = !s.video_autoplay,
             Setting::VideoMuted => s.video_start_muted = !s.video_start_muted,
             Setting::VideoResume => s.video_resume = !s.video_resume,
@@ -376,13 +399,17 @@ impl App {
         self.invalidate();
     }
 
-    /// A theme chip was clicked.
-    pub(super) fn pick_theme(&mut self, i: usize) {
+    /// A theme chip was clicked: `code` is its side (`CHIPS_*`) and its place in `ThemeId::ALL`.
+    pub(super) fn pick_theme(&mut self, code: usize) {
+        let (side, i) = (code as u8 & 0xF0, code & 0x0F);
         let Some(id) = ThemeId::ALL.get(i).copied() else { return };
-        if self.settings.theme == id {
-            return;
+        let s = &mut self.settings;
+        match side {
+            CHIPS_DARK => s.theme_dark = id,
+            CHIPS_LIGHT => s.theme_light = id,
+            _ => s.theme = id,
         }
-        self.settings.theme = id;
+        s.follow_windows();
         settings::save(&self.settings);
         self.apply_theme();
     }
@@ -584,7 +611,7 @@ impl App {
             if open {
                 self.hits.add(Hit::PageThumb, strip);
             }
-            ui::scroll_thumb(g, rect(view.right - 9.0, ty, 7.0, thumb_h), held);
+            ui::scroll_thumb(g, rect(view.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), held);
         }
         e < 1.0
     }
@@ -608,22 +635,46 @@ impl App {
     }
 
     fn page_appearance(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        // Snapper's: one theme, or (matching Windows) one for when Windows is dark and one for when it's light.
+        let r = rows.row(g, "Match Windows", "Dark or light as Windows' app mode is, in the themes picked below");
+        self.switch(g, r, Setting::ThemeFollow, self.settings.theme_follow, open);
+        if self.settings.theme_follow {
+            self.theme_chips(g, rows, "When Windows is dark", CHIPS_DARK, open);
+            self.theme_chips(g, rows, "When Windows is light", CHIPS_LIGHT, open);
+        } else {
+            self.theme_chips(g, rows, "Theme", CHIPS_ANY, open);
+        }
+        let r = rows.row(g, "Solid title bar and status row", "Filled with the theme's colour. Off: see-through over the photo");
+        self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
+        let r = rows.row(g, "Checkerboard background", "Shows where a photo is transparent. Off: plain");
+        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
+    }
+
+    /// A row of theme chips under `label`: the dark themes (`CHIPS_DARK`), the light ones, or all (`CHIPS_ANY`),
+    /// each ticked as the theme for that side.
+    fn theme_chips(&mut self, g: &Gfx, rows: &mut Rows, label: &str, side: u8, open: bool) {
         const CHIP_W: f32 = 116.0;
         const CHIP_H: f32 = 34.0;
-        let r = rows.row_with(g, "Theme", "", CHIP_H + 14.0);
+        let r = rows.row_with(g, label, "", CHIP_H + 14.0);
+        let chosen = match side {
+            CHIPS_DARK => self.settings.theme_dark,
+            CHIPS_LIGHT => self.settings.theme_light,
+            _ => self.settings.theme,
+        };
         let mut cx = r.left;
         for (i, id) in ThemeId::ALL.into_iter().enumerate() {
+            if (side == CHIPS_DARK && !id.theme().dark) || (side == CHIPS_LIGHT && id.theme().dark) {
+                continue;
+            }
             let c = rect(cx, r.bottom, CHIP_W, CHIP_H);
-            let hit = Hit::ThemeChip(i as u8);
+            let hit = Hit::ThemeChip(side | i as u8);
             if open {
                 self.hits.add(hit, c);
             }
             let st = self.state(hit, open);
-            ui::theme_chip(g, c, id.name(), self.settings.theme == id, &st, id.theme());
+            ui::theme_chip(g, c, id.name(), chosen == id, &st, id.theme());
             cx += CHIP_W + 6.0;
         }
-        let r = rows.row(g, "Checkerboard background", "Shows where a photo is transparent. Off: plain");
-        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
     }
 
     fn page_general(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {

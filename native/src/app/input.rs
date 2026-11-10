@@ -1075,6 +1075,15 @@ impl App {
                     self.check_colour();
                     None
                 }
+                // Windows went dark or light: a theme that matches Windows follows it.
+                WM_SETTINGCHANGE if lp.0 != 0 => {
+                    let area = windows::core::PCWSTR(lp.0 as *const u16).to_string().unwrap_or_default();
+                    if area == "ImmersiveColorSet" && self.settings.follow_windows() {
+                        settings::save(&self.settings);
+                        self.apply_theme();
+                    }
+                    None
+                }
                 WM_CLOSE => {
                     self.save_placement();
                     None

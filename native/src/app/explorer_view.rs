@@ -475,7 +475,8 @@ impl App {
         let footer_h = if wide_footer { FILTER_H + 16.0 } else { FILTER_H + 16.0 + 20.0 };
         let list_left = body.left + 6.0;
         let list_right = body.right - 6.0;
-        let (cols, slot, cols_moving) = self.col_layout(list_left, list_right - list_left - 10.0);
+        // The columns stop short of the scrollbar (8 wide now, always: 2 more than its old resting width).
+        let (cols, slot, cols_moving) = self.col_layout(list_left, list_right - list_left - 12.0);
 
         // Headers: click sorts, drag moves (the others ease aside), an edge resizes, right-click customises.
         let hy = body.top + 2.0;
@@ -717,9 +718,7 @@ impl App {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let ty = list.top + (view_h - thumb_h) * scroll / self.explorer.max_scroll;
             let held = self.explorer.thumb_drag.is_some();
-            let hot = held || self.hover == Some(Hit::ExplorerThumb);
-            let tw = if hot { 8.0 } else { 6.0 };
-            ui::scroll_thumb(g, rect(body.right - 4.0 - tw, ty, tw, thumb_h), held);
+            ui::scroll_thumb(g, rect(body.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), held);
         }
 
         self.draw_footer(g, body, list.bottom, wide_footer);

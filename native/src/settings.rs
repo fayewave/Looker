@@ -33,8 +33,16 @@ pub struct Settings {
     pub wheel_navigates: bool,
     /// Pointer zooms (wheel, double-click) aim at the middle of the view rather than the pointer.
     pub zoom_center: bool,
-    /// Ember (default), Garnet or Blush (theme.rs).
+    /// The theme in use: Ember (default), Garnet, Paper or Blush (theme.rs). While `theme_follow`, whichever of
+    /// `theme_dark` and `theme_light` matches Windows' app mode (`follow_windows`).
     pub theme: crate::theme::ThemeId,
+    /// Match Windows: dark or light as Windows' app mode is, in the themes picked for each (Snapper's).
+    pub theme_follow: bool,
+    pub theme_dark: crate::theme::ThemeId,
+    pub theme_light: crate::theme::ThemeId,
+    /// The title bar and status row filled with the theme's page colour instead of floating see-through on the
+    /// photo.
+    pub bars_opaque: bool,
     /// The checkerboard behind the image (default on); off, the viewport is the theme's plain background.
     pub checkerboard: bool,
     /// How much memory decoded photos may take, in MB.
@@ -124,7 +132,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, theme_follow: false, theme_dark: crate::theme::ThemeId::Ember, theme_light: crate::theme::ThemeId::Blush, bars_opaque: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -173,6 +181,16 @@ impl Settings {
             self.bookmarks.push(path.to_path_buf());
             true
         }
+    }
+
+    /// While the theme follows Windows, picks the dark or light one to match its app mode. True if that changed
+    /// the theme (Snapper's).
+    pub fn follow_windows(&mut self) -> bool {
+        if !self.theme_follow {
+            return false;
+        }
+        let t = if crate::theme::windows_light() { self.theme_light } else { self.theme_dark };
+        std::mem::replace(&mut self.theme, t) != t
     }
 
     /// The explorer's default view (a folder without a saved view of its own shows it).
@@ -260,13 +278,17 @@ pub fn parse(text: &str) -> Settings {
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
             "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Ember),
+            "theme_follow" => s.theme_follow = v != "0",
+            "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Ember),
+            "theme_light" => s.theme_light = crate::theme::ThemeId::parse(v).filter(|t| !t.theme().dark).unwrap_or(crate::theme::ThemeId::Blush),
+            "bars_opaque" => s.bars_opaque = v != "0",
             "checkerboard" => s.checkerboard = v != "0",
             "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
             "recents_enabled" => s.recents_enabled = v != "0",
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
             "strip_visible" => s.strip_visible = v == "1",
             "strip_height" => s.strip_height = v.parse::<f32>().map_or(STRIP_HEIGHT, |h| h.clamp(STRIP_MIN, STRIP_MAX)),
-            "strip_other_files" => s.strip_other_files = v == "1",
+            "strip_other_files" => s.strip_other_files = v != "0",
             "explorer_other_files" => s.explorer_other_files = v != "0",
             "default_hint_dismissed" => s.default_hint_dismissed = v == "1",
             "slideshow_seconds" => s.slideshow_seconds = v.parse::<u32>().map_or(SLIDESHOW_SECONDS, |n| n.clamp(1, 120)),
@@ -319,6 +341,10 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("video_start_muted={}\n", s.video_start_muted as i32));
     out.push_str(&format!("video_resume={}\n", s.video_resume as i32));
     out.push_str(&format!("theme={}\n", s.theme.name().to_lowercase()));
+    out.push_str(&format!("theme_follow={}\n", s.theme_follow as i32));
+    out.push_str(&format!("theme_dark={}\n", s.theme_dark.name().to_lowercase()));
+    out.push_str(&format!("theme_light={}\n", s.theme_light.name().to_lowercase()));
+    out.push_str(&format!("bars_opaque={}\n", s.bars_opaque as i32));
     out.push_str(&format!("checkerboard={}\n", s.checkerboard as i32));
     out.push_str(&format!("cache_mb={}\n", s.cache_mb));
     out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
@@ -491,6 +517,10 @@ mod tests {
             wheel_navigates: true,
             zoom_center: true,
             theme: crate::theme::ThemeId::Garnet,
+            theme_follow: true,
+            theme_dark: crate::theme::ThemeId::Garnet,
+            theme_light: crate::theme::ThemeId::Paper,
+            bars_opaque: true,
             checkerboard: false,
             cache_mb: 1024,
             recents_enabled: true,

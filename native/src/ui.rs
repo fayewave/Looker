@@ -297,6 +297,9 @@ pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
     g.outline_round(grow(r, 3.0), radius + 3.0, rgb(theme::t().signal), 2.0);
 }
 
+/// Every scrollbar's width: what the explorer's grew to on hover, now always (Faye, 2026-11-10).
+pub const SCROLL_W: f32 = 8.0;
+
 /// A scroll region's thumb (`r` is its full size): the buttons' fill, their hover fill while it's held.
 pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
     let t = theme::t();

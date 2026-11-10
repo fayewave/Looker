@@ -595,12 +595,18 @@ impl App {
         // Fading from the window's edge all the way: alpha falls as (1 - t)^1.5 over the gradient.
         let edge_out: Vec<_> =
             [0.0f32, 0.25, 0.5, 0.75, 1.0].iter().map(|&k| (k, gfx::rgba(colour, alpha * (1.0 - k).powf(1.5)))).collect();
-        if self.chrome() {
+        // Solid bars (Appearance): the title bar with the toolbar, and the status row, filled with the page's
+        // colour; no gradient under them (Faye, 2026-11-10).
+        let solid = self.chrome() && self.settings.bars_opaque;
+        if solid {
+            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.content));
+            g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.content));
+        } else if self.chrome() {
             let buttons_bottom = Self::toolbar_y() + BUTTON_H;
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
         }
         // The status text: 12 px, centred in its row (~16 px line).
-        let text_top = self.chrome().then(|| bg.bottom - STATUS_H / 2.0 - 8.0);
+        let text_top = (self.chrome() && !solid).then(|| bg.bottom - STATUS_H / 2.0 - 8.0);
         let top = match (text_top, self.strip_cells_top()) {
             (Some(a), Some(b)) => a.min(b),
             (a, b) => match a.or(b) {

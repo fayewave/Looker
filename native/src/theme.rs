@@ -21,17 +21,28 @@ pub enum ThemeId {
     Ember,
     Garnet,
     Blush,
+    Paper,
 }
 
 impl ThemeId {
     /// Picker order: darkest to lightest.
-    pub const ALL: [ThemeId; 3] = [ThemeId::Ember, ThemeId::Garnet, ThemeId::Blush];
+    pub const ALL: [ThemeId; 4] = [ThemeId::Ember, ThemeId::Garnet, ThemeId::Paper, ThemeId::Blush];
 
     pub fn name(self) -> &'static str {
         match self {
             ThemeId::Ember => "Ember",
             ThemeId::Garnet => "Garnet",
             ThemeId::Blush => "Blush",
+            ThemeId::Paper => "Paper",
+        }
+    }
+
+    fn from_u8(v: u8) -> ThemeId {
+        match v {
+            1 => ThemeId::Garnet,
+            2 => ThemeId::Blush,
+            3 => ThemeId::Paper,
+            _ => ThemeId::Ember,
         }
     }
 
@@ -47,6 +58,7 @@ impl ThemeId {
             ThemeId::Ember => &EMBER,
             ThemeId::Garnet => &GARNET,
             ThemeId::Blush => &BLUSH,
+            ThemeId::Paper => &PAPER,
         }
     }
 
@@ -56,6 +68,7 @@ impl ThemeId {
             ThemeId::Ember => &EMBER_RAISED,
             ThemeId::Garnet => &GARNET_RAISED,
             ThemeId::Blush => &BLUSH_RAISED,
+            ThemeId::Paper => &PAPER_RAISED,
         }
     }
 }
@@ -194,6 +207,37 @@ pub const BLUSH: Theme = Theme {
 };
 pub const BLUSH_RAISED: Theme = Theme { divider: 0xE2E2E2, track: 0xD8D8D8, field: 0xF4F4F4, ..BLUSH };
 
+// Paper, after Snapper's (Faye, 2026-11-10): light on warm off-white, its text and washes a warm ink. Unlike
+// the others its cards, popups and controls are warm too (Snapper's Paper is cream all through; neutral greys
+// on it read cold), and so is its checkerboard. Snapper's Paper tokens, with Looker's light red for the accent.
+pub const PAPER: Theme = Theme {
+    dark: false,
+    ink: 0x2B2620,
+    sidebar: 0xE8E2D5,
+    content: 0xF1ECE1,
+    stripe: 0xEAE4D7,
+    divider: 0xD3CBBA,
+    track: 0xCCC3B1,
+    text: 0x2B2620,
+    label: 0x5A5247,
+    placeholder: 0x686054,
+    icon: 0x60584D,
+    accent: 0xD21E1E,
+    on_accent: 0xFFFFFF,
+    accent_fill: 0xEDC6BC,
+    hover_fill: 0xDED6C6,
+    row_select: 0xD6CDBC,
+    warn: 0xB35C00,
+    signal: 0xD21E1E,
+    close_hover: 0xC42B1C,
+    popup: 0xF8F4EB,
+    field: 0xF8F4EB,
+    button: 0xE3DCCE,
+    selected: 0xEFCDC3,
+    checker: [0xE7E1D5, 0xECE6DB],
+};
+pub const PAPER_RAISED: Theme = Theme { divider: 0xDDD6C7, track: 0xD6CEBD, field: 0xECE6DA, ..PAPER };
+
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 /// Makes `id` the theme every widget draws in.
@@ -202,7 +246,17 @@ pub fn set(id: ThemeId) {
 }
 
 pub fn id() -> ThemeId {
-    ThemeId::ALL[CURRENT.load(Ordering::Relaxed) as usize % ThemeId::ALL.len()]
+    ThemeId::from_u8(CURRENT.load(Ordering::Relaxed))
+}
+
+/// Whether Windows' app mode (Settings > Personalization > Colors) is light. Dark if it can't be read.
+pub fn windows_light() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut v = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let key = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let ok = unsafe { RegGetValueW(HKEY_CURRENT_USER, key, windows::core::w!("AppsUseLightTheme"), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as _), Some(&mut size)) }.is_ok();
+    ok && v != 0
 }
 
 /// The theme in use.
@@ -260,5 +314,14 @@ mod tests {
         for id in ThemeId::ALL {
             assert_eq!(ThemeId::parse(id.name()), Some(id));
         }
+    }
+
+    #[test]
+    fn stored_index_is_the_theme() {
+        for id in ThemeId::ALL {
+            set(id);
+            assert_eq!(super::id(), id);
+        }
+        set(ThemeId::Ember);
     }
 }

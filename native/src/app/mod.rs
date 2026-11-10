@@ -1189,6 +1189,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             None,
         )
         .expect("CreateWindowExW");
+        let mut settings = settings;
+        settings.follow_windows(); // Match Windows: the dark or light pick, as Windows is now
         theme::set(settings.theme);
         set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year);
         page::apply_frame_colours(hwnd);

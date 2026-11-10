@@ -280,7 +280,8 @@ impl App {
 
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
         let x = inner.left + PAD_X;
-        let w = (inner.right - PAD_X - x).max(1.0);
+        // 2 more on the right: clear of the scrollbar now it's always 8 wide.
+        let w = (inner.right - PAD_X - 2.0 - x).max(1.0);
         let view_h = (inner.bottom - inner.top - PAD_TOP - PAD_BOTTOM).max(1.0);
 
         // Measure first: the content height decides how far the card scrolls.
@@ -357,7 +358,7 @@ impl App {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let track = inner.bottom - inner.top - 8.0;
             let ty = inner.top + 4.0 + (track - thumb_h) * scroll / self.info_card.max_scroll;
-            ui::scroll_thumb(g, rect(inner.right - 8.0, ty, 6.0, thumb_h), false);
+            ui::scroll_thumb(g, rect(inner.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), false);
         }
 
         // The resize grip straddles the left border; its line shows on hover and turns accent while dragging.

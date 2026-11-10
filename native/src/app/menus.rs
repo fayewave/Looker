@@ -210,6 +210,18 @@ impl App {
             self.invalidate();
             return;
         }
+        // So does the explorer's Folders and files, as its Height stepper always did (Faye, 2026-11-10).
+        if matches!(self.menu, Some((MenuKind::Group, _))) {
+            self.run_explorer_action(action, MenuKind::Group);
+            if matches!(self.menu, Some((MenuKind::Group, _))) {
+                let entries = self.group_entries();
+                if let Some((_, m)) = self.menu.as_mut() {
+                    m.entries = entries;
+                }
+            }
+            self.invalidate();
+            return;
+        }
         let kind = self.menu.take().map(|(k, _)| k);
         self.invalidate();
         match kind {
