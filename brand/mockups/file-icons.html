@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Looker file icons: per-extension mockups</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #101010; color: #e8e8e8; font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 28px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 44px 0 4px; }
+  h3 { font-size: 15px; margin: 22px 0 8px; color: #cfcfcf; }
+  p.lead, p.note { color: #a8a8a8; max-width: 820px; margin: 4px 0 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .cell small { color: #8a8a8a; font-size: 11px; }
+  .sizes { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end; padding: 16px; border-radius: 10px; }
+  .dark { background: #1c1c1c; }
+  .light { background: #f3f3f3; color: #1f1f1f; }
+  .light .cell small { color: #666; }
+  canvas.px { image-rendering: pixelated; }
+  .strip { display: grid; grid-template-columns: 56px repeat(8, 1fr); gap: 10px 6px; align-items: center; }
+  .strip .lab { color: #9a9a9a; font-size: 12px; }
+  .explorer { border-radius: 8px; padding: 10px 14px; width: 330px; font: 13px "Segoe UI", system-ui, sans-serif; }
+  .explorer .head { color: #9a9a9a; font-size: 12px; padding: 0 0 6px 30px; }
+  .explorer .item { display: flex; align-items: center; gap: 10px; height: 28px; }
+  .explorer.light .head { color: #666; }
+  .grid { display: flex; flex-wrap: wrap; gap: 14px; padding: 14px; border-radius: 8px; width: 520px; }
+  .grid .tile { width: 112px; display: flex; flex-direction: column; align-items: center; gap: 6px; font: 12px "Segoe UI", system-ui, sans-serif; text-align: center; }
+  .pair { display: flex; gap: 18px; flex-wrap: wrap; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 99px; background: #2a2a2a; color: #bbb; margin-left: 8px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Looker file icons: one per extension</h1>
+  <p class="lead">Four layouts, each drawn from the real Looker mark, for the icon Windows shows beside a file when Looker is its
+  default app. Every size Windows asks for is shown, the small ones enlarged pixel for pixel underneath. Under 32 px
+  there's no room for readable letters, so each layout has a small-size form.</p>
+
+  <section id="designs"></section>
+
+  <h2>In Explorer</h2>
+  <p class="note">Details view uses the 16 px icon (24 at 150 % scaling); large-icon views use 48 to 256 px, though photos and
+  videos usually show their thumbnails there instead.</p>
+  <section id="context"></section>
+
+  <h2>Colour by kind <span class="tag">optional</span></h2>
+  <p class="note">The same layouts with the band coloured by what the file is: photos Looker red, camera RAW amber, video
+  violet, documents slate, 3D teal. It reads faster at a glance, but drifts from a single brand colour.</p>
+  <section id="kinds"></section>
+</main>
+
+<script>
+// The Looker mark: a rounded square with the two lens shapes cut out (brand/slices/looker_v3_icon.svg).
+const MARK = "M7348.97,461.776L7348.97,1039.201C7348.97,1080.513 7315.431,1114.053 7274.119,1114.053L6696.694,1114.053C6655.382,1114.053 6621.842,1080.513 6621.842,1039.201L6621.842,461.776C6621.842,420.464 6655.382,386.925 6696.694,386.925L7274.119,386.925C7315.431,386.925 7348.97,420.464 7348.97,461.776ZM6883.284,877.256C6865.955,842.158 6855.645,798.189 6855.645,750.489C6855.645,702.789 6865.955,658.819 6883.273,623.717C6887.908,614.577 6886.264,603.507 6879.173,596.109C6872.082,588.712 6861.091,586.601 6851.764,590.845C6775.266,625.075 6707.829,683.821 6707.829,750.489C6707.829,817.157 6775.266,875.902 6851.759,910.143C6861.09,914.389 6872.087,912.277 6879.181,904.876C6886.276,897.475 6887.921,886.399 6883.284,877.256ZM7087.529,623.722C7104.857,658.819 7115.168,702.789 7115.168,750.489C7115.168,798.189 7104.857,842.158 7087.539,877.261C7082.904,886.4 7084.549,897.47 7091.64,904.868C7098.731,912.266 7109.722,914.377 7119.049,910.132C7195.547,875.902 7262.983,817.157 7262.983,750.489C7262.983,683.821 7195.547,625.075 7119.054,590.835C7109.722,586.588 7098.726,588.7 7091.631,596.101C7084.537,603.503 7082.892,614.578 7087.529,623.722Z";
+const RED = "#F52524";
+const EXTS = ["JPG", "PNG", "HEIC", "CR3", "MP4", "MOV", "PDF", "GLB"];
+const KIND = { JPG: "#F52524", PNG: "#F52524", HEIC: "#F52524", CR3: "#E08A12", MP4: "#7B4FE0", MOV: "#7B4FE0", PDF: "#4A5568", GLB: "#119E8C" };
+const SIZES = [16, 20, 24, 32, 48, 64, 256];
+const FONT = "'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif";
+
+// The mark at (x, y), `s` wide: black lenses under the red cut-out square.
+function mark(x, y, s, colour = RED) {
+  const k = s / 727.128;
+  return `<g transform="translate(${x} ${y}) scale(${k}) translate(-6621.842 -386.925)">
+    <rect x="6700" y="560" width="570" height="380" fill="#000"/>
+    <path d="${MARK}" fill="${colour}" fill-rule="evenodd"/></g>`;
+}
+
+// Text that fits a width: shrinks long extensions.
+function fitText(ext, x, y, maxW, size, fill, anchor = "middle", weight = 800, extra = "") {
+  const est = ext.length * size * 0.62;
+  const s = est > maxW ? size * maxW / est : size;
+  return `<text x="${x}" y="${y}" font-family="${FONT}" font-weight="${weight}" font-size="${s.toFixed(2)}" fill="${fill}" text-anchor="${anchor}" dominant-baseline="middle" letter-spacing="${(s * 0.02).toFixed(2)}" ${extra}>${ext}</text>`;
+}
+
+// Each layout draws at 256 units; `small` is its form under 32 px (no letters).
+const DESIGNS = {
+  sash: {
+    name: "A. Diagonal sash",
+    about: "The full Looker icon with a band across its bottom-right corner carrying the extension, like a ribbon. Under 32 px the band stays as a plain corner stripe, so the type colour (or just the stripe) still shows.",
+    draw(ext, band, small) {
+      let s = mark(8, 8, 240);
+      if (small) {
+        s += `<path d="M150 248 L248 150 L248 210 Q248 248 210 248 Z" fill="${band}" stroke="#fff" stroke-width="10"/>`;
+      } else {
+        s += `<g clip-path="url(#clipR)"><rect x="58" y="168" width="290" height="62" fill="${band === RED ? "#111" : band}" transform="rotate(-45 203 199)"/>
+          <g transform="rotate(-45 196 196)">${fitText(ext, 196, 197, 150, 46, "#fff")}</g></g>`;
+      }
+      return s;
+    }
+  },
+  split: {
+    name: "B. Split diagonally",
+    about: "The square cut corner to corner: the Looker mark in the top-left half, the extension set along the diagonal in the bottom-right. Under 32 px it becomes the mark with the lower half in the band colour.",
+    draw(ext, band, small) {
+      const lower = band === RED ? "#F4F4F4" : band;
+      const ink = band === RED ? "#1A1A1A" : "#fff";
+      let s = `<rect x="8" y="8" width="240" height="240" rx="24" fill="${RED}"/>
+        <path d="M248 8 L248 224 Q248 248 224 248 L8 248 Z" fill="${lower}"/>`;
+      s += mark(24, 24, small ? 120 : 98);
+      s += `<rect x="9" y="9" width="238" height="238" rx="23" fill="none" stroke="#0000002e" stroke-width="3"/>`;
+      s += `<path d="M248 8 L8 248" stroke="#00000022" stroke-width="2"/>`;
+      if (!small) s += `<g transform="rotate(-45 170 170)">${fitText(ext, 170, 176, 150, 50, ink)}</g>`;
+      return s;
+    }
+  },
+  page: {
+    name: "C. Document page",
+    about: "A page with a folded corner, the extension large across it and the Looker mark at its foot: the classic file-icon shape. Under 32 px it's the page with the mark alone.",
+    draw(ext, band, small) {
+      let s = `<path d="M40 8 L176 8 L224 56 L224 236 Q224 248 212 248 L52 248 Q40 248 40 236 Z" fill="#F7F7F7" stroke="#CFCFCF" stroke-width="4"/>
+        <path d="M176 8 L176 56 L224 56 Z" fill="#DADADA"/>`;
+      if (small) {
+        s += mark(66, 86, 124, band);
+      } else {
+        s += `<rect x="40" y="88" width="184" height="66" fill="${band}"/>` + fitText(ext, 132, 123, 166, 52, "#fff");
+        s += mark(100, 172, 64);
+      }
+      return s;
+    }
+  },
+  label: {
+    name: "D. Mark with a label bar",
+    about: "The Looker icon, a little smaller, sitting over a solid label bar with the extension, as Adobe's file icons do. Under 32 px the bar shrinks to a thick underline.",
+    draw(ext, band, small) {
+      const bar = band === RED ? "#151515" : band;
+      if (small) return mark(8, 8, 240) + `<rect x="8" y="202" width="240" height="46" rx="10" fill="${bar}" stroke="#fff" stroke-width="8"/>`;
+      return mark(36, 4, 184) + `<rect x="8" y="176" width="240" height="72" rx="16" fill="${bar}"/>` + fitText(ext, 128, 214, 210, 54, "#fff");
+    }
+  }
+};
+
+function svg(design, ext, band, size) {
+  const small = size <= 32;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 256 256">
+    <defs><clipPath id="clipR"><rect x="8" y="8" width="240" height="240" rx="24"/></clipPath></defs>
+    ${DESIGNS[design].draw(ext, band, small)}</svg>`;
+}
+
+// The icon at `size`, rasterised as Windows would show it, and (when small) enlarged pixel for pixel.
+function icon(design, ext, band, size, zoom) {
+  const wrap = document.createElement("div");
+  wrap.className = "cell";
+  const dpr = 1;
+  const c = document.createElement("canvas");
+  c.width = size * dpr; c.height = size * dpr;
+  c.style.width = size + "px"; c.style.height = size + "px";
+  wrap.appendChild(c);
+  let z;
+  if (zoom) {
+    z = document.createElement("canvas");
+    z.className = "px"; z.width = size; z.height = size;
+    z.style.width = size * zoom + "px"; z.style.height = size * zoom + "px";
+    wrap.appendChild(z);
+  }
+  const img = new Image();
+  img.onload = () => {
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    if (z) z.getContext("2d").drawImage(img, 0, 0, size, size);
+  };
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg(design, ext, band, size));
+  return wrap;
+}
+
+function label(t) { const s = document.createElement("small"); s.textContent = t; return s; }
+
+const designsEl = document.getElementById("designs");
+for (const [key, d] of Object.entries(DESIGNS)) {
+  const h = document.createElement("h2"); h.textContent = d.name; designsEl.appendChild(h);
+  const p = document.createElement("p"); p.className = "note"; p.textContent = d.about; designsEl.appendChild(p);
+  // Every size, on dark and on light.
+  const pair = document.createElement("div"); pair.className = "pair";
+  for (const bg of ["dark", "light"]) {
+    const row = document.createElement("div"); row.className = "sizes " + bg;
+    for (const s of SIZES) {
+      const cell = icon(key, "MP4", RED, s, s <= 32 ? 3 : 0);
+      cell.appendChild(label(s + " px"));
+      row.appendChild(cell);
+    }
+    pair.appendChild(row);
+  }
+  designsEl.appendChild(pair);
+  // Every extension at 64 and 32.
+  const h3 = document.createElement("h3"); h3.textContent = "Every extension at 64 px, and at 32 px (its small form)"; designsEl.appendChild(h3);
+  const strip = document.createElement("div"); strip.className = "strip";
+  for (const s of [64, 32]) {
+    const l = document.createElement("div"); l.className = "lab"; l.textContent = s + " px"; strip.appendChild(l);
+    for (const e of EXTS) { const cell = icon(key, e, RED, s, 0); cell.appendChild(label(e)); strip.appendChild(cell); }
+  }
+  designsEl.appendChild(strip);
+}
+
+// In context: a details list (16 px) and a large-icon grid (96 px), dark and light, for each layout.
+const ctx = document.getElementById("context");
+const files = [["Render v1", "MP4"], ["Holiday 042", "JPG"], ["Screenshot 2026-11-10", "PNG"], ["IMG_3391", "HEIC"], ["_MG_0420", "CR3"], ["Contract", "PDF"], ["Chair", "GLB"], ["Clip 7", "MOV"]];
+for (const [key, d] of Object.entries(DESIGNS)) {
+  const h = document.createElement("h3"); h.textContent = d.name; ctx.appendChild(h);
+  const pair = document.createElement("div"); pair.className = "pair";
+  for (const bg of ["dark", "light"]) {
+    const ex = document.createElement("div"); ex.className = "explorer " + bg;
+    ex.innerHTML = `<div class="head">Name</div>`;
+    for (const [n, e] of files) {
+      const it = document.createElement("div"); it.className = "item";
+      it.appendChild(icon(key, e, RED, 16, 0));
+      const t = document.createElement("span"); t.textContent = `${n}.${e.toLowerCase()}`; it.appendChild(t);
+      ex.appendChild(it);
+    }
+    pair.appendChild(ex);
+  }
+  for (const bg of ["dark", "light"]) {
+    const g = document.createElement("div"); g.className = "grid " + bg;
+    for (const [n, e] of files.slice(0, 4)) {
+      const t = document.createElement("div"); t.className = "tile";
+      t.appendChild(icon(key, e, RED, 96, 0));
+      const s = document.createElement("span"); s.textContent = `${n}.${e.toLowerCase()}`; t.appendChild(s);
+      g.appendChild(t);
+    }
+    pair.appendChild(g);
+  }
+  ctx.appendChild(pair);
+}
+
+// Colour by kind.
+const kinds = document.getElementById("kinds");
+for (const [key, d] of Object.entries(DESIGNS)) {
+  const h = document.createElement("h3"); h.textContent = d.name; kinds.appendChild(h);
+  const row = document.createElement("div"); row.className = "sizes dark";
+  for (const e of EXTS) { const cell = icon(key, e, KIND[e], 64, 0); cell.appendChild(label(e)); row.appendChild(cell); }
+  for (const e of ["CR3", "MP4", "PDF", "GLB"]) { const cell = icon(key, e, KIND[e], 16, 4); cell.appendChild(label(e + " 16")); row.appendChild(cell); }
+  kinds.appendChild(row);
+}
+</script>
+</body>
+</html>
