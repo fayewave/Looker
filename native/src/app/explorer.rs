@@ -704,7 +704,13 @@ impl App {
         }
         self.explorer.browse.set([on as u8 as f32], Instant::now());
         self.explorer.focused = on;
+        self.browse_toast(on);
         self.layout_changed();
+    }
+
+    /// Says browse mode came on or went off (Faye, 2026-11-10): the button, Ctrl+B, or the edge dragged past the line.
+    fn browse_toast(&mut self, on: bool) {
+        self.show_toast(if on { "Browse mode on" } else { "Browse mode off" }, false);
     }
 
     pub(super) fn leave_browse(&mut self) {
@@ -2594,6 +2600,9 @@ impl App {
                 }
                 self.settings.explorer_width = w;
             }
+        }
+        if self.browsing() != was {
+            self.browse_toast(!was);
         }
         self.layout_changed();
     }

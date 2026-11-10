@@ -626,7 +626,8 @@ impl Toast {
     pub fn new(text: String, quick: bool, previous: Option<&Toast>) -> Toast {
         let from = previous.map_or(0.0, |p| p.opacity());
         let (hold_ms, fade_out_ms) = if quick { (350.0, 190.0) } else { (1200.0, 380.0) };
-        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms, top: false }
+        // Every toast at the top middle of the preview, as the video's are (Faye, 2026-11-10).
+        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms, top: true }
     }
 
     /// The same, shown fully for `hold_ms` at the top middle (the video's readouts: Faye, 2026-11-10, a tad
