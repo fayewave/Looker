@@ -409,11 +409,34 @@ fn format_time(ft: FILETIME) -> String {
     }
 }
 
-/// How the explorer's date columns read: the date, the time, a two-digit year, leading zeros (bits 1, 2, 4, 8).
-static DATE_COLUMNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3 | 8);
+/// How the explorer's date columns read: the date, the time, a two-digit year, leading zeros in the date, times
+/// aligned (bits 1, 2, 4, 8, 16).
+static DATE_COLUMNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3 | 8 | 16);
 
-pub(super) fn set_date_columns(date: bool, time: bool, yy: bool, pad: bool) {
-    DATE_COLUMNS.store(date as u8 | (time as u8) << 1 | (yy as u8) << 2 | (pad as u8) << 3, std::sync::atomic::Ordering::Relaxed);
+/// What pads a one-digit hour when times are aligned: a figure space, as wide as a digit in the list's tabular
+/// figures, so " 4:55 PM" lines up under "11:55 PM" without a zero (Transient's, Faye 2026-11-10).
+const HOUR_PAD: char = '\u{2007}';
+
+pub(super) fn set_date_columns(date: bool, time: bool, yy: bool, pad: bool, align: bool) {
+    DATE_COLUMNS.store(date as u8 | (time as u8) << 1 | (yy as u8) << 2 | (pad as u8) << 3 | (align as u8) << 4, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A time as the locale writes it, a one-digit hour padded to line up with two (`HOUR_PAD`).
+fn align_time(t: String) -> String {
+    let mut cs = t.chars();
+    match (cs.next(), cs.next()) {
+        (Some(a), Some(b)) if a.is_ascii_digit() && !b.is_ascii_digit() => format!("{HOUR_PAD}{t}"),
+        _ => t,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn one_digit_hours_line_up() {
+    assert_eq!(align_time("4:55 PM".into()), "\u{2007}4:55 PM");
+    assert_eq!(align_time("11:55 PM".into()), "11:55 PM");
+    assert_eq!(align_time("09:05".into()), "09:05");
+    assert_eq!(align_time("9:05".into()), "\u{2007}9:05");
 }
 
 #[cfg(test)]
@@ -453,7 +476,7 @@ fn date_picture(picture: &str, pad: bool, yy: bool) -> String {
 /// asked) and short time, either left out if asked (never both: then the date).
 fn format_column(local: &SYSTEMTIME) -> String {
     let bits = DATE_COLUMNS.load(std::sync::atomic::Ordering::Relaxed);
-    let (time, yy, pad) = (bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
+    let (time, yy, pad, align) = (bits & 2 != 0, bits & 4 != 0, bits & 8 != 0, bits & 16 != 0);
     let date = bits & 1 != 0 || !time;
     unsafe {
         let mut out = Vec::new();
@@ -473,7 +496,8 @@ fn format_column(local: &SYSTEMTIME) -> String {
         if time {
             let mut t = [0u16; 64];
             let tn = GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, Some(local), PCWSTR::null(), Some(&mut t));
-            out.push(String::from_utf16_lossy(&t[..(tn.max(1) - 1) as usize]));
+            let s = String::from_utf16_lossy(&t[..(tn.max(1) - 1) as usize]);
+            out.push(if align { align_time(s) } else { s });
         }
         out.join(" ")
     }
@@ -1249,7 +1273,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         theme::set_accent(settings.accent);
         theme::set_custom(settings.accent_custom);
         theme::set(settings.theme);
-        set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year, settings.date_pad);
+        set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year, settings.date_pad, settings.date_align);
         page::apply_frame_colours(hwnd);
         crate::trace::mark("window created");
         crate::shell_icons::init(hwnd);

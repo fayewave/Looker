@@ -448,7 +448,19 @@ impl App {
         // From the right: browse mode, the bookmark, the grouping, the sidebar (when it isn't a column).
         let mut rx = main.right - 6.0 - NAV;
         let browsing = self.browsing();
-        self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerBrowse, if browsing { 0xE73F } else { 0xE740 }, true, browsing);
+        let glyph = if browsing { 0xE73F } else { 0xE740 };
+        // Pulled at the sticky line, the button leans the way it's pulled (Faye, 2026-11-10): its "on" look fades in
+        // with the stretch towards browse mode (and out, in browse mode, towards the card), back as it springs.
+        let pull = (self.explorer_stretch() / 23.0).clamp(-1.0, 1.0);
+        let on = if browsing { 1.0 - (-pull).max(0.0) * 0.8 } else { pull.max(0.0) * 0.8 };
+        let br = rect(rx, y, NAV, NAV);
+        self.nav_button(g, br, Hit::ExplorerBrowse, glyph, true, on >= 0.999);
+        if on > 0.001 && on < 0.999 {
+            g.push_fade(on, 1.0, (br.left + br.right) / 2.0, (br.top + br.bottom) / 2.0);
+            let fg = ui::button_frame(g, br, ui::Kind::Toggle(true), &ui::State::IDLE);
+            g.text(&[glyph], &g.fonts.body_icons, br, fg, Align::Center);
+            g.pop_fade();
+        }
         if let Some(f) = self.explorer.folder() {
             rx -= NAV + 2.0;
             let marked = self.settings.is_bookmarked(&f);

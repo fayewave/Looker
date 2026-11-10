@@ -102,6 +102,8 @@ pub struct Settings {
     pub date_two_digit_year: bool,
     /// Day and month padded to two digits, 01/01/2026 (default on; saved as `u` in `explorer_dates` when off).
     pub date_pad: bool,
+    /// A one-digit hour padded to line up with two (Transient's Align times; default on, saved as `n` when off).
+    pub date_align: bool,
     /// Video sound: 0..1, and muted.
     pub video_volume: f32,
     pub video_muted: bool,
@@ -142,7 +144,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -322,6 +324,7 @@ pub fn parse(text: &str) -> Settings {
                 s.date_show_time = v.contains('t');
                 s.date_two_digit_year = v.contains('y');
                 s.date_pad = !v.contains('u');
+                s.date_align = !v.contains('n');
             }
             "browse_share" => s.browse_share = v.parse::<f32>().map_or(0.0, |f| if (0.2..=0.95).contains(&f) { f } else { 0.0 }),
             _ => {}
@@ -396,11 +399,12 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("tab_active={}\n", s.tab_active));
     out.push_str(&format!(
-        "explorer_dates={}{}{}{}\n",
+        "explorer_dates={}{}{}{}{}\n",
         if s.date_show_date { "d" } else { "" },
         if s.date_show_time { "t" } else { "" },
         if s.date_two_digit_year { "y" } else { "" },
-        if s.date_pad { "" } else { "u" }
+        if s.date_pad { "" } else { "u" },
+        if s.date_align { "" } else { "n" }
     ));
     out
 }
@@ -579,6 +583,7 @@ mod tests {
             date_show_time: true,
             date_two_digit_year: true,
             date_pad: false,
+            date_align: false,
             video_volume: 0.35,
             video_muted: true,
             video_autoplay: false,

@@ -324,7 +324,8 @@ impl ColKind {
 
     /// The columns Looker starts with.
     pub fn defaults() -> Vec<(ColKind, f32)> {
-        [ColKind::Name, ColKind::Modified, ColKind::Size, ColKind::Dimensions, ColKind::Type].into_iter().map(|c| (c, c.default_width())).collect()
+        // Dimensions isn't a default (Faye, 2026-11-10); it's one tick away in the header menu.
+        [ColKind::Name, ColKind::Modified, ColKind::Size, ColKind::Type].into_iter().map(|c| (c, c.default_width())).collect()
     }
 
     /// "name:0,modified:132,…" for the settings file.

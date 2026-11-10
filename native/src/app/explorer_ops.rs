@@ -596,11 +596,12 @@ impl App {
             if kinds.contains(&ColKind::Modified) {
                 e.push(Entry::Separator);
                 let s = &self.settings;
-                for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year), (3, "Leading zeros (01/01)", s.date_pad)] {
+                for (i, label, on) in [(0u8, "Show the date", s.date_show_date), (1, "Show the time", s.date_show_time), (2, "Two-digit year", s.date_two_digit_year), (3, "Leading zeros in the date", s.date_pad), (4, "Align times", s.date_align)] {
                     // The date can't go while the time is off (something has to show), nor the year without the date.
                     let enabled = match i {
                         0 => s.date_show_time,
                         2 => s.date_show_date,
+                        4 => s.date_show_time,
                         _ => s.date_show_date,
                     };
                     e.push(Entry::Item(MenuItem { action: Action::DateOption(i), glyph: None, label: label.into(), accel: None, check: Some(on), enabled, current: false }));
@@ -696,9 +697,10 @@ impl App {
                     0 => s.date_show_date = !s.date_show_date,
                     1 => s.date_show_time = !s.date_show_time,
                     2 => s.date_two_digit_year = !s.date_two_digit_year,
-                    _ => s.date_pad = !s.date_pad,
+                    3 => s.date_pad = !s.date_pad,
+                    _ => s.date_align = !s.date_align,
                 }
-                super::set_date_columns(s.date_show_date, s.date_show_time, s.date_two_digit_year, s.date_pad);
+                super::set_date_columns(s.date_show_date, s.date_show_time, s.date_two_digit_year, s.date_pad, s.date_align);
                 settings::save(&self.settings);
                 self.invalidate();
             }
