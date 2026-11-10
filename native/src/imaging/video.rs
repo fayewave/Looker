@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 9;
+const API: c_int = 10;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -265,6 +265,15 @@ struct Lib {
     tempo_process: unsafe extern "C" fn(*mut c_void, *const f32, c_int, *mut *const f32) -> c_int,
     tempo_close: unsafe extern "C" fn(*mut c_void),
     frame_rgba: unsafe extern "C" fn(*const LvFrame, c_int, c_int, c_int, *mut c_int, *mut c_int, *mut *mut u8) -> c_int,
+    sub_tracks: unsafe extern "C" fn(*const c_void, *mut *const Track) -> c_int,
+    start_us: unsafe extern "C" fn(*const c_void) -> i64,
+    subs_open: unsafe extern "C" fn(*const u16, c_int, i64, f64, *mut *mut c_void, *mut SubInfo) -> c_int,
+    subs_open_mem: unsafe extern "C" fn(*const u8, c_int, *const u16, f64, *mut *mut c_void, *mut SubInfo) -> c_int,
+    subs_seek: unsafe extern "C" fn(*mut c_void, i64) -> c_int,
+    subs_next: unsafe extern "C" fn(*mut c_void, *mut LvSubEvent) -> c_int,
+    subs_render: unsafe extern "C" fn(*mut c_void, i64, c_int, c_int, c_int, c_int, f64, *mut c_int, *mut LvSubImage) -> c_int,
+    subs_interrupt: unsafe extern "C" fn(*mut c_void),
+    subs_close: unsafe extern "C" fn(*mut c_void),
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -306,6 +315,15 @@ fn load() -> Result<Lib, String> {
             tempo_process: sym!("lv_tempo_process"),
             tempo_close: sym!("lv_tempo_close"),
             frame_rgba: sym!("lv_frame_rgba"),
+            sub_tracks: sym!("lv_sub_tracks"),
+            start_us: sym!("lv_start_us"),
+            subs_open: sym!("lv_subs_open"),
+            subs_open_mem: sym!("lv_subs_open_mem"),
+            subs_seek: sym!("lv_subs_seek"),
+            subs_next: sym!("lv_subs_next"),
+            subs_render: sym!("lv_subs_render"),
+            subs_interrupt: sym!("lv_subs_interrupt"),
+            subs_close: sym!("lv_subs_close"),
         })
     }
 }
@@ -374,7 +392,7 @@ pub struct LvFrame {
     opaque: *mut c_void,
 }
 
-/// One of a video's audio or video streams (`LvTrack` in looker_video.c), for the track menus.
+/// One of a video's audio, video or subtitle streams (`LvTrack` in looker_video.c), for the track menus.
 #[repr(C)]
 #[derive(Clone)]
 pub struct Track {
@@ -390,7 +408,14 @@ pub struct Track {
     /// A video track's picture size (0 for audio).
     pub width: c_int,
     pub height: c_int,
+    /// A subtitle track's `TRACK_*` flags.
+    pub flags: c_int,
 }
+
+/// `LvTrack::flags`: the container marks it forced (shown even with subtitles off).
+pub const TRACK_FORCED: c_int = 1;
+/// Captions for the deaf and hard of hearing (SDH). (The shim also sets 4 for text, 8 for ASS, 16 for pictures.)
+pub const TRACK_HEARING_IMPAIRED: c_int = 2;
 
 impl Track {
     /// How the menu names it: its title, else its language, then what it is ("Commentary · English · AAC 2.0").
@@ -439,8 +464,64 @@ impl Track {
     }
 }
 
-/// A language tag (ISO 639-2, as containers write them) as its English name, the common ones; else the tag.
-fn language_name(tag: &str) -> String {
+impl Track {
+    /// How the Subtitles menu names one: its title, else its language, then forced or SDH, then its format
+    /// ("English (SRT)", "Signs & Songs · English (ASS)", "English, forced (PGS)").
+    pub fn sub_label(&self, n: usize) -> String {
+        let (title, lang, codec) = (text(&self.title), text(&self.lang), text(&self.codec));
+        let low = title.to_ascii_lowercase();
+        let title = if ["handle", "core media", "iso media", "media handler"].iter().any(|b| low.contains(b)) { String::new() } else { title };
+        let lang = language_name(&lang);
+        let mut head = match (title.is_empty(), lang.is_empty()) {
+            (false, false) if !title.eq_ignore_ascii_case(&lang) => format!("{title} \u{b7} {lang}"),
+            (false, _) => title,
+            (true, false) => lang,
+            (true, true) => format!("Track {n}"),
+        };
+        let low = head.to_ascii_lowercase();
+        if self.flags & TRACK_FORCED != 0 && !low.contains("forced") {
+            head.push_str(", forced");
+        }
+        if self.flags & TRACK_HEARING_IMPAIRED != 0 && !low.contains("sdh") && !low.contains("hearing") {
+            head.push_str(", SDH");
+        }
+        format!("{head} ({})", sub_format_name(&codec))
+    }
+
+    /// Its language tag as the container wrote it ("eng"), or "".
+    pub fn lang(&self) -> String {
+        text(&self.lang)
+    }
+}
+
+/// A subtitle codec as people know the format (FFmpeg's names are often the spec's).
+pub fn sub_format_name(codec: &str) -> String {
+    match codec {
+        "subrip" | "srt" => "SRT",
+        "ass" => "ASS",
+        "ssa" => "SSA",
+        "mov_text" => "Timed Text",
+        "webvtt" => "WebVTT",
+        "hdmv_pgs_subtitle" => "PGS",
+        "dvd_subtitle" => "VobSub",
+        "dvb_subtitle" => "DVB",
+        "eia_608" => "CC",
+        "microdvd" => "MicroDVD",
+        "subviewer" | "subviewer1" => "SubViewer",
+        "sami" => "SAMI",
+        "text" => "Text",
+        "realtext" => "RealText",
+        "mpl2" => "MPL2",
+        "vplayer" => "VPlayer",
+        "pjs" => "PJS",
+        other => return other.to_uppercase(),
+    }
+    .to_string()
+}
+
+/// A language tag (ISO 639-2, as containers write them, or 639-1 as file names do) as its English name, the
+/// common ones; else the tag.
+pub fn language_name(tag: &str) -> String {
     let n = match tag.to_ascii_lowercase().as_str() {
         "eng" | "en" => "English",
         "jpn" | "ja" => "Japanese",
@@ -458,6 +539,24 @@ fn language_name(tag: &str) -> String {
         "swe" | "sv" => "Swedish",
         "pol" | "pl" => "Polish",
         "tur" | "tr" => "Turkish",
+        "nor" | "nob" | "no" | "nb" => "Norwegian",
+        "dan" | "da" => "Danish",
+        "fin" | "fi" => "Finnish",
+        "cze" | "ces" | "cs" => "Czech",
+        "hun" | "hu" => "Hungarian",
+        "gre" | "ell" | "el" => "Greek",
+        "heb" | "he" => "Hebrew",
+        "tha" | "th" => "Thai",
+        "vie" | "vi" => "Vietnamese",
+        "ukr" | "uk" => "Ukrainian",
+        "rum" | "ron" | "ro" => "Romanian",
+        "ind" | "id" => "Indonesian",
+        "bul" | "bg" => "Bulgarian",
+        "hrv" | "hr" => "Croatian",
+        "srp" | "sr" => "Serbian",
+        "slv" | "sl" => "Slovenian",
+        "slo" | "slk" | "sk" => "Slovak",
+        "per" | "fas" | "fa" => "Persian",
         _ => return tag.to_string(),
     };
     n.to_string()
@@ -621,6 +720,22 @@ impl Decoder {
     }
 
     /// The file's audio streams, the one playing marked.
+    /// The file's subtitle streams.
+    pub fn sub_tracks(&self) -> Vec<Track> {
+        let Ok(l) = lib() else { return Vec::new() };
+        let mut t: *const Track = std::ptr::null();
+        let n = unsafe { (l.sub_tracks)(self.0, &mut t) };
+        if n <= 0 || t.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(t, n as usize) }.to_vec()
+    }
+
+    /// The zero of this decoder's clock in the file (the video stream's start), µs.
+    pub fn start_us(&self) -> i64 {
+        lib().map_or(0, |l| unsafe { (l.start_us)(self.0) })
+    }
+
     pub fn audio_tracks(&self) -> Vec<Track> {
         let Ok(l) = lib() else { return Vec::new() };
         let mut t: *const Track = std::ptr::null();
@@ -731,6 +846,240 @@ impl Drop for Tempo {
     fn drop(&mut self) {
         if let Ok(l) = lib() {
             unsafe { (l.tempo_close)(self.0) };
+        }
+    }
+}
+
+// --- Subtitles (lv_subs_* in looker_video.c) ---
+
+/// `SubInfo::kind`: 1 is text Looker lays out (FFmpeg's decoders give every text format as ASS-tagged text);
+/// ASS/SSA, which libass draws (`Subs::render`):
+pub const SUB_ASS: c_int = 2;
+/// Pictures placed on a canvas (PGS, VobSub, DVB).
+pub const SUB_BITMAP: c_int = 3;
+
+/// `LvSubInfo`: what was opened.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SubInfo {
+    pub kind: c_int,
+    pub stream: c_int,
+    /// Fonts the file carries, handed to libass.
+    pub fonts: c_int,
+    pub canvas_w: c_int,
+    pub canvas_h: c_int,
+    codec: [c_char; 32],
+}
+
+impl SubInfo {
+    pub fn codec(&self) -> String {
+        text(&self.codec)
+    }
+}
+
+#[repr(C)]
+struct LvSubRect {
+    x: c_int,
+    y: c_int,
+    w: c_int,
+    h: c_int,
+    stride: c_int,
+    bgra: *const u8,
+}
+
+#[repr(C)]
+struct LvSubEvent {
+    start_us: i64,
+    end_us: i64,
+    read_us: i64,
+    text: *const c_char,
+    n_rects: c_int,
+    rects: *const LvSubRect,
+    canvas_w: c_int,
+    canvas_h: c_int,
+    read_order: c_int,
+}
+
+#[repr(C)]
+struct LvSubImage {
+    x: c_int,
+    y: c_int,
+    w: c_int,
+    h: c_int,
+    stride: c_int,
+    bgra: *const u8,
+}
+
+/// A bitmap subtitle's picture: premultiplied BGRA, placed at (x, y) on its event's canvas.
+#[derive(Clone)]
+pub struct SubRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub bgra: std::sync::Arc<Vec<u8>>,
+}
+
+/// One event read from a subtitle stream.
+#[derive(Clone)]
+pub struct SubEvent {
+    pub start_us: i64,
+    /// None: it lasts until the next event (PGS).
+    pub end_us: Option<i64>,
+    /// How far the reader had got: the time of the packet it came from.
+    pub read_us: i64,
+    /// Text: the ASS-tagged text; ASS: the packet (ReadOrder,Layer,...,Text).
+    pub text: String,
+    pub rects: Vec<SubRect>,
+    /// What the rects are placed on (0 when the stream doesn't say: the video's size).
+    pub canvas: (i32, i32),
+    pub read_order: i32,
+}
+
+/// What `Subs::next` hands back.
+pub enum SubRead {
+    Event(SubEvent),
+    End,
+    /// `SubsInterrupter::interrupt` stopped it.
+    Interrupted,
+}
+
+/// libass's picture of a moment: premultiplied BGRA `w × h` at (x, y) in the frame asked for.
+pub struct SubImage {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub bgra: Vec<u8>,
+}
+
+/// An open subtitle stream (looker_video.c's LvSubs): `next` from one thread (the reader), `render` from another
+/// (the UI); the shim keeps libass's track behind a lock between the two.
+pub struct Subs(*mut c_void);
+// SAFETY: the shim serialises what the two threads share (libass's track); reading is one thread's.
+unsafe impl Send for Subs {}
+unsafe impl Sync for Subs {}
+
+/// Stops a `Subs::next` in progress from another thread.
+pub struct SubsInterrupter(*mut c_void);
+// SAFETY: lv_subs_interrupt only sets a flag; the owner keeps the stream alive while this exists.
+unsafe impl Send for SubsInterrupter {}
+unsafe impl Sync for SubsInterrupter {}
+
+impl SubsInterrupter {
+    pub fn interrupt(&self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.subs_interrupt)(self.0) };
+        }
+    }
+}
+
+impl Subs {
+    /// The video's embedded subtitle stream `stream` (a `Track::stream`), on the clock whose zero is `zero_us`
+    /// in the file; or with `stream` None a binary sidecar file (VobSub's .idx). `fps`: for MicroDVD, or 0.
+    pub fn open(path: &Path, stream: Option<i32>, zero_us: i64, fps: f64) -> Result<(Subs, SubInfo), String> {
+        let l = lib()?;
+        let mut p = std::ptr::null_mut();
+        let mut info: SubInfo = unsafe { std::mem::zeroed() };
+        let r = unsafe { (l.subs_open)(wide(path).as_ptr(), stream.unwrap_or(-1), zero_us, fps, &mut p, &mut info) };
+        if r < 0 || p.is_null() {
+            return Err(error(l, r));
+        }
+        Ok((Subs(p), info))
+    }
+
+    /// A text subtitle file already turned into UTF-8; `name` (the file's) helps pick the format.
+    pub fn open_text(utf8: &[u8], name: &Path, fps: f64) -> Result<(Subs, SubInfo), String> {
+        let l = lib()?;
+        let mut p = std::ptr::null_mut();
+        let mut info: SubInfo = unsafe { std::mem::zeroed() };
+        let r = unsafe { (l.subs_open_mem)(utf8.as_ptr(), utf8.len() as c_int, wide(name).as_ptr(), fps, &mut p, &mut info) };
+        if r < 0 || p.is_null() {
+            return Err(error(l, r));
+        }
+        Ok((Subs(p), info))
+    }
+
+    pub fn interrupter(&self) -> SubsInterrupter {
+        SubsInterrupter(self.0)
+    }
+
+    /// Reading goes on from the keyframe at or before `us`.
+    pub fn seek(&self, us: i64) -> Result<(), String> {
+        let l = lib()?;
+        let r = unsafe { (l.subs_seek)(self.0, us) };
+        if r < 0 { Err(error(l, r)) } else { Ok(()) }
+    }
+
+    pub fn next(&self) -> Result<SubRead, String> {
+        let l = lib()?;
+        let mut e: LvSubEvent = unsafe { std::mem::zeroed() };
+        let r = unsafe { (l.subs_next)(self.0, &mut e) };
+        const EOF: c_int = -541478725;
+        if r == EOF {
+            return Ok(SubRead::End);
+        }
+        if r == INTERRUPTED {
+            return Ok(SubRead::Interrupted);
+        }
+        if r < 0 {
+            return Err(error(l, r));
+        }
+        let text = if e.text.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(e.text) }.to_string_lossy().into_owned() };
+        let mut rects = Vec::new();
+        if !e.rects.is_null() {
+            for r in unsafe { std::slice::from_raw_parts(e.rects, e.n_rects.max(0) as usize) } {
+                if r.w <= 0 || r.h <= 0 || r.bgra.is_null() {
+                    continue;
+                }
+                let (w, h) = (r.w as usize, r.h as usize);
+                let mut px = Vec::with_capacity(w * h * 4);
+                for y in 0..h {
+                    px.extend_from_slice(unsafe { std::slice::from_raw_parts(r.bgra.add(y * r.stride as usize), w * 4) });
+                }
+                rects.push(SubRect { x: r.x, y: r.y, w: w as u32, h: h as u32, bgra: std::sync::Arc::new(px) });
+            }
+        }
+        Ok(SubRead::Event(SubEvent {
+            start_us: e.start_us,
+            end_us: (e.end_us >= 0).then_some(e.end_us),
+            read_us: e.read_us,
+            text,
+            rects,
+            canvas: (e.canvas_w, e.canvas_h),
+            read_order: e.read_order,
+        }))
+    }
+
+    /// libass's picture of moment `us` in a `w × h` frame showing a video `video_w × video_h`, its text scaled by
+    /// `scale`. None when it's the same as the last call's; Some(None) when nothing shows.
+    pub fn render(&self, us: i64, w: u32, h: u32, video_w: u32, video_h: u32, scale: f64) -> Result<Option<Option<SubImage>>, String> {
+        let l = lib()?;
+        let mut img: LvSubImage = unsafe { std::mem::zeroed() };
+        let mut changed: c_int = 0;
+        let r = unsafe { (l.subs_render)(self.0, us, w as c_int, h as c_int, video_w as c_int, video_h as c_int, scale, &mut changed, &mut img) };
+        if r < 0 {
+            return Err(error(l, r));
+        }
+        if changed == 0 {
+            return Ok(None);
+        }
+        if img.bgra.is_null() || img.w <= 0 || img.h <= 0 {
+            return Ok(Some(None));
+        }
+        let (iw, ih) = (img.w as usize, img.h as usize);
+        let mut px = Vec::with_capacity(iw * ih * 4);
+        for y in 0..ih {
+            px.extend_from_slice(unsafe { std::slice::from_raw_parts(img.bgra.add(y * img.stride as usize), iw * 4) });
+        }
+        Ok(Some(Some(SubImage { x: img.x, y: img.y, w: iw as u32, h: ih as u32, bgra: px })))
+    }
+}
+
+impl Drop for Subs {
+    fn drop(&mut self) {
+        if let Ok(l) = lib() {
+            unsafe { (l.subs_close)(self.0) };
         }
     }
 }

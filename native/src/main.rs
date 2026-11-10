@@ -28,6 +28,7 @@ mod player;
 mod settings;
 mod shell_icons;
 mod store;
+mod subs;
 mod tags;
 mod textedit;
 mod theme;

@@ -37,6 +37,14 @@ pub(super) enum Action {
     VideoTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
+    /// The context menu's Subtitles: none, one of the video's streams, a sidecar (by its place in the list), a
+    /// file picked by hand, the delay (-1 earlier, +1 later, 0 none), the text's size (percent).
+    SubOff,
+    SubStream(i32),
+    SubFile(usize),
+    SubAdd,
+    SubDelay(i32),
+    SubSize(u16),
     // The explorer's (explorer_ops.rs).
     OpenInViewer,
     Cut,
@@ -122,6 +130,8 @@ impl App {
                 e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
             }
             e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
+            // Subtitles beside them: off, the video's own, the files beside it, one picked by hand; delay, size.
+            e.push(Entry::Sub(Some(0xE7F0), "Subtitles".into(), self.subtitle_entries()));
         }
         e.extend([
             Entry::Separator,
@@ -312,6 +322,16 @@ impl App {
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::AudioTrack(s) => self.set_audio_track(s),
             Action::VideoTrack(s) => self.set_video_track(s),
+            Action::SubOff => self.set_subtitles(crate::subs::Choice::Off),
+            Action::SubStream(s) => self.set_subtitles(crate::subs::Choice::Stream(s)),
+            Action::SubFile(i) => {
+                if let Some(p) = self.video.as_ref().and_then(|v| v.subs.sidecars.get(i)).map(|s| s.path.clone()) {
+                    self.set_subtitles(crate::subs::Choice::File(p));
+                }
+            }
+            Action::SubAdd => self.add_subtitle_file(),
+            Action::SubDelay(d) => self.subtitle_delay(d),
+            Action::SubSize(s) => self.subtitle_size(s as u32),
             _ => {}
         }
     }

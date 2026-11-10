@@ -775,15 +775,19 @@ endif()
 # Looker: only what the viewer plays (native/PLAN.md N6). LGPL: never --enable-gpl / --enable-nonfree. Everything
 # off, then the containers, codecs and GPU decoders a photo-and-footage viewer meets. External libraries (dav1d)
 # and the D3D11VA support above are not components, so --disable-everything leaves them alone.
-set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps srt ass webvtt)
+# Subtitles (native/PLAN.md N6e): the text formats a sidecar file comes in (MicroDVD, SubViewer, SAMI, MPL2,
+# VPlayer, RealText, PJS beside SRT, ASS/SSA and WebVTT) and VobSub's .idx/.sub pair.
+set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps srt ass webvtt
+    microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub)
 set(LOOKER_DECODERS
     h264 hevc vp8 vp9 av1 libdav1d prores dnxhd cfhd mpeg1video mpeg2video mpeg4 h263 msmpeg4v3 mjpeg vc1 wmv1 wmv2 wmv3
     rawvideo v210 v210x png qtrle
     aac aac_latm mp1 mp2 mp3 mp3float opus vorbis flac alac ac3 eac3 dca truehd wmav1 wmav2 wmapro
     pcm_s8 pcm_u8 pcm_s16le pcm_s16be pcm_s24le pcm_s24be pcm_s32le pcm_s32be pcm_f32le pcm_f32be pcm_f64le pcm_mulaw
     pcm_alaw pcm_dvd pcm_bluray
-    subrip srt ass ssa mov_text webvtt)
-set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca)
+    subrip srt ass ssa movtext webvtt text microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs ccaption
+    pgssub dvdsub dvbsub)
+set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca dvdsub dvbsub)
 set(LOOKER_HWACCELS h264 hevc vp9 av1 mpeg2 vc1 wmv3)
 set(LOOKER_FILTERS abuffer abuffersink aformat aresample atempo anull)
 string(APPEND OPTIONS " --disable-everything --disable-network --enable-protocol=file")

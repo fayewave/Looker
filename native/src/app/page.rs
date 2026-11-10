@@ -762,7 +762,7 @@ impl App {
         self.text_button(g, r, "Open Store", Hit::PageLink(link::STORE), ui::Kind::Standard, open);
         let r = rows.row(g, "Reset Looker", "Every setting to its default; photos aren't touched");
         self.text_button(g, r, "Reset\u{2026}", Hit::PageLink(link::RESET), ui::Kind::Standard, open);
-        rows.note(g, "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause), for animated AVIF libavif (BSD-2-Clause), and, where Windows lacks the Raw Image Extension, LibRaw (LGPL-2.1 or CDDL-1.0) with Little CMS (MIT), JasPer and zlib, and for video FFmpeg (LGPL-2.1 or later). The licences are in the codecs\\licenses folder beside Looker.exe.");
+        rows.note(g, "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause), for animated AVIF libavif (BSD-2-Clause), and, where Windows lacks the Raw Image Extension, LibRaw (LGPL-2.1 or CDDL-1.0) with Little CMS (MIT), JasPer and zlib, and for video FFmpeg (LGPL-2.1 or later), with libass (ISC), FreeType (FreeType License), HarfBuzz (MIT) and FriBidi (LGPL-2.1 or later) for subtitles. Portions of this software are copyright © The FreeType Project (www.freetype.org). The licences are in the codecs\\licenses folder beside Looker.exe.");
         let logs = format!("Logs: {}\\looker-native*.log", std::env::temp_dir().display().to_string().trim_end_matches('\\'));
         rows.note(g, &logs);
     }

@@ -17,6 +17,7 @@ mod menus;
 mod model;
 mod page;
 mod slideshow;
+mod subtitles;
 mod video;
 
 use std::os::windows::fs::MetadataExt;

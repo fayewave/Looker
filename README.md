@@ -39,7 +39,8 @@ it keeps itself up to date.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 - Videos play, HDR and 4K60 included, with frame stepping, frame-accurate scrubbing, a timecode or frame count,
-  and the media keys and taskbar progress.
+  and the media keys and taskbar progress; subtitles from the file itself (SRT, ASS/SSA with its styling and
+  fonts, WebVTT, MP4 timed text, PGS, VobSub, DVB) or from files beside it, in any encoding.
 - Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
 
 <img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
@@ -67,6 +68,7 @@ it keeps itself up to date.
 | `Ctrl+F`, `Ctrl+Z` | Filter the folder, undo |
 | `F11`, `F5`, `Space` | Fullscreen, slideshow, pause |
 | `,` `.`, `J` `K` `L`, `M` | Video: previous / next frame, slower / pause / faster, mute |
+| `V`, `G` `H` | Video: next subtitle track, subtitles 50 ms earlier / later |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |
 | `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+Shift+E` | Copy image, copy path, show in File Explorer |
