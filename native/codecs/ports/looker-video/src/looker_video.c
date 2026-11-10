@@ -40,7 +40,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 11
+#define LOOKER_VIDEO_API 12
 
 typedef struct LvInfo
 {

@@ -778,7 +778,9 @@ endif()
 # Audio files (the waveform view): mp3, flac, ogg, wav, w64, aiff, aac (ADTS), caf, wavpack, ape. Subtitles
 # (native/PLAN.md N6e): the text formats a sidecar file comes in (MicroDVD, SubViewer, SAMI, MPL2, VPlayer, RealText,
 # PJS beside SRT, ASS/SSA and WebVTT) and VobSub's .idx/.sub pair.
-set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
+# mpegvideo: the program stream demuxer probes video streams (DVD VOBs, .mpg) through it; without it MPEG-2 video
+# in a program stream came out as an unknown codec.
+set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps mpegvideo srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
     microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub)
 set(LOOKER_DECODERS
     h264 hevc vp8 vp9 av1 libdav1d prores dnxhd cfhd mpeg1video mpeg2video mpeg4 h263 msmpeg4v3 mjpeg vc1 wmv1 wmv2 wmv3
@@ -791,7 +793,18 @@ set(LOOKER_DECODERS
 set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca dvdsub dvbsub)
 set(LOOKER_HWACCELS h264 hevc vp9 av1 mpeg2 vc1 wmv3)
 set(LOOKER_FILTERS abuffer abuffersink aformat aresample atempo anull)
+# DVD ripping (native/PLAN.md N8, looker_rip.c): Matroska and MP4 out, H.264 through Windows' Media Foundation
+# encoder (h264_mf, LGPL; never x264), AAC, PCM for DVD LPCM in Matroska, bwdif to deinterlace.
+set(LOOKER_MUXERS matroska mp4)
+set(LOOKER_ENCODERS h264_mf aac pcm_s16le pcm_s24le)
+list(APPEND LOOKER_FILTERS buffer buffersink format scale bwdif null)
 string(APPEND OPTIONS " --disable-everything --disable-network --enable-protocol=file")
+foreach(c IN LISTS LOOKER_MUXERS)
+    string(APPEND OPTIONS " --enable-muxer=${c}")
+endforeach()
+foreach(c IN LISTS LOOKER_ENCODERS)
+    string(APPEND OPTIONS " --enable-encoder=${c}")
+endforeach()
 foreach(c IN LISTS LOOKER_DEMUXERS)
     string(APPEND OPTIONS " --enable-demuxer=${c}")
 endforeach()

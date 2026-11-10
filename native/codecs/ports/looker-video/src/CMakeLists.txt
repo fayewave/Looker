@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(looker_video C)
 
 # FFMPEG_ROOT: vcpkg's installed tree (include\, lib\ with the import libraries of the FFmpeg and libass DLLs).
-add_library(looker_video SHARED looker_video.c)
+add_library(looker_video SHARED looker_video.c looker_rip.c)
 target_include_directories(looker_video PRIVATE "${FFMPEG_ROOT}/include")
 # libass (ass.dll, with FreeType, HarfBuzz and FriBidi beside it) draws ASS/SSA subtitles.
 foreach(lib avformat avcodec avfilter swscale swresample avutil ass)

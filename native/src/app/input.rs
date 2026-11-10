@@ -560,6 +560,8 @@ impl App {
                             Some(Hit::DefaultHintClose) => self.dismiss_default_hint(),
                             Some(Hit::MenuItem(i)) => self.activate_menu(i),
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
+                            Some(Hit::DialogChoice(i, j)) => self.dialog_pick(i, j),
+                            Some(Hit::RipCancel) => self.cancel_rip(),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
@@ -961,6 +963,7 @@ impl App {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
                             self.invalidate();
                         }
+                        rip::TIMER_RIP => self.invalidate(),
                         TIMER_TOOLTIP => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
                             if self.menu.is_none() && self.pressed.is_none() {
@@ -1201,6 +1204,7 @@ impl App {
                     None
                 }
                 WM_CLOSE => {
+                    self.stop_rip_for_close();
                     self.save_placement();
                     None
                 }

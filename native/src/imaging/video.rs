@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 11;
+const API: c_int = 12;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -294,6 +294,7 @@ pub(super) struct Lib {
     subs_render: unsafe extern "C" fn(*mut c_void, i64, c_int, c_int, c_int, c_int, f64, *mut c_int, *mut LvSubImage) -> c_int,
     subs_interrupt: unsafe extern "C" fn(*mut c_void),
     subs_close: unsafe extern "C" fn(*mut c_void),
+    rip: unsafe extern "C" fn(*const RipJob) -> c_int,
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -351,6 +352,7 @@ fn load() -> Result<Lib, String> {
             subs_render: sym!("lv_subs_render"),
             subs_interrupt: sym!("lv_subs_interrupt"),
             subs_close: sym!("lv_subs_close"),
+            rip: sym!("lv_rip"),
         })
     }
 }
@@ -376,6 +378,115 @@ pub(super) fn error(l: &Lib, code: c_int) -> String {
 pub(super) fn wide(path: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+// --- DVD ripping (lv_rip in looker_rip.c, src/dvd.rs) ---
+
+/// `LvRipStream`.
+#[repr(C)]
+struct RipStream {
+    id: c_int,
+    lang: [c_char; 4],
+}
+
+/// `LvRipJob`.
+#[repr(C)]
+struct RipJob {
+    read: unsafe extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int,
+    ctx: *mut c_void,
+    out: *const u16,
+    mode: c_int,
+    audio_count: c_int,
+    audio: *const RipStream,
+    sub_count: c_int,
+    subs: *const RipStream,
+    sub_extradata: *const c_char,
+    chapter_count: c_int,
+    chapters_us: *const i64,
+    duration_us: i64,
+    dar_num: c_int,
+    dar_den: c_int,
+    video_kbps: c_int,
+    cancel: *const i32,
+}
+
+/// What to rip: the streams by their program stream ids, with ISO 639-2 languages.
+pub struct RipSpec<'a> {
+    pub out: &'a Path,
+    /// H.264 + AAC in MP4; else every stream copied into Matroska.
+    pub mp4: bool,
+    pub audio: Vec<(i32, String)>,
+    pub subs: Vec<(i32, String)>,
+    pub sub_header: String,
+    pub chapters_us: Vec<i64>,
+    pub duration_us: i64,
+    pub dar: (i32, i32),
+}
+
+struct RipSource<'a> {
+    reader: &'a mut dyn std::io::Read,
+    error: Option<std::io::Error>,
+}
+
+unsafe extern "C" fn rip_read(ctx: *mut c_void, buf: *mut u8, size: c_int) -> c_int {
+    // SAFETY: ctx is the RipSource `rip` lent lv_rip for the call; buf holds `size` bytes.
+    let src = unsafe { &mut *(ctx as *mut RipSource) };
+    let out = unsafe { std::slice::from_raw_parts_mut(buf, size.max(0) as usize) };
+    match src.reader.read(out) {
+        Ok(n) => n as c_int,
+        Err(e) => {
+            src.error = Some(e);
+            -5 // AVERROR(EIO)
+        }
+    }
+}
+
+/// Rips a DVD title read through `reader` (a dvd::TitleReader) to `spec.out`. Blocks; `cancel` set non-zero stops
+/// it. A partial file is left for the caller to remove.
+pub fn rip(spec: &RipSpec, reader: &mut dyn std::io::Read, cancel: &std::sync::atomic::AtomicI32) -> Result<(), String> {
+    let l = lib()?;
+    let stream = |(id, lang): &(i32, String)| {
+        let mut l = [0 as c_char; 4];
+        for (d, s) in l.iter_mut().zip(lang.bytes().take(3)) {
+            *d = s as c_char;
+        }
+        RipStream { id: *id, lang: l }
+    };
+    let audio: Vec<RipStream> = spec.audio.iter().map(stream).collect();
+    let subs: Vec<RipStream> = spec.subs.iter().map(stream).collect();
+    let header = std::ffi::CString::new(spec.sub_header.clone()).unwrap_or_default();
+    let out = wide(spec.out);
+    let mut src = RipSource { reader, error: None };
+    let job = RipJob {
+        read: rip_read,
+        ctx: &mut src as *mut RipSource as *mut c_void,
+        out: out.as_ptr(),
+        mode: spec.mp4 as c_int,
+        audio_count: audio.len() as c_int,
+        audio: audio.as_ptr(),
+        sub_count: subs.len() as c_int,
+        subs: subs.as_ptr(),
+        sub_extradata: if spec.sub_header.is_empty() { std::ptr::null() } else { header.as_ptr() },
+        chapter_count: spec.chapters_us.len() as c_int,
+        chapters_us: spec.chapters_us.as_ptr(),
+        duration_us: spec.duration_us,
+        dar_num: spec.dar.0,
+        dar_den: spec.dar.1,
+        video_kbps: 2500,
+        cancel: cancel.as_ptr(),
+    };
+    // SAFETY: every pointer in job outlives the call.
+    let r = unsafe { (l.rip)(&job) };
+    if let Some(e) = src.error {
+        return Err(format!("Couldn't read the disc: {e}"));
+    }
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return Err("Cancelled".into());
+    }
+    if r < 0 {
+        return Err(error(l, r));
+    }
+    Ok(())
 }
 
 // --- Playback (lv_* in looker_video.c) ---

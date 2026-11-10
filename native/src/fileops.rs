@@ -56,6 +56,9 @@ pub enum Done {
     /// "New folder", and its undo (`removed`).
     NewFolder { path: Result<PathBuf, String>, origin: Origin },
     FolderRemoved { path: PathBuf, ok: bool, origin: Origin },
+    /// Rip DVD: the disc read (or why it can't be ripped), and a finished rip.
+    DvdOpened(Result<Box<crate::dvd::Disc>, String>),
+    Ripped { out: PathBuf, result: Result<(), String> },
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work

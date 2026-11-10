@@ -354,6 +354,30 @@ impl<A> DialogButton<A> {
 pub enum Focus {
     Field,
     Button(usize),
+    /// One of the dialog's lists of options (arrow keys move its pick).
+    Choices(usize),
+}
+
+/// A list of options in a dialog, one of them picked (Rip DVD's titles and formats): a heading, then a row per
+/// option with its name and a line of detail, the pick shown as a toggle that's on.
+pub struct Choices {
+    pub label: String,
+    /// Each option's name and detail ("" for none).
+    pub rows: Vec<(String, String)>,
+    pub selected: usize,
+}
+
+const CHOICE_HEAD: f32 = 26.0;
+const CHOICE_ROW_GAP: f32 = 4.0;
+
+impl Choices {
+    fn row_h(&self) -> f32 {
+        if self.rows.iter().any(|r| !r.1.is_empty()) { 44.0 } else { 30.0 }
+    }
+
+    fn height(&self) -> f32 {
+        CHOICE_HEAD + self.rows.len() as f32 * (self.row_h() + CHOICE_ROW_GAP) - CHOICE_ROW_GAP
+    }
 }
 
 /// A modal card, as Snapper asks "Delete this capture?": the window dimmed, a card with a title, text and/or a
@@ -364,6 +388,10 @@ pub struct Dialog<A> {
     pub title: String,
     pub body: String,
     pub field: Option<TextField>,
+    /// Lists of options between the text and the text box.
+    pub choices: Vec<Choices>,
+    /// A heading over the text box, as the lists have.
+    pub field_label: Option<String>,
     pub buttons: Vec<DialogButton<A>>,
     pub default: usize,
     pub focus: Focus,
@@ -378,13 +406,53 @@ pub struct DialogLayout {
     pub field: Option<D2D_RECT_F>,
     /// The text box's clear button, while it shows.
     pub field_clear: Option<D2D_RECT_F>,
+    /// Each option's row: (list, option, rect); and each list's heading.
+    pub choice_rows: Vec<(usize, usize, D2D_RECT_F)>,
+    choice_heads: Vec<D2D_RECT_F>,
+    field_head: Option<D2D_RECT_F>,
     title: D2D_RECT_F,
     body: D2D_RECT_F,
 }
 
 impl<A: Copy> Dialog<A> {
     pub fn new(title: String, body: String, buttons: Vec<DialogButton<A>>, default: usize, from_keyboard: bool) -> Dialog<A> {
-        Dialog { title, body, field: None, buttons, default, focus: Focus::Button(default), focus_visible: from_keyboard, opened: Instant::now() }
+        Dialog { title, body, field: None, choices: Vec::new(), field_label: None, buttons, default, focus: Focus::Button(default), focus_visible: from_keyboard, opened: Instant::now() }
+    }
+
+    /// Adds lists of options; the first takes the keyboard focus (unless there is a text box).
+    pub fn with_choices(mut self, choices: Vec<Choices>) -> Dialog<A> {
+        if !choices.is_empty() && self.field.is_none() {
+            self.focus = Focus::Choices(0);
+        }
+        self.choices = choices;
+        self
+    }
+
+    /// The pick in list `list`.
+    pub fn picked(&self, list: usize) -> usize {
+        self.choices.get(list).map_or(0, |c| c.selected)
+    }
+
+    /// Picks option `row` of list `list` (a click), which takes the focus.
+    pub fn pick(&mut self, list: usize, row: usize) {
+        if let Some(c) = self.choices.get_mut(list) {
+            if row < c.rows.len() {
+                c.selected = row;
+                self.focus = Focus::Choices(list);
+            }
+        }
+    }
+
+    /// Up/Down in the focused list: the pick moves. Returns false if no list has the focus.
+    pub fn step_choice(&mut self, down: bool) -> bool {
+        let Focus::Choices(i) = self.focus else { return false };
+        let Some(c) = self.choices.get_mut(i) else { return false };
+        let n = c.rows.len();
+        if n > 0 {
+            c.selected = if down { (c.selected + 1).min(n - 1) } else { c.selected.saturating_sub(1) };
+        }
+        self.focus_visible = true;
+        true
     }
 
     /// Adds a text box, which takes the keyboard focus.
@@ -412,11 +480,20 @@ impl<A: Copy> Dialog<A> {
         if self.field.is_some() {
             natural = natural.max(FIELD_MIN_W);
         }
-        let w = (natural.ceil() + DIALOG_PAD * 2.0).clamp(DIALOG_MIN_W, DIALOG_MAX_W).min(bounds.right - bounds.left - 32.0);
+        for c in &self.choices {
+            for (name, detail) in &c.rows {
+                natural = natural.max(g.measure(&wide(name), &g.fonts.body).max(g.measure(&wide(detail), &g.fonts.caption)) + 28.0);
+            }
+        }
+        let max_w = if self.choices.is_empty() { DIALOG_MAX_W } else { DIALOG_MAX_W + 80.0 };
+        let w = (natural.ceil() + DIALOG_PAD * 2.0).clamp(DIALOG_MIN_W, max_w).min(bounds.right - bounds.left - 32.0);
         let inner = w - DIALOG_PAD * 2.0;
         let body_h = if self.body.is_empty() { 0.0 } else { g.measure_height(&wide(&self.body), &g.fonts.body_wrap, inner).ceil() };
-        let field_h = if self.field.is_some() { FIELD_H + if body_h > 0.0 { 12.0 } else { 0.0 } } else { 0.0 };
-        let content_h = body_h + field_h;
+        let lists_h: f32 = self.choices.iter().map(|c| c.height() + 12.0).sum();
+        let choices_h = if body_h > 0.0 || lists_h == 0.0 { lists_h } else { lists_h - 12.0 };
+        let head_h = if self.field_label.is_some() { CHOICE_HEAD } else { 0.0 };
+        let field_h = if self.field.is_some() { FIELD_H + head_h + if body_h + choices_h > 0.0 { 12.0 } else { 0.0 } } else { 0.0 };
+        let content_h = body_h + choices_h + field_h;
         let h = 48.0 + content_h + 24.0 + DIALOG_BUTTON_H + 18.0;
         let x = g.snap((bounds.left + bounds.right - w) / 2.0);
         let y = g.snap((bounds.top + bounds.bottom - h) / 2.0);
@@ -445,11 +522,27 @@ impl<A: Copy> Dialog<A> {
             (Some(f), Some(r)) if self.focus == Focus::Field && !f.edit.units().is_empty() => Some(TextField::clear_rect(r)),
             _ => None,
         };
+        let mut choice_rows = Vec::new();
+        let mut choice_heads = Vec::new();
+        let mut cy = body_top + body_h + if body_h > 0.0 { 12.0 } else { 0.0 };
+        for (i, c) in self.choices.iter().enumerate() {
+            choice_heads.push(rect(x + DIALOG_PAD, cy, inner, CHOICE_HEAD - 8.0));
+            cy += CHOICE_HEAD;
+            let rh = c.row_h();
+            for j in 0..c.rows.len() {
+                choice_rows.push((i, j, rect(x + DIALOG_PAD, cy, inner, rh)));
+                cy += rh + CHOICE_ROW_GAP;
+            }
+            cy += 12.0 - CHOICE_ROW_GAP;
+        }
         DialogLayout {
             card,
             buttons,
             field,
             field_clear,
+            choice_rows,
+            choice_heads,
+            field_head: field.filter(|_| self.field_label.is_some()).map(|f| rect(f.left, f.top - CHOICE_HEAD, f.right - f.left, CHOICE_HEAD - 8.0)),
             title: rect(x + DIALOG_PAD, y + 18.0, inner, 22.0),
             body: rect(x + DIALOG_PAD, body_top, inner, body_h),
         }
@@ -458,6 +551,7 @@ impl<A: Copy> Dialog<A> {
     /// Tab / arrow keys: the next or previous focusable thing (the text box, then enabled buttons), wrapping.
     pub fn move_focus(&mut self, forward: bool) {
         let mut order: Vec<Focus> = Vec::new();
+        order.extend((0..self.choices.len()).map(Focus::Choices));
         if self.field.is_some() {
             order.push(Focus::Field);
         }
@@ -474,14 +568,14 @@ impl<A: Copy> Dialog<A> {
     /// What Enter does: the focused button, or the default one from the text box.
     pub fn enter_action(&self) -> Option<A> {
         let i = match self.focus {
-            Focus::Field => self.default,
+            Focus::Field | Focus::Choices(_) => self.default,
             Focus::Button(i) => i,
         };
         self.buttons.get(i).filter(|b| b.enabled).map(|b| b.action)
     }
 
     /// Draws the dialog. Returns the caret rect while the text box has focus (for placing the IME window).
-    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, buttons: &[State], field_hover: f32, clear: State) -> Option<D2D_RECT_F> {
+    pub fn draw(&mut self, g: &Gfx, l: &DialogLayout, window: D2D_RECT_F, buttons: &[State], field_hover: f32, clear: State, choices: &[State]) -> Option<D2D_RECT_F> {
         let e = motion::progress(self.opened);
         let raised = theme::raised();
         g.fill(window, rgba(0x000000, 0.5 * e));
@@ -493,6 +587,28 @@ impl<A: Copy> Dialog<A> {
         label(g, &self.title, &g.fonts.title, l.title, rgb(raised.text), Align::Left);
         if !self.body.is_empty() {
             label(g, &self.body, &g.fonts.body_wrap, l.body, rgb(raised.label), Align::Left);
+        }
+        if let (Some(t), Some(r)) = (&self.field_label, l.field_head) {
+            g.text(&wide(&t.to_uppercase()), &g.fonts.overline, r, rgb(raised.label), Align::Left);
+        }
+        for (c, r) in self.choices.iter().zip(&l.choice_heads) {
+            g.text(&wide(&c.label.to_uppercase()), &g.fonts.overline, *r, rgb(raised.label), Align::Left);
+        }
+        for (k, &(i, j, r)) in l.choice_rows.iter().enumerate() {
+            let c = &self.choices[i];
+            let on = c.selected == j;
+            let st = choices.get(k).copied().unwrap_or(State::IDLE);
+            let fg = button_frame(g, r, Kind::Toggle(on), &State { pressed: false, ..st });
+            let (name, detail) = &c.rows[j];
+            if detail.is_empty() {
+                label(g, name, &g.fonts.body, D2D_RECT_F { left: r.left + 12.0, right: r.right - 12.0, ..r }, fg, Align::Left);
+            } else {
+                label(g, name, &g.fonts.body, rect(r.left + 12.0, r.top + 6.0, r.right - r.left - 24.0, 16.0), fg, Align::Left);
+                label(g, detail, &g.fonts.caption, rect(r.left + 12.0, r.top + 23.0, r.right - r.left - 24.0, 15.0), rgb(raised.label), Align::Left);
+            }
+            if on && self.focus_visible && self.focus == Focus::Choices(i) {
+                focus_ring(g, r, 5.0);
+            }
         }
         let focused = self.focus == Focus::Field;
         let caret = match (&mut self.field, l.field) {

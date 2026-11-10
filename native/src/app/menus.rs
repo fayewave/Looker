@@ -47,6 +47,8 @@ pub(super) enum Action {
     SubSize(u16),
     // The explorer's (explorer_ops.rs).
     OpenInViewer,
+    /// A DVD drive's or VIDEO_TS folder's: Rip DVD (app/rip.rs).
+    RipDvd,
     Cut,
     CopyFiles,
     Paste,

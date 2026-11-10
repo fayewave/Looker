@@ -24,6 +24,9 @@ pub(super) enum DialogKind {
     DeleteMany(Vec<PathBuf>),
     Rename(PathBuf),
     Reset,
+    /// Rip DVD's dialog, and a message with only OK.
+    Rip(Box<super::rip::RipSetup>),
+    Notice,
 }
 
 impl App {
@@ -428,6 +431,12 @@ impl App {
             return;
         }
         match kind {
+            DialogKind::Notice => {}
+            DialogKind::Rip(setup) => {
+                let (title, mp4) = (d.picked(0), d.picked(1) == 1);
+                let name = d.field.map(|f| f.edit.text()).unwrap_or_default();
+                self.start_rip(*setup, title, mp4, name);
+            }
             DialogKind::Reset => self.reset_app(),
             DialogKind::Rename(path) => {
                 let name = d.field.map(|f| f.edit.text()).unwrap_or_default();
@@ -475,11 +484,19 @@ impl App {
                     self.dialog_choose(c);
                 }
             }
+            VK_UP | VK_DOWN if d.step_choice(vk == VK_DOWN) => {}
             VK_LEFT | VK_UP => d.move_focus(false),
             VK_RIGHT | VK_DOWN => d.move_focus(true),
             _ => {}
         }
         self.invalidate();
+    }
+
+    pub(super) fn dialog_pick(&mut self, list: usize, row: usize) {
+        if let Some((_, d)) = &mut self.dialog {
+            d.pick(list, row);
+            self.invalidate();
+        }
     }
 
     pub(super) fn dialog_click(&mut self, index: usize) {
@@ -534,6 +551,8 @@ impl App {
                     self.show_toast("Copied", false);
                 }
             }
+            Done::DvdOpened(r) => self.on_dvd_opened(r),
+            Done::Ripped { out, result } => self.on_ripped(out, result),
             other => self.on_explorer_file_op(other),
         }
     }

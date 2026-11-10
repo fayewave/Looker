@@ -425,6 +425,9 @@ impl App {
                     e.push(item(Action::OpenItem, 0xE8B7, "Open", Some("Enter"), true));
                     e.push(item(Action::OpenInViewer, 0xE8A7, "Open in the viewer", None, r.kind == Kind::Folder));
                     e.push(item(Action::OpenInNewTab, 0xE8A0, "Open in new tab", Some("Middle-click"), r.kind == Kind::Folder));
+                    if crate::dvd::is_dvd(&r.path) {
+                        e.push(item(Action::RipDvd, 0xE958, "Rip DVD\u{2026}", None, self.ripping.is_none()));
+                    }
                 }
                 Kind::Image => e.push(item(Action::OpenItem, 0xE8A7, "Open", Some("Enter"), true)),
                 Kind::Other => e.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true)),
@@ -471,6 +474,10 @@ impl App {
             item(Action::SelectAll, 0xE8B3, "Select all", Some("Ctrl+A"), !self.explorer.view.is_empty()),
             item(Action::Refresh, 0xE72C, "Refresh", Some("F5"), true),
         ];
+        if self.explorer.folder().is_some_and(|f| crate::dvd::is_dvd(&f)) {
+            e.push(Entry::Separator);
+            e.push(item(Action::RipDvd, 0xE958, "Rip DVD\u{2026}", None, self.ripping.is_none()));
+        }
         e.shrink_to_fit();
         self.show_menu(MenuKind::ExplorerBg, e, x, y);
     }
@@ -678,6 +685,11 @@ impl App {
                 if let Some(f) = first {
                     self.open_folder(f);
                     self.leave_browse();
+                }
+            }
+            (Action::RipDvd, _) => {
+                if let Some(p) = first.or_else(|| self.explorer.folder()) {
+                    self.open_dvd(p);
                 }
             }
             (Action::Cut, _) => self.explorer_clip(true),

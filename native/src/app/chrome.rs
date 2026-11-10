@@ -709,6 +709,7 @@ impl App {
                 ui::ToastPhase::Done => self.toast = None,
             }
         }
+        self.draw_rip(g);
         // A submenu row under the pointer opens its menu beside it; another row of the menu closes it.
         let hovered = match self.hover {
             Some(Hit::MenuItem(i)) => Some(i),
@@ -771,8 +772,13 @@ impl App {
                 self.hits.add(Hit::DialogFieldClear, r);
             }
             let clear = self.state(Hit::DialogFieldClear, true);
+            let mut choice_states = Vec::new();
+            for &(i, j, r) in &layout.choice_rows {
+                self.hits.add(Hit::DialogChoice(i, j), r);
+                choice_states.push(self.state(Hit::DialogChoice(i, j), true));
+            }
             if let Some((_, d)) = &mut self.dialog {
-                self.caret_rect = d.draw(g, &layout, window, &states, field_hover, clear);
+                self.caret_rect = d.draw(g, &layout, window, &states, field_hover, clear, &choice_states);
                 moving |= d.moving();
             }
         }
