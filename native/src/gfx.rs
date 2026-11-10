@@ -183,6 +183,41 @@ pub struct Fonts {
     _ellipsis: Vec<IDWriteInlineObject>,
 }
 
+/// What a cached text layout is for: drawn (plain or with tabular figures), or measured.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum LayoutKind {
+    Plain,
+    Tabular,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct LayoutKey {
+    /// The text's hash; the text itself is kept in the entry and compared on every hit.
+    hash: u64,
+    format: usize,
+    /// The box, as f32 bits.
+    w: u32,
+    h: u32,
+    align: i32,
+    kind: LayoutKind,
+}
+
+struct LayoutEntry {
+    text: Box<[u16]>,
+    layout: IDWriteTextLayout,
+    /// Its ink reaches outside its box: drawn clipped. Clipping costs (D2D1_DRAW_TEXT_OPTIONS_CLIP was ~30 µs a
+    /// call: the explorer's 32 cells took 1 ms a frame), so text that fits is drawn without.
+    spills: bool,
+    /// The frame it was last used in.
+    used: u64,
+}
+
+/// Entries unused for this many frames are let go (checked every `LAYOUT_SWEEP` frames), and past `LAYOUT_CAP`
+/// the cache starts over (scrolling through a huge folder).
+const LAYOUT_KEEP: u64 = 600;
+const LAYOUT_SWEEP: u64 = 120;
+const LAYOUT_CAP: usize = 20_000;
+
 pub struct Gfx {
     pub dev: Device,
     pub text: Text,
@@ -207,6 +242,12 @@ pub struct Gfx {
     /// Where a format's first baseline sits in a box of a given height (by format and height): text is
     /// placed so it lands on a whole device pixel (`snap_text`).
     baselines: std::cell::RefCell<std::collections::HashMap<(usize, u32), f32>>,
+    /// Text layouts kept from frame to frame (`cached_layout`): laying text out was most of what drawing the UI
+    /// cost, and nearly all of it is the same every frame (the explorer's rows took ~2 ms a frame laid out
+    /// afresh, which at 360 Hz is most of a vsync).
+    layouts: std::cell::RefCell<std::collections::HashMap<LayoutKey, LayoutEntry>>,
+    /// Frames begun, for the layouts' ages.
+    frame: std::cell::Cell<u64>,
     /// The copy of the frame `blur_backdrop` blurs, kept while the size, format and DPI stay.
     backdrop: Option<(ID3D11Texture2D, ID2D1Bitmap1, (u32, u32, i32, u32))>,
     blur_failed: bool,
@@ -279,6 +320,8 @@ impl Gfx {
                 ui: None,
                 fade_stack: Default::default(),
                 baselines: Default::default(),
+                layouts: Default::default(),
+                frame: Default::default(),
                 backdrop: None,
                 blur_failed: false,
             };
@@ -412,6 +455,16 @@ impl Gfx {
     /// Starts a frame with the photo layer: `bg` fills the window. Under scRGB, `begin_ui` must follow once
     /// the photo layer is drawn.
     pub fn begin(&self, bg: u32) {
+        let frame = self.frame.get() + 1;
+        self.frame.set(frame);
+        if frame % LAYOUT_SWEEP == 0 {
+            let mut l = self.layouts.borrow_mut();
+            if l.len() > LAYOUT_CAP {
+                l.clear();
+            } else {
+                l.retain(|_, e| frame - e.used <= LAYOUT_KEEP);
+            }
+        }
         unsafe {
             self.dev.dc.BeginDraw();
             self.dev.dc.Clear(Some(&self.photo_rgb(bg)));
@@ -747,83 +800,92 @@ impl Gfx {
         D2D_RECT_F { top: r.top + dy, bottom: r.bottom + dy, ..r }
     }
 
-    pub fn text(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+    /// A layout of `s` in `fmt`, `w` x `h`, aligned `align` (with tabular figures for `LayoutKind::Tabular`):
+    /// the one made for the same text, format, box and alignment in an earlier frame, else a new one kept for
+    /// the next. Formats are never changed after they're made (but for their alignment, which `text` no longer
+    /// touches), so a format's address names its settings.
+    fn cached_layout(&self, s: &[u16], fmt: &IDWriteTextFormat, w: f32, h: f32, align: DWRITE_TEXT_ALIGNMENT, kind: LayoutKind) -> Option<(IDWriteTextLayout, bool)> {
+        use std::hash::{Hash, Hasher};
+        let (w, h) = (w.max(1.0), h.max(1.0));
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        s.hash(&mut hasher);
+        let key = LayoutKey { hash: hasher.finish(), format: fmt.as_raw() as usize, w: w.to_bits(), h: h.to_bits(), align: align.0, kind };
+        let frame = self.frame.get();
+        if let Some(e) = self.layouts.borrow_mut().get_mut(&key) {
+            if *e.text == *s {
+                e.used = frame;
+                return Some((e.layout.clone(), e.spills));
+            }
+        }
+        let layout = unsafe {
+            let l = self.text.dwrite.CreateTextLayout(s, fmt, w, h).ok()?;
+            l.SetTextAlignment(align).ok()?;
+            if kind == LayoutKind::Tabular {
+                l.SetTypography(&self.fonts.tabular, DWRITE_TEXT_RANGE { startPosition: 0, length: s.len() as u32 }).ok()?;
+            }
+            l
+        };
+        // Overhangs are how far the ink reaches past each edge of the box (negative inside it); a quarter DIP
+        // is antialiasing.
+        let spills = unsafe { layout.GetOverhangMetrics() }.map_or(true, |o| o.left.max(o.top).max(o.right).max(o.bottom) > 0.25);
+        self.layouts.borrow_mut().insert(key, LayoutEntry { text: s.into(), layout: layout.clone(), spills, used: frame });
+        Some((layout, spills))
+    }
+
+    fn draw_cached(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align, kind: LayoutKind) {
         let r = self.snap_text(fmt, r);
+        if !(r.right > r.left && r.bottom > r.top) {
+            return;
+        }
+        let align = match align {
+            Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
+            Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
+            Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
+        };
+        let Some((l, spills)) = self.cached_layout(s, fmt, r.right - r.left, r.bottom - r.top, align, kind) else { return };
+        let opt = if spills { D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT } else { D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT };
         unsafe {
-            let _ = fmt.SetTextAlignment(match align {
-                Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
-                Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
-                Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
-            });
             self.brush.SetColor(&color);
-            self.dev.dc.DrawText(s, fmt, &r, &self.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL);
+            self.dev.dc.DrawTextLayout(windows_numerics::Vector2 { X: r.left, Y: r.top }, &l, &self.brush, opt);
         }
     }
 
-    /// A layout of `s` in `fmt` with tabular figures, `w` x `h`.
-    fn tabular_layout(&self, s: &[u16], fmt: &IDWriteTextFormat, w: f32, h: f32) -> Option<IDWriteTextLayout> {
-        unsafe {
-            let l = self.text.dwrite.CreateTextLayout(s, fmt, w.max(1.0), h.max(1.0)).ok()?;
-            // Formats are shared and `text` leaves its alignment on them: measured right-aligned in a 10,000 DIP
-            // box, a width came out a hair short and the text drawn into it was trimmed.
-            l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok()?;
-            l.SetTypography(&self.fonts.tabular, DWRITE_TEXT_RANGE { startPosition: 0, length: s.len() as u32 }).ok()?;
-            Some(l)
-        }
+    pub fn text(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
+        self.draw_cached(s, fmt, r, color, align, LayoutKind::Plain);
     }
 
     /// `text` with tabular figures (the status row).
     pub fn text_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align) {
-        let r = self.snap_text(fmt, r);
-        let Some(l) = self.tabular_layout(s, fmt, r.right - r.left, r.bottom - r.top) else { return };
-        unsafe {
-            let _ = l.SetTextAlignment(match align {
-                Align::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
-                Align::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
-                Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
-            });
-            self.brush.SetColor(&color);
-            self.dev.dc.DrawTextLayout(
-                windows_numerics::Vector2 { X: r.left, Y: r.top },
-                &l,
-                &self.brush,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-            );
-        }
+        self.draw_cached(s, fmt, r, color, align, LayoutKind::Tabular);
+    }
+
+    /// The metrics of `s` laid out left-aligned in a `w` x `h` box (measured left-aligned: right-aligned in a
+    /// 10,000 DIP box a width came out a hair short and the text drawn into it was trimmed).
+    fn metrics(&self, s: &[u16], fmt: &IDWriteTextFormat, w: f32, h: f32, kind: LayoutKind) -> Option<DWRITE_TEXT_METRICS> {
+        let (l, _) = self.cached_layout(s, fmt, w, h, DWRITE_TEXT_ALIGNMENT_LEADING, kind)?;
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { l.GetMetrics(&mut m) }.ok()?;
+        Some(m)
     }
 
     /// `measure` with tabular figures.
     pub fn measure_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
-        let Some(l) = self.tabular_layout(s, fmt, 10_000.0, 100.0) else { return 0.0 };
-        let mut m = DWRITE_TEXT_METRICS::default();
-        unsafe { if l.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 } }
+        self.metrics(s, fmt, 10_000.0, 100.0, LayoutKind::Tabular).map_or(0.0, |m| m.widthIncludingTrailingWhitespace)
     }
 
     /// `measure_height` with tabular figures.
     pub fn measure_height_tabular(&self, s: &[u16], fmt: &IDWriteTextFormat, width: f32) -> f32 {
-        let Some(l) = self.tabular_layout(s, fmt, width, 10_000.0) else { return 0.0 };
-        let mut m = DWRITE_TEXT_METRICS::default();
-        unsafe { if l.GetMetrics(&mut m).is_ok() { m.height } else { 0.0 } }
+        self.metrics(s, fmt, width, 10_000.0, LayoutKind::Tabular).map_or(0.0, |m| m.height)
     }
 
     /// Width of a single line of text, in DIPs.
     pub fn measure(&self, s: &[u16], fmt: &IDWriteTextFormat) -> f32 {
-        unsafe {
-            let Ok(layout) = self.text.dwrite.CreateTextLayout(s, fmt, 10_000.0, 100.0) else { return 0.0 };
-            let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            let mut m = DWRITE_TEXT_METRICS::default();
-            if layout.GetMetrics(&mut m).is_ok() { m.widthIncludingTrailingWhitespace } else { 0.0 }
-        }
+        self.metrics(s, fmt, 10_000.0, 100.0, LayoutKind::Plain).map_or(0.0, |m| m.widthIncludingTrailingWhitespace)
     }
 
     /// Height of text wrapped at `width` (with a wrapping format), in DIPs.
     pub fn measure_height(&self, s: &[u16], fmt: &IDWriteTextFormat, width: f32) -> f32 {
-        unsafe {
-            let Ok(layout) = self.text.dwrite.CreateTextLayout(s, fmt, width.max(1.0), 10_000.0) else { return 0.0 };
-            let _ = layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            let mut m = DWRITE_TEXT_METRICS::default();
-            if layout.GetMetrics(&mut m).is_ok() { m.height } else { 0.0 }
-        }
+        self.metrics(s, fmt, width, 10_000.0, LayoutKind::Plain).map_or(0.0, |m| m.height)
     }
 
     /// A single-line, left-aligned layout of `s`, `height` tall (text vertically centred): for text boxes,
