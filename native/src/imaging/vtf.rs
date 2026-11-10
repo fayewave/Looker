@@ -50,7 +50,8 @@ fn size(format: u32, w: u32, h: u32) -> Option<usize> {
         0 | 1 | 11 | 12 | 16 => w * h * 4,
         24 | 25 => w * h * 8,
         2 | 3 | 9 | 10 => w * h * 3,
-        4 | 17 | 18 | 19 | 6 | 7 => w * h * 2,
+        4 | 17 | 18 | 19 | 6 | 7 | 22 => w * h * 2,
+        23 => w * h * 4,
         5 | 8 => w * h,
         13 | 20 => blocks * 8,
         14 | 15 => blocks * 16,
@@ -158,6 +159,9 @@ fn rgba(data: &[u8], w: usize, h: usize, format: u32) -> Option<Vec<[u8; 4]>> {
         5 => data.iter().take(n).map(|&v| [v, v, v, 255]).collect(),
         6 => data.chunks_exact(2).take(n).map(|p| [p[0], p[0], p[0], p[1]]).collect(),
         8 => data.iter().take(n).map(|&v| [255, 255, 255, v]).collect(),
+        // Distortion maps (UV, UVWQ): their channels as colours, opaque.
+        22 => data.chunks_exact(2).take(n).map(|p| [p[0], p[1], 0, 255]).collect(),
+        23 => data.chunks_exact(4).take(n).map(|p| [p[0], p[1], p[2], 255]).collect(),
         // Half-float RGBA (HDR): linear light, clipped and turned to sRGB.
         24 => data
             .chunks_exact(8)
@@ -274,5 +278,34 @@ mod tests {
         let block = [0x00, 0xF8, 0x00, 0xF8, 0, 0, 0, 0];
         let img = decode(&file(13, &block), 1).unwrap();
         assert_eq!(&img.pixels[..4], &[0, 0, 255, 255]);
+    }
+
+    /// Reads every .vtf under `LOOKER_VTF` and counts what fails, by reason.
+    #[test]
+    #[ignore]
+    fn reads_a_folder() {
+        let Ok(root) = std::env::var("LOOKER_VTF") else { return };
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let (mut ok, mut fails) = (0usize, std::collections::BTreeMap::<String, (usize, String)>::new());
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("vtf")) {
+                    match std::fs::read(&p).map_err(|e| e.to_string()).and_then(|b| decode(&b, 256)) {
+                        Ok(_) => ok += 1,
+                        Err(e) => {
+                            let f = fails.entry(e).or_insert((0, p.display().to_string()));
+                            f.0 += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("ok {ok}");
+        for (e, (n, example)) in &fails {
+            println!("{n:5}  {e}  e.g. {example}");
+        }
     }
 }
