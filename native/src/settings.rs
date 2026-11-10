@@ -91,6 +91,8 @@ pub struct Settings {
     pub video_muted: bool,
     /// A video starts playing when it's opened.
     pub video_autoplay: bool,
+    /// The video bar counts pictures ("372 / 732") instead of showing timecode.
+    pub video_frames: bool,
     /// Videos shorter than this many seconds loop (0: none, `u32::MAX`: all).
     pub video_loop_secs: u32,
     /// Every video starts muted (M unmutes it).
@@ -122,7 +124,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Ember, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: false, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -253,6 +255,7 @@ pub fn parse(text: &str) -> Settings {
             "video_volume" => s.video_volume = v.parse::<f32>().map_or(0.8, |x| x.clamp(0.0, 1.0)),
             "video_muted" => s.video_muted = v == "1",
             "video_autoplay" => s.video_autoplay = v != "0",
+            "video_frames" => s.video_frames = v != "0",
             "video_loop" => s.video_loop_secs = if v == "always" { u32::MAX } else { v.parse().unwrap_or(10) },
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
@@ -307,6 +310,7 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("video_volume={:.2}\n", s.video_volume));
     out.push_str(&format!("video_muted={}\n", s.video_muted as i32));
     out.push_str(&format!("video_autoplay={}\n", s.video_autoplay as i32));
+    out.push_str(&format!("video_frames={}\n", s.video_frames as i32));
     if s.video_loop_secs == u32::MAX {
         out.push_str("video_loop=always\n");
     } else {
@@ -523,6 +527,7 @@ mod tests {
             video_volume: 0.35,
             video_muted: true,
             video_autoplay: false,
+            video_frames: false,
             video_loop_secs: u32::MAX,
             video_start_muted: true,
             video_resume: false,

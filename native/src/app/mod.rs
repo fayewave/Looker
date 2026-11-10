@@ -54,6 +54,8 @@ use crate::view::View;
 /// The standard Windows 11 caption height (the C# app's compact TitleBar), caption buttons 46 × 32.
 const TITLE_H: f32 = 32.0;
 const TOOLBAR_H: f32 = 40.0;
+/// The photo's room starts this far below the toolbar: the strip's top pad (strip.rs `TOP_PAD`).
+const PREVIEW_TOP_PAD: f32 = 8.0;
 const STATUS_H: f32 = 28.0;
 const CAPTION_W: f32 = 46.0;
 /// The toolbar's boxed buttons, as Snapper's: 32 square, 4 apart within a group, 12 between groups, 16 from
@@ -228,6 +230,8 @@ enum Hit {
     VideoMute,
     VideoVolume,
     VideoSettings,
+    /// The times either side of the seek bar: a click picks Timecode or Frames.
+    VideoTime,
     VideoFullscreen,
     /// The 3D view's cube (which face: worked out from the point).
     ModelCube,
@@ -291,7 +295,7 @@ impl Placement {
         } else {
             client_size_for(self)
         };
-        let vh = h as f32 - (TITLE_H + TOOLBAR_H + STATUS_H + bottom_inset) * s;
+        let vh = h as f32 - (TITLE_H + TOOLBAR_H + PREVIEW_TOP_PAD + STATUS_H + bottom_inset) * s;
         let vw = w as f32 - right_inset * s;
         (vw.max(1.0) as u32, vh.max(1.0) as u32)
     }

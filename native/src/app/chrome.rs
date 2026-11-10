@@ -79,7 +79,10 @@ impl App {
     pub(super) fn image_area(&self) -> D2D_RECT_F {
         let v = self.viewport();
         let left = v.left + self.left_inset();
-        D2D_RECT_F { left, right: (v.right - self.right_inset()).max(left + 1.0), ..v }
+        // Off the toolbar by the strip's own top pad, as the strip's cells are off the photo (Faye, 2026-11-10: it
+        // touched the toolbar's buttons). Fullscreen has no toolbar.
+        let top = if self.chrome() { (v.top + PREVIEW_TOP_PAD).min(v.bottom - 1.0) } else { v.top };
+        D2D_RECT_F { left, top, right: (v.right - self.right_inset()).max(left + 1.0), ..v }
     }
 
     pub(super) fn caption_rect(&self, c: Caption) -> D2D_RECT_F {
@@ -232,6 +235,7 @@ impl App {
             Hit::VideoMute => "Mute (M)",
             Hit::VideoVolume => "Volume (\u{2191} \u{2193}, wheel)",
             Hit::VideoSettings => "Settings",
+            Hit::VideoTime => "Timecode or frames",
             Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
             _ => return None,
         })

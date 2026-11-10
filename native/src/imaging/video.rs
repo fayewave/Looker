@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 6;
+const API: c_int = 7;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -256,6 +256,7 @@ struct Lib {
     interrupt: unsafe extern "C" fn(*mut c_void),
     resume: unsafe extern "C" fn(*mut c_void),
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
+    frame_times: unsafe extern "C" fn(*const c_void, *mut *const i64) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
     tempo_open: unsafe extern "C" fn(f64, *mut *mut c_void) -> c_int,
@@ -294,6 +295,7 @@ fn load() -> Result<Lib, String> {
             interrupt: sym!("lv_interrupt"),
             resume: sym!("lv_resume"),
             hw: sym!("lv_hw"),
+            frame_times: sym!("lv_frame_times"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
             tempo_open: sym!("lv_tempo_open"),
@@ -489,6 +491,18 @@ impl Decoder {
     /// Whether pictures come from the GPU's decoder.
     pub fn hardware(&self) -> bool {
         lib().is_ok_and(|l| unsafe { (l.hw)(self.0) } != 0)
+    }
+
+    /// Every picture's time from the container's index, sorted, 0 = the first (MP4/MOV, AVI); empty when the
+    /// container doesn't list every picture. A picture's number is its place in this list.
+    pub fn frame_times(&self) -> Vec<i64> {
+        let Ok(l) = lib() else { return Vec::new() };
+        let mut t: *const i64 = std::ptr::null();
+        let n = unsafe { (l.frame_times)(self.0, &mut t) };
+        if n <= 0 || t.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(t, n as usize) }.to_vec()
     }
 
     pub fn next(&mut self) -> Result<Item, String> {

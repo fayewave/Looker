@@ -31,6 +31,8 @@ pub(super) enum Action {
     Choose(usize),
     /// The video bar's Settings menu: loop on/off.
     ToggleVideoLoop,
+    /// The video bar's times: picture numbers (true) or timecode.
+    VideoFrames(bool),
     /// The strip's menu: list the folder's other files in it too.
     ToggleStripOther,
     /// The explorer card's: the same for its rows.
@@ -198,6 +200,7 @@ impl App {
             match action {
                 Action::Choose(i) => self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]),
                 Action::ToggleVideoLoop => self.toggle_video_loop(),
+                Action::VideoFrames(on) => self.set_video_frames(on),
                 _ => {}
             }
             let entries = self.video_settings_entries();
@@ -214,6 +217,11 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::VideoTime) => {
+                if let Action::VideoFrames(on) = action {
+                    self.set_video_frames(on);
+                }
+            }
             Some(MenuKind::Combo(which)) => {
                 if let Action::Choose(i) = action {
                     self.choose(which, i);
@@ -312,6 +320,8 @@ pub(super) enum MenuKind {
     Recent(PathBuf),
     /// A Settings drop-down.
     Combo(page::Setting),
-    /// The video bar's Settings menu: speed and loop.
+    /// The video bar's Settings menu: speed, loop and Timecode/Frames.
     VideoSettings,
+    /// The menu off the video bar's times: Timecode or Frames.
+    VideoTime,
 }

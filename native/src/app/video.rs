@@ -838,7 +838,7 @@ impl App {
     /// and while it's over the bar or using it.
     fn bar_wanted(&self) -> bool {
         let Some(p) = self.player_ref() else { return false };
-        let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSettings, _)));
+        let using = matches!(self.pressed, Some(h) if is_bar_hit(h)) || matches!(self.menu, Some((menus::MenuKind::VideoSettings | menus::MenuKind::VideoTime, _)));
         let over = matches!(self.hover, Some(h) if is_bar_hit(h));
         // Out of fullscreen it stays (Faye, 2026-11-10): only fullscreen is the video alone.
         self.fullscreen.is_none() || !p.playing() || using || over || (self.tracking && self.video_moved.elapsed() < BAR_IDLE)
@@ -881,8 +881,8 @@ impl App {
         let bar = rect(x, g.snap(a.bottom - margin - h), w, h);
         let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
-        let fps = self.player_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
-        let tw = g.measure_tabular(&wide(&timecode_template(fps, long)), &g.fonts.caption).ceil() + 2.0;
+        let _ = long;
+        let tw = g.measure_tabular(&wide(&self.time_template()), &g.fonts.caption).ceil() + 2.0;
         // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
         // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
@@ -990,10 +990,22 @@ impl App {
         }
 
         let long = dur >= 3_600_000_000;
-        let fps = self.player_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
         if let Some((elapsed, total)) = l.times {
-            g.text_tabular(&wide(&timecode(pos, fps, long)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
-            g.text_tabular(&wide(&timecode(dur, fps, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
+            // Clickable (Timecode or Frames): the bar's quiet box on hover, as its buttons.
+            if live {
+                self.hits.add(Hit::VideoTime, elapsed);
+                self.hits.add(Hit::VideoTime, total);
+            }
+            let open = matches!(self.menu, Some((menus::MenuKind::VideoTime, _)));
+            let st = self.state(Hit::VideoTime, true);
+            let boxed = |r: D2D_RECT_F| D2D_RECT_F { left: r.left - 5.0, right: r.right + 5.0, ..r };
+            let over = |r: &D2D_RECT_F| ui::contains(&boxed(*r), self.mouse.0, self.mouse.1);
+            for r in [elapsed, total] {
+                let s = if over(&r) || open { st } else { ui::State::IDLE };
+                ui::quiet_frame(g, boxed(r), ui::Kind::Toggle(open && over(&r)), &s);
+            }
+            g.text_tabular(&wide(&self.time_text(pos)), &g.fonts.caption, elapsed, rgb(raised.text), Align::Right);
+            g.text_tabular(&wide(&self.total_text()), &g.fonts.caption, total, rgb(raised.label), Align::Left);
         }
 
         // The seek bar: the line, a grey fill up to the pointer while it's on it (where a click would put the
@@ -1079,8 +1091,9 @@ impl App {
         }
     }
 
-    fn draw_seek_preview(&mut self, g: &Gfx, l: &BarLayout, x: f32, at: i64, long: bool) {
+    fn draw_seek_preview(&mut self, g: &Gfx, l: &BarLayout, x: f32, at: i64, _long: bool) {
         let area = self.image_area();
+        let label = self.time_text(at);
         let Some(v) = self.video.as_mut() else { return };
         if v.preview.is_none() {
             let rotation = v.player.as_ref().and_then(|p| p.info.as_ref()).map_or(0, |i| i.rotation);
@@ -1093,8 +1106,6 @@ impl App {
             p.want(at);
         }
         let raised = theme::raised();
-        let fps = v.player.as_ref().and_then(|p| p.info.as_ref()).and_then(|i| i.fps()).unwrap_or(0.0);
-        let label = timecode(at, fps, long);
         let lw = g.measure_tabular(&wide(&label), &g.fonts.caption).ceil();
         let (iw, ih) = match &v.still {
             Some((_, _, w, h)) => {
@@ -1176,6 +1187,7 @@ impl App {
             Hit::VideoMute => self.toggle_mute(),
             Hit::VideoFullscreen => self.toggle_fullscreen(),
             Hit::VideoSettings => self.toggle_settings_menu(),
+            Hit::VideoTime => self.toggle_time_menu(),
             _ => {}
         }
         self.invalidate();
@@ -1190,7 +1202,85 @@ impl App {
         );
         entries.push(ui::Entry::Separator);
         entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
+        entries.push(ui::Entry::Separator);
+        entries.push(ui::Entry::Heading("Time".into()));
+        entries.extend(self.time_display_entries());
         entries
+    }
+
+    /// Timecode or Frames, ticked as set: the time menu's rows, and the Settings menu's last.
+    fn time_display_entries(&self) -> Vec<ui::Entry<menus::Action>> {
+        let frames = self.settings.video_frames;
+        vec![menus::check(menus::Action::VideoFrames(false), "Timecode", !frames), menus::check(menus::Action::VideoFrames(true), "Frames", frames)]
+    }
+
+    /// The bar's times: timecode, or the picture's number counted from 1 (Faye, 2026-11-10).
+    pub(super) fn set_video_frames(&mut self, on: bool) {
+        if self.settings.video_frames != on {
+            self.settings.video_frames = on;
+            settings::save(&self.settings);
+        }
+        self.show_video_toast(if on { "Frames" } else { "Timecode" });
+        self.invalidate();
+    }
+
+    /// The bar's time at `us`: timecode, or in frames mode the picture's number from the container's list of
+    /// pictures (exact on a variable frame rate), else worked out from the frame rate.
+    fn time_text(&self, us: i64) -> String {
+        let Some(p) = self.player_ref() else { return String::new() };
+        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        if self.settings.video_frames {
+            if let Some((n, _)) = p.frame_number(us) {
+                return n.to_string();
+            }
+            if fps > 0.0 {
+                return ((us.max(0) as f64 * fps / 1e6).round() as u64 + 1).to_string();
+            }
+        }
+        timecode(us, fps, p.duration() >= 3_600_000_000)
+    }
+
+    /// The bar's total: the duration's timecode, or how many pictures there are.
+    fn total_text(&self) -> String {
+        let Some(p) = self.player_ref() else { return String::new() };
+        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        if self.settings.video_frames {
+            if let Some((_, count)) = p.frame_number(0) {
+                return count.to_string();
+            }
+            if fps > 0.0 {
+                return ((p.duration() as f64 * fps / 1e6).round() as u64).max(1).to_string();
+            }
+        }
+        timecode(p.duration(), fps, p.duration() >= 3_600_000_000)
+    }
+
+    /// The widest the bar's times get, for their boxes.
+    fn time_template(&self) -> String {
+        let Some(p) = self.player_ref() else { return String::new() };
+        let fps = p.info.as_ref().and_then(|i| i.fps()).unwrap_or(0.0);
+        if self.settings.video_frames && (fps > 0.0 || p.frame_number(0).is_some()) {
+            return "0".repeat(self.total_text().len());
+        }
+        timecode_template(fps, p.duration() >= 3_600_000_000)
+    }
+
+    /// A click on the bar's times: Timecode or Frames, in a menu off the time clicked.
+    fn toggle_time_menu(&mut self) {
+        if matches!(self.menu, Some((menus::MenuKind::VideoTime, _))) {
+            self.close_menu();
+            return;
+        }
+        let Some(g) = &self.gfx else { return };
+        let (mx, my) = self.mouse;
+        let Some((a, b)) = self.bar_layout(g).and_then(|l| l.times) else { return };
+        let r = if ui::contains(&b, mx, my) { b } else { a };
+        let entries = self.time_display_entries();
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((menus::MenuKind::VideoTime, ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
     }
 
     /// The bar's Settings button: a menu of the speeds and Loop.
@@ -1211,7 +1301,7 @@ impl App {
 
 /// The bar's own hits: the pointer over them keeps it up, and the photo's clicks and drags don't apply.
 pub(super) fn is_bar_hit(h: Hit) -> bool {
-    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSettings | Hit::VideoFullscreen)
+    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSettings | Hit::VideoTime | Hit::VideoFullscreen)
 }
 
 #[cfg(test)]

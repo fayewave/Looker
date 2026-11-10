@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 6
+#define LOOKER_VIDEO_API 7
 
 typedef struct LvInfo
 {
@@ -761,6 +761,8 @@ typedef struct LvPlayer
     int v_flush; // the end was reached by lv_next_audio: the video decoder still needs its flush after vq
     volatile LONG interrupt; // lv_interrupt: the decode in progress gives up (a newer seek is waiting)
     int keyframes;           // LV_KEYFRAMES: pictures go to the CPU even from the GPU (lv_frame_rgba fits them)
+    long long *frame_us;     // every picture's time from the container's index, sorted (lv_frame_times)
+    int n_frames;            // 0 when the container doesn't list every picture (Matroska: keyframes only)
 } LvPlayer;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
@@ -911,7 +913,60 @@ EXPORT void lv_close(LvPlayer *p)
     av_packet_free(&p->pkt);
     input_close(&p->in);
     av_free(p->abuf);
+    free(p->frame_us);
     free(p);
+}
+
+static int cmp_ll(const void *a, const void *b)
+{
+    long long x = *(const long long *)a, y = *(const long long *)b;
+    return (x > y) - (x < y);
+}
+
+// Every picture's time, from the index the demuxer built at open (MP4/MOV list each sample; AVI too): sorted, on
+// the same clock as the pictures (0 = the first). Left empty when the index lists far fewer entries than the
+// duration and frame rate imply (Matroska's cues are keyframes only): the frame count would be a guess then.
+static void build_frame_table(LvPlayer *p, const LvInfo *info)
+{
+    AVStream *vs = p->in.fmt->streams[p->vi];
+    int n = avformat_index_get_entries_count(vs);
+    if (n <= 1)
+        return;
+    double expected = info->fps_num > 0 && info->fps_den > 0 ? info->duration_us / 1e6 * info->fps_num / info->fps_den : 0;
+    if (expected > 0 && n < expected / 2)
+        return;
+    long long *t = malloc((size_t)n * sizeof *t);
+    if (t == NULL)
+        return;
+    int k = 0;
+    for (int i = 0; i < n; i++)
+    {
+        const AVIndexEntry *e = avformat_index_get_entry(vs, i);
+        if (e == NULL || (e->flags & AVINDEX_DISCARD_FRAME) || e->timestamp == AV_NOPTS_VALUE)
+            continue;
+        t[k++] = e->timestamp;
+    }
+    if (k <= 1)
+    {
+        free(t);
+        return;
+    }
+    // Sorted, then shifted so the first is 0: the entries are decode times (B-frames come out of order and a
+    // constant reorder delay later), and a picture's number is its place in presentation order.
+    qsort(t, (size_t)k, sizeof *t, cmp_ll);
+    int64_t first = t[0];
+    for (int i = 0; i < k; i++)
+        t[i] = av_rescale_q(t[i] - first, vs->time_base, AV_TIME_BASE_Q);
+    p->frame_us = t;
+    p->n_frames = k;
+}
+
+// The table build_frame_table made at open: its length (0 when there's none), and the times in *out (owned by the
+// player: valid until lv_close).
+EXPORT int lv_frame_times(const LvPlayer *p, const long long **out)
+{
+    *out = p ? p->frame_us : NULL;
+    return p ? p->n_frames : 0;
 }
 
 // Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
@@ -1001,6 +1056,8 @@ EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, Lv
         r = AVERROR(ENOMEM);
         goto fail;
     }
+    if (!p->keyframes)
+        build_frame_table(p, info);
     av_buffer_unref(&hw);
     *out = p;
     return 0;

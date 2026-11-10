@@ -344,13 +344,15 @@ pub struct Player {
     step: bool,
     /// A seek to a picture already queued (paused): shown next, the decoder untouched.
     jump: bool,
+    /// Every picture's time from the container's index (`Decoder::frame_times`), empty without one.
+    frames: Vec<i64>,
     /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
     /// such wait counted once), for the trace.
     shown_count: u64,
     dropped: u64,
     starved: u64,
     waiting: bool,
-    opened: Arc<Mutex<Option<Result<Info, String>>>>,
+    opened: Arc<Mutex<Option<Result<(Info, Vec<i64>), String>>>>,
 }
 
 impl Player {
@@ -400,7 +402,7 @@ impl Player {
                 decode_thread(s, &p, device.0, o)
             })
             .ok();
-        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -409,7 +411,8 @@ impl Player {
             return Some(Ok(()));
         }
         let r = self.opened.lock().ok()?.take()?;
-        Some(r.map(|i| {
+        Some(r.map(|(i, frames)| {
+            self.frames = frames;
             // Short clips loop, like an animated image.
             self.looping = i.duration_us > 0 && i.duration_us < 10_000_000;
             if i.audio_channels > 0 {
@@ -534,6 +537,12 @@ impl Player {
     /// Where a seek is going, else the time of the picture on screen.
     pub fn position(&self) -> i64 {
         self.target.unwrap_or_else(|| self.shown.map_or(0, |(_, pts, _)| pts))
+    }
+
+    /// The picture at `us` counted from 1, and how many there are, from the container's index: exact whatever
+    /// the frame rate does (the nearest listed time). None when the container doesn't list every picture.
+    pub fn frame_number(&self, us: i64) -> Option<(usize, usize)> {
+        frame_number_in(&self.frames, us).map(|i| (i + 1, self.frames.len()))
     }
 
     pub fn duration(&self) -> i64 {
@@ -677,7 +686,20 @@ impl Drop for Player {
     }
 }
 
-fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<Info, String>>>>) {
+/// The index in sorted `frames` nearest `us`, or None for an empty list.
+fn frame_number_in(frames: &[i64], us: i64) -> Option<usize> {
+    if frames.is_empty() {
+        return None;
+    }
+    let i = frames.partition_point(|&t| t < us);
+    Some(match (i.checked_sub(1), frames.get(i)) {
+        (Some(a), Some(&b)) => if us - frames[a] <= b - us { a } else { i },
+        (Some(a), None) => a,
+        (None, _) => 0,
+    })
+}
+
+fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<(Info, Vec<i64>), String>>>>) {
     let t = Instant::now();
     // CPU pictures go on the window's device from here, so the UI thread only draws them.
     let uploader = unsafe { <windows::Win32::Graphics::Direct3D11::ID3D11Device as windows::core::Interface>::from_raw_borrowed(&d3d11) }.and_then(|d| Uploader::new(d).ok());
@@ -691,7 +713,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 t.elapsed().as_secs_f64() * 1000.0
             ));
             if let Ok(mut o) = opened.lock() {
-                *o = Some(Ok(info));
+                *o = Some(Ok((info, d.frame_times())));
             }
             *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
             shared.gpu.store(d.hardware(), std::sync::atomic::Ordering::Relaxed);
@@ -1337,6 +1359,18 @@ mod tests {
     use super::*;
 
     /// Waits (up to 3 s) for the next picture `due` hands out.
+    #[test]
+    fn frame_numbers_are_the_nearest_listed() {
+        let f = [0, 8000, 17000, 25000];
+        assert_eq!(frame_number_in(&f, 0), Some(0));
+        assert_eq!(frame_number_in(&f, 8000), Some(1));
+        assert_eq!(frame_number_in(&f, 12000), Some(1));
+        assert_eq!(frame_number_in(&f, 13000), Some(2));
+        assert_eq!(frame_number_in(&f, 99000), Some(3));
+        assert_eq!(frame_number_in(&f, -5), Some(0));
+        assert_eq!(frame_number_in(&[], 5), None);
+    }
+
     fn next_due(p: &mut Player) -> Option<i64> {
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(3) {
@@ -1475,7 +1509,7 @@ mod tests {
         println!("{:.3} fps, frame {frame} us", info.fps_num as f64 / info.fps_den as f64);
         next_due(&mut p).expect("first picture");
         let mid = info.duration_us / 2;
-        let (mut steps, mut stuck) = (0, 0);
+        let (mut steps, mut stuck, mut miscounted) = (0, 0, 0);
         for round in 0..6 {
             // A slow drag forward fills the cache; then back over it, and steps from there.
             let base = mid + round * 40 * frame;
@@ -1494,10 +1528,18 @@ mod tests {
                     stuck += 1;
                     println!("  step from {before} stayed at {after}");
                 }
+                // With the container's list of pictures, each step is exactly one number on.
+                if let (Some((a, _)), Some((b, _))) = (p.frame_number(before), p.frame_number(after)) {
+                    if b != a + 1 {
+                        miscounted += 1;
+                        println!("  step {before} -> {after}: frame {a} -> {b}");
+                    }
+                }
             }
         }
-        println!("{stuck} of {steps} steps didn't move");
+        println!("{stuck} of {steps} steps didn't move, {miscounted} miscounted; {} pictures listed", p.frames.len());
         assert_eq!(stuck, 0);
+        assert_eq!(miscounted, 0);
     }
 
     /// Opens `LOOKER_DECODE` on the CPU, paused, and checks the first picture, frame steps and exact seeks.
