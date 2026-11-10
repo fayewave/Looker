@@ -2483,6 +2483,9 @@ impl App {
     // --- Resize grip    // --- Resize grip (dragging right = wider) -------------------------------------------------------
 
     pub(super) fn explorer_grip_press(&mut self, x: f32) {
+        // From where the edge rests: a bounce still swinging would shift where the sticky zone starts.
+        self.explorer.spring = None;
+        self.explorer.stretch = 0.0;
         self.explorer.drag = Some((x, self.explorer_width()));
     }
 
@@ -2493,17 +2496,19 @@ impl App {
         let (ww, _) = self.size_dip();
         let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // Sticky at the change, with give (Faye, 2026-11-10). The change sits at the card's widest: the card goes
-        // over to browse mode once the pointer is `STICK` past it, browse mode back once it's `STICK` short of it
-        // (one point each way, so it can't flip to and fro); in between the edge follows on a rubber band, and
-        // crossing snaps with a bounce. Out of the zone the edge is where the pointer is, in browse mode too (the
-        // list makes room for the sidebar).
+        // Sticky at the change, with give (Faye, 2026-11-10). The zone is on the card's side of its widest: dragged
+        // out, the card holds there on a rubber band until the pointer is `STICK` past it, then snaps into browse
+        // mode with a bounce; dragged back, browse mode gives way to the card as soon as the edge reaches the card's
+        // widest (its sidebar goes there). One point each way, so it can't flip to and fro. Out of the zone the edge
+        // is where the pointer is, in browse mode too (the list makes room for the sidebar).
         const STICK: f32 = 96.0;
         let was = self.browsing();
-        let to_browse = if was { w >= card_cap - STICK } else { w > card_cap + STICK };
+        let to_browse = if was { w >= card_cap } else { w > card_cap + STICK };
+        // A fast flick that jumps the zone in one move still lands in it first (its stretch shows for that move).
+        let w = if !was && to_browse && self.explorer.stretch == 0.0 { card_cap + STICK * 0.5 } else { w };
+        let to_browse = if was { to_browse } else { w > card_cap + STICK };
         self.explorer.stretch = match (was, to_browse) {
             (false, false) if w > card_cap => rubber(w - card_cap),
-            (true, true) if w < card_cap => -rubber(card_cap - w),
             _ => 0.0,
         };
         let now = Instant::now();
@@ -2520,11 +2525,9 @@ impl App {
             self.settings.browse_share = w.max(card_cap) / ww;
         } else {
             if was {
-                self.settings.explorer_width = card_cap;
                 self.explorer.browse.set([0.0], now);
-            } else {
-                self.settings.explorer_width = w.min(card_cap);
             }
+            self.settings.explorer_width = w.min(card_cap);
         }
         self.layout_changed();
     }
