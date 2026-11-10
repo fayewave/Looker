@@ -876,13 +876,15 @@ impl App {
         let aw = a.right - a.left;
         let (margin, h, btn) = bar_metrics(aw);
         let pad = (h - btn) / 2.0;
-        // As wide as the photo's area (Faye, 2026-11-10: the seek bar the full width of the preview).
-        let w = aw - 2.0 * margin;
+        // As wide as the photo's room: beside a card, out to its edge (already the cards' margin off the card,
+        // as the video is: Faye, 2026-11-10); against the window's edge, its margin off that.
+        let (ml, mr) = (if self.left_inset() > 0.5 { 0.0 } else { margin }, if self.right_inset() > 0.5 { 0.0 } else { margin });
+        let w = aw - ml - mr;
         if w < 40.0 || a.bottom - a.top < h + 2.0 * margin {
             return None;
         }
-        let x = g.snap((a.left + a.right - w) / 2.0);
-        let bar = rect(x, g.snap(a.bottom - margin - h), w, h);
+        let x = g.snap(a.left + ml);
+        let bar = rect(x, g.snap(a.bottom - margin - h), g.snap(a.left + aw - mr) - x, h);
         let y = bar.top + pad;
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
         let _ = long;
