@@ -2002,9 +2002,12 @@ impl App {
         }
     }
 
-    /// Dragging an edge, as File Pilot and Transient do: the column left of it takes the change, and the
-    /// columns to its right share it in proportion (down to their narrowest), so the edge stays under the
-    /// pointer and Name, which fills the rest, sizes like the others.
+    /// Dragging an edge, as File Pilot and Transient do: the column left of it takes the change, and every column to
+    /// its right shares it at the same time (Faye, 2026-11-10, after Transient's `kit/list.rs`), so one drag re-fits
+    /// the lot and the edge stays under the pointer. Widening, the ones on the right give up room in proportion to
+    /// how much each has above its narrowest; narrowing, they grow in proportion to their widths. Name fills what
+    /// the others leave, so its share is taken or given implicitly. All from the widths at the press, so a drag
+    /// never compounds.
     pub(super) fn col_edge_drag(&mut self, x: f32) {
         let Some(r) = &self.explorer.col_resize else { return };
         let min = |c: ColKind| if c == ColKind::Name { super::explorer_view::NAME_MIN } else { 40.0 };
@@ -2013,25 +2016,26 @@ impl App {
         if p + 1 >= w.len() {
             return;
         }
-        // The width comes from, or goes to, the nearest column on the right first (the next ones only once it's at
-        // its narrowest): shared out in proportion, narrowing one column swelled the last, Type, to twice its
-        // width over a few drags (Faye, 2026-11-10).
         let d = x - r.x0;
+        let right = p + 1..w.len();
         if d > 0.0 {
-            let mut left = d;
-            for k in p + 1..w.len() {
-                let take = left.min((w[k] - min(r.widths[k].1)).max(0.0));
-                w[k] -= take;
-                w[p] += take;
-                left -= take;
-                if left <= 0.0 {
-                    break;
+            let slack: f32 = right.clone().map(|k| (w[k] - min(r.widths[k].1)).max(0.0)).sum();
+            let take = d.min(slack);
+            if take > 0.0 {
+                for k in right {
+                    w[k] -= take * (r.widths[k].2 - min(r.widths[k].1)).max(0.0) / slack;
                 }
+                w[p] += take;
             }
         } else {
-            let d = (-d).min((w[p] - min(r.widths[p].1)).max(0.0));
-            w[p] -= d;
-            w[p + 1] += d;
+            let give = (-d).min((w[p] - min(r.widths[p].1)).max(0.0));
+            let total: f32 = right.clone().map(|k| w[k]).sum();
+            if give > 0.0 && total > 0.0 {
+                for k in right {
+                    w[k] += give * r.widths[k].2 / total;
+                }
+                w[p] -= give;
+            }
         }
         // Name's own width is what the others leave, so only theirs are kept.
         let updates: Vec<(usize, ColKind, f32)> = r.widths.iter().zip(&w).map(|(&(i, c, _), &nw)| (i, c, nw)).collect();
