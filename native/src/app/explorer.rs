@@ -29,11 +29,6 @@ pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
 const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
-/// The card's widest: a hair short of the width the sidebar needs (`SIDEBAR_AT` inside, plus the margins and the
-/// border), so the sidebar only ever comes with browse mode; dragged wider, the card becomes it (Faye, 2026-11-10).
-const CARD_MAX: f32 = super::explorer_view::SIDEBAR_AT + 2.0 * MARGIN + 2.0 - 1.0;
-/// Browse mode leaves the photo at least this much of the window (or 30 % of it), by default.
-const PREVIEW_MIN: f32 = 360.0;
 /// Dragging browse mode's edge leaves the photo at least this much.
 const PREVIEW_DRAGGED_MIN: f32 = 200.0;
 /// Changes on disk often come in bursts (a copy writes, renames, sets times): re-list once they settle.
@@ -469,7 +464,7 @@ impl App {
 
     /// The card's width now: its own, eased out to browse mode's while that's on.
     pub(super) fn explorer_width(&self) -> f32 {
-        let card = self.settings.explorer_width.min(CARD_MAX);
+        let card = self.settings.explorer_width;
         let k = self.explorer.browse.value(Instant::now())[0];
         if k <= 0.0 {
             return card;
@@ -478,10 +473,13 @@ impl App {
         card + (wide - card) * k
     }
 
-    /// Browse mode's width: as its edge was last dragged, else all but a preview of 360 DIPs (or 30 %).
+    /// Browse mode's width: the card's and the sidebar's as it's set, side by side, so the list keeps its width
+    /// and the sidebar comes in beside it (Faye, 2026-11-10: always that, not a width remembered from before);
+    /// while its edge is dragged in browse mode, where it's dragged. The photo keeps at least 200 DIPs.
     fn browse_width(&self) -> f32 {
         let (w, _) = self.size_dip();
-        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { w - PREVIEW_MIN.max(w * 0.3) };
+        let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
+        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { self.settings.explorer_width + side + 1.0 };
         wide.min(w - PREVIEW_DRAGGED_MIN).max(self.settings.explorer_width)
     }
 
@@ -547,6 +545,10 @@ impl App {
             return;
         }
         let on = !self.browsing();
+        if on {
+            // Always the card's width plus the sidebar's, not where its edge was last dragged.
+            self.settings.browse_share = 0.0;
+        }
         if on && !self.settings.explorer_visible {
             self.toggle_explorer();
         }
@@ -1810,7 +1812,7 @@ impl App {
     /// pointer and Name, which fills the rest, sizes like the others.
     pub(super) fn col_edge_drag(&mut self, x: f32) {
         let Some(r) = &self.explorer.col_resize else { return };
-        let min = |c: ColKind| if c == ColKind::Name { 120.0 } else { 40.0 };
+        let min = |c: ColKind| if c == ColKind::Name { super::explorer_view::NAME_MIN } else { 40.0 };
         let mut w: Vec<f32> = r.widths.iter().map(|&(_, _, w)| w).collect();
         let p = r.pos;
         if p + 1 >= w.len() {
@@ -2272,7 +2274,7 @@ impl App {
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
-        let card_cap = INFO_MAX.min(CARD_MAX).min((ww - MIN_IMAGE_W).max(INFO_MIN));
+        let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
         let w = (w0 + (x - x0)).round().clamp(INFO_MIN, (ww - PREVIEW_DRAGGED_MIN).max(INFO_MIN));
         if w <= card_cap {
             if self.browsing() {

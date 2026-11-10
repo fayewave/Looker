@@ -416,6 +416,7 @@ impl App {
 
     /// Puts the settings' theme in use, the window frame included.
     pub(super) fn apply_theme(&mut self) {
+        self.set_accent_globals();
         theme::set(self.settings.theme);
         apply_frame_colours(self.hwnd);
         self.landing.stale();
@@ -529,6 +530,7 @@ impl App {
         self.draw_page_sidebar(g, side, open);
         let pane = D2D_RECT_F { left: side.right + 1.0, ..card };
         moving |= self.draw_page_content(g, pane, open);
+        moving |= self.draw_accent_picker(g, card);
         g.pop_fade();
         moving
     }
@@ -644,6 +646,7 @@ impl App {
         } else {
             self.theme_chips(g, rows, "Theme", CHIPS_ANY, open);
         }
+        self.accent_chips(g, rows, open);
         let r = rows.row(g, "Solid status row", "Filled with the theme's colour. Off: see-through over the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
         let r = rows.row(g, "Checkerboard background", "Shows where a photo is transparent. Off: plain");
@@ -672,8 +675,31 @@ impl App {
                 self.hits.add(hit, c);
             }
             let st = self.state(hit, open);
-            ui::theme_chip(g, c, id.name(), chosen == id, &st, id.theme());
+            ui::theme_chip(g, c, id.name(), chosen == id, &st, id.theme().content);
             cx += CHIP_W + 6.0;
+        }
+    }
+
+    /// The accent chips, each a square of its colour as it is in the theme in use, on a line (or more, if
+    /// narrow): Snapper's (Faye, 2026-11-10). Custom opens its colour picker.
+    fn accent_chips(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        const CHIP_W: f32 = 116.0;
+        const CHIP_H: f32 = 34.0;
+        const GAP: f32 = 6.0;
+        let n = theme::Accent::ALL.len();
+        let per_line = (((rows.w + GAP) / (CHIP_W + GAP)).floor() as usize).max(1);
+        let lines = n.div_ceil(per_line);
+        let r = rows.row_with(g, "Accent", "", lines as f32 * (CHIP_H + GAP) + 8.0);
+        let id = self.settings.theme;
+        for (i, a) in theme::Accent::ALL.into_iter().enumerate() {
+            let (col, line) = ((i % per_line) as f32, (i / per_line) as f32);
+            let c = rect(r.left + col * (CHIP_W + GAP), r.bottom + line * (CHIP_H + GAP), CHIP_W, CHIP_H);
+            let hit = Hit::AccentChip(i as u8);
+            if open {
+                self.hits.add(hit, c);
+            }
+            let st = self.state(hit, open);
+            ui::theme_chip(g, c, a.name(), self.settings.accent == a, &st, a.colour(id));
         }
     }
 

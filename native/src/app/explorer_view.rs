@@ -96,13 +96,16 @@ struct ColDraw {
     dragged: bool,
 }
 
+/// Name's narrowest: the layout drops columns that would leave it less, and an edge drag stops there too (it let Name
+/// go to 120, so a drag past 160 made the last column vanish: Faye, 2026-11-10).
+pub(super) const NAME_MIN: f32 = 160.0;
+
 impl App {
     /// The columns that fit `avail`, in the user's order, Name taking what the others leave (those that would
     /// leave it under 160 DIPs drop off the end). While a header is dragged it follows the pointer and the
     /// others close round the slot it would land in; columns ease to their places while they're moving.
     /// Returns them (the dragged one last), its slot, and whether any is still moving.
     fn col_layout(&mut self, left: f32, avail: f32) -> (Vec<ColDraw>, Option<(f32, f32)>, bool) {
-        const NAME_MIN: f32 = 160.0;
         let cols = self.explorer.look.columns.clone();
         let mut shown: Vec<usize> = (0..cols.len()).collect();
         let others = |shown: &[usize]| shown.iter().filter(|&&i| cols[i].0 != ColKind::Name).map(|&i| cols[i].1).sum::<f32>();
@@ -178,9 +181,10 @@ impl App {
         ui::card(g, card);
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
         let w = inner.right - inner.left;
-        // The sidebar slides in from the left as the card gets wide enough (browse mode), and back out, on the
-        // app's one curve and length (Faye, 2026-11-10: it popped in).
-        let slide = self.fades.get(Hit::SidebarColumn, w >= SIDEBAR_AT);
+        // The sidebar comes with browse mode (Faye, 2026-11-10: never the card alone), sliding in from the left and
+        // back out on the app's one curve and length (it popped in), given room for a list beside it.
+        let side_room = self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX) + 240.0;
+        let slide = self.fades.get(Hit::SidebarColumn, self.browsing() && w >= side_room.min(SIDEBAR_AT));
         let column_sidebar = slide > 0.0;
         g.push_clip(inner);
         let mut moving = slide > 0.0 && slide < 1.0;
@@ -595,7 +599,9 @@ impl App {
         // Rows: `rh` tall (the view's Height, in rows), the thumbnail growing with it.
         let rh = ROW * self.explorer.look.height as f32;
         let (icon_w, icon_h) = if self.explorer.look.height == 1 { (ICON_W, ICON_H) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0) };
-        let list = D2D_RECT_F { left: list_left, top: hy + HEADER + 2.0, right: list_right - 6.0, bottom: body.bottom - footer_h };
+        // The rows stop 4 short of the scrollbar (it starts 12 in from the card's edge): a picked row's outline ran
+        // under it (Faye, 2026-11-10).
+        let list = D2D_RECT_F { left: list_left, top: hy + HEADER + 2.0, right: list_right - 10.0, bottom: body.bottom - footer_h };
         self.hits.add(Hit::ExplorerList, D2D_RECT_F { left: body.left, right: body.right, ..list });
         let view_h = (list.bottom - list.top).max(1.0);
         let n = self.explorer.view.len();

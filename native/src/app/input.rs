@@ -220,6 +220,9 @@ impl App {
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
                     }
+                    if matches!(self.pressed, Some(Hit::PickerSv | Hit::PickerHue)) {
+                        self.picker_drag(x, y);
+                    }
                     if self.video.is_some() {
                         self.video_pointer(x, y);
                     }
@@ -336,6 +339,11 @@ impl App {
                     let (x, y) = self.dip_from_lparam(lp);
                     self.hide_tooltip();
                     let h = self.hit(x, y);
+                    // The Custom accent's picker has every press while it's open.
+                    if self.picker_live() {
+                        self.picker_press(h, x, y);
+                        return Some(LRESULT(0));
+                    }
                     // Light dismiss: a press outside an open menu only closes it.
                     if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface | Hit::MenuSwatch(..))) {
                         // On the card, a press elsewhere on it closes the menu and carries on (another drop-down).
@@ -428,6 +436,8 @@ impl App {
                     if pressed.is_some() && pressed == h && !dropped {
                         let r = h.and_then(|h| self.hits.rect_of(h));
                         match h {
+                            Some(p @ (Hit::PickerPreset(_) | Hit::PickerDone | Hit::PickerCancel)) => self.picker_click(p),
+                            Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
                             Some(Hit::ExplorerUp) => self.explorer_up(),
                             Some(Hit::ExplorerHistory) => self.explorer_history_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
@@ -749,6 +759,10 @@ impl App {
                         self.invalidate();
                         return Some(LRESULT(0));
                     }
+                    if self.picker_live() {
+                        self.picker_key(vk, shift, ctrl);
+                        return Some(LRESULT(0));
+                    }
                     if self.dialog.is_some() {
                         self.dialog_key(vk, shift, ctrl);
                         return Some(LRESULT(0));
@@ -888,7 +902,9 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_CHAR => {
-                    if self.dialog.is_some() {
+                    if self.picker_live() {
+                        self.picker_char(wp.0 as u16);
+                    } else if self.dialog.is_some() {
                         self.dialog_char(wp.0 as u16);
                     } else if self.explorer.field.is_some() {
                         let u = wp.0 as u16;

@@ -2,6 +2,7 @@
 //! Layout (DIPs, as in MainWindow.xaml): title bar 48 / toolbar 40 / viewport / status row 28.
 
 
+mod accent;
 mod actions;
 mod chrome;
 mod document;
@@ -148,6 +149,18 @@ enum Hit {
     Toggle(page::Setting),
     ToggleAnim(page::Setting),
     ThemeChip(u8),
+    /// Appearance's accent chips, by place in `theme::Accent::ALL`.
+    AccentChip(u8),
+    /// The Custom accent's colour picker (accent.rs): everything outside it, the card, the saturation and
+    /// brightness square, the hue strip, the hex box, a ready-made colour, Done and Cancel.
+    PickerOutside,
+    PickerCard,
+    PickerSv,
+    PickerHue,
+    PickerHex,
+    PickerPreset(u8),
+    PickerDone,
+    PickerCancel,
     PageLink(u8),
     /// The landing page: "Open a folder", a recent file by index, and Clear (Open is "Open a file").
     LandingFolder,
@@ -523,6 +536,8 @@ pub struct App {
     video: Option<video::VideoView>,
     /// The playing video on the taskbar button and in Windows' media controls (media.rs).
     media: crate::media::Media,
+    /// The Custom accent's colour picker, open over the Settings card.
+    accent_picker: Option<accent::AccentPicker>,
     /// When the pointer last moved: a playing video's bar fades a moment after.
     video_moved: std::time::Instant,
     /// The slideshow's dissolve from the previous image, while it runs.
@@ -1197,6 +1212,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
         .expect("CreateWindowExW");
         let mut settings = settings;
         settings.follow_windows(); // Match Windows: the dark or light pick, as Windows is now
+        theme::set_accent(settings.accent);
+        theme::set_custom(settings.accent_custom);
         theme::set(settings.theme);
         set_date_columns(settings.date_show_date, settings.date_show_time, settings.date_two_digit_year);
         page::apply_frame_colours(hwnd);
@@ -1255,6 +1272,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             model: None,
             video: None,
             media: Default::default(),
+            accent_picker: None,
             video_moved: std::time::Instant::now(),
             fade: None,
             last_drawn: None,

@@ -1149,6 +1149,21 @@ impl Gfx {
         }
     }
 
+    /// `r` rounded by `radius`, filled with a gradient across it (`horizontal`) or down it: the colour picker's
+    /// square and hue strip.
+    pub fn fill_gradient_round(&self, r: D2D_RECT_F, radius: f32, horizontal: bool, stops: &[(f32, D2D1_COLOR_F)]) {
+        unsafe {
+            let stops: Vec<D2D1_GRADIENT_STOP> = stops.iter().map(|&(position, color)| D2D1_GRADIENT_STOP { position, color }).collect();
+            let rt: &ID2D1RenderTarget = &self.dev.dc;
+            let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let end = if horizontal { windows_numerics::Vector2 { X: r.right, Y: r.top } } else { windows_numerics::Vector2 { X: r.left, Y: r.bottom } };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: windows_numerics::Vector2 { X: r.left, Y: r.top }, endPoint: end };
+            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                self.dev.dc.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, &b);
+            }
+        }
+    }
+
     /// Starts a layer over `r` whose content fades out over `w` at each end, by `left` and `right` (0..1),
     /// so it fades into whatever is beneath (the strip's edge fades). Ends with `pop_layer`.
     pub fn push_hfade_layer(&self, r: D2D_RECT_F, w: f32, left: f32, right: f32) {

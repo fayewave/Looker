@@ -43,6 +43,9 @@ pub struct Settings {
     /// The status row filled with the theme's bar colour instead of floating see-through on the photo (the key
     /// keeps its first name: it covered the title bar too at first).
     pub bars_opaque: bool,
+    /// The accent colour (Snapper's set; Crimson, Looker's red, the default) and Custom's colour.
+    pub accent: crate::theme::Accent,
+    pub accent_custom: u32,
     /// The checkerboard behind the image (default on); off, the viewport is the theme's plain background.
     pub checkerboard: bool,
     /// How much memory decoded photos may take, in MB.
@@ -132,7 +135,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
+        Settings { window: None, remember_window: true, sort: Sort::default(), info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: EXPLORER_WIDTH, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::FoldersFirst, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true }
     }
 }
 
@@ -282,6 +285,8 @@ pub fn parse(text: &str) -> Settings {
             "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Black),
             "theme_light" => s.theme_light = crate::theme::ThemeId::parse(v).filter(|t| !t.theme().dark).unwrap_or(crate::theme::ThemeId::Light),
             "bars_opaque" => s.bars_opaque = v != "0",
+            "accent" => s.accent = crate::theme::Accent::parse(v).unwrap_or(crate::theme::Accent::DEFAULT),
+            "accent_custom" => s.accent_custom = u32::from_str_radix(v.trim_start_matches('#'), 16).map_or(crate::theme::DEFAULT_CUSTOM, |c| c & 0xFF_FFFF),
             "checkerboard" => s.checkerboard = v != "0",
             "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
             "recents_enabled" => s.recents_enabled = v != "0",
@@ -345,6 +350,8 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("theme_dark={}\n", s.theme_dark.name().to_lowercase()));
     out.push_str(&format!("theme_light={}\n", s.theme_light.name().to_lowercase()));
     out.push_str(&format!("bars_opaque={}\n", s.bars_opaque as i32));
+    out.push_str(&format!("accent={}\n", s.accent.name().to_lowercase()));
+    out.push_str(&format!("accent_custom={:06X}\n", s.accent_custom));
     out.push_str(&format!("checkerboard={}\n", s.checkerboard as i32));
     out.push_str(&format!("cache_mb={}\n", s.cache_mb));
     out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
@@ -521,6 +528,8 @@ mod tests {
             theme_dark: crate::theme::ThemeId::Dark,
             theme_light: crate::theme::ThemeId::Paper,
             bars_opaque: true,
+            accent: crate::theme::Accent::Sky,
+            accent_custom: 0x123456,
             checkerboard: false,
             cache_mb: 1024,
             recents_enabled: true,

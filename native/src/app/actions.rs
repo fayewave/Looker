@@ -236,6 +236,9 @@ impl App {
 
     /// The text box with the keys: the dialog's, else one of the explorer's.
     fn active_field(&mut self) -> Option<&mut TextField> {
+        if self.picker_field().is_some() {
+            return self.picker_field();
+        }
         if self.dialog.is_some() {
             return self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut());
         }
@@ -244,6 +247,9 @@ impl App {
 
     /// Where the active text box's text is drawn, for placing the caret under the pointer.
     fn active_field_rect(&self) -> Option<D2D_RECT_F> {
+        if self.picker_live() {
+            return self.hits.rect_of(Hit::PickerHex);
+        }
         if self.dialog.is_some() {
             return self.hits.rect_of(Hit::DialogField);
         }
@@ -270,7 +276,9 @@ impl App {
     }
 
     pub(super) fn blink_caret(&mut self) {
-        let field = if self.dialog.is_some() {
+        let field = if self.picker_live() {
+            self.picker_field()
+        } else if self.dialog.is_some() {
             self.dialog.as_mut().filter(|(_, d)| d.field_focused()).and_then(|(_, d)| d.field.as_mut())
         } else {
             self.explorer_field_mut()
