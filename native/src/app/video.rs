@@ -741,6 +741,8 @@ impl App {
             if !p.playing() {
                 p.set_playing(true);
             }
+            // Said, as J and L say it (Faye, 2026-11-10).
+            self.show_video_toast(speed_text(s));
         }
         self.invalidate();
     }

@@ -603,6 +603,8 @@ pub struct Toast {
     from: f32,
     hold_ms: f32,
     fade_out_ms: f32,
+    /// At the top middle of the area, dropping in, instead of bottom-right rising (the video's readouts).
+    top: bool,
 }
 
 pub enum ToastPhase {
@@ -618,12 +620,14 @@ impl Toast {
     pub fn new(text: String, quick: bool, previous: Option<&Toast>) -> Toast {
         let from = previous.map_or(0.0, |p| p.opacity());
         let (hold_ms, fade_out_ms) = if quick { (350.0, 190.0) } else { (1200.0, 380.0) };
-        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms }
+        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms, top: false }
     }
 
-    /// The same, shown fully for `hold_ms` (the video's readouts: Faye, 2026-11-10, a tad longer than quick).
-    pub fn held(mut self, hold_ms: f32) -> Toast {
+    /// The same, shown fully for `hold_ms` at the top middle (the video's readouts: Faye, 2026-11-10, a tad
+    /// longer than quick, and up top).
+    pub fn video(mut self, hold_ms: f32) -> Toast {
         self.hold_ms = hold_ms;
+        self.top = true;
         self
     }
 
@@ -650,17 +654,23 @@ impl Toast {
         }
     }
 
-    /// Bottom-right of `area`, 16 DIPs in.
+    /// Bottom-right of `area`, 16 DIPs in (or its top middle).
     pub fn draw(&self, g: &Gfx, area: D2D_RECT_F, opacity: f32) {
         let raised = theme::raised();
         let w = (g.measure(&wide(&self.text), &g.fonts.body) + 28.0).ceil();
         let h = 32.0;
-        // Rising into place as it comes in, not as it goes.
+        // Rising (or dropping) into place as it comes in, not as it goes.
         let coming = self.start.elapsed().as_secs_f32() < EASE;
         let rise = if coming { 16.0 * (1.0 - opacity) } else { 0.0 };
-        let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h + rise), w, h);
+        let (r, ox, oy) = if self.top {
+            let r = rect(g.snap((area.left + area.right - w) / 2.0), g.snap(area.top + 16.0 - rise), w, h);
+            (r, (r.left + r.right) / 2.0, r.top)
+        } else {
+            let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h + rise), w, h);
+            (r, r.right, r.bottom)
+        };
         let scale = if coming { 0.97 + 0.03 * opacity } else { 1.0 };
-        g.push_fade(opacity, scale, r.right, r.bottom);
+        g.push_fade(opacity, scale, ox, oy);
         shadow(g, r, 8.0);
         g.fill_round(r, 8.0, rgb(raised.popup));
         stroke(g, r, 8.0, rgb(raised.divider));
