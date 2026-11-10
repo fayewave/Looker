@@ -84,6 +84,8 @@ pub(super) struct VideoView {
     resume: Option<(i64, bool)>,
     /// The audio stream picked from the context menu (a `Track::stream`), None: the file's best.
     audio_track: Option<i32>,
+    /// The video stream picked from the context menu, None: the file's best.
+    video_track: Option<i32>,
     /// Whether the loop setting makes this one loop, once the player has opened (its length decides).
     auto_loop: Option<bool>,
     scrub: Option<Scrub>,
@@ -363,6 +365,7 @@ impl App {
             failed: false,
             resume: None,
             audio_track: None,
+            video_track: None,
             auto_loop: None,
             scrub: None,
             preview: None,
@@ -480,7 +483,7 @@ impl App {
                     None => (0, autoplay),
                 },
             };
-            let mut p = Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.audio_track);
+            let mut p = Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.video_track, v.audio_track);
             if at > 0 {
                 p.seek(at, true);
             }
@@ -1212,6 +1215,35 @@ impl App {
         let at = v.position();
         let playing = p.playing();
         v.audio_track = Some(stream);
+        v.resume = Some((at, playing));
+        v.player = None;
+        if let Some(l) = label {
+            self.show_video_toast(l);
+        }
+        self.invalidate();
+    }
+
+    /// The video's picture streams for the context menu: (stream, label, showing). Cover art isn't one.
+    pub(super) fn video_picture_tracks(&self) -> Vec<(i32, String, bool)> {
+        let Some(p) = self.player_ref().filter(|_| self.video_shown()) else { return Vec::new() };
+        p.video_tracks().iter().enumerate().map(|(n, tr)| (tr.stream, tr.video_label(n + 1), tr.playing != 0)).collect()
+    }
+
+    /// Shows the video stream `stream` (Faye, 2026-11-10: some files have several): the player opens again on
+    /// it, where it was and playing if it was, keeping the audio track.
+    pub(super) fn set_video_track(&mut self, stream: i32) {
+        let label = self.video_picture_tracks().into_iter().find(|t| t.0 == stream).map(|t| t.1);
+        let Some(v) = self.video.as_mut() else { return };
+        let Some(p) = v.player.as_ref() else { return };
+        if p.video_tracks().iter().any(|t| t.stream == stream && t.playing != 0) {
+            return;
+        }
+        let at = v.position();
+        let playing = p.playing();
+        if v.audio_track.is_none() {
+            v.audio_track = p.audio_tracks().iter().find(|t| t.playing != 0).map(|t| t.stream);
+        }
+        v.video_track = Some(stream);
         v.resume = Some((at, playing));
         v.player = None;
         if let Some(l) = label {

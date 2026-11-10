@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 8;
+const API: c_int = 9;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -256,8 +256,9 @@ struct Lib {
     resume: unsafe extern "C" fn(*mut c_void),
     hw: unsafe extern "C" fn(*const c_void) -> c_int,
     frame_times: unsafe extern "C" fn(*const c_void, *mut *const i64) -> c_int,
-    open_audio: unsafe extern "C" fn(*const u16, *mut c_void, c_int, c_int, *mut Info, *mut *mut c_void) -> c_int,
     audio_tracks: unsafe extern "C" fn(*const c_void, *mut *const Track) -> c_int,
+    open_streams: unsafe extern "C" fn(*const u16, *mut c_void, c_int, c_int, c_int, *mut Info, *mut *mut c_void) -> c_int,
+    video_tracks: unsafe extern "C" fn(*const c_void, *mut *const Track) -> c_int,
     close: unsafe extern "C" fn(*mut c_void),
     frame_free: unsafe extern "C" fn(*mut LvFrame),
     tempo_open: unsafe extern "C" fn(f64, *mut *mut c_void) -> c_int,
@@ -296,8 +297,9 @@ fn load() -> Result<Lib, String> {
             resume: sym!("lv_resume"),
             hw: sym!("lv_hw"),
             frame_times: sym!("lv_frame_times"),
-            open_audio: sym!("lv_open_audio"),
             audio_tracks: sym!("lv_audio_tracks"),
+            open_streams: sym!("lv_open_streams"),
+            video_tracks: sym!("lv_video_tracks"),
             close: sym!("lv_close"),
             frame_free: sym!("lv_frame_free"),
             tempo_open: sym!("lv_tempo_open"),
@@ -372,7 +374,7 @@ pub struct LvFrame {
     opaque: *mut c_void,
 }
 
-/// One of a video's audio streams (`LvTrack` in looker_video.c), for the track menu.
+/// One of a video's audio or video streams (`LvTrack` in looker_video.c), for the track menus.
 #[repr(C)]
 #[derive(Clone)]
 pub struct Track {
@@ -385,6 +387,9 @@ pub struct Track {
     lang: [c_char; 16],
     title: [c_char; 64],
     codec: [c_char; 32],
+    /// A video track's picture size (0 for audio).
+    pub width: c_int,
+    pub height: c_int,
 }
 
 impl Track {
@@ -406,6 +411,26 @@ impl Track {
         let what = [codec_name(&codec).to_uppercase(), ch].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
         let head = match (title.is_empty(), lang.is_empty()) {
             (false, false) => format!("{title} · {lang}"),
+            (false, true) => title,
+            (true, false) => lang,
+            (true, true) => format!("Track {n}"),
+        };
+        if what.is_empty() { head } else { format!("{head} ({what})") }
+    }
+}
+
+impl Track {
+    /// How the Video track menu names one: its title, else its language, then its size and codec
+    /// ("Camera 2 (1920 × 1080 H264)").
+    pub fn video_label(&self, n: usize) -> String {
+        let (title, lang, codec) = (text(&self.title), text(&self.lang), text(&self.codec));
+        let low = title.to_ascii_lowercase();
+        let title = if ["handle", "core media", "iso media", "media handler"].iter().any(|b| low.contains(b)) { String::new() } else { title };
+        let lang = language_name(&lang);
+        let size = if self.width > 0 && self.height > 0 { format!("{} \u{d7} {}", self.width, self.height) } else { String::new() };
+        let what = [size, codec_name(&codec).to_uppercase()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+        let head = match (title.is_empty(), lang.is_empty()) {
+            (false, false) => format!("{title} \u{b7} {lang}"),
             (false, true) => title,
             (true, false) => lang,
             (true, true) => format!("Track {n}"),
@@ -538,11 +563,17 @@ impl Decoder {
 
     /// open, playing the audio stream udio (a Track::stream), else the best one.
     pub fn open_audio(path: &Path, d3d11: *mut c_void, keyframes: bool, audio: Option<i32>) -> Result<(Decoder, Info), String> {
+        Decoder::open_streams(path, d3d11, keyframes, None, audio)
+    }
+
+    /// open, showing the video stream `video` and playing the audio stream `audio` (`Track::stream`s), else the
+    /// file's best of each.
+    pub fn open_streams(path: &Path, d3d11: *mut c_void, keyframes: bool, video: Option<i32>, audio: Option<i32>) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
         let mut p = std::ptr::null_mut();
         let flags = if keyframes { LV_NO_AUDIO | LV_KEYFRAMES } else { 0 };
-        let r = unsafe { (l.open_audio)(wide(path).as_ptr(), d3d11, flags, audio.unwrap_or(-1), &mut info, &mut p) };
+        let r = unsafe { (l.open_streams)(wide(path).as_ptr(), d3d11, flags, video.unwrap_or(-1), audio.unwrap_or(-1), &mut info, &mut p) };
         if r < 0 || p.is_null() {
             return Err(error(l, r));
         }
@@ -572,6 +603,17 @@ impl Decoder {
         let Ok(l) = lib() else { return Vec::new() };
         let mut t: *const i64 = std::ptr::null();
         let n = unsafe { (l.frame_times)(self.0, &mut t) };
+        if n <= 0 || t.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(t, n as usize) }.to_vec()
+    }
+
+    /// The file's video streams (cover art left out), the one showing marked.
+    pub fn video_tracks(&self) -> Vec<Track> {
+        let Ok(l) = lib() else { return Vec::new() };
+        let mut t: *const Track = std::ptr::null();
+        let n = unsafe { (l.video_tracks)(self.0, &mut t) };
         if n <= 0 || t.is_null() {
             return Vec::new();
         }

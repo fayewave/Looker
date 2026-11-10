@@ -37,7 +37,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 8
+#define LOOKER_VIDEO_API 9
 
 typedef struct LvInfo
 {
@@ -58,16 +58,18 @@ typedef struct LvInfo
     char audio_codec[32];
 } LvInfo;
 
-// One of a file's audio streams, for the track menu (lv_audio_tracks).
+// One of a file's audio or video streams, for the track menus (lv_audio_tracks, lv_video_tracks).
 typedef struct LvTrack
 {
-    int stream;       // its stream index: what lv_open_audio takes
+    int stream;       // its stream index: what lv_open_streams takes
     int channels;
     int is_default;   // the container's default track
     int playing;      // the one this player plays
     char lang[16];    // its language tag ("eng"), or ""
     char title[64];   // its title, or ""
     char codec[32];   // FFmpeg's short codec name
+    int width;        // a video track's picture size (0 for audio)
+    int height;
 } LvTrack;
 
 // ---- file input -----------------------------------------------------------------------------------------------
@@ -273,14 +275,24 @@ static void set_display(LvInfo *info, int w, int h, AVRational sar)
     }
 }
 
-// The video stream to show (never cover art) and the audio that goes with it.
-static int pick_streams(AVFormatContext *fmt, int *video, int *audio)
+static int is_picture_stream(const AVFormatContext *fmt, int i)
+{
+    if (i < 0 || (unsigned)i >= fmt->nb_streams)
+        return 0;
+    const AVStream *s = fmt->streams[i];
+    return s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC);
+}
+
+// The video stream to show (`want` when it's one, else the best; never cover art) and the audio that goes with it.
+static int pick_streams(AVFormatContext *fmt, int want, int *video, int *audio)
 {
     int v = -1;
     for (unsigned i = 0; i < fmt->nb_streams; i++)
         fmt->streams[i]->discard = AVDISCARD_ALL;
     int best = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (best >= 0 && !(fmt->streams[best]->disposition & AV_DISPOSITION_ATTACHED_PIC))
+    if (is_picture_stream(fmt, want))
+        v = want;
+    else if (best >= 0 && !(fmt->streams[best]->disposition & AV_DISPOSITION_ATTACHED_PIC))
         v = best;
     for (unsigned i = 0; v < 0 && i < fmt->nb_streams; i++)
     {
@@ -422,7 +434,7 @@ EXPORT int looker_video_probe(const wchar_t *path, LvInfo *info)
     int r = input_open(&in, path, 1);
     int vi = -1, ai = -1;
     if (r >= 0)
-        r = pick_streams(in.fmt, &vi, &ai);
+        r = pick_streams(in.fmt, -1, &vi, &ai);
     if (r >= 0)
         fill_info(in.fmt, in.fmt->streams[vi], ai >= 0 ? in.fmt->streams[ai] : NULL, info);
     input_close(&in);
@@ -627,13 +639,13 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
     int r = input_open(&in, path, 0);
     if (r < 0)
         goto done;
-    r = pick_streams(in.fmt, &vi, &ai);
+    r = pick_streams(in.fmt, -1, &vi, &ai);
     if (r < 0 || in.fmt->streams[vi]->codecpar->width <= 0 || in.fmt->streams[vi]->codecpar->codec_id == AV_CODEC_ID_NONE)
     {
         // Headers that don't say (MPEG-TS/PS, some AVIs): probe properly.
         for (unsigned i = 0; i < in.fmt->nb_streams; i++)
             in.fmt->streams[i]->discard = AVDISCARD_DEFAULT;
-        if ((r = avformat_find_stream_info(in.fmt, NULL)) < 0 || (r = pick_streams(in.fmt, &vi, &ai)) < 0)
+        if ((r = avformat_find_stream_info(in.fmt, NULL)) < 0 || (r = pick_streams(in.fmt, -1, &vi, &ai)) < 0)
             goto done;
     }
     AVStream *st = in.fmt->streams[vi];
@@ -777,6 +789,8 @@ typedef struct LvPlayer
     int n_frames;            // 0 when the container doesn't list every picture (Matroska: keyframes only)
     LvTrack *tracks;         // the file's audio streams (lv_audio_tracks)
     int n_tracks;
+    LvTrack *vtracks;        // its video streams, cover art left out (lv_video_tracks)
+    int n_vtracks;
 } LvPlayer;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
@@ -929,6 +943,7 @@ EXPORT void lv_close(LvPlayer *p)
     av_free(p->abuf);
     free(p->frame_us);
     free(p->tracks);
+    free(p->vtracks);
     free(p);
 }
 
@@ -962,6 +977,45 @@ static void list_tracks(LvPlayer *p)
             snprintf(t->title, sizeof t->title, "%s", e->value);
         snprintf(t->codec, sizeof t->codec, "%s", avcodec_get_name(s->codecpar->codec_id));
     }
+}
+
+// The file's video streams, the one showing marked (cover art isn't one).
+static void list_video_tracks(LvPlayer *p)
+{
+    AVFormatContext *fmt = p->in.fmt;
+    int n = 0;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+        n += is_picture_stream(fmt, (int)i);
+    if (n == 0 || (p->vtracks = calloc((size_t)n, sizeof *p->vtracks)) == NULL)
+        return;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        if (!is_picture_stream(fmt, (int)i))
+            continue;
+        const AVStream *s = fmt->streams[i];
+        LvTrack *t = &p->vtracks[p->n_vtracks++];
+        t->stream = (int)i;
+        t->width = s->codecpar->width;
+        t->height = s->codecpar->height;
+        t->is_default = (s->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        t->playing = (int)i == p->vi;
+        const AVDictionaryEntry *e = av_dict_get(s->metadata, "language", NULL, 0);
+        if (e && strcmp(e->value, "und") != 0)
+            snprintf(t->lang, sizeof t->lang, "%s", e->value);
+        e = av_dict_get(s->metadata, "title", NULL, 0);
+        if (e == NULL)
+            e = av_dict_get(s->metadata, "handler_name", NULL, 0);
+        if (e && strstr(e->value, "Handler") == NULL && strstr(e->value, "handler") == NULL)
+            snprintf(t->title, sizeof t->title, "%s", e->value);
+        snprintf(t->codec, sizeof t->codec, "%s", avcodec_get_name(s->codecpar->codec_id));
+    }
+}
+
+// The file's video streams (cover art left out); valid until lv_close.
+EXPORT int lv_video_tracks(const LvPlayer *p, const LvTrack **out)
+{
+    *out = p ? p->vtracks : NULL;
+    return p ? p->n_vtracks : 0;
 }
 
 // The file's audio streams (0 when it has none); valid until lv_close.
@@ -1023,18 +1077,25 @@ EXPORT int lv_frame_times(const LvPlayer *p, const long long **out)
     return p ? p->n_frames : 0;
 }
 
-EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_stream, LvInfo *info, LvPlayer **out);
+EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int video_stream, int audio_stream, LvInfo *info, LvPlayer **out);
 
 // Opens `path` for playback. `d3d11` (an ID3D11Device made with D3D11_CREATE_DEVICE_VIDEO_SUPPORT, or NULL)
 // decodes on that GPU where it can. `flags`: LV_NO_AUDIO, LV_KEYFRAMES.
 EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, LvPlayer **out)
 {
-    return lv_open_audio(path, d3d11, flags, -1, info, out);
+    return lv_open_streams(path, d3d11, flags, -1, -1, info, out);
 }
 
 // lv_open playing the audio stream `audio_stream` (an index lv_audio_tracks gave), or the best one when it's -1
 // or not an audio stream.
 EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_stream, LvInfo *info, LvPlayer **out)
+{
+    return lv_open_streams(path, d3d11, flags, -1, audio_stream, info, out);
+}
+
+// lv_open_audio showing the video stream `video_stream` (an index lv_video_tracks gave), or the best one when
+// it's -1 or not a video stream.
+EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int video_stream, int audio_stream, LvInfo *info, LvPlayer **out)
 {
     *out = NULL;
     LvPlayer *p = calloc(1, sizeof *p);
@@ -1048,7 +1109,7 @@ EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_
     if (r < 0)
         goto fail;
     AVFormatContext *fmt = p->in.fmt;
-    r = pick_streams(fmt, &p->vi, &p->ai);
+    r = pick_streams(fmt, video_stream, &p->vi, &p->ai);
     LvInfo quick;
     if (r >= 0)
         fill_info(fmt, fmt->streams[p->vi], NULL, &quick);
@@ -1058,7 +1119,7 @@ EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_
     {
         for (unsigned i = 0; i < fmt->nb_streams; i++)
             fmt->streams[i]->discard = AVDISCARD_DEFAULT;
-        if ((r = avformat_find_stream_info(fmt, NULL)) < 0 || (r = pick_streams(fmt, &p->vi, &p->ai)) < 0)
+        if ((r = avformat_find_stream_info(fmt, NULL)) < 0 || (r = pick_streams(fmt, video_stream, &p->vi, &p->ai)) < 0)
             goto fail;
     }
     AVStream *vs = fmt->streams[p->vi];
@@ -1071,6 +1132,7 @@ EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_
         fill_info(fmt, vs, fmt->streams[p->ai], info);
     }
     list_tracks(p);
+    list_video_tracks(p);
 
     if (d3d11)
     {

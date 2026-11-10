@@ -348,13 +348,15 @@ pub struct Player {
     frames: Vec<i64>,
     /// The file's audio streams (`Decoder::audio_tracks`), the one playing marked.
     tracks: Vec<Track>,
+    /// Its video streams (`Decoder::video_tracks`), the one showing marked.
+    vtracks: Vec<Track>,
     /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
     /// such wait counted once), for the trace.
     shown_count: u64,
     dropped: u64,
     starved: u64,
     waiting: bool,
-    opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>), String>>>>,
+    opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>, Vec<Track>), String>>>>,
 }
 
 impl Player {
@@ -362,11 +364,12 @@ impl Player {
     /// once when `play`.
     #[cfg(test)]
     pub fn open(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool) -> Player {
-        Player::open_track(path, d3d11, play, volume, muted, None)
+        Player::open_track(path, d3d11, play, volume, muted, None, None)
     }
 
-    /// `open`, playing the audio stream `audio` (a `Track::stream`), else the file's best.
-    pub fn open_track(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool, audio: Option<i32>) -> Player {
+    /// `open`, showing the video stream `video` and playing the audio stream `audio` (`Track::stream`s), else the
+    /// file's best of each.
+    pub fn open_track(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool, video: Option<i32>, audio: Option<i32>) -> Player {
         let now = Instant::now();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -407,10 +410,10 @@ impl Player {
             .name("video-decode".into())
             .spawn(move || {
                 let device = device;
-                decode_thread(s, &p, device.0, o, audio)
+                decode_thread(s, &p, device.0, o, video, audio)
             })
             .ok();
-        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), vtracks: Vec::new(), shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -419,9 +422,10 @@ impl Player {
             return Some(Ok(()));
         }
         let r = self.opened.lock().ok()?.take()?;
-        Some(r.map(|(i, frames, tracks)| {
+        Some(r.map(|(i, frames, tracks, vtracks)| {
             self.frames = frames;
             self.tracks = tracks;
+            self.vtracks = vtracks;
             // Short clips loop, like an animated image.
             self.looping = i.duration_us > 0 && i.duration_us < 10_000_000;
             if i.audio_channels > 0 {
@@ -557,6 +561,11 @@ impl Player {
     /// The file's audio streams, the one playing marked (empty until it has opened, or without sound).
     pub fn audio_tracks(&self) -> &[Track] {
         &self.tracks
+    }
+
+    /// The file's video streams, the one showing marked (empty until it has opened).
+    pub fn video_tracks(&self) -> &[Track] {
+        &self.vtracks
     }
 
     pub fn duration(&self) -> i64 {
@@ -713,12 +722,12 @@ fn frame_number_in(frames: &[i64], us: i64) -> Option<usize> {
     })
 }
 
-fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>), String>>>>, audio: Option<i32>) {
+fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<(Info, Vec<i64>, Vec<Track>, Vec<Track>), String>>>>, video: Option<i32>, audio: Option<i32>) {
     let t = Instant::now();
     // CPU pictures go on the window's device from here, so the UI thread only draws them.
     let uploader = unsafe { <windows::Win32::Graphics::Direct3D11::ID3D11Device as windows::core::Interface>::from_raw_borrowed(&d3d11) }.and_then(|d| Uploader::new(d).ok());
     let mut upload_failed = false;
-    let mut dec = match Decoder::open_audio(path, d3d11, false, audio) {
+    let mut dec = match Decoder::open_streams(path, d3d11, false, video, audio) {
         Ok((d, info)) => {
             crate::trace::mark(format!(
                 "video: opened {} ({}) in {:.0} ms",
@@ -727,7 +736,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 t.elapsed().as_secs_f64() * 1000.0
             ));
             if let Ok(mut o) = opened.lock() {
-                *o = Some(Ok((info, d.frame_times(), d.audio_tracks())));
+                *o = Some(Ok((info, d.frame_times(), d.audio_tracks(), d.video_tracks())));
             }
             *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
             shared.gpu.store(d.hardware(), std::sync::atomic::Ordering::Relaxed);
@@ -1380,6 +1389,9 @@ mod tests {
     fn audio_tracks_list() {
         let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
         let (d, _) = Decoder::open_audio(&path, std::ptr::null_mut(), false, None).expect("opens");
+        for (n, t) in d.video_tracks().iter().enumerate() {
+            println!("  video stream {} showing {}: {}", t.stream, t.playing, t.video_label(n + 1));
+        }
         let tracks = d.audio_tracks();
         for (n, t) in tracks.iter().enumerate() {
             println!("  stream {} playing {} default {}: {}", t.stream, t.playing, t.is_default, t.label(n + 1));

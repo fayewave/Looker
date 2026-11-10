@@ -33,6 +33,8 @@ pub(super) enum Action {
     ToggleVideoLoop,
     /// The context menu: play this audio stream of the video.
     AudioTrack(i32),
+    /// The context menu's Video track: show this stream.
+    VideoTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
     // The explorer's (explorer_ops.rs).
@@ -113,6 +115,12 @@ impl App {
                 tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
             };
             e.push(Entry::Separator);
+            // And which picture stream shows, as the audio (Faye, 2026-11-10), there even with one.
+            let pictures: Vec<Entry<Action>> =
+                self.video_picture_tracks().into_iter().map(|(stream, label, showing)| check(Action::VideoTrack(stream), &label, showing)).collect();
+            if !pictures.is_empty() {
+                e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
+            }
             e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
         }
         e.extend([
@@ -303,6 +311,7 @@ impl App {
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::AudioTrack(s) => self.set_audio_track(s),
+            Action::VideoTrack(s) => self.set_video_track(s),
             _ => {}
         }
     }
