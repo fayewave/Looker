@@ -175,8 +175,6 @@ pub struct Fonts {
     pub body_icons: IDWriteTextFormat,
     /// 96 px icons: the file glyph standing in for a file Looker can't show.
     pub hero_icons: IDWriteTextFormat,
-    /// 40 px icons: the play/pause that flashes over a clicked video.
-    pub flash_icons: IDWriteTextFormat,
     /// 14 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
     /// Inter's tabular figures (`tnum`): every digit the same width, so the status row's numbers don't
@@ -1004,6 +1002,44 @@ impl Gfx {
         }
     }
 
+    /// `r` less a disc at (cx, cy) of radius `rad`.
+    fn rect_with_hole(&self, r: D2D_RECT_F, cx: f32, cy: f32, rad: f32) -> Option<ID2D1Geometry> {
+        unsafe {
+            let f = self.dev.dc.GetFactory().ok()?;
+            let outer = f.CreateRectangleGeometry(&r).ok()?;
+            let disc = f.CreateEllipseGeometry(&D2D1_ELLIPSE { point: windows_numerics::Vector2 { X: cx, Y: cy }, radiusX: rad, radiusY: rad }).ok()?;
+            let path = f.CreatePathGeometry().ok()?;
+            let sink = path.Open().ok()?;
+            outer.CombineWithGeometry(&disc, D2D1_COMBINE_MODE_EXCLUDE, None, D2D1_DEFAULT_FLATTENING_TOLERANCE, &sink).ok()?;
+            sink.Close().ok()?;
+            path.cast().ok()
+        }
+    }
+
+    /// What `draw` paints, everywhere in `r` but a disc at (cx, cy) of radius `rad`: an icon with a notch cut out
+    /// for a badge, whatever is behind it (the explorer's folder and gear).
+    pub fn with_hole(&self, r: D2D_RECT_F, cx: f32, cy: f32, rad: f32, draw: impl FnOnce()) {
+        let Some(mask) = self.rect_with_hole(r, cx, cy, rad) else {
+            draw();
+            return;
+        };
+        unsafe {
+            let params = D2D1_LAYER_PARAMETERS1 {
+                contentBounds: r,
+                geometricMask: std::mem::ManuallyDrop::new(Some(mask)),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: windows_numerics::Matrix3x2::identity(),
+                opacity: 1.0,
+                opacityBrush: std::mem::ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            };
+            self.dev.dc.PushLayer(&params, None);
+            draw();
+            self.dev.dc.PopLayer();
+            drop(std::mem::ManuallyDrop::into_inner(params.geometricMask));
+        }
+    }
+
     pub fn fill_polygon(&self, points: &[(f32, f32)], color: D2D1_COLOR_F) {
         if let Some(geo) = self.path(points, true) {
             unsafe {
@@ -1263,7 +1299,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, flash_icons: icon(40.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 

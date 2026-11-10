@@ -192,6 +192,21 @@ impl App {
         g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
     }
 
+    /// The Folders and files button: a folder with a gear at its bottom right (Faye, 2026-11-10), the gear in a
+    /// notch cut out of the folder.
+    fn folder_settings_button(&mut self, g: &Gfx, r: D2D_RECT_F, on: bool) {
+        let id = Hit::ExplorerGroup;
+        self.hits.add(id, r);
+        let st = self.state(id, true);
+        let fg = ui::button_frame(g, r, if on { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
+        let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+        // The folder a touch up and left of centre, so the pair is centred; the gear over its corner.
+        let folder = rect(cx - 9.0, cy - 9.0, 16.0, 16.0);
+        let (gx, gy) = (g.snap(cx + 4.5), g.snap(cy + 4.5));
+        g.with_hole(folder, gx, gy, 6.0, || g.text(&[0xE8B7], &g.fonts.body_icons, folder, fg, Align::Center));
+        g.text(&[0xE713], &g.fonts.caption_icons, rect(gx - 6.0, gy - 6.0, 12.0, 12.0), fg, Align::Center);
+    }
+
     /// The breadcrumb rows: the buttons, then the crumbs under them. Returns where they end.
     /// The tab strip along the top, as Transient's (File Pilot's measurements): tabs 155 wide on a 32-tall strip,
     /// narrowing together to fit; the one in front in the card's colour, outlined, flowing into the card below
@@ -367,9 +382,8 @@ impl App {
             self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerBookmark, if marked { 0xE840 } else { 0xE718 }, true, marked);
         }
         rx -= NAV + 2.0;
-        let group_glyph = super::explorer_ops::group_glyph(self.explorer.look.group);
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
-        self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerGroup, group_glyph, true, group_open);
+        self.folder_settings_button(g, rect(rx, y, NAV, NAV), group_open);
         if !column_sidebar {
             rx -= NAV + 2.0;
             let open = self.explorer.sidebar_open;

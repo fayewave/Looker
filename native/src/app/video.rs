@@ -51,15 +51,24 @@ const PREVIEW_H: f32 = 108.0;
 const RESUME_MARGIN_US: i64 = 10_000_000;
 const RESUME_CAP: usize = 200;
 /// The play/pause flashed over a clicked video: how long it fades, and its circle.
-const FLASH: Duration = Duration::from_millis(500);
+const FLASH: Duration = Duration::from_millis(350);
 const FLASH_D: f32 = 88.0;
+/// Which the flash shows (Segoe's play and pause code points, though it draws them as shapes).
+const PLAY_GLYPH: u16 = 0xE768;
+const PAUSE_GLYPH: u16 = 0xE769;
 
-/// The seek bar held down: where it's held, the last seek sent while dragging, and whether it was playing.
+/// The seek bar held down: where it's held, the last seek sent while dragging (and whether it was exact), and
+/// whether it was playing.
 struct Scrub {
     at: i64,
     sent: Option<i64>,
+    exact: bool,
     was_playing: bool,
 }
+
+/// Dragging the seek bar closer than this to where the picture is seeks to the exact picture (slowly: almost frame by
+/// frame); further, to the keyframe first (at once), then exactly once that's up.
+const SCRUB_EXACT_US: i64 = 2_000_000;
 
 pub(super) struct VideoView {
     pub path: PathBuf,
@@ -188,6 +197,19 @@ impl VideoView {
     }
 }
 
+/// The bar's margin, height and button size for a photo area `area_w` wide: a small one (browse mode's preview)
+/// gets a compact bar on tighter margins.
+fn bar_metrics(area_w: f32) -> (f32, f32, f32) {
+    if area_w < 360.0 { (8.0, 30.0, 24.0) } else { (16.0, BAR_H, BAR_BTN) }
+}
+
+/// The band at the bottom of a photo area `area_w` wide that a video keeps clear for its bar: the bar and a margin
+/// above and below it.
+pub(super) fn bar_band(area_w: f32) -> f32 {
+    let (margin, h, _) = bar_metrics(area_w);
+    h + 2.0 * margin
+}
+
 /// The bar's parts, laid out from the image area each frame.
 struct BarLayout {
     bar: D2D_RECT_F,
@@ -202,6 +224,8 @@ struct BarLayout {
     volume: Option<D2D_RECT_F>,
     speed: Option<D2D_RECT_F>,
     looped: Option<D2D_RECT_F>,
+    /// Fullscreen, at the far right: kept as long as the speaker is.
+    full: Option<D2D_RECT_F>,
 }
 
 /// "1:05", "12:40", "1:02:03" (hours when the video is that long).
@@ -369,13 +393,22 @@ impl App {
     /// Frames are moving, the player is still coming up, or a preview is on its way: draw again next vsync.
     pub(super) fn video_animating(&self) -> bool {
         self.video.as_ref().is_some_and(|v| {
-            !v.failed && (v.flash.is_some() || v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at)) || v.preview.as_ref().is_some_and(|p| p.busy()))
+            !v.failed && (v.flash.is_some() || v.player.as_ref().is_none_or(|p| p.animating()) || v.scrub.as_ref().is_some_and(|s| s.sent != Some(s.at) || !s.exact) || v.preview.as_ref().is_some_and(|p| p.busy()))
         })
     }
 
     /// Before the frame begins (Direct2D isn't mid-draw): opens the player once the device is right, and turns
     /// the picture due now into the bitmap drawn this frame.
     pub(super) fn prepare_video(&mut self, g: &Gfx) {
+        // A file Looker can't show covering the video (the explorer opened it) stops it, as another file would; it
+        // starts again when the video's back.
+        if self.placeholder.is_some() {
+            if self.video.is_some() {
+                self.leave_video();
+            }
+            return;
+        }
+        self.sync_video();
         let slideshow = self.slideshow.running;
         // A slideshow plays every video (to its end, without looping).
         let (volume, muted, autoplay) = (self.settings.video_volume, self.video_muted(), self.settings.video_autoplay || slideshow);
@@ -434,9 +467,12 @@ impl App {
         }
         // Scrubbing: the next seek once the last one's picture is up.
         if let Some(s) = &mut v.scrub {
-            if s.sent != Some(s.at) && (s.sent.is_none() || p.settled()) {
-                p.seek(s.at, false);
+            let refine = s.sent == Some(s.at) && !s.exact; // a keyframe seek landed: now the exact picture
+            if (s.sent != Some(s.at) || refine) && (s.sent.is_none() || p.settled()) {
+                let exact = refine || (s.at - p.position()).abs() < SCRUB_EXACT_US;
+                p.seek(s.at, exact);
                 s.sent = Some(s.at);
+                s.exact = exact;
             }
         }
         if let Some(s) = v.preview.as_ref().and_then(|p| p.take()) {
@@ -597,7 +633,7 @@ impl App {
         self.video_toggle_play();
         let playing = self.player_ref().map(|p| p.playing());
         if let (Some(v), Some(playing)) = (self.video.as_mut(), playing) {
-            v.flash = Some((if playing { 0xE768 } else { 0xE769 }, Instant::now()));
+            v.flash = Some((if playing { PLAY_GLYPH } else { PAUSE_GLYPH }, Instant::now()));
         }
     }
 
@@ -620,6 +656,8 @@ impl App {
     /// The click's play/pause: a dark disc with the glyph, fading out (and growing a little) over half a second.
     pub(super) fn draw_video_flash(&mut self, g: &Gfx) {
         let area = self.image_area();
+        // The middle of where the video fits (above the bar's band).
+        let (_, vh) = self.view_size();
         let Some(v) = self.video.as_mut() else { return };
         let Some((glyph, at)) = v.flash else { return };
         let t = at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
@@ -627,14 +665,22 @@ impl App {
             v.flash = None;
             return;
         }
-        let (cx, cy) = ((area.left + area.right) / 2.0, (area.top + area.bottom) / 2.0);
-        let disc = rect(g.snap(cx - FLASH_D / 2.0), g.snap(cy - FLASH_D / 2.0), FLASH_D, FLASH_D);
-        // Held, then gone: most of the fade comes at the end.
-        g.push_fade(1.0 - t * t, 1.0 + 0.12 * t, cx, cy);
+        let (cx, cy) = (g.snap((area.left + area.right) / 2.0), g.snap(area.top + vh as f32 / 2.0));
+        let disc = rect(cx - FLASH_D / 2.0, cy - FLASH_D / 2.0, FLASH_D, FLASH_D);
+        // Held, then gone: most of the fade comes at the end. Only the opacity changes (it used to grow too, and
+        // the disc and glyph re-snapped to the pixels every frame: it shook).
+        g.push_fade(1.0 - t * t, 1.0, cx, cy);
         g.fill_round(disc, FLASH_D / 2.0, gfx::rgba(0x000000, 0.55));
-        // The play triangle's weight sits left of its box: nudged right to look centred.
-        let nudge = if glyph == 0xE768 { 3.0 } else { 0.0 };
-        g.text(&[glyph], &g.fonts.flash_icons, D2D_RECT_F { left: disc.left + nudge, right: disc.right + nudge, ..disc }, gfx::rgba(0xFFFFFF, 0.95), Align::Center);
+        let ink = gfx::rgba(0xFFFFFF, 0.95);
+        if glyph == PLAY_GLYPH {
+            // Solid, its centroid on the centre (a third of its width left of it, two thirds right).
+            let (w, h) = (30.0, 34.0);
+            g.fill_polygon(&[(cx - w / 3.0, cy - h / 2.0), (cx - w / 3.0, cy + h / 2.0), (cx + w * 2.0 / 3.0, cy)], ink);
+        } else {
+            let (w, h, gap) = (9.0, 32.0, 8.0);
+            g.fill_round(rect(cx - gap / 2.0 - w, cy - h / 2.0, w, h), 2.0, ink);
+            g.fill_round(rect(cx + gap / 2.0, cy - h / 2.0, w, h), 2.0, ink);
+        }
         g.pop_fade();
     }
 
@@ -753,9 +799,7 @@ impl App {
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
         let a = self.image_area();
         let aw = a.right - a.left;
-        // A small photo area (browse mode's preview) gets a compact bar on tighter margins.
-        let compact = aw < 360.0;
-        let (margin, h, btn) = if compact { (8.0, 30.0, 24.0) } else { (16.0, BAR_H, BAR_BTN) };
+        let (margin, h, btn) = bar_metrics(aw);
         let pad = (h - btn) / 2.0;
         // As wide as the photo's area (Faye, 2026-11-10: the seek bar the full width of the preview).
         let w = aw - 2.0 * margin;
@@ -768,9 +812,10 @@ impl App {
         let long = self.player_ref().is_some_and(|p| p.duration() >= 3_600_000_000);
         let tw = g.measure_tabular(&wide(if long { "0:00:00" } else { "00:00" }), &g.fonts.caption).ceil() + 2.0;
         // As it narrows the loop button goes first, then the volume slider, the speed (each while the seek bar
-        // would stay 160 wide), then the times, the speaker and play (while it would stay 48): the seek bar stays.
+        // would stay 160 wide), then the times, the speaker with fullscreen, and play (while it would stay 48): the
+        // seek bar stays.
         let essentials = |play: bool, times: bool, mute: bool| {
-            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + 12.0 } else { 0.0 } + if mute { btn + 8.0 } else { 0.0 }
+            2.0 * pad + 12.0 + if play { btn + 6.0 } else { 0.0 } + if times { 2.0 * tw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
         };
         let (with_play, with_times, with_mute) =
             [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
@@ -781,6 +826,12 @@ impl App {
         let with_loop = with_volume && base + SPEED_W + 4.0 + VOLUME_W + btn + 4.0 <= w;
         let play = with_play.then(|| rect(bar.left + pad, y, btn, btn));
         let mut right = bar.right - pad;
+        let full = with_mute.then(|| {
+            right -= btn;
+            let r = rect(right, y, btn, btn);
+            right -= 4.0;
+            r
+        });
         let looped = with_loop.then(|| {
             right -= btn;
             let r = rect(right, y, btn, btn);
@@ -815,7 +866,7 @@ impl App {
         let cy = y + btn / 2.0;
         let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
-        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, speed, looped })
+        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, speed, looped, full })
     }
 
     /// The bar, over the photo (above the page bar's place: a video has no pages). Returns whether it's fading.
@@ -864,7 +915,8 @@ impl App {
             g.text_tabular(&wide(&clock_text(dur, long)), &g.fonts.caption, total, rgb(raised.label), Align::Left);
         }
 
-        // The seek bar: the line, what's played in the accent; thicker while the pointer is on it.
+        // The seek bar: the line, a grey fill up to the pointer while it's on it (where a click would put the
+        // red), what's played in the accent; thicker while the pointer is on it.
         if live {
             self.hits.add(Hit::VideoSeek, l.seek);
         }
@@ -875,6 +927,12 @@ impl App {
         let line = D2D_RECT_F { top: l.track.top - grow, bottom: l.track.bottom + grow, ..l.track };
         let rad = (line.bottom - line.top) / 2.0;
         g.fill_round(line, rad, rgb(raised.track));
+        if k > 0.0 && !scrubbing {
+            let mx = self.mouse.0.clamp(line.left, line.right);
+            if mx > line.left + 0.5 {
+                g.fill_round(D2D_RECT_F { right: mx, ..line }, rad, gfx::rgba(raised.text, 0.28 * k));
+            }
+        }
         let frac = if dur > 0 { (pos as f64 / dur as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
         let px = line.left + (line.right - line.left) * frac;
         if px > line.left + 0.5 {
@@ -896,7 +954,8 @@ impl App {
         };
         if let Some(r) = l.mute {
             let fg = button(self, Hit::VideoMute, r, ui::Kind::Subtle);
-            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
+            // 16 px: the speaker glyphs sit smaller in their box than play's at 14 (Faye: the same size).
+            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
         }
         if let Some(r) = l.volume {
             if live {
@@ -922,6 +981,12 @@ impl App {
         if let Some(r) = l.looped {
             let fg = button(self, Hit::VideoLoop, r, if looping { ui::Kind::Toggle(true) } else { ui::Kind::Subtle });
             g.text(&[0xE8EE], &g.fonts.body_icons, r, fg, Align::Center);
+        }
+        if let Some(r) = l.full {
+            let fg = button(self, Hit::VideoFullscreen, r, ui::Kind::Subtle);
+            // Segoe's back-to-window in fullscreen, full screen otherwise.
+            let glyph = if self.fullscreen.is_some() { 0xE73F } else { 0xE740 };
+            g.text(&[glyph], &g.fonts.body_icons, r, fg, Align::Center);
         }
         g.pop_fade();
 
@@ -989,7 +1054,7 @@ impl App {
         let Some(p) = v.player.as_mut() else { return };
         let was_playing = p.playing();
         p.set_playing(false);
-        v.scrub = Some(Scrub { at, sent: None, was_playing });
+        v.scrub = Some(Scrub { at, sent: None, exact: false, was_playing });
         self.invalidate();
     }
 
@@ -1028,6 +1093,7 @@ impl App {
             Hit::VideoPlay => self.video_toggle_play(),
             Hit::VideoMute => self.toggle_mute(),
             Hit::VideoLoop => self.toggle_video_loop(),
+            Hit::VideoFullscreen => self.toggle_fullscreen(),
             Hit::VideoSpeed => self.toggle_speed_menu(),
             _ => {}
         }
@@ -1056,7 +1122,7 @@ impl App {
 
 /// The bar's own hits: the pointer over them keeps it up, and the photo's clicks and drags don't apply.
 pub(super) fn is_bar_hit(h: Hit) -> bool {
-    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSpeed | Hit::VideoLoop)
+    matches!(h, Hit::VideoBar | Hit::VideoPlay | Hit::VideoSeek | Hit::VideoMute | Hit::VideoVolume | Hit::VideoSpeed | Hit::VideoLoop | Hit::VideoFullscreen)
 }
 
 #[cfg(test)]

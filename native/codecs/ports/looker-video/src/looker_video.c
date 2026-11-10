@@ -1349,6 +1349,18 @@ EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
 {
     // Cleared first: a seek that fails leaves the player usable.
     InterlockedExchange(&p->interrupt, 0);
+    // Exact, ahead of everything decoded and close (a slow drag on the seek bar): no seek and no flush. The decoder
+    // carries on from where it is and drops what comes before the target, so each small step forward costs only the
+    // pictures it moves over, not a restart from the keyframe.
+    if (exact && !p->v_done && !p->demux_eof && us >= p->next_vpts && us - p->next_vpts <= 2000000 &&
+        (p->skip_until_us == INT64_MIN || us >= p->skip_until_us))
+    {
+        p->skip_until_us = us;
+        p->seek_first = 0; // decoding on from before the target: nothing lands past it
+        p->seek_target = us;
+        p->audio_skip = 1;
+        return 0;
+    }
     AVStream *vs = p->in.fmt->streams[p->vi];
     // Rounded down: rounded to the nearest, a time in the second half of a frame named the next one, which may be a
     // keyframe past the target.

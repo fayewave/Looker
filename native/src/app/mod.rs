@@ -229,6 +229,7 @@ enum Hit {
     VideoVolume,
     VideoSpeed,
     VideoLoop,
+    VideoFullscreen,
     /// A document's page bar: the pill, and its two buttons.
     PageBar,
     PagePrevious,
@@ -553,6 +554,14 @@ impl App {
         self.viewer.current.as_ref().map(|(p, _)| p.as_path())
     }
 
+    /// A drag on the photo's area moves the window (Faye, 2026-11-10) when there's nothing to pan: the picture at
+    /// fit, or a file Looker can't show. Not in fullscreen, nor for a document (its pages pan at fit) or a 3D model.
+    pub(super) fn drag_moves_window(&self) -> bool {
+        self.fullscreen.is_none()
+            && !self.model_active()
+            && (self.placeholder.is_some() || (self.current_doc().is_none() && self.view.at_fit_position()))
+    }
+
     /// The photo is on screen to zoom and pan: there is one, and no file Looker can't open covers it.
     pub(super) fn photo_up(&self) -> bool {
         self.view.has_content() && self.placeholder.is_none()
@@ -632,10 +641,22 @@ impl App {
         self.current_changed();
     }
 
+    /// The space the view fits the picture into: the photo's area, less the video bar's band under a video (Faye,
+    /// 2026-11-10: a portrait video went under the bar), kept while the bar is away too so the picture doesn't move
+    /// when it comes back. Not in fullscreen, where the bar fades out over the video.
+    pub(super) fn view_size(&self) -> (f64, f64) {
+        let v = self.image_area();
+        let (w, h) = (v.right - v.left, v.bottom - v.top);
+        let video = self.fullscreen.is_none()
+            && self.placeholder.is_none()
+            && self.current_path().is_some_and(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video);
+        let room = if video { video::bar_band(w).min(h * 0.4) } else { 0.0 };
+        (w as f64, (h - room).max(1.0) as f64)
+    }
+
     /// Fit a new image (or the current one, turned by the rotation preview).
     fn reset_view(&mut self, nw: u32, nh: u32) {
-        let v = self.image_area();
-        let (vw, vh) = ((v.right - v.left) as f64, (v.bottom - v.top) as f64);
+        let (vw, vh) = self.view_size();
         // A document opens on its first page: the strip is the content, the page the fit reference.
         if let Some(e) = self.viewer.shown.clone().filter(|e| e.layout.is_some()) {
             let l = e.layout.as_ref().unwrap();

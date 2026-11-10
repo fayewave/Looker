@@ -196,6 +196,8 @@ pub struct Player {
     pub looping: bool,
     /// A frame step waiting for its picture.
     step: bool,
+    /// A seek to a picture already queued (paused): shown next, the decoder untouched.
+    jump: bool,
     /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
     /// such wait counted once), for the trace.
     shown_count: u64,
@@ -248,7 +250,7 @@ impl Player {
                 decode_thread(s, &p, device.0, o)
             })
             .ok();
-        Player { shared, info: None, shown: None, target: None, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -277,7 +279,15 @@ impl Player {
         let epoch = st.epoch;
         let fresh = self.shown.is_none_or(|(e, _, _)| e != epoch);
         let mut pick: Option<Frame> = None;
-        if self.step && !fresh {
+        if self.jump && !fresh {
+            // A seek to a queued picture: the queue was cut down to it.
+            if let Some(p) = st.pictures.pop_front() {
+                self.jump = false;
+                self.target = None;
+                st.set_anchor(p.pts_us, now);
+                pick = Some(p);
+            }
+        } else if self.step && !fresh {
             // A frame step: the next picture, and the clock moves to it.
             if let Some(p) = st.pictures.pop_front() {
                 self.step = false;
@@ -379,6 +389,34 @@ impl Player {
         let us = if d > 0 { us.clamp(0, d) } else { us.max(0) };
         let now = Instant::now();
         let mut st = self.shared.lock();
+        // Paused and exact (dragging the seek bar slowly): the picture on screen or one already decoded may be the
+        // one, and then the decoder isn't touched at all.
+        if exact && !st.playing && st.seek.is_none() && !self.step {
+            if let Some((_, pts, dur)) = self.shown.filter(|s| s.0 == st.epoch) {
+                if us >= pts && us < pts + dur.max(1) {
+                    self.jump = false;
+                    self.target = None;
+                    st.set_anchor(pts, now);
+                    return;
+                }
+                if us > pts {
+                    if let Some(i) = st.pictures.iter().rposition(|f| f.pts_us <= us) {
+                        let f = &st.pictures[i];
+                        // The last one queued: its end is only a guess until the next is decoded.
+                        if i + 1 < st.pictures.len() || us < f.pts_us + f.duration_us.max(1) {
+                            st.pictures.drain(..i);
+                            st.set_anchor(us, now);
+                            drop(st);
+                            self.jump = true;
+                            self.target = Some(us);
+                            self.shared.wake.notify_all();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        self.jump = false;
         st.clear();
         st.epoch = st.epoch.wrapping_add(1);
         st.seek = Some((us, exact));
@@ -416,7 +454,7 @@ impl Player {
     /// The picture for the last seek is on screen (scrubbing waits for it before seeking again).
     pub fn settled(&self) -> bool {
         let epoch = self.shared.lock().epoch;
-        self.shown.is_some_and(|(e, _, _)| e == epoch)
+        !self.jump && self.shown.is_some_and(|(e, _, _)| e == epoch)
     }
 
     /// Whether it's at its end and stopped there.
@@ -1093,6 +1131,22 @@ mod tests {
             println!("seek {target} -> {got} in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
             assert!(got <= target && target - got < 2 * frame, "seek {target} landed on {got}");
         }
+        // A slow drag on the seek bar: exact seeks a frame apart, each landing on its picture, quickly (from the
+        // queue, or the decoder carrying on: no restart from the keyframe).
+        let start = p.position();
+        let (mut worst, mut total) = (0.0f64, 0.0f64);
+        for i in 1..=40 {
+            let target = start + i * frame + frame / 2;
+            let t = Instant::now();
+            p.seek(target, true);
+            let got = next_due(&mut p).expect("dragged picture");
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            worst = worst.max(ms);
+            total += ms;
+            assert!(got <= target && target - got < 2 * frame, "drag to {target} landed on {got}");
+        }
+        println!("slow drag: 40 frames, {:.1} ms average, {worst:.0} worst", total / 40.0);
+
         // An exact seek overtaken by another at once (the first is interrupted mid-decode): the second wins.
         let far = (info.duration_us * 9 / 10).max(frame);
         p.seek(far, true);

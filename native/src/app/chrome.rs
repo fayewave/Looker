@@ -25,9 +25,10 @@ impl App {
     }
 
     /// The cards and the strip follow their toggles while a photo is up, in fullscreen too, but not behind
-    /// a page or during a slideshow (that is the photos alone).
+    /// a page, during a slideshow (that is the photos alone), or for a video in fullscreen (the video alone, like a
+    /// cinema: Faye, 2026-11-10).
     pub(super) fn panels_allowed(&self) -> bool {
-        self.viewer.current.is_some() && !self.slideshow.running
+        self.viewer.current.is_some() && !self.slideshow.running && !(self.fullscreen.is_some() && self.video_shown())
     }
 
     /// The panels slide to where their toggles say (a toggle, a slideshow starting or ending).
@@ -232,6 +233,7 @@ impl App {
             Hit::VideoVolume => "Volume (\u{2191} \u{2193}, wheel)",
             Hit::VideoSpeed => "Speed (J, L)",
             Hit::VideoLoop => "Loop",
+            Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
             _ => return None,
         })
     }

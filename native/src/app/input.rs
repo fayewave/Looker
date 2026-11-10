@@ -233,6 +233,19 @@ impl App {
                     if let Some((px, py)) = self.drag.filter(|_| self.model_active()) {
                         self.model_drag(x - px, y - py, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         self.drag = Some((x, y));
+                    } else if self.drag.is_some() && self.drag_moves_window() {
+                        // Nothing to pan: past a few DIPs (a click still plays a video), the drag moves the window,
+                        // handed to Windows as a drag on the title bar (snapping and all).
+                        if (x - self.press_at.0).abs() + (y - self.press_at.1).abs() > 4.0 {
+                            self.drag = None;
+                            self.pressed = None;
+                            let _ = ReleaseCapture();
+                            let mut pt = POINT::default();
+                            let _ = GetCursorPos(&mut pt);
+                            let lp = LPARAM(((pt.y as u16 as isize) << 16) | (pt.x as u16 as isize));
+                            SendMessageW(self.hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(lp));
+                            return Some(LRESULT(0));
+                        }
                     } else if let Some((px, py)) = self.drag {
                         self.view.pan((x - px) as f64, (y - py) as f64);
                         self.sync_page_to_view(); // dragging across a document moves the page bar along
@@ -291,6 +304,7 @@ impl App {
                             | Hit::VideoVolume
                             | Hit::VideoSpeed
                             | Hit::VideoLoop
+                            | Hit::VideoFullscreen
                             | Hit::ExplorerBack
                             | Hit::ExplorerForward
                             | Hit::Crumb(_)
@@ -378,7 +392,7 @@ impl App {
                         _ => {}
                     }
                     self.press_at = (x, y);
-                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) {
+                    if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active() || self.placeholder.is_some()) {
                         self.drag = Some((x, y));
                     }
                     self.invalidate();
@@ -471,7 +485,7 @@ impl App {
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
-                            Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSpeed | Hit::VideoLoop)) => self.video_bar_click(h),
+                            Some(h @ (Hit::VideoPlay | Hit::VideoMute | Hit::VideoSpeed | Hit::VideoLoop | Hit::VideoFullscreen)) => self.video_bar_click(h),
                             _ => {}
                         }
                     }

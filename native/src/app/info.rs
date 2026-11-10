@@ -108,8 +108,8 @@ impl App {
 
     /// The space for the image changed (window size, a card shown, hidden or resized): refit and decode for it.
     pub(super) fn layout_changed(&mut self) {
-        let a = self.image_area();
-        self.view.set_viewport((a.right - a.left) as f64, (a.bottom - a.top) as f64, self.scale() as f64);
+        let (vw, vh) = self.view_size();
+        self.view.set_viewport(vw, vh, self.scale() as f64);
         let (bw, bh) = self.fit_box();
         self.viewer.set_fit_box(bw, bh);
         self.schedule_upgrade();
