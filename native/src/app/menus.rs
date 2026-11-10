@@ -92,6 +92,11 @@ pub(super) fn check(action: Action, label: &str, on: bool) -> Entry<Action> {
     Entry::Item(MenuItem { tint: None, action, glyph: None, label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
 }
 
+/// A panel toggle: its icon and key, and a tickbox showing whether it's out (Faye, 2026-11-11).
+fn toggle(action: Action, glyph: u16, label: &str, accel: &'static str, enabled: bool, on: bool) -> Entry<Action> {
+    Entry::Item(MenuItem { tint: None, action, glyph: Some(glyph), label: label.into(), accel: Some(accel), check: Some(on), enabled, current: false })
+}
+
 impl App {
     fn context_entries(&self) -> Vec<Entry<Action>> {
         let has = self.viewer.current.is_some();
@@ -143,9 +148,9 @@ impl App {
         }
         e.extend([
             Entry::Separator,
-            item(Action::ToggleExplorer, 0xE8B7, "File explorer", Some("Ctrl+E"), has),
-            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), has),
-            item(Action::ToggleInfo, 0xE946, "Info panel", Some("Ctrl+I"), has),
+            toggle(Action::ToggleExplorer, 0xE8B7, "File explorer", "Ctrl+E", has || self.home_explorer(), self.explorer_shown()),
+            toggle(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", "Ctrl+Shift+T", has, self.strip_shown()),
+            toggle(Action::ToggleInfo, 0xE946, "Info panel", "Ctrl+I", has, self.info_shown()),
         ]);
         e
     }
@@ -193,7 +198,7 @@ impl App {
     /// The thumbnail strip's menu.
     pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
         let entries = vec![
-            item(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", Some("Ctrl+Shift+T"), true),
+            toggle(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", "Ctrl+Shift+T", true, self.strip_shown()),
         ];
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
@@ -258,6 +263,26 @@ impl App {
                 if let Some((_, m)) = self.menu.as_mut() {
                     m.entries = entries;
                 }
+            }
+            self.invalidate();
+            return;
+        }
+        // The context menu's track, Loop and subtitle picks leave it open with its ticks moved, the submenu they
+        // were picked in still out (Faye, 2026-11-11). Add subtitle file opens a dialog: that one closes it.
+        let stays = matches!(
+            action,
+            Action::AudioTrack(_) | Action::VideoTrack(_) | Action::ToggleVideoLoop | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_)
+        );
+        if stays && matches!(self.menu, Some((MenuKind::Context, _))) {
+            self.run_action(action);
+            let entries = self.context_entries();
+            if let Some((_, m)) = self.menu.as_mut() {
+                if let Some((i, sub)) = m.sub.as_mut() {
+                    if let Some(Entry::Sub(_, _, rows)) = entries.get(*i) {
+                        sub.entries = rows.clone();
+                    }
+                }
+                m.entries = entries;
             }
             self.invalidate();
             return;

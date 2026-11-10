@@ -759,10 +759,6 @@ impl App {
                         self.scroll_page(delta as f32);
                         return Some(LRESULT(0));
                     }
-                    if self.viewer.current.is_none() {
-                        self.scroll_landing(delta as f32);
-                        return Some(LRESULT(0));
-                    }
                     if matches!(self.hit(x, y), Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip)) {
                         self.scroll_strip(delta as f32);
                         return Some(LRESULT(0));
@@ -771,7 +767,7 @@ impl App {
                         self.scroll_popup(delta as f32);
                         return Some(LRESULT(0));
                     }
-                    if matches!(self.hit(x, y), Some(Hit::Sidebar | Hit::SideRow(_) | Hit::SideChevron(_))) {
+                    if matches!(self.hit(x, y), Some(Hit::Sidebar | Hit::SideRow(_) | Hit::SideChevron(_) | Hit::SideHeader(_))) {
                         self.scroll_sidebar(delta as f32);
                         return Some(LRESULT(0));
                     }
@@ -788,6 +784,14 @@ impl App {
                         )
                     ) {
                         self.scroll_explorer(delta as f32);
+                        return Some(LRESULT(0));
+                    }
+                    // The home page scrolls its recent files, but not from over the explorer card beside it (it took
+                    // every wheel: Faye, 2026-11-11).
+                    if self.viewer.current.is_none() {
+                        if !(self.explorer_shown() && contains(&self.explorer_rect(), x, y)) {
+                            self.scroll_landing(delta as f32);
+                        }
                         return Some(LRESULT(0));
                     }
                     if self.hit(x, y).is_some_and(video::is_bar_hit) {
