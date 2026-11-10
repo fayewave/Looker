@@ -273,6 +273,11 @@ impl App {
                     if matches!(self.pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_pointer(x);
                     }
+                    match self.pressed {
+                        Some(Hit::TextView) => self.text_drag(x, y),
+                        Some(Hit::TextScroll) => self.text_scroll_drag(y),
+                        _ => {}
+                    }
                     if let Some((px, py, moved)) = self.pan_drag {
                         // A few DIPs of slack, so a right-click that wobbles still opens the menu.
                         if moved || (x - px).abs() + (y - py).abs() > 4.0 {
@@ -332,7 +337,7 @@ impl App {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
-                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath) => IDC_IBEAM,
+                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
                             Hit::Reveal
@@ -464,7 +469,12 @@ impl App {
                         Some(Hit::VideoVolume) => self.volume_at(x),
                         Some(Hit::AudioWave) => self.audio_press(x),
                         Some(Hit::AudioScroll) => self.audio_scroll_press(x),
+                        Some(Hit::TextView) => self.text_press(x, y, 1),
+                        Some(Hit::TextScroll) => self.text_scroll_press(y),
                         _ => {}
+                    }
+                    if !matches!(h, Some(Hit::TextView | Hit::TextScroll)) {
+                        self.text_blur();
                     }
                     self.press_at = (x, y);
                     // Dragging the view cube orbits as the model itself does (a click without moving snaps).
@@ -493,6 +503,9 @@ impl App {
                     }
                     if matches!(pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_release();
+                    }
+                    if matches!(pressed, Some(Hit::TextView | Hit::TextScroll)) {
+                        self.text_release();
                     }
                     if pressed == Some(Hit::VideoVolume) {
                         settings::save(&self.settings);
@@ -713,7 +726,9 @@ impl App {
                         // Treat as a fresh press: it may dismiss the menu or pick an item.
                         return self.handle(WM_LBUTTONDOWN, wp, lp);
                     }
-                    if self.hit(x, y) == Some(Hit::AudioWave) {
+                    if self.hit(x, y) == Some(Hit::TextView) {
+                        self.text_press(x, y, 2);
+                    } else if self.hit(x, y) == Some(Hit::AudioWave) {
                         self.audio_double_click();
                     } else if self.hit(x, y) == Some(Hit::AudioScroll) {
                         self.audio_zoom_fit();
@@ -807,6 +822,10 @@ impl App {
                         self.video_volume_by(delta as f32 / 120.0 * 0.05);
                         return Some(LRESULT(0));
                     }
+                    if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextScroll)) {
+                        self.text_wheel(delta as f32, GetKeyState(VK_CONTROL.0 as i32) < 0);
+                        return Some(LRESULT(0));
+                    }
                     if matches!(self.hit(x, y), Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_wheel(delta as f32, x, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
@@ -871,6 +890,9 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     self.hide_tooltip();
+                    if self.text_focused() && !self.page_open() && self.text_key(vk, shift, ctrl) {
+                        return Some(LRESULT(0));
+                    }
                     if !self.page_open() {
                         // A text box with the keys keeps them all: what it doesn't use (a letter, whose character
                         // follows as WM_CHAR) mustn't reach the viewer's keys.
@@ -1007,6 +1029,8 @@ impl App {
                         self.picker_char(wp.0 as u16);
                     } else if self.dialog.is_some() {
                         self.dialog_char(wp.0 as u16);
+                    } else if self.text_focused() && self.menu.is_none() && !self.page_open() {
+                        self.text_char(wp.0 as u16);
                     } else if self.explorer.field.is_some() {
                         let u = wp.0 as u16;
                         if u >= 0x20 && u != 0x7F {
@@ -1217,6 +1241,7 @@ impl App {
                     None
                 }
                 WM_CLOSE => {
+                    self.close_text(); // unsaved edits are saved, as when moving to another file
                     self.stop_rip_for_close();
                     self.save_placement();
                     None

@@ -245,9 +245,10 @@ impl App {
         let model = entry.is_some_and(|e| e.format == format::Format::Model);
         let video = entry.is_some_and(|e| matches!(e.format, format::Format::Video | format::Format::Audio));
         let audio = entry.is_some_and(|e| e.format == format::Format::Audio);
+        let text = entry.is_some_and(|e| e.format == format::Format::Text);
         // A model's histogram would be of its render, not of anything in the file; a video's of its first picture
         // only (hidden: Faye, 2026-11-10).
-        if entry.is_some_and(|e| e.histogram.is_some()) && !model && !video {
+        if entry.is_some_and(|e| e.histogram.is_some()) && !model && !video && !text {
             out.push(Block::Histogram);
         }
         out.push(Block::Title("File"));
@@ -260,11 +261,16 @@ impl App {
                 for (label, value) in self.model_facts() {
                     out.push(row(label, value));
                 }
+            } else if text {
+                if let Some((lines, chars)) = self.text_facts() {
+                    out.push(row("Lines", lines.to_string()));
+                    out.push(row("Characters", chars.to_string()));
+                }
             } else if !audio {
                 let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
                 out.push(row("Dimensions", format!("{w} × {h}")));
             }
-            if e.pages == 0 && !model && !video {
+            if e.pages == 0 && !model && !video && !text {
                 out.push(row("Megapixels", format!("{:.1} MP", e.native_w as f64 * e.native_h as f64 / 1_000_000.0)));
             }
         }

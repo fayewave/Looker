@@ -391,6 +391,18 @@ impl Viewer {
         self.schedule_preloads();
     }
 
+    /// The theme changed: text files are drawn in its colours (`imaging/text.rs`), so theirs are drawn again.
+    pub fn theme_changed(&mut self) {
+        let is_text = |p: &Path| crate::format::from_extension(p.extension().and_then(|e| e.to_str())) == Format::Text;
+        let keys: Vec<Key> = self.cache.keys().filter(|k| is_text(&k.path)).cloned().collect();
+        for k in keys {
+            self.cache.remove(&k);
+        }
+        if let Some((p, s)) = self.current.clone().filter(|(p, _)| is_text(p)) {
+            self.request(Key::new(&p, s, self.sharp), Duration::ZERO);
+        }
+    }
+
     /// Drops every cached decode and remembered failure of a file (it was rewritten or deleted).
     pub fn forget(&mut self, path: &Path) {
         let keys: Vec<Key> = self.cache.keys().filter(|k| k.path == path).cloned().collect();

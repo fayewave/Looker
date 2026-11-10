@@ -423,7 +423,7 @@ fn replace_file(temp: &Path, dest: &Path) -> Result<(), String> {
 /// The whole image (first frame) at full size, capped at the largest bitmap edge; for a document, `page`.
 pub fn full_image(path: &Path, page: usize) -> Option<Image> {
     let f = wic()?;
-    if matches!(format::sniff_file(path), Format::Pdf | Format::Text) {
+    if format::sniff_file(path) == Format::Pdf {
         let (width, height, pixels) = imaging::pdf::render_page_of(&f, path, page)
             .map_err(|e| crate::trace::mark(format!("page render failed: {e}")))
             .ok()?;

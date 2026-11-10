@@ -159,7 +159,7 @@ fn worker(s: &Shared) {
     }
     let factory: Option<IWICImagingFactory> = unsafe { CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).ok() };
     // The open document: consecutive pages of one file don't re-read it.
-    let mut open: Option<((PathBuf, u64), crate::imaging::pdf::Document)> = None;
+    let mut open: Option<((PathBuf, u64), windows::Data::Pdf::PdfDocument)> = None;
     loop {
         let req = {
             let mut q = s.queue.lock().unwrap();

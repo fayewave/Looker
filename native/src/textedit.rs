@@ -78,6 +78,10 @@ impl TextEdit {
     pub fn caret(&self) -> usize {
         self.caret
     }
+    /// Where the selection started (the caret's other end).
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
     /// The selection as (start, end); empty when they are equal.
     pub fn selection(&self) -> (usize, usize) {
         (self.caret.min(self.anchor), self.caret.max(self.anchor))
@@ -214,6 +218,15 @@ impl TextEdit {
         let line = s.split(['\r', '\n']).next().unwrap_or("");
         let units: Vec<u16> = line.chars().filter(|c| !c.is_control()).collect::<String>().encode_utf16().collect();
         self.insert_units(&units, if units.len() == 1 { Kind::Typing } else { Kind::Other });
+    }
+
+    /// Text for the multi-line editor (app/textview.rs): line breaks as \n, tabs kept, other control characters
+    /// dropped. One typed character joins the run of typing before it (one undo step); a line break doesn't.
+    pub fn insert_multiline(&mut self, s: &str) {
+        let s = s.replace("\r\n", "\n").replace('\r', "\n");
+        let units: Vec<u16> = s.chars().filter(|c| *c == '\n' || *c == '\t' || !c.is_control()).collect::<String>().encode_utf16().collect();
+        let kind = if units.len() == 1 && units[0] != b'\n' as u16 { Kind::Typing } else { Kind::Other };
+        self.insert_units(&units, kind);
     }
 
     /// One UTF-16 unit from WM_CHAR (a surrogate pair arrives as two).

@@ -417,7 +417,11 @@ impl App {
     /// Puts the settings' theme in use, the window frame included.
     pub(super) fn apply_theme(&mut self) {
         self.set_accent_globals();
+        let changed = theme::id() != self.settings.theme;
         theme::set(self.settings.theme);
+        if changed {
+            self.viewer.theme_changed();
+        }
         apply_frame_colours(self.hwnd);
         self.landing.stale();
         self.invalidate();

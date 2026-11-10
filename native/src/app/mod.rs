@@ -20,6 +20,7 @@ mod rip;
 mod slideshow;
 mod audio;
 mod subtitles;
+mod textview;
 mod video;
 
 use std::os::windows::fs::MetadataExt;
@@ -262,6 +263,9 @@ enum Hit {
     AudioScroll,
     AudioMode(u8),
     AudioClear,
+    /// A text file's editor (textview.rs), and its scrollbar.
+    TextView,
+    TextScroll,
     /// The audio bar's previous and next file, and Loop.
     AudioPrev,
     AudioNext,
@@ -575,6 +579,8 @@ pub struct App {
     menu: Option<(menus::MenuKind, ui::Menu<menus::Action>)>,
     /// Menus closing (`retire_menu`), drawn until they've shrunk away.
     menus_out: Vec<ui::Menu<menus::Action>>,
+    /// The text file on screen, read and edited in place (textview.rs).
+    text_view: Option<textview::TextView>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
     dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
@@ -1336,6 +1342,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             fades: ui::Fades::new(),
             menu: None,
             menus_out: Vec::new(),
+            text_view: None,
             tooltip: None,
             dialog: None,
             toast: None,

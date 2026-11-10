@@ -272,6 +272,18 @@ impl App {
             if let Some(name) = format::display_name(c.format, Some(path)) {
                 parts.push((0, name));
             }
+            // A text file: its lines and characters (the still is only its thumbnail).
+            if c.format == format::Format::Text {
+                if let Some((lines, chars)) = self.text_facts() {
+                    parts.push((1, format!("{lines} lines")));
+                    parts.push((4, format!("{chars} characters")));
+                }
+                if let Some(i) = &self.info {
+                    parts.push((3, format_bytes(i.size)));
+                    parts.push((6, format!("Modified {}", format_time(i.modified))));
+                }
+                return parts;
+            }
             // A model has triangles, not pixels (and the still's zoom means nothing).
             if c.format == format::Format::Model {
                 if let Some(s) = self.model_status() {
@@ -384,6 +396,7 @@ impl App {
         self.prepare_model(&g);
         self.prepare_video(&g);
         self.prepare_audio(&g);
+        self.prepare_text();
         self.prepare_subtitles(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
@@ -508,7 +521,7 @@ impl App {
     pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
         // A photo's camera and exposure come from its EXIF (read once per file, as the info card does).
-        if self.placeholder.is_none() && self.viewer.current_entry().is_some_and(|c| !matches!(c.format, format::Format::Video | format::Format::Audio | format::Format::Model)) {
+        if self.placeholder.is_none() && self.viewer.current_entry().is_some_and(|c| !matches!(c.format, format::Format::Video | format::Format::Audio | format::Format::Model | format::Format::Text)) {
             self.request_exif();
         }
         // Centred in the whole row (an inset box sat the text 1.5 px high).
@@ -562,7 +575,7 @@ impl App {
         }
         // A file Looker can't open covers the photo: the photo isn't drawn at all (it would show around the
         // cover, behind the floating bars).
-        let model = self.draw_model(g) || self.draw_audio_photo(g);
+        let model = self.draw_model(g) || self.draw_audio_photo(g) || self.text_shown();
         if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none() && !model) {
             {
                 let r = self.view.frame();
@@ -611,6 +624,7 @@ impl App {
         // The photo layer ends here (see Gfx::begin_ui).
         g.begin_ui(None);
         self.draw_audio(g);
+        self.draw_text_view(g);
         if self.viewer.shown.is_none() && self.viewer.error.is_some() {
             self.draw_cant_display(g);
         }

@@ -553,9 +553,11 @@ impl App {
         };
         let t = theme::t();
         let all = explorer::crumbs(&place);
-        let names: Vec<String> = all.iter().map(Place::name).collect();
         const PAD: f32 = 6.0;
         const CHEVRON: f32 = 16.0;
+        // A long folder name loses its middle, so its start and its end both show (Faye, 2026-11-11).
+        const MAX_NAME: f32 = 180.0;
+        let names: Vec<String> = all.iter().map(|p| middle_fit(g, &p.name(), MAX_NAME)).collect();
         let widths: Vec<f32> = names.iter().map(|n| g.measure(&wide(n), &g.fonts.body) + 2.0 + 2.0 * PAD).collect();
         let more_w = g.measure(&wide("\u{2026}"), &g.fonts.body) + 2.0 + 2.0 * PAD;
         let avail = (x1 - x0).max(0.0);
@@ -587,6 +589,8 @@ impl App {
         for i in from..all.len() {
             let last = i + 1 == all.len();
             let w = if last { widths[i].min((x1 - x).max(0.0)) } else { widths[i] };
+            // The last one squeezed by the row's end: shortened in the middle too, to what's left.
+            let name = if last && w < widths[i] { middle_fit(g, &names[i], (w - 2.0 - 2.0 * PAD).max(0.0)) } else { names[i].clone() };
             let r = rect(x, y, w, h);
             let id = Hit::Crumb(i);
             self.hits.add(id, r);
@@ -595,7 +599,7 @@ impl App {
             let is_target = false;
             let open = self.explorer.path_edit.as_ref().is_some_and(|p| p.crumb == Some(i));
             let colour = ui::crumb_frame(g, fill, &st, is_target || open, if last { rgb(t.text) } else { rgb(t.label) });
-            g.text(&wide(&names[i]), &g.fonts.body, r, colour, Align::Center);
+            g.text(&wide(&name), &g.fonts.body, r, colour, Align::Center);
             x += w;
             if !last {
                 let cr = rect(x, y + 4.0, CHEVRON, h - 8.0);
@@ -1560,4 +1564,27 @@ fn aspect_text(w: u32, h: u32) -> String {
         }
     }
     format!("{r:.2}:1")
+}
+
+/// `s` as it fits `max_w` in the body font: whole, else its start and end with "…" between them.
+fn middle_fit(g: &Gfx, s: &str, max_w: f32) -> String {
+    if g.measure(&wide(s), &g.fonts.body) <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let cut = |k: usize| -> String {
+        let head = k.div_ceil(2);
+        let tail = k / 2;
+        let mut out: String = chars[..head].iter().collect();
+        out.push('\u{2026}');
+        out.extend(&chars[chars.len() - tail..]);
+        out
+    };
+    // The most characters kept that still fit.
+    let (mut lo, mut hi) = (0usize, chars.len().saturating_sub(1));
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if g.measure(&wide(&cut(mid)), &g.fonts.body) <= max_w { lo = mid } else { hi = mid - 1 }
+    }
+    cut(lo)
 }

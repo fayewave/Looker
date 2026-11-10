@@ -1,6 +1,5 @@
-//! Plain text (.txt) as pages: the text wrapped at the page's width in Consolas (Notepad's font), split into
-//! Letter pages, each drawn on white paper the way a PDF page is. It goes through the PDF path (`pdf::Document`):
-//! the strip of pages, the page bar, the page thread rendering what's visible.
+//! Plain text (.txt) for thumbnails: the start of the file on a Letter page in the theme's colours (its popup
+//! grey, its text), wrapped in Consolas. On screen a text file is the editor (app/textview.rs), not this.
 
 use std::path::Path;
 
@@ -17,7 +16,6 @@ pub const PAGE_H: f32 = 1056.0;
 const MARGIN: f32 = 72.0;
 /// 10 pt.
 const FONT_SIZE: f32 = 13.333;
-const INK: u32 = 0x1F1F1F;
 /// Past this many characters the rest is left off (a log of hundreds of megabytes would take minutes to lay
 /// out); the last page says so.
 const MAX_CHARS: usize = 4 << 20;
@@ -44,7 +42,7 @@ fn decode_text(b: &[u8]) -> String {
     let b = b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(b);
     match std::str::from_utf8(b) {
         Ok(s) => s.to_string(),
-        Err(_) => b.iter().map(|&c| cp1252(c)).collect(),
+        Err(_) => ansi(b),
     }
 }
 
@@ -120,8 +118,32 @@ pub fn open(path: &Path) -> Result<TextDoc, String> {
     Ok(TextDoc { text, pages })
 }
 
-pub fn page_sizes(doc: &TextDoc) -> Vec<(f32, f32)> {
-    vec![(PAGE_W, PAGE_H); doc.pages.len()]
+/// The first page, fitted to the box: the still the thumbnails and the strip show.
+pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<super::Decoded, String> {
+    let doc = open(path)?;
+    let (box_w, box_h) = if box_w == 0 || box_h == 0 { (1024, 1024) } else { (box_w, box_h) };
+    let k = (box_w as f32 / PAGE_W).min(box_h as f32 / PAGE_H).min(2.0);
+    let (w, h) = (((PAGE_W * k).round() as u32).max(1), ((PAGE_H * k).round() as u32).max(1));
+    let px = render(f, &doc, 0, w, h)?;
+    Ok(super::Decoded::still(w, h, px, w, h, None))
+}
+
+/// Bytes that aren't UTF-8 read as Windows-1252 (old Notepad's "ANSI").
+pub fn ansi(b: &[u8]) -> String {
+    b.iter().map(|&c| cp1252(c)).collect()
+}
+
+/// Text back to Windows-1252; None if some character has no place in it.
+pub fn to_ansi(s: &str) -> Option<Vec<u8>> {
+    s.chars()
+        .map(|ch| {
+            let u = ch as u32;
+            if u < 0x80 || (0xA0..=0xFF).contains(&u) {
+                return Some(u as u8);
+            }
+            (0x80u8..=0x9F).find(|&b| cp1252(b) == ch)
+        })
+        .collect()
 }
 
 /// Page `index` at exactly `w × h`, premultiplied BGRA.
@@ -143,9 +165,10 @@ pub fn render(f: &IWICImagingFactory, doc: &TextDoc, index: usize, w: u32, h: u3
         let dc: ID2D1DeviceContext = rt.cast().map_err(err)?;
         dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         let c = |v: u32| D2D1_COLOR_F { r: (v >> 16 & 0xFF) as f32 / 255.0, g: (v >> 8 & 0xFF) as f32 / 255.0, b: (v & 0xFF) as f32 / 255.0, a: 1.0 };
-        let brush = dc.CreateSolidColorBrush(&c(INK), None).map_err(err)?;
+        let t = crate::theme::t();
+        let brush = dc.CreateSolidColorBrush(&c(t.text), None).map_err(err)?;
         dc.BeginDraw();
-        dc.Clear(Some(&c(0xFFFFFF)));
+        dc.Clear(Some(&c(crate::theme::raised().popup)));
         let (sx, sy) = (w as f32 / PAGE_W, h as f32 / PAGE_H);
         dc.SetTransform(&windows_numerics::Matrix3x2 { M11: sx, M12: 0.0, M21: 0.0, M22: sy, M31: 0.0, M32: 0.0 });
         dc.DrawTextLayout(windows_numerics::Vector2 { X: MARGIN, Y: MARGIN }, &tl, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
