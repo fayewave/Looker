@@ -113,6 +113,8 @@ pub struct Theme {
     pub button: u32,
     /// The checkerboard's two squares behind the photo (neutral greys a hair apart).
     pub checker: [u32; 2],
+    /// The title bar and status row when Appearance makes them solid: neutral (no page tint), Ember's black.
+    pub bar: u32,
     /// A button that's on (a panel's toggle, the picked theme chip), the file the explorer is on and the
     /// Settings section open: `button` tinted with the accent (under an accent outline, on the buttons and
     /// rows). The one control fill that's red.
@@ -146,6 +148,7 @@ pub const EMBER: Theme = Theme {
     button: 0x131313,
     selected: 0x401616,
     checker: [0x070707, 0x0A0A0A],
+    bar: 0x000000,
 };
 pub const EMBER_RAISED: Theme = Theme { divider: 0x363636, track: 0x3A3A3A, field: 0x161616, button: 0x262626, hover_fill: 0x2C2C2C, row_select: 0x323232, ..EMBER };
 
@@ -175,6 +178,7 @@ pub const GARNET: Theme = Theme {
     button: 0x2E2E2E,
     selected: 0x602C2C,
     checker: [0x0F0F0F, 0x131313],
+    bar: 0x222222,
 };
 pub const GARNET_RAISED: Theme = Theme { divider: 0x4E4E4E, track: 0x555555, field: 0x2B2B2B, button: 0x3A3A3A, hover_fill: 0x4A4A4A, row_select: 0x555555, ..GARNET };
 
@@ -204,6 +208,7 @@ pub const BLUSH: Theme = Theme {
     button: 0xEEEEEE,
     selected: 0xF2CACA,
     checker: [0xECECEC, 0xF1F1F1],
+    bar: 0xF3F3F3,
 };
 pub const BLUSH_RAISED: Theme = Theme { divider: 0xE2E2E2, track: 0xD8D8D8, field: 0xF4F4F4, ..BLUSH };
 
@@ -235,6 +240,7 @@ pub const PAPER: Theme = Theme {
     button: 0xE3DCCE,
     selected: 0xEFCDC3,
     checker: [0xE7E1D5, 0xECE6DB],
+    bar: 0xE8E2D5,
 };
 pub const PAPER_RAISED: Theme = Theme { divider: 0xDDD6C7, track: 0xD6CEBD, field: 0xECE6DA, ..PAPER };
 

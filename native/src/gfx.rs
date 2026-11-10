@@ -166,6 +166,8 @@ pub struct Fonts {
     pub overline: IDWriteTextFormat,
     /// 14 px semibold: the Settings card's headings.
     pub page_title: IDWriteTextFormat,
+    /// 14 px medium, one line: the video's toasts.
+    pub body_large: IDWriteTextFormat,
     /// Segoe Fluent Icons, 16 px (toolbar) and 10 px (caption buttons, chevrons).
     pub icons: IDWriteTextFormat,
     pub caption_icons: IDWriteTextFormat,
@@ -1324,6 +1326,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 17.0, 13.0)?;
         let overline = inter(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let page_title = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let body_large = inter(14.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         subtitle_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
@@ -1343,7 +1346,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, large_icons: icon(18.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, body_large, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, large_icons: icon(18.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 

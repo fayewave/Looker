@@ -34,10 +34,10 @@ impl App {
         self.invalidate();
     }
 
-    /// A video readout (volume, speed, frame step, loop): quick's fade, held 650 ms instead of 350, at the top
-    /// middle of the preview.
+    /// A video readout (volume, speed, frame step, loop): quick's fade out, held 900 ms (quick's is 350), at the
+    /// top middle of the preview.
     pub(super) fn show_video_toast(&mut self, text: impl Into<String>) {
-        self.toast = Some(Toast::new(text.into(), true, self.toast.as_ref()).video(650.0));
+        self.toast = Some(Toast::new(text.into(), true, self.toast.as_ref()).video(900.0));
         self.invalidate();
     }
 

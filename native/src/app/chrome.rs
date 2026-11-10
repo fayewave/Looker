@@ -452,7 +452,7 @@ impl App {
         for (tool, glyph, r) in self.tool_rects() {
             // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
             // looking the same whatever is behind.
-            g.fill_round(r, 5.0, rgb(if self.settings.bars_opaque { t.sidebar } else { t.content }));
+            g.fill_round(r, 5.0, rgb(if self.settings.bars_opaque { t.bar } else { t.content }));
             let enabled = self.tool_enabled(tool);
             let id = Hit::Tool(tool);
             self.hits.add(id, r);
@@ -608,8 +608,8 @@ impl App {
         // gradient under them.
         let solid = self.chrome() && self.settings.bars_opaque;
         if solid {
-            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.sidebar));
-            g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.sidebar));
+            g.fill(D2D_RECT_F { bottom: bg.top + TITLE_H + TOOLBAR_H, ..bg }, rgb(t.bar));
+            g.fill(D2D_RECT_F { top: self.content_bottom(), ..bg }, rgb(t.bar));
         } else if self.chrome() {
             let buttons_bottom = Self::toolbar_y() + BUTTON_H;
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
