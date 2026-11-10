@@ -225,6 +225,17 @@ impl App {
         let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);
         self.hits.add(Hit::ExplorerGrip, grip);
         let dragging = self.explorer.drag.is_some();
+        // While the edge is dragged near the sticky line, a ghost of it shows where the line is, over the explorer
+        // in browse mode, over the photo beside the card (Faye, 2026-11-10): faint 160 DIPs off, clearer closer in.
+        let line_x = self.viewport().left + self.sticky_line() - super::explorer::MARGIN;
+        let near = (1.0 - (card.right - line_x).abs() / 160.0).clamp(0.0, 1.0);
+        let near = near * near * (3.0 - 2.0 * near);
+        let ghost = self.fades.get(Hit::StickyGhost, dragging) * near;
+        moving |= self.fades.moving;
+        if ghost > 0.0 {
+            let x = g.snap(line_x) - 1.0;
+            g.fill_round(rect(x, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), 1.0, gfx::rgba(theme::t().accent, 0.4 * ghost));
+        }
         let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
         ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving

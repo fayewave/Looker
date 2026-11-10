@@ -565,8 +565,13 @@ impl App {
     /// sticky line, so a small window still has room for the photo.
     pub(super) fn card_min(&self) -> f32 {
         let (w, _) = self.size_dip();
-        let cap = INFO_MAX.min((w - MIN_IMAGE_W).max(EXPLORER_MIN));
-        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX).min(cap)
+        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX).min(self.sticky_line())
+    }
+
+    /// The sticky line: the card's widest, where browse mode begins.
+    pub(super) fn sticky_line(&self) -> f32 {
+        let (w, _) = self.size_dip();
+        INFO_MAX.min((w - MIN_IMAGE_W).max(EXPLORER_MIN))
     }
 
     /// The card's width now: its own, eased out to browse mode's while that's on, stretched or bouncing at the

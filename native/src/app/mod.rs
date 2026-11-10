@@ -187,6 +187,8 @@ enum Hit {
     ExplorerList,
     ExplorerRow(usize),
     ExplorerGrip,
+    /// Not a target: the ghost of the sticky line, fading in while the edge is dragged near it.
+    StickyGhost,
     ExplorerBack,
     ExplorerForward,
     ExplorerUp,
