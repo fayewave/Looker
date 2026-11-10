@@ -3159,10 +3159,15 @@ impl App {
                 self.explorer.row(i).filter(|r| r.kind == Kind::Other && mx >= n0 && mx <= n1).map(|r| format!("{}: not an image Looker can open", r.name))
             }
             Hit::Tab(i) => self.explorer.tab_tips.iter().find(|(k, _)| *k == i).map(|(_, t)| t.clone()),
-            Hit::Crumb(_) | Hit::CrumbMore => self.explorer.place.as_ref().map(|p| match p {
-                Place::Folder(f) => f.to_string_lossy().into_owned(),
-                other => other.name(),
-            }),
+            // A crumb: that folder's own path (a drive's, This PC's name), cut off or not (Faye, 2026-11-11).
+            Hit::Crumb(i) => {
+                let place = self.explorer.place.clone()?;
+                explorer::crumbs(&place).get(i).map(|p| match p {
+                    Place::Folder(f) => f.to_string_lossy().into_owned(),
+                    other => other.name(),
+                })
+            }
+            Hit::CrumbMore => Some(self.explorer.hidden_crumbs.iter().map(Place::name).collect::<Vec<_>>().join("  \u{203A}  ")),
             Hit::ExplorerBack => Some("Back (Alt+Left)".into()),
             Hit::ExplorerForward => Some("Forward (Alt+Right)".into()),
             Hit::ExplorerUp => Some("Up (Backspace)".into()),
@@ -3175,10 +3180,14 @@ impl App {
             Hit::ExplorerBookmark => Some(if self.explorer.folder().is_some_and(|f| self.settings.is_bookmarked(&f)) { "Remove bookmark".into() } else { "Bookmark this folder".into() }),
             Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
             Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (Ctrl+B)".into() } else { "Browse mode (Ctrl+B)".into() }),
-            Hit::SideRow(i) => match self.sidebar_items().get(i).map(|it| it.target.clone()) {
-                Some(SideTarget::Place(Place::Folder(p))) => Some(p.to_string_lossy().into_owned()),
-                _ => None,
-            },
+            // A sidebar folder's path; anything else there (This PC, a collection) its name.
+            Hit::SideRow(i) => {
+                let it = self.sidebar_items().into_iter().nth(i)?;
+                match it.target {
+                    SideTarget::Place(Place::Folder(p)) => Some(p.to_string_lossy().into_owned()),
+                    _ => Some(it.label),
+                }
+            }
             _ => None,
         }
     }

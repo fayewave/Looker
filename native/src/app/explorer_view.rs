@@ -882,8 +882,11 @@ impl App {
                     }
                 } else {
                     g.text(&wide(&r.name), &g.fonts.body, rect(tx, row.top, (name_right - tx).max(0.0), rh), ink(t.text), Align::Left);
-                    if hovered && g.measure(&wide(&r.name), &g.fonts.body) > (name_right - tx).max(0.0) + 0.5 {
-                        self.explorer.cell_tips.push((rect(x, row.top, w, rh), r.name.clone()));
+                    // The name's tooltip whether it's cut off or not (Faye, 2026-11-11); a file Looker can't open
+                    // says so.
+                    if hovered {
+                        let tip = if r.kind == Kind::Other { format!("{}: not an image Looker can open", r.name) } else { r.name.clone() };
+                        self.explorer.cell_tips.push((rect(x, row.top, w, rh), tip));
                     }
                 }
             }
