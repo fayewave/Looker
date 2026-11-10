@@ -2483,15 +2483,7 @@ impl App {
     // --- Resize grip    // --- Resize grip (dragging right = wider) -------------------------------------------------------
 
     pub(super) fn explorer_grip_press(&mut self, x: f32) {
-        // Where the drag starts on the pointer's scale (`explorer_grip_drag`): browse mode's width less the
-        // sidebar it adds.
-        let w = self.explorer_width() - if self.browsing() { self.browse_gap() } else { 0.0 };
-        self.explorer.drag = Some((x, w));
-    }
-
-    /// What browse mode adds to the card's width at the change: the sidebar and its divider.
-    fn browse_gap(&self) -> f32 {
-        self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX) + 1.0
+        self.explorer.drag = Some((x, self.explorer_width()));
     }
 
     /// One drag covers both widths: the card up to its widest, then past that it becomes browse mode and goes
@@ -2501,13 +2493,12 @@ impl App {
         let (ww, _) = self.size_dip();
         let card_cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(EXPLORER_MIN));
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // Sticky at the change, with give (Faye, 2026-11-10). `w` is on the pointer's scale: the card's width, and in
-        // browse mode its width less the sidebar it adds (so the edge keeps its distance from the pointer and never
-        // jumps while dragged). The change sits at the card's widest: the card goes over to browse mode once the
-        // pointer is `STICK` past it, browse mode back once it's `STICK` short of it (one point each way, so it
-        // can't flip to and fro); in between the edge follows on a rubber band, and crossing snaps with a bounce.
-        const STICK: f32 = 48.0;
-        let gap = self.browse_gap();
+        // Sticky at the change, with give (Faye, 2026-11-10). The change sits at the card's widest: the card goes
+        // over to browse mode once the pointer is `STICK` past it, browse mode back once it's `STICK` short of it
+        // (one point each way, so it can't flip to and fro); in between the edge follows on a rubber band, and
+        // crossing snaps with a bounce. Out of the zone the edge is where the pointer is, in browse mode too (the
+        // list makes room for the sidebar).
+        const STICK: f32 = 96.0;
         let was = self.browsing();
         let to_browse = if was { w >= card_cap - STICK } else { w > card_cap + STICK };
         self.explorer.stretch = match (was, to_browse) {
@@ -2526,7 +2517,7 @@ impl App {
                 self.explorer.browse.set([1.0], now);
                 self.explorer.focused = true;
             }
-            self.settings.browse_share = (w.max(card_cap) + gap) / ww;
+            self.settings.browse_share = w.max(card_cap) / ww;
         } else {
             if was {
                 self.settings.explorer_width = card_cap;
