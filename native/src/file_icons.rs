@@ -30,7 +30,7 @@ thread_local! {
 /// Looker's icon for this extension at `px` device pixels, if Looker opens the type.
 pub fn icon(ext: &str, px: u32) -> Option<Arc<Icon>> {
     let ext = ext.to_ascii_lowercase();
-    if ext.is_empty() || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if ext.is_empty() || !ext.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return None;
     }
     let px = px.clamp(8, 256);

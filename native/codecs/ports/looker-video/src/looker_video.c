@@ -147,6 +147,65 @@ static void quiet_once(void)
         av_log_set_level(AV_LOG_QUIET);
 }
 
+// Raw elementary streams (.264, .hevc, .m1v, .obu, .thd, .mlp...) carry no timestamps, and FFmpeg gives them no
+// duration: count the packets (all of them in a small file, else the first 4 MB's and scale by the file size), then
+// rewind. Without a duration the player shows no length and doesn't loop. For video, a duration guessed from the bit
+// rate is no better: MPEG-1's sequence header says 104 Mbit/s for "variable", which made a 2 s .m1v 9 ms long.
+// (Constant-rate audio, AC-3 and DTS, is guessed right.)
+static void raw_duration(AVFormatContext *fmt)
+{
+    if (!fmt->iformat || !(fmt->iformat->flags & AVFMT_NOTIMESTAMPS) || !fmt->pb)
+        return;
+    int si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    int video = si >= 0;
+    if (!video)
+        si = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (si < 0)
+        return;
+    AVStream *st = fmt->streams[si];
+    int guessed = video && fmt->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
+    if ((fmt->duration > 0 || st->duration > 0) && !guessed)
+        return;
+    AVRational fps = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+    if (video && (fps.num <= 0 || fps.den <= 0))
+        return;
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt)
+        return;
+    // Video counts frames; audio adds up the packets' durations (the parser sets them), in the stream's time base.
+    int64_t units = 0, bytes = 0, size = avio_size(fmt->pb);
+    int eof = 0;
+    while (bytes < (4 << 20))
+    {
+        if (av_read_frame(fmt, pkt) < 0)
+        {
+            eof = 1;
+            break;
+        }
+        if (pkt->stream_index == si)
+        {
+            units += video ? 1 : (pkt->duration > 0 ? pkt->duration : 0);
+            bytes += pkt->size;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    if (!eof && bytes > 0 && size > bytes)
+        units = (int64_t)((double)units * size / bytes);
+    if (units > 0)
+    {
+        fmt->duration = video ? av_rescale(units, (int64_t)fps.den * AV_TIME_BASE, fps.num)
+                              : av_rescale_q(units, st->time_base, AV_TIME_BASE_Q);
+        st->duration = av_rescale_q(fmt->duration, AV_TIME_BASE_Q, st->time_base);
+        fmt->duration_estimation_method = AVFMT_DURATION_FROM_STREAM; // counted: not again
+    }
+    if (av_seek_frame(fmt, si, st->start_time != AV_NOPTS_VALUE ? st->start_time : 0, AVSEEK_FLAG_BACKWARD) < 0)
+    {
+        avio_seek(fmt->pb, 0, SEEK_SET);
+        avformat_flush(fmt);
+    }
+}
+
 // Opens the container; `full` also runs avformat_find_stream_info, which decodes a run of frames to fill in what
 // the headers left out. A still skips it when the headers already give the picture's codec and size (MP4, MOV,
 // Matroska, MXF, AVI do): on a 1080p60 H.264 recording that saves ~50 ms.
@@ -179,7 +238,12 @@ static int input_open(Input *in, const wchar_t *path, int full)
     int r = avformat_open_input(&in->fmt, name, NULL, NULL);
     if (r < 0)
         return r; // avformat_open_input freed the context
-    return full ? avformat_find_stream_info(in->fmt, NULL) : 0;
+    if (!full)
+        return 0;
+    r = avformat_find_stream_info(in->fmt, NULL);
+    if (r >= 0)
+        raw_duration(in->fmt);
+    return r;
 }
 
 // ---- stream info ----------------------------------------------------------------------------------------------
@@ -232,6 +296,10 @@ static void fill_info(const AVFormatContext *fmt, const AVStream *st, const AVSt
     else if (st->duration > 0)
         info->duration_us = av_rescale_q(st->duration, st->time_base, AV_TIME_BASE_Q);
     AVRational fps = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+    // The DV demuxer reports its time base (60000/1) as the average rate: past 1000 fps, trust the real rate.
+    if (fps.den > 0 && fps.num > 1000LL * fps.den && st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0 &&
+        st->r_frame_rate.num <= 1000LL * st->r_frame_rate.den)
+        fps = st->r_frame_rate;
     if ((fps.num <= 0 || fps.den <= 0) && st->time_base.num > 0 && st->time_base.den >= 10 * st->time_base.num &&
         st->time_base.den <= 300 * st->time_base.num)
         fps = av_inv_q(st->time_base);
@@ -664,6 +732,7 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
     }
     AVStream *st = in.fmt->streams[vi];
     st->discard = AVDISCARD_DEFAULT;
+    raw_duration(in.fmt);
     fill_info(in.fmt, st, ai >= 0 ? in.fmt->streams[ai] : NULL, info);
 
     const AVCodec *codec = decoder_for(st->codecpar);
@@ -1197,6 +1266,7 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
     }
     AVStream *vs = fmt->streams[p->vi];
     vs->discard = AVDISCARD_DEFAULT;
+    raw_duration(fmt);
     fill_info(fmt, vs, p->ai >= 0 ? fmt->streams[p->ai] : NULL, info);
     p->start_us = vs->start_time != AV_NOPTS_VALUE ? av_rescale_q(vs->start_time, vs->time_base, AV_TIME_BASE_Q) : 0;
     if (audio_stream >= 0 && (unsigned)audio_stream < fmt->nb_streams && fmt->streams[audio_stream]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)

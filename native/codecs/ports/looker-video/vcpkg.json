@@ -13,7 +13,8 @@
         "avformat",
         "dav1d",
         "swresample",
-        "swscale"
+        "swscale",
+        "zlib"
       ]
     },
     "libass",

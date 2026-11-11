@@ -15,7 +15,7 @@ $outDir = Join-Path $native 'assets\FileIcons'
 $formatRs = Get-Content (Join-Path $native 'src\format.rs') -Raw
 $block = [regex]::Match($formatRs, 'pub const EXTENSIONS: &\[&str\] = &\[(.*?)\];', 'Singleline').Groups[1].Value
 $block = ($block -split "`n" | ForEach-Object { ($_ -replace '//.*$', '') }) -join "`n"
-$exts = [regex]::Matches($block, '"([a-z0-9]+)"') | ForEach-Object { $_.Groups[1].Value }
+$exts = [regex]::Matches($block, '"([a-z0-9-]+)"') | ForEach-Object { $_.Groups[1].Value }
 if ($exts.Count -lt 50) { throw "Couldn't read format::EXTENSIONS ($($exts.Count) found)." }
 
 # Render through headless Chrome (Edge's headless mode printed nothing here, 2026-11-10).

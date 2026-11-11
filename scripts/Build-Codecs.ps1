@@ -85,10 +85,12 @@ Get-ChildItem (Join-Path $installed 'bin\ass-*.dll') | Copy-Item -Destination $O
 foreach ($dll in 'freetype.dll', 'harfbuzz.dll', 'fribidi-0.dll') {
     Copy-Item (Join-Path $installed "bin\$dll") $OutDir
 }
+# zlib for FFmpeg's zlib-based decoders (ZMBV, TSCC, Flash Screen Video, LCL, PNG in AVI/MOV).
+Copy-Item (Join-Path $installed 'bin\z.dll') $OutDir
 foreach ($lib in 'avformat', 'avcodec', 'avfilter', 'avutil', 'swresample', 'swscale') {
     Get-ChildItem (Join-Path $installed "bin\$lib-*.dll") | Copy-Item -Destination $OutDir
 }
-foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi') {
+foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi', 'zlib') {
     Copy-Item (Join-Path $installed "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
 }
 foreach ($port in 'libraw', 'lcms', 'jasper', 'zlib') {

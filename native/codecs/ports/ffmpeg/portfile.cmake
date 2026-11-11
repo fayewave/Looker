@@ -781,8 +781,14 @@ endif()
 # Older web video: FLV (Sorenson H.263 and VP6 beside H.264) and Ogg Theora (.ogv).
 # mpegvideo: the program stream demuxer probes video streams (DVD VOBs, .mpg) through it; without it MPEG-2 video
 # in a program stream came out as an unknown codec.
+# VLC parity (2026-11-11): RealMedia, DV, NSV, NuppelVideo, WTV, Y4M, GXF, IVF/OBU, raw H.264/HEVC/MPEG-4 streams,
+# Bink/Smacker; raw AC-3/E-AC-3/DTS/TrueHD/MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF);
+# and the codecs VLC decodes in them and in the containers above (old AVI/QuickTime, lossless capture, screen
+# recorders, RealVideo/RealAudio, ATRAC, speech codecs, the rest of PCM and ADPCM). All FFmpeg's own, all LGPL.
 set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps mpegvideo flv srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
-    microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub)
+    microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub
+    rm dv nsv nuv wtv yuv4mpegpipe gxf ivf obu h264 hevc m4v h261 bink smacker
+    ac3 eac3 dts dtshd truehd mlp mpc mpc8 tta tak shorten amr amrnb amrwb au voc gsm xwma dsf iff)
 set(LOOKER_DECODERS
     h264 hevc vp8 vp9 av1 libdav1d prores dnxhd cfhd mpeg1video mpeg2video mpeg4 h263 msmpeg4v3 mjpeg vc1 wmv1 wmv2 wmv3
     rawvideo v210 v210x png qtrle theora flv vp6 vp6f vp6a
@@ -790,8 +796,21 @@ set(LOOKER_DECODERS
     pcm_s8 pcm_u8 pcm_s16le pcm_s16be pcm_s24le pcm_s24be pcm_s32le pcm_s32be pcm_f32le pcm_f32be pcm_f64le pcm_mulaw
     pcm_alaw pcm_dvd pcm_bluray adpcm_ms adpcm_ima_wav wavpack ape
     subrip srt ass ssa movtext webvtt text microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs ccaption
-    pgssub dvdsub dvbsub)
-set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca dvdsub dvbsub)
+    pgssub dvdsub dvbsub
+    dvvideo dirac hap dxv jpeg2000 r210 r10k bitpacked ffv1 huffyuv ffvhuff utvideo magicyuv lagarith fraps zmbv cllc hqx hq_hqa
+    tscc tscc2 flashsv flashsv2 mss1 mss2 vmnc cinepak indeo2 indeo3 indeo4 indeo5 msvideo1 msrle svq1 svq3 rpza smc 8bps
+    mjpegb h261 msmpeg4v1 msmpeg4v2 vp3 vp5 vp7 rv10 rv20 rv30 rv40 bink smackvid truemotion1 truemotion2 zlib mszh
+    amrnb amrwb speex nellymoser wmalossless wmavoice cook ralf sipr ra_144 ra_288 atrac1 atrac3 atrac3al atrac3p atrac3pal
+    atrac9 mpc7 mpc8 tta tak shorten mlp dsd_lsbf dsd_msbf dsd_lsbf_planar dsd_msbf_planar dst qdm2 qdmc mace3 mace6 imc
+    binkaudio_dct binkaudio_rdft smackaud dvaudio s302m dolby_e xma1 xma2 truespeech gsm gsm_ms adpcm_g722 adpcm_g726
+    adpcm_g726le g723_1 g729 comfortnoise
+    pcm_s16le_planar pcm_s24le_planar pcm_s32le_planar pcm_s8_planar pcm_s16be_planar pcm_s24daud pcm_s64le pcm_s64be
+    pcm_f16le pcm_f24le pcm_f64be pcm_u16le pcm_u16be pcm_u24le pcm_u24be pcm_u32le pcm_u32be pcm_lxf pcm_vidc
+    adpcm_ima_qt adpcm_ima_dk3 adpcm_ima_dk4 adpcm_ima_ws adpcm_ima_amv adpcm_ima_smjpeg adpcm_ima_oki adpcm_ima_apc
+    adpcm_swf adpcm_yamaha adpcm_ct adpcm_4xm adpcm_adx adpcm_ea adpcm_xa adpcm_thp
+    hdmv_text_subtitle xsub jacosub stl)
+set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca dvdsub dvbsub
+    h263 h261 rv34 vp3 dirac jpeg2000 mlp gsm amr cook sipr tak xma dvaudio dolby_e g723_1 g729)
 set(LOOKER_HWACCELS h264 hevc vp9 av1 mpeg2 vc1 wmv3)
 set(LOOKER_FILTERS abuffer abuffersink aformat aresample atempo anull)
 # DVD ripping (native/PLAN.md N8, looker_rip.c): Matroska and MP4 out, H.264 through Windows' Media Foundation

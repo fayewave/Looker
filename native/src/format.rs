@@ -100,12 +100,20 @@ pub const EXTENSIONS: &[&str] = &[
     "vmf", "vmt", "vtf",
     // Text: plain, Markdown, logs and settings, Source's configs and model scripts, data, subtitles, NFOs.
     "txt", "md", "markdown", "log", "ini", "cfg", "vdf", "qc", "json", "xml", "csv", "tsv", "yaml", "yml", "toml", "srt", "vtt",
-    "nfo",
+    "nfo", "ass", "ssa",
     // Video.
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp", "ts",
     "flv", "ogv", "m2v", "vob",
+    // More video, for VLC parity (2026-11-11): the containers above under other names, then RealMedia, DV, NSV,
+    // NuppelVideo, Windows Media Center, Y4M, GXF, IVF/OBU, raw H.264/HEVC streams, Bink, Smacker.
+    "asf", "f4v", "3g2", "divx", "xvid", "ogm", "m1v", "mpv", "mpe", "m2p", "mod", "tod", "m2t", "trp", "tp", "dvr-ms",
+    "rm", "rmvb", "dv", "nsv", "nuv", "wtv", "y4m", "gxf", "ivf", "obu", "264", "h264", "265", "hevc", "bik", "smk",
     // Audio.
     "mp3", "m4a", "m4b", "aac", "flac", "wav", "aif", "aiff", "ogg", "oga", "opus", "wma", "mka", "wv", "ape", "caf",
+    // More audio (VLC parity): MPEG layer 1/2, Wave64, WebM audio, raw Dolby/DTS streams, Musepack, TTA, TAK, Shorten,
+    // AMR, Sun/NeXT, Creative Voice, GSM, xWMA, DSD, RealAudio.
+    "mp1", "mp2", "mpa", "w64", "weba", "ac3", "eac3", "dts", "thd", "mlp", "mpc", "tta", "tak", "shn", "amr", "awb",
+    "au", "snd", "voc", "gsm", "xwma", "dsf", "dff", "ra",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -190,13 +198,16 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "mtl" => Format::Mtl,
         // Source materials are KeyValues text: read and edited as text (Faye, 2026-11-11).
         "txt" | "vmt" | "md" | "markdown" | "log" | "ini" | "cfg" | "vdf" | "qc" | "json" | "xml" | "csv" | "tsv" | "yaml" | "yml"
-        | "toml" | "srt" | "vtt" | "nfo" => Format::Text,
+        | "toml" | "srt" | "vtt" | "nfo" | "ass" | "ssa" => Format::Text,
         "vtf" => Format::Vtf,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" | "ts" | "flv" | "ogv"
-        | "m2v" | "vob" => Format::Video,
+        | "m2v" | "vob" | "asf" | "f4v" | "3g2" | "divx" | "xvid" | "ogm" | "m1v" | "mpv" | "mpe" | "m2p" | "mod" | "tod"
+        | "m2t" | "trp" | "tp" | "dvr-ms" | "rm" | "rmvb" | "dv" | "nsv" | "nuv" | "wtv" | "y4m" | "gxf" | "ivf" | "obu"
+        | "264" | "h264" | "265" | "hevc" | "bik" | "smk" => Format::Video,
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
-        | "caf" => Format::Audio,
+        | "caf" | "mp1" | "mp2" | "mpa" | "w64" | "weba" | "ac3" | "eac3" | "dts" | "thd" | "mlp" | "mpc" | "tta" | "tak"
+        | "shn" | "amr" | "awb" | "au" | "snd" | "voc" | "gsm" | "xwma" | "dsf" | "dff" | "ra" => Format::Audio,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -365,6 +376,10 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     if h.len() >= 2 && h[0] == 0xFF && h[1] & 0xE0 == 0xE0 {
         return Format::Audio;
     }
+    // .mod is a camcorder's MPEG program stream (caught above) or a tracker module, which Looker doesn't play.
+    if !h.is_empty() && ext.is_some_and(|e| e.trim_start_matches('.').eq_ignore_ascii_case("mod")) {
+        return Format::Unknown;
+    }
     from_extension(ext)
 }
 
@@ -508,6 +523,24 @@ mod tests {
         assert_eq!(sniff(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6], Some("wma")), Format::Audio);
         assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], Some("mkv")), Format::Video);
         assert_eq!(display_name(Format::Audio, Some(Path::new("song.flac"))).as_deref(), Some("FLAC"));
+    }
+
+    #[test]
+    fn vlc_parity_formats() {
+        assert_eq!(sniff(b".RMF\0\0\0\x12", Some("rmvb")), Format::Video);
+        assert_eq!(sniff(b".ra\xfd\0\x04", Some("ra")), Format::Audio);
+        assert_eq!(sniff(b"RIFF\0\0\0\0XWMAfmt ", Some("xwma")), Format::Audio);
+        assert_eq!(sniff(b"RIFF\0\0\0\0AVI LIST", Some("divx")), Format::Video);
+        assert_eq!(sniff(b"OggS ", Some("ogm")), Format::Video);
+        assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], Some("weba")), Format::Audio);
+        assert_eq!(sniff(&[0, 0, 0, 1, 0x67, 0x64], Some("264")), Format::Video);
+        assert_eq!(sniff(b"YUV4MPEG2 W640", Some("y4m")), Format::Video);
+        assert_eq!(sniff(b"DSD \x1c\0\0\0", Some("dsf")), Format::Audio);
+        assert_eq!(sniff(&[0x0B, 0x77, 0x01, 0x02], Some("ac3")), Format::Audio);
+        assert_eq!(sniff(b"[Script Info]", Some("ass")), Format::Text);
+        // .mod: a camcorder's program stream is video, a tracker module isn't opened.
+        assert_eq!(sniff(&[0, 0, 1, 0xBA, 0x44], Some("mod")), Format::Video);
+        assert_eq!(sniff(b"Song title here\0\0\0\0\0", Some("mod")), Format::Unknown);
     }
 
     #[test]

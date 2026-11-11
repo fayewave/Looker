@@ -70,8 +70,12 @@ it keeps itself up to date.
   PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, OpenEXR, Radiance HDR, Valve VTF
 - **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
   KDC, ERF, MEF
-- **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, TS, MPG/MPEG, M2V, VOB, 3GP, FLV, OGV
-- **Audio:** MP3, M4A/M4B, AAC, FLAC, WAV, AIFF, Ogg/Opus, WMA, MKA, WavPack, APE, CAF
+- **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, ASF, MXF, MTS/M2TS, TS, MPG/MPEG, M2V, VOB, 3GP/3G2, FLV, F4V,
+  OGV/OGM, DivX/Xvid, RealMedia (RM/RMVB), DV, WTV/DVR-MS, NSV, NUV, GXF, Y4M, IVF, raw H.264/HEVC/MPEG/AV1 streams,
+  Bink, Smacker; old and pro codecs too (Cinepak, Indeo, HuffYUV, FFV1, Ut Video, MagicYUV, HAP, ZMBV, Camtasia, Flash
+  Screen Video, JPEG 2000, Dirac...)
+- **Audio:** MP3, MP2, M4A/M4B, AAC, FLAC, WAV, W64, AIFF, Ogg/Opus/Speex, WMA, MKA, WebM audio, WavPack, APE, CAF,
+  AC-3/E-AC-3, DTS, TrueHD, MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF), RealAudio
 - **Documents:** PDF
 - **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO, Valve VMT/VMF/VDF/QC
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries

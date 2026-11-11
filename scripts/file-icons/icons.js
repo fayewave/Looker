@@ -13,20 +13,20 @@ const KIND_OF = {
   anim: "gif apng heics avifs",
   icon: "ico cur",
   vector: "svg svgz",
-  doc: "pdf txt vmt md markdown log ini cfg vdf qc json xml csv tsv yaml yml toml srt vtt nfo",
+  doc: "pdf txt vmt md markdown log ini cfg vdf qc json xml csv tsv yaml yml toml srt vtt nfo ass ssa",
   layers: "psd psb xcf",
   raw: "cr2 cr3 crw nef nrw arw sr2 srf dng orf raf rw2 pef srw 3fr fff rwl iiq mrw dcr kdc erf mef",
   model: "obj stl ply 3mf gltf glb vmf",
   material: "mtl",
-  video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp ts flv ogv m2v vob",
-  audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf",
+  video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp ts flv ogv m2v vob asf f4v 3g2 divx xvid ogm m1v mpv mpe m2p mod tod m2t trp tp dvr-ms rm rmvb dv nsv nuv wtv y4m gxf ivf obu 264 h264 265 hevc bik smk",
+  audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf mp1 mp2 mpa w64 weba ac3 eac3 dts thd mlp mpc tta tak shn amr awb au snd voc gsm xwma dsf dff ra",
 };
 const TYPE_NAME = {
   photo: e => ({ EXR: "OpenEXR image", HDR: "Radiance HDR image" })[e] || `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
-  vector: e => e === "SVGZ" ? "Compressed SVG image" : "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script", JSON: "JSON file", XML: "XML document", CSV: "CSV spreadsheet", TSV: "TSV spreadsheet", YAML: "YAML file", YML: "YAML file", TOML: "TOML file", SRT: "SRT subtitles", VTT: "WebVTT subtitles", NFO: "NFO info file" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
+  vector: e => e === "SVGZ" ? "Compressed SVG image" : "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script", JSON: "JSON file", XML: "XML document", CSV: "CSV spreadsheet", TSV: "TSV spreadsheet", YAML: "YAML file", YML: "YAML file", TOML: "TOML file", SRT: "SRT subtitles", VTT: "WebVTT subtitles", NFO: "NFO info file", ASS: "ASS subtitles", SSA: "SSA subtitles" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => e === "VMF" ? "VMF Hammer map" : `${e} 3D model`,
-  material: () => "MTL material library", video: e => ({ TS: "MPEG-TS video", VOB: "DVD video", M2V: "MPEG-2 video" })[e] || `${e} video`,
-  audio: e => `${e} audio`,
+  material: () => "MTL material library", video: e => ({ TS: "MPEG-TS video", VOB: "DVD video", M2V: "MPEG-2 video", M2T: "MPEG-TS video", TRP: "MPEG-TS video", TP: "MPEG-TS video", M1V: "MPEG-1 video", MPV: "MPEG video", MPE: "MPEG video", M2P: "MPEG-PS video", RM: "RealMedia video", RMVB: "RealMedia video", "DVR-MS": "DVR-MS recording", WTV: "Windows recorded TV", Y4M: "YUV4MPEG video", "264": "H.264 video stream", H264: "H.264 video stream", "265": "HEVC video stream", HEVC: "HEVC video stream", OBU: "AV1 video stream", IVF: "IVF video", BIK: "Bink video", SMK: "Smacker video" })[e] || `${e} video`,
+  audio: e => ({ RA: "RealAudio", THD: "Dolby TrueHD audio", MLP: "MLP audio", DSF: "DSD audio", DFF: "DSD audio", SHN: "Shorten audio", MPC: "Musepack audio", AU: "AU audio", SND: "AU audio", VOC: "Creative Voice audio" })[e] || `${e} audio`,
 };
 
 // The real width of `t` at `size` (with the 2 % letter spacing), measured in Segoe UI.
