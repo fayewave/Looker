@@ -574,7 +574,7 @@ impl App {
         } else if self.fullscreen.is_some() && self.video_shown() {
             // A video in fullscreen: pure black around it, no checkerboard, like a cinema (Faye, 2026-11-11).
             g.fill(bg, g.photo_rgb(0x000000));
-        } else if self.settings.checkerboard {
+        } else if self.checkerboard_on() {
             g.checkerboard(bg);
         } else {
             g.fill(bg, g.photo_rgb(gfx::checker_plain()));

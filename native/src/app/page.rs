@@ -47,6 +47,7 @@ pub(super) enum Setting {
     Recents,
     Window,
     Checkerboard,
+    CheckerboardVideo,
     ThemeFollow,
     BarsOpaque,
     VideoAutoplay,
@@ -374,6 +375,7 @@ impl App {
                 }
             }
             Setting::Checkerboard => s.checkerboard = !s.checkerboard,
+            Setting::CheckerboardVideo => s.checkerboard_video = !s.checkerboard_video,
             Setting::BarsOpaque => s.bars_opaque = !s.bars_opaque,
             Setting::ThemeFollow => {
                 s.theme_follow = !s.theme_follow;
@@ -653,8 +655,10 @@ impl App {
         self.accent_chips(g, rows, open);
         let r = rows.row(g, "Solid status row", "Filled with the theme's colour. Off: see-through over the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
-        let r = rows.row(g, "Checkerboard background", "Shows where a photo is transparent. Off: plain");
+        let r = rows.row(g, "Checkerboard background", "Behind photos and every other file: shows where one is transparent. Off: plain");
         self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
+        let r = rows.row(g, "Checkerboard behind videos", "Off: plain");
+        self.switch(g, r, Setting::CheckerboardVideo, self.settings.checkerboard_video, open);
     }
 
     /// A row of theme chips under `label`: the dark themes (`CHIPS_DARK`), the light ones, or all (`CHIPS_ANY`),

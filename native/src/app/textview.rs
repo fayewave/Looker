@@ -1048,7 +1048,8 @@ impl App {
         let spell_lines = (first, tops.partition_point(|&y| y < scroll + view_h).min(n));
         self.text_spell_lines(spell_lines.0, spell_lines.1);
 
-        // The card, as the explorer's and the info card's.
+        // The card, as the explorer's and the info card's, with their shadow.
+        ui::shadow(g, r.card, 9.0);
         g.fill_round(r.card, 9.0, rgb(t.sidebar));
         ui::stroke(g, r.card, 9.0, rgb(t.divider));
         self.hits.add(Hit::TextView, D2D_RECT_F { left: r.card.left, right: r.track.left - 2.0, top: r.gutter.top - PAD / 2.0, bottom: r.foot.top });

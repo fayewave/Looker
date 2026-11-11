@@ -284,14 +284,15 @@ pub fn section(g: &Gfx, text: &str, r: D2D_RECT_F) {
     g.text(&wide(&text.to_uppercase()), &g.fonts.overline, r, rgb(theme::t().label), Align::Left);
 }
 
-/// The soft three-step shadow under menus, dialogs and cards.
+/// The one soft shadow under everything that floats: menus, dialogs, toasts, the video bar and every panel (Faye,
+/// 2026-11-11: the panels too, and a touch blurrier: five steps out to 5 DIPs, was three to 3, as dark in all).
 pub fn shadow(g: &Gfx, r: D2D_RECT_F, radius: f32) {
     shadow_faded(g, r, radius, 1.0);
 }
 
 /// [`shadow`] at an opacity, for surfaces that fade in and out.
 pub fn shadow_faded(g: &Gfx, r: D2D_RECT_F, radius: f32, opacity: f32) {
-    for (d, a) in [(3.0, 0.05), (2.0, 0.07), (1.0, 0.10)] {
+    for (d, a) in [(5.0, 0.02), (4.0, 0.03), (3.0, 0.04), (2.0, 0.05), (1.0, 0.06)] {
         let s = D2D_RECT_F { left: r.left - d, top: r.top - d + 2.0, right: r.right + d, bottom: r.bottom + d + 2.0 };
         g.fill_round(s, radius + d, rgba(0x000000, a * opacity));
     }
@@ -322,9 +323,10 @@ pub fn grip_line(g: &Gfx, r: D2D_RECT_F, hover: f32, dragging: bool) {
     }
 }
 
-/// A card floating over the photo: the lighter fill, a divider hairline, radius 10.
+/// A card floating over the photo: the shared shadow, the lighter fill, a divider hairline, radius 10.
 pub fn card(g: &Gfx, r: D2D_RECT_F) {
     let t = theme::t();
+    shadow(g, r, 10.0);
     g.fill_round(r, 10.0, rgb(t.sidebar));
     stroke(g, r, 10.0, rgb(t.divider));
 }

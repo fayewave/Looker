@@ -49,6 +49,8 @@ pub struct Settings {
     pub accent_custom: u32,
     /// The checkerboard behind the image (default on); off, the viewport is the theme's plain background.
     pub checkerboard: bool,
+    /// The same behind a video (default off: a video is never transparent; Faye, 2026-11-11).
+    pub checkerboard_video: bool,
     /// How much memory decoded photos may take, in MB.
     pub cache_mb: u32,
     /// Remember recently shown photos (the landing page's list). Off records nothing.
@@ -166,7 +168,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100 }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100 }
     }
 }
 
@@ -337,6 +339,7 @@ pub fn parse(text: &str) -> Settings {
             "accent" => s.accent = crate::theme::Accent::parse(v).unwrap_or(crate::theme::Accent::DEFAULT),
             "accent_custom" => s.accent_custom = u32::from_str_radix(v.trim_start_matches('#'), 16).map_or(crate::theme::DEFAULT_CUSTOM, |c| c & 0xFF_FFFF),
             "checkerboard" => s.checkerboard = v != "0",
+            "checkerboard_video" => s.checkerboard_video = v != "0",
             "cache_mb" => s.cache_mb = v.parse::<u32>().map_or(CACHE_MB, |m| m.clamp(128, 2048)),
             "recents_enabled" => s.recents_enabled = v != "0",
             "recent" if !v.is_empty() && s.recents.len() < RECENT_CAPACITY => s.recents.push(PathBuf::from(v)),
@@ -419,6 +422,7 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("accent={}\n", s.accent.name().to_lowercase()));
     out.push_str(&format!("accent_custom={:06X}\n", s.accent_custom));
     out.push_str(&format!("checkerboard={}\n", s.checkerboard as i32));
+    out.push_str(&format!("checkerboard_video={}\n", s.checkerboard_video as i32));
     out.push_str(&format!("cache_mb={}\n", s.cache_mb));
     out.push_str(&format!("recents_enabled={}\n", s.recents_enabled as i32));
     for r in &s.recents {
@@ -603,6 +607,7 @@ mod tests {
             accent: crate::theme::Accent::Sky,
             accent_custom: 0x123456,
             checkerboard: false,
+            checkerboard_video: true,
             cache_mb: 1024,
             recents_enabled: true,
             recents: vec![PathBuf::from(r"C:\a b\one.jpg"), PathBuf::from(r"D:\two.png")],

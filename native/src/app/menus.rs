@@ -19,6 +19,7 @@ pub(super) enum Action {
     ToggleExplorer,
     ToggleStrip,
     ToggleInfo,
+    ToggleCheckerboard,
     SortField(SortField),
     SortDescending(bool),
     /// The explorer card: open the item the menu is for (a file in the viewer, a folder as the viewer's folder).
@@ -150,11 +151,28 @@ impl App {
         }
         e.extend([
             Entry::Separator,
+            // The checkerboard for this kind of file: videos have a setting of their own (Faye, 2026-11-11).
+            Entry::Item(MenuItem {
+                icon: None,
+                tint: None,
+                action: Action::ToggleCheckerboard,
+                glyph: Some(0xF0E2),
+                label: "Checkerboard background".into(),
+                accel: None,
+                check: Some(self.checkerboard_on()),
+                enabled: image,
+                current: false,
+            }),
             toggle(Action::ToggleExplorer, 0xE8B7, "File explorer", "Ctrl+E", has || self.home_explorer(), self.explorer_shown()),
             toggle(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", "Ctrl+Shift+T", has, self.strip_shown()),
             toggle(Action::ToggleInfo, 0xE946, "Info panel", "Ctrl+I", has, self.info_shown()),
         ]);
         e
+    }
+
+    /// The checkerboard is on for what's showing: a video's setting, or the one for every other file.
+    pub(super) fn checkerboard_on(&self) -> bool {
+        if self.video_shown() { self.settings.checkerboard_video } else { self.settings.checkerboard }
     }
 
     fn sort_entries(&self) -> Vec<Entry<Action>> {
@@ -391,6 +409,13 @@ impl App {
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
             Action::Rename => self.begin_rename(false),
             Action::ToggleInfo => self.toggle_info(),
+            Action::ToggleCheckerboard => {
+                let video = self.video_shown();
+                let s = &mut self.settings;
+                if video { s.checkerboard_video = !s.checkerboard_video } else { s.checkerboard = !s.checkerboard }
+                settings::save(&self.settings);
+                self.invalidate();
+            }
             Action::ToggleStrip => self.toggle_strip(),
             Action::ToggleExplorer => self.toggle_explorer(),
             Action::AudioTrack(s) => self.set_audio_track(s),
