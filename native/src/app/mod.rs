@@ -763,13 +763,19 @@ impl App {
         }
     }
 
-    /// After every navigation: title, status-row file facts.
-    fn current_changed(&mut self) {
-        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
-        self.info = std::fs::metadata(&path).ok().map(|m| {
+    /// The current file's size and times, from the file system (after a navigation, or a save into it).
+    fn read_file_info(&mut self) {
+        let Some(path) = self.current_path() else { return };
+        self.info = std::fs::metadata(path).ok().map(|m| {
             let ft = |t: u64| FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 };
             FileInfo { size: m.len(), modified: ft(m.last_write_time()), created: ft(m.creation_time()), accessed: ft(m.last_access_time()) }
         });
+    }
+
+    /// After every navigation: title, status-row file facts.
+    fn current_changed(&mut self) {
+        let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        self.read_file_info();
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(format!("{} - Looker", file_name(&path))));
         }

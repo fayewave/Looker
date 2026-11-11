@@ -94,6 +94,8 @@ pub(super) enum Action {
     InfoAddField(crate::metawrite::Field),
     /// A field's menu: edit it.
     InfoEditField(crate::metawrite::Field),
+    /// A field's menu: remove it (from every selected file).
+    InfoRemoveField(crate::metawrite::Field),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -266,6 +268,10 @@ impl App {
             }
             if let Some(f) = i.and_then(|i| self.info_row_field(i)) {
                 entries.push(item(Action::InfoEditField(f), 0xE70F, &format!("Edit {label}"), None, true));
+                if self.info_has_field(f) {
+                    let text = if self.info_many() { format!("Remove {label} from all") } else { format!("Remove {label}") };
+                    entries.push(item(Action::InfoRemoveField(f), 0xE74D, &text, None, true));
+                }
             }
             if super::info::LOCATION_ROWS.contains(&label) && !self.info_many() && self.photo_coordinates().is_some() {
                 entries.push(item(Action::InfoCopyCoordinates, 0xE8C8, "Copy coordinates", None, true));

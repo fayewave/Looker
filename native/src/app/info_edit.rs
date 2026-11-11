@@ -452,6 +452,26 @@ impl App {
         }
     }
 
+    /// Whether any of the files being edited has field `f` (as shown): the row menu's Remove.
+    pub(super) fn info_has_field(&self, f: Field) -> bool {
+        self.info_targets().iter().any(|p| self.shown_value(p, f).is_some())
+    }
+
+    /// The row menu's Remove (from all): the field goes from every file the card edits, as one undo step. The
+    /// way to clear a field over a selection whose values differ (an empty box there leaves them be).
+    pub(super) fn info_remove_field(&mut self, f: Field) {
+        self.info_end_edit();
+        let paths = self.info_targets();
+        let n = paths.iter().filter(|p| self.shown_value(p, f).is_some()).count();
+        if n == 0 {
+            return;
+        }
+        self.set_info_values(&paths, f, |_| None);
+        if paths.len() > 1 {
+            self.show_toast(format!("{} removed from {} files (unsaved)", f.label(), grouped(n as u64)), false);
+        }
+    }
+
     /// The "+ Add a field" menu: the fields none of the files has.
     pub(super) fn open_info_add_menu(&mut self, r: D2D_RECT_F) {
         let paths = self.info_targets();
@@ -528,6 +548,8 @@ impl App {
                     }
                     if self.current_path() == Some(path.as_path()) {
                         self.forget_exif();
+                        // Its size and Modified time too (saved from a selection, it's still the photo up).
+                        self.read_file_info();
                     }
                 }
                 Err(e) => failed.push((path, e)),

@@ -327,6 +327,7 @@ impl App {
             }
             Action::Reveal => self.reveal(),
             Action::InfoEditField(f) => self.info_start_edit(f),
+            Action::InfoRemoveField(f) => self.info_remove_field(f),
             Action::InfoCopyCoordinates => {
                 if let Some((lat, lon)) = self.photo_coordinates() {
                     if clipboard::set_text(self.hwnd, &format!("{lat:.6}, {lon:.6}")) {
@@ -645,9 +646,9 @@ impl App {
         let text = if saving {
             "Saving\u{2026}".to_string()
         } else {
-            // Short, beside two buttons in a card that can be 260 wide: files once there are several (a
-            // selection's edit is one change in each).
-            if files > 1 { format!("{files} files unsaved") } else { format!("{unsaved} unsaved") }
+            // Short, beside two buttons in a card that can be 260 wide ("3 files unsaved" didn't fit): files
+            // once there are several (a selection's edit is one change in each), else changes.
+            format!("{} unsaved", if files > 1 { files } else { unsaved })
         };
         let bh = 28.0;
         let by = f.top + (f.bottom - f.top - bh) / 2.0;
