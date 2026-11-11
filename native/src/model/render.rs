@@ -239,8 +239,9 @@ impl Camera {
         let (back, right, up) = self.axes();
         let dist = self.distance(mesh, aspect);
         let eye = std::array::from_fn(|i| target[i] + back[i] * dist);
-        let near = (dist - r * 1.5).max(r * 0.01);
-        let far = dist + r * 1.5;
+        // Deep enough for the floor's far corners (it reaches about 2.8 radii out).
+        let near = (dist - r * 3.5).max(r * 0.01);
+        let far = dist + r * 3.5;
         let f = 1.0 / (Self::fovy(aspect) / 2.0).tan();
         let a = far / (near - far);
         let b = near * far / (near - far);
@@ -578,8 +579,9 @@ impl Renderer {
         }
     }
 
-    /// Draws `mesh` seen by `camera` into `target`, on a transparent background, with the `pivot` cross.
-    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, place: &Place, out: Output, pivot: Option<Pivot>) {
+    /// Draws `mesh` seen by `camera` into `target`, on a transparent background, with the `pivot` cross; `floor`,
+    /// a wireframe grid under it.
+    pub fn draw(&self, mesh: &Mesh, gpu: &GpuMesh, target: &Target, camera: &Camera, place: &Place, out: Output, pivot: Option<Pivot>, floor: bool) {
         let e = camera.eye(mesh, place);
         // Lights hang off the camera: the key above left and in front, a dim fill from the right.
         let key = normalized(mix(e.right, -0.5, e.up, 0.7, e.back, 0.6));
@@ -638,7 +640,14 @@ impl Renderer {
                     ctx.DrawIndexed(p.count, p.start, 0);
                 }
             }
+            // The floor and, while the orbit centre moves, the depth guides: lines, behind the model where it hides
+            // them (they go before the transparent parts would matter: over everything opaque, depth-tested).
+            let guides = pivot.map_or(0.0, |p| p.alpha);
+            if floor {
+                self.draw_floor(mesh, guides);
+            }
             if let Some(p) = pivot.filter(|p| p.alpha > 0.0) {
+                self.draw_guides(mesh, &e, p);
                 self.draw_pivot(&e, camera, target, place, p);
             }
             if let Some((t, _)) = &target.msaa {
@@ -651,12 +660,93 @@ impl Renderer {
     }
 }
 
+/// A round step for the floor's grid near `want` (1, 2 or 5 times a power of ten), so its squares are tidy units.
+fn grid_step(want: f32) -> f32 {
+    let p = 10f32.powf(want.max(1e-6).log10().floor());
+    [1.0, 2.0, 5.0, 10.0].into_iter().map(|k| k * p).find(|&s| s >= want).unwrap_or(10.0 * p)
+}
+
 impl Renderer {
-    /// The orbit centre as a 3D cross (red X, green Y, blue Z, lit like the model), 36 DIPs each way: solid where
-    /// it's in front of the model, faint where the model hides it, so it reads as sitting inside.
+    /// Line segments (pairs of points) in one flat colour at `alpha`; `hidden`: also where the model hides them,
+    /// fainter, so they read as passing behind or through it.
+    fn draw_lines(&self, points: &[[f32; 3]], colour: [f32; 3], alpha: f32, hidden: f32) {
+        if points.len() < 2 || alpha <= 0.0 {
+            return;
+        }
+        let verts: Vec<Vertex> = points.iter().map(|&pos| Vertex { pos, normal: [0.0, 1.0, 0.0], uv: [0.0; 2], colour: [1.0; 3] }).collect();
+        let Ok(vb) = buffer(&self.device, D3D11_BIND_VERTEX_BUFFER, as_bytes(&verts)) else { return };
+        unsafe {
+            let ctx = &self.ctx;
+            let stride = std::mem::size_of::<Vertex>() as u32;
+            ctx.IASetVertexBuffers(0, 1, Some(&Some(vb)), Some(&stride), Some(&0));
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+            ctx.PSSetShaderResources(0, Some(&[None, None]));
+            ctx.OMSetBlendState(&self.blend, None, u32::MAX);
+            // No diffuse or highlight: the colour is all emission, so it's flat whatever the lights.
+            for (depth, a) in [(&self.depth_read, alpha), (&self.depth_behind, alpha * hidden)] {
+                if a <= 0.0 {
+                    continue;
+                }
+                let consts = [0.0, 0.0, 0.0, a, 0.0, 0.0, 0.0, 1.0, colour[0], colour[1], colour[2], 0.0, 0.0, 0.0, 0.0, 0.0];
+                ctx.UpdateSubresource(&self.material_cb, 0, None, consts.as_ptr() as _, 0, 0);
+                ctx.OMSetDepthStencilState(depth, 0);
+                ctx.Draw(verts.len() as u32, 0);
+            }
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        }
+    }
+
+    /// A wireframe floor under the model (Faye, 2026-11-11): a grid of round-unit squares on the plane of its lowest
+    /// point, reaching about 1.6 radii out, its outline firmer. `guides` (0..1, while the orbit centre moves) brightens it.
+    fn draw_floor(&self, mesh: &Mesh, guides: f32) {
+        let c = mesh.centre();
+        let r = mesh.radius().max(1e-6);
+        // A hair under the lowest point, so a flat base doesn't flicker against the lines.
+        let y = mesh.min[1] - r * 0.002;
+        let step = grid_step(r * 1.6 / 8.0);
+        let n = ((r * 1.6) / step).ceil().max(2.0) as i32;
+        let half = n as f32 * step;
+        // Centred on the model, snapped to the grid's own step so the lines sit on round coordinates.
+        let (cx, cz) = ((c[0] / step).round() * step, (c[2] / step).round() * step);
+        let mut lines = Vec::new();
+        for i in -n + 1..n {
+            let o = i as f32 * step;
+            lines.extend([[cx + o, y, cz - half], [cx + o, y, cz + half], [cx - half, y, cz + o], [cx + half, y, cz + o]]);
+        }
+        let border = [[cx - half, y, cz - half], [cx + half, y, cz - half], [cx + half, y, cz + half], [cx - half, y, cz + half]];
+        let edges: Vec<[f32; 3]> = (0..4).flat_map(|k| [border[k], border[(k + 1) % 4]]).collect();
+        let grey = [0.5, 0.5, 0.5];
+        self.draw_lines(&lines, grey, 0.22 + 0.18 * guides, 0.0);
+        self.draw_lines(&edges, grey, 0.36 + 0.2 * guides, 0.0);
+    }
+
+    /// While the orbit centre moves: the model's bounding box as a wireframe, and a line dropped from the centre to
+    /// the floor with a small cross where it lands, so where it is in depth reads at a glance.
+    fn draw_guides(&self, mesh: &Mesh, e: &Eye, p: Pivot) {
+        let (lo, hi) = (mesh.min, mesh.max);
+        let corner = |k: usize| -> [f32; 3] { std::array::from_fn(|i| if k >> i & 1 == 1 { hi[i] } else { lo[i] }) };
+        let mut box_lines = Vec::new();
+        for k in 0..8usize {
+            for axis in 0..3 {
+                if k >> axis & 1 == 0 {
+                    box_lines.extend([corner(k), corner(k | 1 << axis)]);
+                }
+            }
+        }
+        self.draw_lines(&box_lines, [0.62, 0.62, 0.62], 0.45 * p.alpha, 0.35);
+        let t = e.target;
+        let foot = [t[0], lo[1], t[2]];
+        let s = mesh.radius() * 0.04;
+        let drop = [t, foot, [foot[0] - s, foot[1], foot[2]], [foot[0] + s, foot[1], foot[2]], [foot[0], foot[1], foot[2] - s], [foot[0], foot[1], foot[2] + s]];
+        self.draw_lines(&drop, [0.40, 0.76, 0.24], 0.8 * p.alpha, 0.35);
+    }
+
+    /// The orbit centre as a 3D cross (red X, green Y, blue Z, lit like the model), 20 DIPs each way (Faye,
+    /// 2026-11-11: it was 36): solid where it's in front of the model, faint where the model hides it, so it reads
+    /// as sitting inside.
     fn draw_pivot(&self, e: &Eye, camera: &Camera, target: &Target, place: &Place, p: Pivot) {
         let per_px = 2.0 * e.dist * (Camera::fovy(place.aspect) / 2.0).tan() / (target.height as f32 * place.scale[1]).max(1.0);
-        let (len, half) = (36.0 * p.dip * per_px, (0.9 * p.dip).max(1.0) * per_px);
+        let (len, half) = (20.0 * p.dip * per_px, (0.7 * p.dip).max(1.0) * per_px);
         let c = e.target;
         let _ = camera;
         const COLOURS: [[f32; 3]; 3] = [[0.86, 0.26, 0.26], [0.40, 0.76, 0.24], [0.24, 0.50, 0.92]];
@@ -742,7 +832,8 @@ pub fn still(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Res
     let pixels = warp_renderer(|r| {
         let gpu = r.upload(&mesh)?;
         let target = r.target(w, h, DXGI_FORMAT_B8G8R8A8_UNORM)?;
-        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb, None);
+        // The viewer's first frame has the live view's floor (no pop when it takes over); thumbnails don't.
+        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb, None, box_w != box_h);
         read_back(r, &target)
     })?;
     // Native size: the render's own (the view shows it at fit, 1:1 when it was asked at the area's size).

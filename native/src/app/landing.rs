@@ -5,6 +5,7 @@
 //! or a cloud placeholder can stall it.
 
 use std::os::windows::fs::MetadataExt;
+use std::time::Instant;
 
 use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFactory};
 
@@ -34,14 +35,35 @@ pub(super) struct Landing {
     entries: Option<Vec<Recent>>,
     checking: bool,
     scroll: f32,
+    /// The wheel's eased glide (from, to, since), as the other lists scroll (Faye, 2026-11-11: it jumped).
+    anim: Option<(f32, f32, Instant)>,
     max_scroll: f32,
     /// The wordmark rasterized for (dpi, bitmap, width px, height px).
     wordmark: Option<(f32, ID2D1Bitmap1)>,
 }
 
+/// The wheel's glide, as the info card's.
+const SCROLL_MS: f32 = 150.0;
+
 impl Landing {
     pub fn new() -> Landing {
-        Landing { entries: None, checking: false, scroll: 0.0, max_scroll: 0.0, wordmark: None }
+        Landing { entries: None, checking: false, scroll: 0.0, anim: None, max_scroll: 0.0, wordmark: None }
+    }
+
+    /// The scroll offset to draw this frame, and whether it is still moving.
+    fn scroll_now(&mut self) -> (f32, bool) {
+        let Some((from, to, t0)) = self.anim else { return (self.scroll, false) };
+        let t = (t0.elapsed().as_secs_f32() * 1000.0 / SCROLL_MS).min(1.0);
+        if t >= 1.0 {
+            self.anim = None;
+            self.scroll = to;
+            return (to, false);
+        }
+        (from + (to - from) * (1.0 - (1.0 - t).powi(3)), true)
+    }
+
+    fn target(&self) -> f32 {
+        self.anim.map_or(self.scroll, |(_, to, _)| to)
     }
 
     /// Check the list again next time the page draws.
@@ -105,6 +127,7 @@ impl App {
         settings::save(&self.settings);
         self.landing.entries = Some(Vec::new());
         self.landing.scroll = 0.0;
+        self.landing.anim = None;
         self.invalidate();
     }
 
@@ -123,7 +146,10 @@ impl App {
 
     pub(super) fn scroll_landing(&mut self, delta: f32) {
         let l = &mut self.landing;
-        l.scroll = (l.scroll - delta / 120.0 * SCROLL_STEP).clamp(0.0, l.max_scroll);
+        let (now, _) = l.scroll_now();
+        let to = (l.target() - delta / 120.0 * SCROLL_STEP).clamp(0.0, l.max_scroll);
+        l.scroll = now;
+        l.anim = Some((now, to, Instant::now()));
         self.invalidate();
     }
 
@@ -174,7 +200,8 @@ impl App {
         let has_recent = !entries.is_empty();
 
         // Measure the block, then place it 2 : 3 between the spare space above and below.
-        let mut content = 16.0 + WORDMARK_H + 8.0 + 16.0 + 8.0 + 32.0 + 16.0;
+        let head = 16.0 + WORDMARK_H + 8.0 + 16.0 + 8.0 + 32.0 + 16.0;
+        let mut content = head;
         if has_recent {
             content += 16.0 + 16.0 + 28.0 + 4.0 + entries.len() as f32 * ROW_H;
         }
@@ -182,9 +209,20 @@ impl App {
         let hint = crate::store::packaged() && !self.settings.default_hint_dismissed;
         let hint_h = if hint { 8.0 + 32.0 + 28.0 } else { 0.0 };
         let height = (v.bottom - v.top - hint_h).max(0.0);
-        self.landing.max_scroll = (content - height).max(0.0);
+        // A long list doesn't pull the wordmark up to the top: it starts a quarter of the way down, as the page
+        // would with few recents, and goes up as the list scrolls (Faye, 2026-11-11).
+        let lead = ((height - content) * 2.0 / 5.0).max((height - head) / 4.0).max(0.0).round();
+        self.landing.max_scroll = (lead + content - height).max(0.0);
+        if let Some((_, to, _)) = &mut self.landing.anim {
+            *to = to.min(self.landing.max_scroll);
+        }
+        let (scroll, moving) = self.landing.scroll_now();
+        let scroll = scroll.min(self.landing.max_scroll);
         self.landing.scroll = self.landing.scroll.min(self.landing.max_scroll);
-        let mut y = v.top + ((height - content).max(0.0) * 2.0 / 5.0).round() + 16.0 - self.landing.scroll;
+        if moving {
+            self.invalidate();
+        }
+        let mut y = v.top + lead + 16.0 - scroll;
         let cx = (v.left + v.right) / 2.0;
         g.push_clip(D2D_RECT_F { bottom: v.bottom - hint_h, ..v });
 

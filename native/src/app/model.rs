@@ -216,7 +216,7 @@ impl App {
                 m.target = Some(r.target(w, h, format)?);
             }
             let t = m.target.as_ref().unwrap();
-            r.draw(&mesh, gpu, t, &m.camera, &place, out, pivot);
+            r.draw(&mesh, gpu, t, &m.camera, &place, out, pivot, true);
             if m.bitmap.is_none() {
                 m.bitmap = Some(g.texture_bitmap(&t.texture, format).map_err(|e| e.message().to_string())?);
             }
