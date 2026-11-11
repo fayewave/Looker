@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::*;
-use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, SideSection, Watcher};
+use crate::explorer::{self, ColKind, Collection, Group, History, Kind, Place, Row, SearchField, SideSection, Term, Watcher};
 use crate::motion::Ease;
 use crate::settings::{EXPLORER_MIN, INFO_MAX};
 use crate::textedit::TextEdit;
@@ -164,6 +164,8 @@ pub(super) struct Meta {
     pub duration_us: Option<i64>,
     /// The other columns' text (camera settings, codecs, tags...), as `meta_fields` reads them.
     pub fields: Vec<(ColKind, String)>,
+    /// A photo's words (title, keywords, rating...: `metadata::Exif::words`), for the filter's fields.
+    pub words: Vec<(&'static str, String)>,
 }
 
 impl Meta {
@@ -209,6 +211,38 @@ fn photo_fields(x: &crate::metadata::Exif) -> Vec<(ColKind, String)> {
         f.push((ColKind::Gps, format!("{lat:.5}, {lon:.5}")));
     }
     f
+}
+
+/// What a row has for a filter's field, lower-cased, from its lazy columns (None until they're read).
+fn search_values(r: &Row, m: Option<&Meta>, f: SearchField) -> Option<Vec<String>> {
+    use SearchField::*;
+    if f == Ext {
+        return Some(r.path.extension().map(|e| e.to_string_lossy().to_lowercase()).into_iter().collect());
+    }
+    let m = m?;
+    let words = |l: &str| m.words.iter().filter(|(k, _)| *k == l).map(|(_, v)| v.to_lowercase()).collect::<Vec<_>>();
+    let col = |c: ColKind| m.field(c).map(str::to_lowercase).into_iter().collect::<Vec<_>>();
+    let low = |v: &Option<String>| v.as_deref().map(str::to_lowercase).into_iter().collect::<Vec<_>>();
+    Some(match f {
+        Title => words("Title"),
+        Description => words("Description"),
+        Keywords => words("Keywords").iter().flat_map(|v| crate::metawrite::split_keywords(v)).collect(),
+        Rating => words("Rating"),
+        Author => words("Author"),
+        Copyright => words("Copyright"),
+        Label => words("Label"),
+        Camera => [low(&m.camera), col(ColKind::Make)].concat(),
+        Lens => low(&m.lens),
+        Iso => col(ColKind::Iso),
+        Aperture => col(ColKind::Aperture),
+        Exposure => col(ColKind::Exposure),
+        Focal => col(ColKind::FocalLength),
+        Taken => m.taken.map(|t| format!("{:04}-{:02}-{:02} {:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute)).into_iter().collect(),
+        Artist => [col(ColKind::Artist), words("Author")].concat(),
+        Album => col(ColKind::Album),
+        Genre => col(ColKind::Genre),
+        Ext => unreachable!(),
+    })
 }
 
 fn video_fields(i: &crate::imaging::video::Info) -> Vec<(ColKind, String)> {
@@ -390,6 +424,12 @@ pub(super) struct Explorer {
     pub(super) meta: HashMap<String, Meta>,
     meta_pending: HashSet<String>,
     meta_tx: Option<Sender<Vec<(PathBuf, u64)>>>,
+    /// The filter names a field (`keyword:beach`): every file's details are read, not just those on screen.
+    pub(super) search_fields: bool,
+    /// Ask for every file's details at the next frame (the filter or the rows changed).
+    pub(super) search_meta: bool,
+    /// Files whose details the field filter is still waiting for.
+    pub(super) search_unread: usize,
     /// A column header being dragged to a new place.
     pub(super) header_drag: Option<HeaderDrag>,
     pub(super) col_resize: Option<ColResize>,
@@ -511,6 +551,9 @@ impl Explorer {
             meta: HashMap::new(),
             meta_pending: HashSet::new(),
             meta_tx: None,
+            search_fields: false,
+            search_meta: false,
+            search_unread: 0,
             header_drag: None,
             col_resize: None,
             col_pos: HashMap::new(),
@@ -611,10 +654,46 @@ impl Explorer {
 
     /// The filter's words changed (or the rows did): which rows show.
     pub(super) fn refilter(&mut self) {
-        let words = explorer::filter_words(&self.filter.edit.text());
-        self.view = (0..self.rows.len()).filter(|&i| explorer::matches(&self.rows[i], &words)).collect();
+        self.filter_view();
+        // A field searched: every file's details are asked for (by the next frame), not just the rows on screen.
+        self.search_meta = self.search_fields;
         self.max_scroll = 0.0;
         self.reveal = self.cursor.as_deref().and_then(|c| self.index_of(c));
+    }
+
+    /// The rows the filter lets through: every word in the name, or in the field it names (Transient's filter,
+    /// with Looker's `field:value`). A file whose details aren't read yet doesn't match a field (yet).
+    pub(super) fn filter_view(&mut self) {
+        let terms = explorer::filter_terms(&self.filter.edit.text());
+        self.search_fields = terms.iter().any(|t| matches!(t, Term::Field(..)));
+        let mut unread = 0;
+        let mut view = Vec::new();
+        for (i, r) in self.rows.iter().enumerate() {
+            let mut meta: Option<Option<&Meta>> = None;
+            let ok = terms.iter().all(|t| match t {
+                Term::Name(w) => r.name.to_lowercase().contains(w.as_str()),
+                Term::Field(f, want) => {
+                    if r.is_folder() {
+                        return false;
+                    }
+                    let m = *meta.get_or_insert_with(|| self.meta.get(&explorer::norm(&r.path)).filter(|m| m.stamp == r.stamp));
+                    match search_values(r, m, *f) {
+                        Some(values) => explorer::field_matches(*f, &values, want),
+                        None => {
+                            if !r.cloud {
+                                unread += 1;
+                            }
+                            false
+                        }
+                    }
+                }
+            });
+            if ok {
+                view.push(i);
+            }
+        }
+        self.view = view;
+        self.search_unread = unread;
     }
 
     pub fn resort(&mut self, sort: crate::folder::Sort, group: Group) {
@@ -2174,7 +2253,7 @@ impl App {
                                 // An audio file: its length.
                                 if format::of_path(&p) == format::Format::Audio {
                                     let (duration_us, fields) = audio_fields(&p);
-                                    return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us, fields });
+                                    return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us, fields, words: Vec::new() });
                                 }
                                 // A video: its size, length and recording date from one probe.
                                 if format::of_path(&p) == format::Format::Video {
@@ -2183,7 +2262,7 @@ impl App {
                                     let duration_us = info.as_ref().map(|i| i.duration_us).filter(|&d| d > 0);
                                     let taken = info.as_ref().and_then(|i| crate::metadata::local_time(i.created));
                                     let fields = info.as_ref().map(video_fields).unwrap_or_default();
-                                    return (p, Meta { stamp, dims, taken, camera: None, lens: None, duration_us, fields });
+                                    return (p, Meta { stamp, dims, taken, camera: None, lens: None, duration_us, fields, words: Vec::new() });
                                 }
                                 let dims = f.as_ref().and_then(|f| explorer::dimensions(f, &p));
                                 let exif = crate::metadata::read(&p);
@@ -2191,7 +2270,8 @@ impl App {
                                 let lens = exif.as_ref().and_then(|x| x.lens.clone());
                                 let taken = exif.as_ref().and_then(|x| x.taken);
                                 let fields = exif.as_ref().map(photo_fields).unwrap_or_default();
-                                (p, Meta { stamp, dims, taken, camera, lens, duration_us: None, fields })
+                                let words = exif.map(|x| x.words).unwrap_or_default();
+                                (p, Meta { stamp, dims, taken, camera, lens, duration_us: None, fields, words })
                             })
                             .collect();
                         let ptr = Box::into_raw(Box::new(out));
@@ -2206,7 +2286,10 @@ impl App {
             e.meta_tx = Some(tx);
         }
         if let Some(tx) = &e.meta_tx {
-            let _ = tx.send(batch);
+            // In small batches, so a filter by field (which asks for every row) fills in as it goes.
+            for chunk in batch.chunks(24) {
+                let _ = tx.send(chunk.to_vec());
+            }
         }
     }
 
@@ -2216,9 +2299,12 @@ impl App {
             self.explorer.meta_pending.remove(&k);
             self.explorer.meta.insert(k, m);
         }
-        // Sorted by one of these columns: the rows take their places as the values come in.
+        // Sorted by one of these columns: the rows take their places as the values come in; filtered by a
+        // field, the rows that have it show as they're read.
         if self.explorer.look.xsort.is_some_and(|(c, _)| c.lazy()) {
             self.explorer.resort(self.explorer.look.sort, self.explorer.look.group);
+        } else if self.explorer.search_fields {
+            self.explorer.filter_view();
         }
         self.invalidate();
     }

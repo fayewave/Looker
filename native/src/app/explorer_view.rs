@@ -760,6 +760,11 @@ impl App {
         if !lazy_wanted.is_empty() {
             self.want_meta(&lazy_wanted);
         }
+        // Filtering by a field: every file's details, nearest the top first.
+        if std::mem::take(&mut self.explorer.search_meta) {
+            let all: Vec<(PathBuf, u64, bool)> = self.explorer.rows.iter().filter(|r| !r.is_folder()).map(|r| (r.path.clone(), r.stamp, r.cloud)).collect();
+            self.want_meta(&all);
+        }
         // The selection rectangle, from its press (scrolled with the list) to the pointer, inside the list.
         if let Some(m) = self.explorer.marquee.as_ref().filter(|m| m.active) {
             let (x0, y0) = (m.start.0, m.start.1 - scroll + list.top);
@@ -851,6 +856,10 @@ impl App {
         } else {
             if rows.len() < e.rows.len() {
                 out.push((Some(0xE71Cu16), format!("{} of {}", rows.len(), e.rows.len())));
+            }
+            // A field filter still reading the files' details.
+            if e.search_fields && e.search_unread > 0 {
+                out.push((Some(0xE72Cu16), format!("Reading {}", e.search_unread)));
             }
             rows
         };

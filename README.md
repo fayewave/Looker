@@ -35,7 +35,9 @@ it keeps itself up to date.
 - Opens straight into the file; the next files in the folder are already loaded.
 - Zoom at the pointer up to 25600 %, with crisp pixels from 100 % up; drag to pan, at fit too.
 - Fullscreen, slideshow, thumbnail strip; the mouse's Back and Forward buttons step through the files you've viewed.
-- Info panel with EXIF and a histogram.
+- Info panel with EXIF, a histogram and a summary of several selected files; edit titles, captions, keywords,
+  ratings, author and copyright in JPEG and TIFF, one file or a whole selection at once.
+- Filter a folder by field: `keyword:beach`, `camera:x100`, `rating:4+`, `taken:2024`, `ext:png`.
 - Rotate, rename, copy, set as wallpaper, show in File Explorer.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.

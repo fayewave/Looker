@@ -834,18 +834,115 @@ pub fn sort_rows(rows: &mut [Row], sort: Sort, group: Group) {
     rows.sort_by(|a, b| compare(a, b, sort, group));
 }
 
-/// The filter's words: lower-cased, split on spaces.
-pub fn filter_words(text: &str) -> Vec<String> {
-    text.split_whitespace().map(str::to_lowercase).collect()
+/// A field the filter can search by name ("keyword:beach"), in what the lazy columns read from the files.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SearchField {
+    Title,
+    Description,
+    Keywords,
+    Rating,
+    Author,
+    Copyright,
+    Label,
+    Camera,
+    Lens,
+    Iso,
+    Aperture,
+    Exposure,
+    Focal,
+    Taken,
+    Ext,
+    Artist,
+    Album,
+    Genre,
 }
 
-/// Every word appears in the row's name (Transient's filter: several words, all must match).
-pub fn matches(row: &Row, words: &[String]) -> bool {
-    if words.is_empty() {
-        return true;
+/// The field a filter word names before its colon. (No one-letter names: "c:" and "f:" are drives.)
+pub fn search_field(name: &str) -> Option<SearchField> {
+    use SearchField::*;
+    Some(match name {
+        "title" => Title,
+        "description" | "desc" | "caption" | "comment" => Description,
+        "keyword" | "keywords" | "kw" => Keywords,
+        "rating" | "stars" => Rating,
+        "author" | "creator" | "by" => Author,
+        "copyright" => Copyright,
+        "label" => Label,
+        "camera" | "make" | "model" => Camera,
+        "lens" => Lens,
+        "iso" => Iso,
+        "aperture" | "fstop" => Aperture,
+        "exposure" | "shutter" => Exposure,
+        "focal" => Focal,
+        "taken" | "date" | "year" => Taken,
+        "ext" | "type" => Ext,
+        "artist" => Artist,
+        "album" => Album,
+        "genre" => Genre,
+        _ => return None,
+    })
+}
+
+/// One word of the filter: in the name, or in a field (an empty value: the field is there at all).
+#[derive(Clone, PartialEq, Debug)]
+pub enum Term {
+    Name(String),
+    Field(SearchField, String),
+}
+
+/// The filter's words, lower-cased: split on spaces outside double quotes (`keyword:"new york"`); a word
+/// whose part before its colon names a field searches that field.
+pub fn filter_terms(text: &str) -> Vec<Term> {
+    let mut out = Vec::new();
+    let mut chars = text.chars().peekable();
+    loop {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+        let mut tok = String::new();
+        let mut quoted = false;
+        while let Some(&c) = chars.peek() {
+            if c == '"' {
+                quoted = !quoted;
+            } else if c.is_whitespace() && !quoted {
+                break;
+            } else {
+                tok.push(c);
+            }
+            chars.next();
+        }
+        let tok = tok.to_lowercase();
+        if tok.is_empty() {
+            continue;
+        }
+        match tok.split_once(':').and_then(|(f, v)| search_field(f).map(|f| (f, v))) {
+            Some((f, v)) => out.push(Term::Field(f, v.trim().to_string())),
+            None => out.push(Term::Name(tok)),
+        }
     }
-    let name = row.name.to_lowercase();
-    words.iter().all(|w| name.contains(w.as_str()))
+    out
+}
+
+/// Whether a field's values (lower-cased) satisfy a filter word: contains it; a rating is a count of stars
+/// ("4", or "3+" for at least three; "0": unrated); a type is the extension, dot or not.
+pub fn field_matches(f: SearchField, values: &[String], want: &str) -> bool {
+    if want.is_empty() {
+        return !values.is_empty();
+    }
+    match f {
+        SearchField::Rating => {
+            let k = values.first().and_then(|v| crate::metawrite::parse_rating(v)).unwrap_or(0);
+            match want.strip_suffix('+') {
+                Some(n) => n.parse::<u32>().is_ok_and(|n| k >= n),
+                None => want.parse::<u32>().is_ok_and(|n| k == n),
+            }
+        }
+        SearchField::Ext => values.iter().any(|v| v == want.trim_start_matches('.')),
+        _ => values.iter().any(|v| v.contains(want)),
+    }
 }
 
 /// The breadcrumb trail: "This PC", then every ancestor from the drive root down to the place. A collection
@@ -1447,11 +1544,27 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_needs_every_word() {
-        let r = Row::test("Beach Sunset 04.jpg", Kind::Image, 0, 0);
-        assert!(matches(&r, &filter_words("sun beach")));
-        assert!(!matches(&r, &filter_words("sun dog")));
-        assert!(matches(&r, &[]));
+    fn filter_terms_name_fields() {
+        use SearchField::*;
+        assert_eq!(
+            filter_terms(r#"Sun  Keyword:Beach camera:"X100 V" c:\photos rating:"#),
+            vec![
+                Term::Name("sun".into()),
+                Term::Field(Keywords, "beach".into()),
+                Term::Field(Camera, "x100 v".into()),
+                Term::Name(r"c:\photos".into()),
+                Term::Field(Rating, String::new()),
+            ]
+        );
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(field_matches(Rating, &v(&["\u{2605}\u{2605}\u{2605}\u{2606}\u{2606}"]), "3"));
+        assert!(field_matches(Rating, &v(&["\u{2605}\u{2605}\u{2605}\u{2605}\u{2606}"]), "3+"));
+        assert!(!field_matches(Rating, &v(&["\u{2605}\u{2605}\u{2606}\u{2606}\u{2606}"]), "3+"));
+        assert!(field_matches(Rating, &[], "0"));
+        assert!(field_matches(Ext, &v(&["jpg"]), ".jpg"));
+        assert!(!field_matches(Ext, &v(&["jpeg"]), "jpg"));
+        assert!(field_matches(Keywords, &v(&["beach", "sun"]), "bea"));
+        assert!(!field_matches(Title, &[], ""));
     }
 
     #[test]
