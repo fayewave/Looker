@@ -449,6 +449,158 @@ pub fn orientation(f: &IWICImagingFactory, path: &Path) -> u16 {
     }
 }
 
+/// The info card's Image group for a file WIC reads: its pixel format ("8-bit RGB", "16-bit RGB with alpha",
+/// "Indexed, 256 colours"), colour profile by name, resolution and frame count. Its own factory: it runs on
+/// the info card's EXIF thread.
+pub fn facts(path: &Path) -> Vec<(&'static str, String)> {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+    let mut out = Vec::new();
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(f) = CoCreateInstance::<_, IWICImagingFactory>(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER) else { return out };
+        let Ok(dec) = open(&f, &Source::File(path)) else { return out };
+        let Ok(frame) = dec.GetFrame(0) else { return out };
+        if let Some(p) = pixel_format(&f, &frame) {
+            out.push(("Pixel format", p));
+        }
+        if let Some(p) = profile_name(&f, &frame) {
+            out.push(("Colour profile", p));
+        }
+        let (mut dx, mut dy) = (0.0f64, 0.0f64);
+        if frame.GetResolution(&mut dx, &mut dy).is_ok() && dx > 0.0 && dy > 0.0 {
+            let (dx, dy) = (dx.round() as u32, dy.round() as u32);
+            out.push(("Resolution", if dx == dy { format!("{dx} dpi") } else { format!("{dx} \u{d7} {dy} dpi") }));
+        }
+        if let Ok(n) = dec.GetFrameCount() {
+            if n > 1 {
+                out.push(("Frames", n.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// How the decoder's own pixels are laid out, worded.
+unsafe fn pixel_format(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode) -> Option<String> {
+    unsafe {
+        let fmt = frame.GetPixelFormat().ok()?;
+        let info = f.CreateComponentInfo(&fmt).ok()?.cast::<IWICPixelFormatInfo2>().ok()?;
+        let bpp = info.GetBitsPerPixel().ok()?;
+        let channels = info.GetChannelCount().ok()?.max(1);
+        let alpha = info.SupportsTransparency().is_ok_and(|b| b.as_bool());
+        let float = info.GetNumericRepresentation().ok() == Some(WICPixelFormatNumericRepresentationFloat);
+        let indexed = info.GetNumericRepresentation().ok() == Some(WICPixelFormatNumericRepresentationIndexed);
+        if indexed {
+            return Some(format!("Indexed, {} colours{}", 1u32 << bpp.min(16), if alpha { ", with transparency" } else { "" }));
+        }
+        let cmyk = [GUID_WICPixelFormat32bppCMYK, GUID_WICPixelFormat64bppCMYK, GUID_WICPixelFormat40bppCMYKAlpha, GUID_WICPixelFormat80bppCMYKAlpha].contains(&fmt);
+        let depth = bpp / channels;
+        let colour = match (cmyk, channels - alpha as u32) {
+            (true, _) => "CMYK",
+            (_, 1) => "greyscale",
+            _ => "RGB",
+        };
+        let kind = if float { format!("{depth}-bit float") } else if depth == 1 { "1-bit".to_string() } else { format!("{depth}-bit") };
+        Some(format!("{kind} {colour}{}", if alpha { " with alpha" } else { "" }))
+    }
+}
+
+/// The frame's colour profile by the name it gives itself ("Display P3"), or the EXIF colour space it names.
+unsafe fn profile_name(f: &IWICImagingFactory, frame: &IWICBitmapFrameDecode) -> Option<String> {
+    unsafe {
+        let mut count = 0u32;
+        frame.GetColorContexts(&mut [], &mut count).ok()?;
+        if count == 0 {
+            return None;
+        }
+        let mut contexts: Vec<Option<IWICColorContext>> = (0..count).map(|_| f.CreateColorContext().ok()).collect();
+        frame.GetColorContexts(&mut contexts, &mut count).ok()?;
+        let ctx = contexts.into_iter().flatten().next()?;
+        if ctx.GetType().ok()? == WICColorContextExifColorSpace {
+            return match ctx.GetExifColorSpace().ok()? {
+                1 => Some("sRGB".into()),
+                2 => Some("Adobe RGB".into()),
+                _ => None,
+            };
+        }
+        // A real buffer: the empty-slice size query passes a dangling pointer WIC refuses (see `describe`).
+        let mut bytes = vec![0u8; 64 << 10];
+        let mut n = 0u32;
+        if ctx.GetProfileBytes(&mut bytes, &mut n).is_err() {
+            if n as usize <= bytes.len() {
+                return None;
+            }
+            bytes.resize(n as usize, 0);
+            ctx.GetProfileBytes(&mut bytes, &mut n).ok()?;
+        }
+        bytes.truncate(n as usize);
+        icc_name(&bytes)
+    }
+}
+
+/// An ICC profile's description tag: `desc` (v2, ASCII) or `mluc` (v4, UTF-16BE, the first record).
+pub fn icc_name(p: &[u8]) -> Option<String> {
+    let be32 = |at: usize| p.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let count = be32(128)?;
+    for i in 0..count.min(256) {
+        let e = 132 + i * 12;
+        if p.get(e..e + 4)? != b"desc" {
+            continue;
+        }
+        let (off, size) = (be32(e + 4)?, be32(e + 8)?);
+        let tag = p.get(off..off + size)?;
+        let text = match tag.get(..4)? {
+            b"desc" => {
+                let n = u32::from_be_bytes(tag.get(8..12)?.try_into().ok()?) as usize;
+                String::from_utf8_lossy(tag.get(12..12 + n)?).trim_end_matches('\0').to_string()
+            }
+            b"mluc" => {
+                let len = u32::from_be_bytes(tag.get(20..24)?.try_into().ok()?) as usize;
+                let at = u32::from_be_bytes(tag.get(24..28)?.try_into().ok()?) as usize;
+                let units: Vec<u16> = tag.get(at..at + len)?.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                String::from_utf16_lossy(&units).trim_end_matches('\0').to_string()
+            }
+            _ => return None,
+        };
+        let text = text.trim().to_string();
+        return (!text.is_empty()).then_some(text);
+    }
+    None
+}
+
+#[cfg(test)]
+mod icc_tests {
+    use super::icc_name;
+
+    /// A header, one tag-table entry pointing at `tag`.
+    fn profile(tag: &[u8]) -> Vec<u8> {
+        let mut p = vec![0u8; 128];
+        p.extend(1u32.to_be_bytes());
+        p.extend(b"desc");
+        p.extend((144u32).to_be_bytes());
+        p.extend((tag.len() as u32).to_be_bytes());
+        p.extend(tag);
+        p
+    }
+
+    #[test]
+    fn names_v2_and_v4_profiles() {
+        let mut v2 = b"desc\0\0\0\0".to_vec();
+        v2.extend(12u32.to_be_bytes());
+        v2.extend(b"sRGB IEC61966\0");
+        assert_eq!(icc_name(&profile(&v2)).as_deref(), Some("sRGB IEC6196"));
+        let text: Vec<u8> = "Display P3".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        let mut v4 = b"mluc\0\0\0\0".to_vec();
+        v4.extend(1u32.to_be_bytes());
+        v4.extend(12u32.to_be_bytes());
+        v4.extend(b"enUS");
+        v4.extend((text.len() as u32).to_be_bytes());
+        v4.extend(28u32.to_be_bytes());
+        v4.extend(&text);
+        assert_eq!(icc_name(&profile(&v4)).as_deref(), Some("Display P3"));
+    }
+}
+
 /// Writes premultiplied BGRA pixels as a PNG (straight alpha in the file).
 pub fn save_png(f: &IWICImagingFactory, path: &Path, w: u32, h: u32, pbgra: &[u8]) -> Result<()> {
     unsafe {

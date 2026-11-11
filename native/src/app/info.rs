@@ -79,6 +79,9 @@ pub(super) enum Block {
     Row { label: &'static str, value: String, path: bool },
 }
 
+/// The Location group's rows: right-click offers the map on any of them.
+pub(super) const LOCATION_ROWS: [&str; 7] = ["Place", "City", "State", "Country", "Latitude", "Longitude", "Altitude"];
+
 /// 1,234,567.
 fn grouped(v: u64) -> String {
     let s = v.to_string();
@@ -304,8 +307,27 @@ impl App {
                 }
             }
             Action::Reveal => self.reveal(),
+            Action::InfoCopyCoordinates => {
+                if let Some((lat, lon)) = self.photo_coordinates() {
+                    if clipboard::set_text(self.hwnd, &format!("{lat:.6}, {lon:.6}")) {
+                        self.show_toast("Copied coordinates", false);
+                    }
+                }
+            }
+            Action::InfoMap => {
+                // Only when asked: the coordinates go to the map site in the address.
+                if let Some((lat, lon)) = self.photo_coordinates() {
+                    super::page::shell_open(&format!("https://www.google.com/maps/search/?api=1&query={lat:.6},{lon:.6}"));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The current photo's GPS fix, once its EXIF is read.
+    pub(super) fn photo_coordinates(&self) -> Option<(f64, f64)> {
+        let e = self.current_exif()?;
+        Some((e.latitude?, e.longitude?))
     }
 
     fn info_blocks(&self) -> Vec<Block> {

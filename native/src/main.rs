@@ -12,6 +12,7 @@ mod audio;
 mod clipboard;
 mod colour;
 mod decode;
+mod describe;
 mod dvd;
 mod engine;
 mod explorer;

@@ -45,6 +45,12 @@ pub struct Exif {
     /// An audio file's facts and its tags, already worded; empty otherwise.
     pub audio: Vec<(&'static str, String)>,
     pub tags: Vec<(&'static str, String)>,
+    /// A picture's pixel format, colour profile, resolution and frames (WIC), worded.
+    pub image: Vec<(&'static str, String)>,
+    /// Its title, caption, keywords, rating, author... (XMP, IPTC, EXIF text: describe.rs).
+    pub words: Vec<(&'static str, String)>,
+    /// Where it was taken by name (place, city, state, country).
+    pub place: Vec<(&'static str, String)>,
 }
 
 /// Reads the file's EXIF block; None when it has none or the container isn't one EXIF can live in. A video's
@@ -59,11 +65,19 @@ pub fn read(path: &Path) -> Option<Exif> {
         let info = crate::imaging::video::probe(path).ok()?;
         return Some(Exif { video: crate::imaging::video::facts(&info), taken: local_time(info.created), ..Default::default() });
     }
-    let file = std::fs::File::open(path).ok()?;
-    let mut r = std::io::BufReader::new(file);
-    let exif = exif::Reader::new().read_from_container(&mut r).ok()?;
+    let format = crate::format::sniff_file(path);
+    let bytes = head_and_tail(path);
+    let exif = exif::Reader::new().read_from_container(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?)).ok();
+    let words = crate::describe::read(&bytes, exif.as_ref());
+    // Formats WIC itself reads (camera RAW's inbox decoder would describe only its embedded preview).
+    use crate::format::Format as F;
+    let image = if matches!(format, F::Jpeg | F::Png | F::Bmp | F::Gif | F::Tiff | F::Webp | F::Ico | F::JpegXr | F::Heif | F::Avif) { crate::imaging::wic::facts(path) } else { Vec::new() };
+    let mut e = Exif { image, words: words.rows(), place: words.place_rows(), ..Default::default() };
+    let Some(exif) = exif else {
+        return (!e.image.is_empty() || !e.words.is_empty() || !e.place.is_empty()).then_some(e);
+    };
     let get = |t: Tag| exif.get_field(t, In::PRIMARY).map(|f| &f.value);
-    let mut e = Exif {
+    e = Exif {
         make: get(Tag::Make).and_then(ascii),
         model: get(Tag::Model).and_then(ascii),
         lens: get(Tag::LensModel).and_then(ascii),
@@ -81,7 +95,7 @@ pub fn read(path: &Path) -> Option<Exif> {
         }),
         taken: get(Tag::DateTimeOriginal).and_then(ascii).and_then(|s| parse_time(&s)),
         digitized: get(Tag::DateTimeDigitized).and_then(ascii).and_then(|s| parse_time(&s)),
-        ..Default::default()
+        ..e
     };
     let lat = get(Tag::GPSLatitude).and_then(dms);
     let lon = get(Tag::GPSLongitude).and_then(dms);
@@ -99,6 +113,22 @@ pub fn read(path: &Path) -> Option<Exif> {
         e.altitude = Some(format!("{} metres", trim(if below { -alt } else { alt }, 1)));
     }
     Some(e)
+}
+
+/// The first 8 MB and the last 1 MB of the file: where XMP and IPTC live (a JPEG's or TIFF's start; a PNG's or
+/// WebP's chunks can trail the pixels).
+fn head_and_tail(path: &Path) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    const HEAD: u64 = 8 << 20;
+    const TAIL: u64 = 1 << 20;
+    let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut out = Vec::new();
+    let _ = (&mut f).take(HEAD).read_to_end(&mut out);
+    if len > HEAD + TAIL && f.seek(SeekFrom::Start(len - TAIL)).is_ok() {
+        let _ = f.take(TAIL).read_to_end(&mut out);
+    }
+    out
 }
 
 fn ascii(v: &Value) -> Option<String> {
@@ -240,6 +270,8 @@ pub fn groups(e: &Exif, date: impl Fn(ExifTime) -> String) -> Vec<Group> {
             out.push(Group { title, rows });
         }
     };
+    push("Image", e.image.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
+    push("Description", e.words.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
     push("Video", e.video.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
     push("Audio", e.audio.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
     push("Tags", e.tags.iter().map(|(l, v)| (*l, Some(v.clone()))).collect());
@@ -258,14 +290,14 @@ pub fn groups(e: &Exif, date: impl Fn(ExifTime) -> String) -> Vec<Group> {
         ],
     );
     push("Date", vec![(if e.video.is_empty() { "Taken" } else { "Recorded" }, e.taken.map(&date)), ("Digitized", e.digitized.map(&date))]);
-    push(
-        "Location",
-        vec![
-            ("Latitude", e.latitude.map(|v| format!("{v:.6}"))),
-            ("Longitude", e.longitude.map(|v| format!("{v:.6}"))),
-            ("Altitude", e.altitude.clone()),
-        ],
-    );
+    // The place by name first, then the coordinates.
+    let mut location: Vec<(&'static str, Option<String>)> = e.place.iter().map(|(l, v)| (*l, Some(v.clone()))).collect();
+    location.extend([
+        ("Latitude", e.latitude.map(|v| format!("{v:.6}"))),
+        ("Longitude", e.longitude.map(|v| format!("{v:.6}"))),
+        ("Altitude", e.altitude.clone()),
+    ]);
+    push("Location", location);
     out
 }
 
@@ -349,6 +381,21 @@ mod tests {
         let g = groups(&e, |_| String::new());
         assert_eq!(g.iter().map(|g| g.title).collect::<Vec<_>>(), ["Camera", "Exposure"]);
         assert_eq!(g[0].rows, [("Model", "X100V".to_string())]);
+    }
+
+    /// Prints the Image and Description groups of every photo in `Pictures\Looker Test Photos` (or
+    /// `LOOKER_PHOTOS`). `cargo test --release -- --ignored --nocapture describes_the_test_photos`
+    #[test]
+    #[ignore]
+    fn describes_the_test_photos() {
+        let dir = std::env::var_os("LOOKER_PHOTOS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap()).join("Pictures").join("Looker Test Photos"));
+        let mut paths: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| crate::format::is_supported(p)).collect();
+        paths.sort();
+        for p in &paths {
+            let e = read(p);
+            let rows: Vec<String> = e.iter().flat_map(|e| e.image.iter().chain(&e.words).chain(&e.place)).map(|(l, v)| format!("{l}: {v}")).collect();
+            println!("{:<44} {}", p.file_name().unwrap().to_string_lossy(), rows.join(" | "));
+        }
     }
 
     #[test]

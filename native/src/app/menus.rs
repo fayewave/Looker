@@ -87,6 +87,9 @@ pub(super) enum Action {
     /// The info card's: copy the property the menu is for, or every one of them.
     InfoCopy,
     InfoCopyAll,
+    /// A Location row's: the photo's coordinates on a map (the browser), or to the clipboard as "lat, lon".
+    InfoMap,
+    InfoCopyCoordinates,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -256,6 +259,10 @@ impl App {
             entries.push(item(Action::InfoCopy, 0xE8C8, &format!("Copy {label}"), None, true));
             if path {
                 entries.push(item(Action::Reveal, 0xEC50, "Show in File Explorer", None, true));
+            }
+            if super::info::LOCATION_ROWS.contains(&label) && self.photo_coordinates().is_some() {
+                entries.push(item(Action::InfoCopyCoordinates, 0xE8C8, "Copy coordinates", None, true));
+                entries.push(item(Action::InfoMap, 0xE707, "Show on a map", None, true));
             }
             entries.push(Entry::Separator);
         }
