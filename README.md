@@ -39,15 +39,22 @@ it keeps itself up to date.
 - Rotate, rename, copy, set as wallpaper, show in File Explorer.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
+- Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
+
+<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
+
+## Video and audio
+
 - Videos play, HDR and 4K60 included, with frame stepping, frame-accurate scrubbing, a timecode or frame count,
   and the media keys and taskbar progress; subtitles from the file itself (SRT, ASS/SSA with its styling and
   fonts, WebVTT, MP4 timed text, PGS, VobSub, DVB) or from files beside it, in any encoding.
 - Audio files play with their cover, tags and a waveform (or spectrogram) per channel: click to seek, drag to loop
   a part, Ctrl+wheel to zoom; loudness in LUFS.
 - Rip unprotected DVDs to MKV or MP4.
-- Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
 
-<img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
+<img src="brand/screenshots/readme-video.jpg" alt="A 4K video playing, with the video bar" width="700">
+
+<img src="brand/screenshots/readme-audio.jpg" alt="An audio file: cover, tags and the waveform" width="700">
 
 ## Text editor
 
