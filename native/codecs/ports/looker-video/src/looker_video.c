@@ -30,6 +30,7 @@
 #include <libswscale/swscale.h>
 
 #include <ass/ass.h>
+#include <fluidsynth.h>
 
 #include <limits.h>
 #include <math.h>
@@ -40,7 +41,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 12
+#define LOOKER_VIDEO_API 13
 
 typedef struct LvInfo
 {
@@ -148,13 +149,17 @@ static void quiet_once(void)
 }
 
 // Raw elementary streams (.264, .hevc, .m1v, .obu, .thd, .mlp...) carry no timestamps, and FFmpeg gives them no
-// duration: count the packets (all of them in a small file, else the first 4 MB's and scale by the file size), then
-// rewind. Without a duration the player shows no length and doesn't loop. For video, a duration guessed from the bit
+// duration: count the packets (all of them in a small file, else the first 4 MB's and scale by the file size), on a
+// second open of the file (some demuxers can't seek back to the start: RoQ came back broken). Without a duration the player shows no length and doesn't loop. For video, a duration guessed from the bit
 // rate is no better: MPEG-1's sequence header says 104 Mbit/s for "variable", which made a 2 s .m1v 9 ms long.
 // (Constant-rate audio, AC-3 and DTS, is guessed right.)
-static void raw_duration(AVFormatContext *fmt)
+// Other containers without a length (id RoQ, raw aptX and SBC) are counted the same way.
+static int input_open(Input *in, const wchar_t *path, int full);
+static void input_close(Input *in);
+
+static void raw_duration(AVFormatContext *fmt, const wchar_t *path)
 {
-    if (!fmt->iformat || !(fmt->iformat->flags & AVFMT_NOTIMESTAMPS) || !fmt->pb)
+    if (!fmt->iformat || !fmt->pb || (fmt->pb->seekable & AVIO_SEEKABLE_NORMAL) == 0)
         return;
     int si = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     int video = si >= 0;
@@ -163,21 +168,30 @@ static void raw_duration(AVFormatContext *fmt)
     if (si < 0)
         return;
     AVStream *st = fmt->streams[si];
-    int guessed = video && fmt->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
+    int guessed = video && (fmt->iformat->flags & AVFMT_NOTIMESTAMPS) && fmt->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
     if ((fmt->duration > 0 || st->duration > 0) && !guessed)
         return;
     AVRational fps = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
     if (video && (fps.num <= 0 || fps.den <= 0))
         return;
+    Input tmp;
+    if (input_open(&tmp, path, 0) < 0 || avformat_find_stream_info(tmp.fmt, NULL) < 0 || (unsigned)si >= tmp.fmt->nb_streams)
+    {
+        input_close(&tmp);
+        return;
+    }
     AVPacket *pkt = av_packet_alloc();
     if (!pkt)
+    {
+        input_close(&tmp);
         return;
+    }
     // Video counts frames; audio adds up the packets' durations (the parser sets them), in the stream's time base.
-    int64_t units = 0, bytes = 0, size = avio_size(fmt->pb);
+    int64_t units = 0, bytes = 0, size = avio_size(tmp.fmt->pb);
     int eof = 0;
     while (bytes < (4 << 20))
     {
-        if (av_read_frame(fmt, pkt) < 0)
+        if (av_read_frame(tmp.fmt, pkt) < 0)
         {
             eof = 1;
             break;
@@ -190,19 +204,16 @@ static void raw_duration(AVFormatContext *fmt)
         av_packet_unref(pkt);
     }
     av_packet_free(&pkt);
+    AVRational tb = tmp.fmt->streams[si]->time_base;
+    input_close(&tmp);
     if (!eof && bytes > 0 && size > bytes)
         units = (int64_t)((double)units * size / bytes);
     if (units > 0)
     {
         fmt->duration = video ? av_rescale(units, (int64_t)fps.den * AV_TIME_BASE, fps.num)
-                              : av_rescale_q(units, st->time_base, AV_TIME_BASE_Q);
+                              : av_rescale_q(units, tb, AV_TIME_BASE_Q);
         st->duration = av_rescale_q(fmt->duration, AV_TIME_BASE_Q, st->time_base);
         fmt->duration_estimation_method = AVFMT_DURATION_FROM_STREAM; // counted: not again
-    }
-    if (av_seek_frame(fmt, si, st->start_time != AV_NOPTS_VALUE ? st->start_time : 0, AVSEEK_FLAG_BACKWARD) < 0)
-    {
-        avio_seek(fmt->pb, 0, SEEK_SET);
-        avformat_flush(fmt);
     }
 }
 
@@ -242,7 +253,7 @@ static int input_open(Input *in, const wchar_t *path, int full)
         return 0;
     r = avformat_find_stream_info(in->fmt, NULL);
     if (r >= 0)
-        raw_duration(in->fmt);
+        raw_duration(in->fmt, path);
     return r;
 }
 
@@ -732,7 +743,7 @@ EXPORT int looker_video_still(const wchar_t *path, int box_w, int box_h, LvInfo 
     }
     AVStream *st = in.fmt->streams[vi];
     st->discard = AVDISCARD_DEFAULT;
-    raw_duration(in.fmt);
+    raw_duration(in.fmt, path);
     fill_info(in.fmt, st, ai >= 0 ? in.fmt->streams[ai] : NULL, info);
 
     const AVCodec *codec = decoder_for(st->codecpar);
@@ -814,12 +825,20 @@ enum
 {
     LV_NO_AUDIO = 1, // lv_open: pictures only
     LV_KEYFRAMES = 2, // lv_open: keyframes only, each handed out as soon as it's decoded (the seek bar's previews)
+    LV_NO_DEINTERLACE = 4, // lv_open: interlaced pictures as they are (two fields woven), on the GPU when it can
+    // lv_open: sound in these codecs (the ones the output device takes) comes as IEC 61937 bursts for a receiver
+    // (LV_BITSTREAM frames; lv_passthrough says which and how) instead of decoded.
+    LV_PASS_AC3 = 8,
+    LV_PASS_EAC3 = 16,
+    LV_PASS_DTS = 32,
+    LV_PASS_TRUEHD = 64,
 };
 enum
 {
     LV_TEXTURE = 1, // texture + texture_index: an NV12 (8-bit) or P010 (10-bit, MSB-aligned) array slice
     LV_PLANAR = 2,  // data[0..nplanes]: Y, U, V (+ A), or Y and interleaved UV when nplanes == 2
     LV_RGBA = 3,    // data[0]: straight RGBA, 8 bits per channel
+    LV_BITSTREAM = 4, // audio: data[0], linesize[0] bytes of IEC 61937 (16-bit samples), nb_samples frames of it
 };
 
 typedef struct LvFrame
@@ -876,7 +895,31 @@ typedef struct LvPlayer
     int n_vtracks;
     LvTrack *stracks;        // its subtitle streams (lv_sub_tracks)
     int n_stracks;
+    struct LvChapter *chapters; // the container's chapters (lv_chapters)
+    int n_chapters;
+    // Deinterlacing (interlaced video: DVD, DV, broadcast): pictures go through bwdif, one per field, decoded on
+    // the CPU. `vtb` is the time base of what video_out gets: the stream's, or the filter's (twice as fine).
+    AVFilterGraph *deint;
+    AVFilterContext *deint_src, *deint_sink;
+    int deint_on, deint_eof, no_deint;
+    int deint_w, deint_h, deint_fmt; // what the graph was made for (a change remakes it)
+    AVRational vtb;
+    // Passthrough (LV_PASS_*): the audio stream's packets go through FFmpeg's spdif muxer into IEC 61937 bursts
+    // for a receiver, instead of the decoder (which is opened all the same, unused, so every other path holds).
+    AVFormatContext *sp;
+    unsigned char *sp_buf, *sp_out; // what the muxer wrote since the last hand-out; what was last handed out
+    int sp_len, sp_cap, sp_out_cap;
+    long long sp_pts; // the time of the first packet in sp_buf, -1 when none
+    int sp_eof;
+    int sp_codec, sp_rate, sp_channels; // LV_PASS_* of the stream, and the IEC stream's rate and channel count
 } LvPlayer;
+
+// A chapter, on the player's clock (lv_start_us is 0).
+typedef struct LvChapter
+{
+    long long start_us, end_us;
+    char title[128]; // UTF-8, "" when it has none
+} LvChapter;
 
 // How far lv_next_audio may read ahead of the pictures: packets and bytes.
 #define VQ_MAX_PACKETS 2000
@@ -1011,6 +1054,188 @@ static int open_decoder(AVStream *st, const AVCodec *codec, AVBufferRef *hw, int
     return r;
 }
 
+// ---- passthrough: IEC 61937 for a receiver ---------------------------------------------------------------------
+
+static long long to_us(LvPlayer *p, int stream, int64_t ts);
+
+static int sp_write(void *opaque, const uint8_t *buf, int size)
+{
+    LvPlayer *p = opaque;
+    if (p->sp_len + size > p->sp_cap)
+    {
+        int cap = (p->sp_len + size) * 2;
+        unsigned char *b = av_realloc(p->sp_buf, (size_t)cap);
+        if (b == NULL)
+            return AVERROR(ENOMEM);
+        p->sp_buf = b;
+        p->sp_cap = cap;
+    }
+    memcpy(p->sp_buf + p->sp_len, buf, (size_t)size);
+    p->sp_len += size;
+    return size;
+}
+
+static void sp_close(LvPlayer *p)
+{
+    if (p->sp == NULL)
+        return;
+    if (p->sp->pb)
+    {
+        av_freep(&p->sp->pb->buffer);
+        avio_context_free(&p->sp->pb);
+    }
+    avformat_free_context(p->sp);
+    p->sp = NULL;
+}
+
+// (Re)makes the muxer for the audio stream (after a seek too: E-AC-3 and TrueHD gather several frames a burst).
+static int sp_open(LvPlayer *p)
+{
+    sp_close(p);
+    p->sp_len = 0;
+    p->sp_pts = -1;
+    p->sp_eof = 0;
+    AVStream *as = p->in.fmt->streams[p->ai];
+    AVFormatContext *o = NULL;
+    int r = avformat_alloc_output_context2(&o, NULL, "spdif", NULL);
+    if (r < 0)
+        return r;
+    AVStream *st = avformat_new_stream(o, NULL);
+    unsigned char *buf = av_malloc(1 << 15);
+    if (st == NULL || buf == NULL || (r = avcodec_parameters_copy(st->codecpar, as->codecpar)) < 0)
+    {
+        av_free(buf);
+        avformat_free_context(o);
+        return r < 0 ? r : AVERROR(ENOMEM);
+    }
+    st->time_base = as->time_base;
+    o->pb = avio_alloc_context(buf, 1 << 15, 1, p, NULL, sp_write, NULL);
+    if (o->pb == NULL)
+    {
+        av_free(buf);
+        avformat_free_context(o);
+        return AVERROR(ENOMEM);
+    }
+    o->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_FLUSH_PACKETS;
+    p->sp = o;
+    if ((r = avformat_write_header(o, NULL)) < 0)
+    {
+        sp_close(p);
+        return r;
+    }
+    avio_flush(o->pb);
+    p->sp_len = 0; // the header writes nothing a receiver needs
+    return 0;
+}
+
+// Picks passthrough for the audio stream when Looker allows its codec: the IEC stream's rate and channel count are
+// what the output must be opened at (E-AC-3 and TrueHD need four times the rate; TrueHD eight channels: HDMI's high
+// bit rate). DTS goes as its core (what every receiver takes).
+static void sp_choose(LvPlayer *p, int flags)
+{
+    if (p->ai < 0)
+        return;
+    const AVCodecParameters *c = p->in.fmt->streams[p->ai]->codecpar;
+    int rate = c->sample_rate;
+    int code = 0, ch = 2;
+    switch (c->codec_id)
+    {
+    case AV_CODEC_ID_AC3:
+        code = LV_PASS_AC3;
+        break;
+    case AV_CODEC_ID_EAC3:
+        code = LV_PASS_EAC3;
+        rate *= 4;
+        break;
+    case AV_CODEC_ID_DTS:
+        code = LV_PASS_DTS;
+        break;
+    case AV_CODEC_ID_TRUEHD:
+        code = LV_PASS_TRUEHD;
+        rate = 192000;
+        ch = 8;
+        break;
+    default:
+        return;
+    }
+    if (!(flags & code) || rate <= 0 || sp_open(p) < 0)
+        return;
+    p->sp_codec = code;
+    p->sp_rate = rate;
+    p->sp_channels = ch;
+}
+
+// The audio stream's next packet (NULL: the end): to the decoder, or the muxer.
+static void a_send(LvPlayer *p, AVPacket *pkt)
+{
+    if (!p->sp)
+    {
+        avcodec_send_packet(p->adec, pkt);
+        return;
+    }
+    if (pkt == NULL)
+    {
+        if (!p->sp_eof)
+        {
+            p->sp_eof = 1;
+            av_write_trailer(p->sp);
+            avio_flush(p->sp->pb);
+        }
+        return;
+    }
+    AVPacket *k = av_packet_clone(pkt);
+    if (k == NULL)
+        return;
+    int64_t ts = k->pts != AV_NOPTS_VALUE ? k->pts : k->dts;
+    if (p->sp_len == 0 && ts != AV_NOPTS_VALUE)
+        p->sp_pts = to_us(p, p->ai, ts);
+    k->stream_index = 0;
+    av_write_frame(p->sp, k); // a broken packet is skipped
+    av_packet_free(&k);
+    avio_flush(p->sp->pb);
+}
+
+// What the muxer has made, as one block: 1 with `out` filled, 0 when nothing yet, AVERROR_EOF when it's done.
+static int sp_take(LvPlayer *p, LvFrame *out)
+{
+    if (p->sp_len == 0)
+        return p->sp_eof ? AVERROR_EOF : 0;
+    if (p->sp_len > p->sp_out_cap)
+    {
+        av_free(p->sp_out);
+        p->sp_out = av_malloc((size_t)p->sp_len);
+        p->sp_out_cap = p->sp_out ? p->sp_len : 0;
+        if (p->sp_out == NULL)
+            return AVERROR(ENOMEM);
+    }
+    memcpy(p->sp_out, p->sp_buf, (size_t)p->sp_len);
+    memset(out, 0, sizeof *out);
+    out->kind = LV_AUDIO;
+    out->layout = LV_BITSTREAM;
+    out->pts_us = p->sp_pts >= 0 ? p->sp_pts : 0;
+    out->nb_samples = p->sp_len / (2 * p->sp_channels);
+    out->duration_us = (long long)out->nb_samples * 1000000 / p->sp_rate;
+    out->data[0] = p->sp_out;
+    out->linesize[0] = p->sp_len;
+    p->sp_len = 0;
+    p->sp_pts = -1;
+    if (p->audio_skip && out->pts_us + out->duration_us <= p->seek_target)
+        return 0; // before an exact seek's target
+    p->audio_skip = 0;
+    return 1;
+}
+
+// Passthrough in use: its LV_PASS_* code, the IEC stream's rate and channels (16-bit samples). 0 when the sound is
+// decoded.
+EXPORT int lv_passthrough(const LvPlayer *p, int *rate, int *channels)
+{
+    if (!p || !p->sp)
+        return 0;
+    *rate = p->sp_rate;
+    *channels = p->sp_channels;
+    return p->sp_codec;
+}
+
 EXPORT void lv_close(LvPlayer *p)
 {
     if (p == NULL)
@@ -1030,6 +1255,11 @@ EXPORT void lv_close(LvPlayer *p)
     free(p->tracks);
     free(p->vtracks);
     free(p->stracks);
+    free(p->chapters);
+    avfilter_graph_free(&p->deint);
+    sp_close(p);
+    av_free(p->sp_buf);
+    av_free(p->sp_out);
     free(p);
 }
 
@@ -1097,10 +1327,61 @@ static void list_video_tracks(LvPlayer *p)
     }
 }
 
+// The container's chapters (Matroska, MP4/MOV chapter tracks, Ogg, DVD-style ones in some MPEG files), in order,
+// each ending where the next starts when the container leaves its end open. One that ends before it starts, or
+// lies past the end, is dropped.
+static void list_chapters(LvPlayer *p, long long duration_us)
+{
+    AVFormatContext *fmt = p->in.fmt;
+    if (fmt->nb_chapters == 0 || (p->chapters = calloc(fmt->nb_chapters, sizeof *p->chapters)) == NULL)
+        return;
+    for (unsigned i = 0; i < fmt->nb_chapters; i++)
+    {
+        const AVChapter *c = fmt->chapters[i];
+        long long s = av_rescale_q(c->start, c->time_base, AV_TIME_BASE_Q) - p->start_us;
+        long long e = c->end != AV_NOPTS_VALUE && c->end > c->start ? av_rescale_q(c->end, c->time_base, AV_TIME_BASE_Q) - p->start_us : -1;
+        if (s < 0)
+            s = 0;
+        if (duration_us > 0 && s >= duration_us)
+            continue;
+        LvChapter *ch = &p->chapters[p->n_chapters++];
+        ch->start_us = s;
+        ch->end_us = e;
+        const AVDictionaryEntry *t = av_dict_get(c->metadata, "title", NULL, 0);
+        if (t)
+            snprintf(ch->title, sizeof ch->title, "%s", t->value);
+    }
+    // In time order (MP4 lists them so; a hand-made Matroska file may not).
+    for (int i = 1; i < p->n_chapters; i++)
+        for (int j = i; j > 0 && p->chapters[j].start_us < p->chapters[j - 1].start_us; j--)
+        {
+            LvChapter t = p->chapters[j];
+            p->chapters[j] = p->chapters[j - 1];
+            p->chapters[j - 1] = t;
+        }
+    for (int i = 0; i < p->n_chapters; i++)
+        if (p->chapters[i].end_us <= p->chapters[i].start_us)
+            p->chapters[i].end_us = i + 1 < p->n_chapters ? p->chapters[i + 1].start_us : duration_us;
+    // A single chapter covering the whole file says nothing.
+    if (p->n_chapters == 1 && p->chapters[0].start_us == 0)
+        p->n_chapters = 0;
+}
+
+// The file's chapters, by start time; valid until lv_close. Count 0 when it has none.
+EXPORT int lv_chapters(const LvPlayer *p, const LvChapter **out)
+{
+    *out = p ? p->chapters : NULL;
+    return p ? p->n_chapters : 0;
+}
+
 static int sub_kind(enum AVCodecID id)
 {
     if (id == AV_CODEC_ID_ASS || id == AV_CODEC_ID_SSA)
         return LV_TRACK_ASS;
+    // Teletext is decoded to text (its subtitle pages, laid out by Looker) rather than libzvbi's page bitmaps,
+    // which are a fixed 40x25-cell picture that doesn't scale with the video.
+    if (id == AV_CODEC_ID_DVB_TELETEXT || id == AV_CODEC_ID_ARIB_CAPTION)
+        return LV_TRACK_TEXT;
     const AVCodecDescriptor *d = avcodec_descriptor_get(id);
     return d && (d->props & AV_CODEC_PROP_BITMAP_SUB) ? LV_TRACK_BITMAP : LV_TRACK_TEXT;
 }
@@ -1266,7 +1547,7 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
     }
     AVStream *vs = fmt->streams[p->vi];
     vs->discard = AVDISCARD_DEFAULT;
-    raw_duration(fmt);
+    raw_duration(fmt, path);
     fill_info(fmt, vs, p->ai >= 0 ? fmt->streams[p->ai] : NULL, info);
     p->start_us = vs->start_time != AV_NOPTS_VALUE ? av_rescale_q(vs->start_time, vs->time_base, AV_TIME_BASE_Q) : 0;
     if (audio_stream >= 0 && (unsigned)audio_stream < fmt->nb_streams && fmt->streams[audio_stream]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
@@ -1277,6 +1558,16 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
     list_tracks(p);
     list_video_tracks(p);
     list_sub_tracks(p);
+    list_chapters(p, info->duration_us);
+    p->vtb = vs->time_base;
+    // Interlaced pictures are deinterlaced (bwdif, on the CPU: the GPU's surfaces would have to be read back)
+    // unless Looker says not to; previews (keyframes) never are.
+    enum AVFieldOrder fo = vs->codecpar->field_order;
+    p->no_deint = (flags & (LV_KEYFRAMES | LV_NO_DEINTERLACE)) != 0;
+    p->deint_on = !p->no_deint &&
+                  (fo == AV_FIELD_TT || fo == AV_FIELD_BB || fo == AV_FIELD_TB || fo == AV_FIELD_BT);
+    if (p->deint_on)
+        d3d11 = NULL;
 
     if (d3d11)
     {
@@ -1322,6 +1613,8 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
             as->discard = AVDISCARD_DEFAULT;
         else
             p->ai = -1; // plays silent rather than not at all
+        if (p->ai >= 0)
+            sp_choose(p, flags);
     }
     if (p->ai < 0)
         p->a_done = 1;
@@ -1352,19 +1645,77 @@ static long long to_us(LvPlayer *p, int stream, int64_t ts)
     return av_rescale_q(ts, p->in.fmt->streams[stream]->time_base, AV_TIME_BASE_Q) - p->start_us;
 }
 
+// A picture's time, in the time base of what video_out gets (the deinterlacer's when it's on).
+static long long vts_us(LvPlayer *p, int64_t ts)
+{
+    return av_rescale_q(ts, p->vtb, AV_TIME_BASE_Q) - p->start_us;
+}
+
+// The deinterlacer, made for this picture's size and format: bwdif, one picture per field (25i plays as 50p),
+// leaving progressive pictures alone (deint=interlaced: a broadcast that switches to progressive film is untouched).
+static int deint_make(LvPlayer *p, const AVFrame *f)
+{
+    avfilter_graph_free(&p->deint);
+    p->deint_eof = 0;
+    AVStream *vs = p->in.fmt->streams[p->vi];
+    AVRational sar = f->sample_aspect_ratio.num > 0 ? f->sample_aspect_ratio : (AVRational){1, 1};
+    char args[256];
+    snprintf(args, sizeof args, "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d", f->width, f->height,
+             f->format, vs->time_base.num, vs->time_base.den, sar.num, sar.den);
+    AVFilterGraph *g = avfilter_graph_alloc();
+    if (g == NULL)
+        return AVERROR(ENOMEM);
+    g->nb_threads = 0; // bwdif's slices on every core
+    AVFilterContext *src = NULL, *sink = NULL, *bw = NULL;
+    int r = avfilter_graph_create_filter(&src, avfilter_get_by_name("buffer"), "in", args, NULL, g);
+    if (r >= 0)
+        r = avfilter_graph_create_filter(&bw, avfilter_get_by_name("bwdif"), "deint", "mode=send_field:parity=auto:deint=interlaced", NULL, g);
+    if (r >= 0)
+        r = avfilter_graph_create_filter(&sink, avfilter_get_by_name("buffersink"), "out", NULL, NULL, g);
+    if (r >= 0)
+        r = avfilter_link(src, 0, bw, 0);
+    if (r >= 0)
+        r = avfilter_link(bw, 0, sink, 0);
+    if (r >= 0)
+        r = avfilter_graph_config(g, NULL);
+    if (r < 0)
+    {
+        avfilter_graph_free(&g);
+        return r;
+    }
+    p->deint = g;
+    p->deint_src = src;
+    p->deint_sink = sink;
+    p->deint_w = f->width;
+    p->deint_h = f->height;
+    p->deint_fmt = f->format;
+    p->vtb = av_buffersink_get_time_base(sink);
+    return 0;
+}
+
+// After a seek: the deinterlacer starts again with the next picture.
+static void deint_reset(LvPlayer *p)
+{
+    avfilter_graph_free(&p->deint);
+    p->deint_src = p->deint_sink = NULL;
+    p->deint_eof = 0;
+}
+
 // A decoded picture into `out`; 1 when handed out, 0 when dropped (before an exact seek's target, or unusable).
 static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
 {
     AVStream *vs = p->in.fmt->streams[p->vi];
     int64_t ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
-    long long dur = f->duration > 0 ? av_rescale_q(f->duration, vs->time_base, AV_TIME_BASE_Q) : 0;
-    long long pts = ts != AV_NOPTS_VALUE ? to_us(p, p->vi, ts) : p->next_vpts;
+    long long dur = f->duration > 0 ? av_rescale_q(f->duration, p->vtb, AV_TIME_BASE_Q) : 0;
+    long long pts = ts != AV_NOPTS_VALUE ? vts_us(p, ts) : p->next_vpts;
     if (dur <= 0)
     {
         AVRational fr = vs->avg_frame_rate.num > 0 ? vs->avg_frame_rate : av_inv_q(vs->time_base);
         dur = fr.num > 0 && fr.den > 0 ? av_rescale(1000000, fr.den, fr.num) : 40000;
         if (dur > 1000000)
             dur = 40000;
+        if (p->deint)
+            dur /= 2; // a picture per field
     }
     p->next_vpts = pts + dur;
     if (p->skip_until_us != INT64_MIN)
@@ -1391,9 +1742,10 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
             {
                 avcodec_flush_buffers(p->vdec);
                 if (p->adec)
-                    avcodec_flush_buffers(p->adec);
+                    { avcodec_flush_buffers(p->adec); if (p->sp) sp_open(p); }
                 swr_free(&p->swr);
                 vq_clear(p);
+                deint_reset(p);
                 p->demux_eof = p->v_done = 0;
                 p->a_done = p->adec ? 0 : 1;
                 p->seek_first = 1;
@@ -1414,8 +1766,8 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
             f = p->held;
             p->held = NULL;
             ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
-            pts = ts != AV_NOPTS_VALUE ? to_us(p, p->vi, ts) : target;
-            long long d2 = f->duration > 0 ? av_rescale_q(f->duration, vs->time_base, AV_TIME_BASE_Q) : dur;
+            pts = ts != AV_NOPTS_VALUE ? vts_us(p, ts) : target;
+            long long d2 = f->duration > 0 ? av_rescale_q(f->duration, p->vtb, AV_TIME_BASE_Q) : dur;
             dur = d2 > 0 ? d2 : dur;
         }
     }
@@ -1603,7 +1955,52 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             AVFrame *f = av_frame_alloc();
             if (f == NULL)
                 return AVERROR(ENOMEM);
-            int r = avcodec_receive_frame(p->vdec, f);
+            // Deinterlacing: what the filter has ready goes first; its end is the video's end.
+            int r = AVERROR(EAGAIN);
+            if (p->deint)
+            {
+                r = av_buffersink_get_frame(p->deint_sink, f);
+                if (r == 0)
+                {
+                    // The filter's own time (per field); the decoder's guess it carried over is per picture.
+                    f->best_effort_timestamp = f->pts;
+                    if (video_out(p, f, out))
+                        return 0;
+                    continue;
+                }
+                if (r != AVERROR(EAGAIN) && r != AVERROR_EOF)
+                    deint_reset(p); // a broken graph: the rest plays woven
+            }
+            if (r != AVERROR_EOF)
+                r = avcodec_receive_frame(p->vdec, f);
+            else
+                av_frame_unref(f);
+            // A picture the container didn't call interlaced but the decoder does (H.264 in MP4): from here on.
+            if (r == 0 && !p->deint_on && !p->no_deint && !p->hw && (f->flags & AV_FRAME_FLAG_INTERLACED))
+                p->deint_on = 1;
+            if (r == 0 && p->deint_on)
+            {
+                if ((p->deint == NULL || f->width != p->deint_w || f->height != p->deint_h || f->format != p->deint_fmt) &&
+                    deint_make(p, f) < 0)
+                {
+                    p->deint_on = 0; // no filter: as it is
+                    p->vtb = p->in.fmt->streams[p->vi]->time_base;
+                }
+                else
+                {
+                    av_buffersrc_add_frame(p->deint_src, f); // takes the picture
+                    av_frame_free(&f);
+                    continue;
+                }
+            }
+            if (r == AVERROR_EOF && p->deint && !p->deint_eof)
+            {
+                // The decoder is drained: the filter gives up its last fields, then says EOF.
+                p->deint_eof = 1;
+                av_buffersrc_add_frame(p->deint_src, NULL);
+                av_frame_free(&f);
+                continue;
+            }
             if (r == 0)
             {
                 if (video_out(p, f, out))
@@ -1626,7 +2023,15 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             else if (r != AVERROR(EAGAIN))
                 return r;
         }
-        if (p->a_done == 0)
+        if (p->a_done == 0 && p->sp)
+        {
+            int t = sp_take(p, out);
+            if (t == 1)
+                return 0;
+            if (t < 0)
+                p->a_done = 1;
+        }
+        else if (p->a_done == 0)
         {
             AVFrame *f = av_frame_alloc();
             if (f == NULL)
@@ -1670,7 +2075,7 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             p->demux_eof = 1;
             avcodec_send_packet(p->vdec, NULL);
             if (p->adec && p->a_done == 0)
-                avcodec_send_packet(p->adec, NULL);
+                a_send(p, NULL);
             continue;
         }
         if (r < 0)
@@ -1678,7 +2083,7 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
         if (p->pkt->stream_index == p->vi && p->v_done == 0)
             avcodec_send_packet(p->vdec, p->pkt);
         else if (p->pkt->stream_index == p->ai && p->a_done == 0)
-            avcodec_send_packet(p->adec, p->pkt);
+            a_send(p, p->pkt);
         av_packet_unref(p->pkt);
     }
 }
@@ -1712,9 +2117,10 @@ EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
         return r;
     avcodec_flush_buffers(p->vdec);
     if (p->adec)
-        avcodec_flush_buffers(p->adec);
+        { avcodec_flush_buffers(p->adec); if (p->sp) sp_open(p); }
     swr_free(&p->swr);
     vq_clear(p);
+    deint_reset(p);
     p->demux_eof = p->v_done = 0;
     p->a_done = p->adec ? 0 : 1;
     p->next_vpts = us;
@@ -1893,17 +2299,28 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
             return AVERROR_EXIT;
         if (p->a_done)
             return AVERROR_EOF;
-        AVFrame *f = av_frame_alloc();
-        if (f == NULL)
-            return AVERROR(ENOMEM);
-        int r = avcodec_receive_frame(p->adec, f);
-        if (r == 0)
+        int r;
+        if (p->sp)
         {
-            if (audio_out(p, f, out))
+            int t = sp_take(p, out);
+            if (t == 1)
                 return 0;
-            continue;
+            r = t == 0 ? AVERROR(EAGAIN) : t;
         }
-        av_frame_free(&f);
+        else
+        {
+            AVFrame *f = av_frame_alloc();
+            if (f == NULL)
+                return AVERROR(ENOMEM);
+            r = avcodec_receive_frame(p->adec, f);
+            if (r == 0)
+            {
+                if (audio_out(p, f, out))
+                    return 0;
+                continue;
+            }
+            av_frame_free(&f);
+        }
         if (r != AVERROR(EAGAIN))
         {
             p->a_done = 1;
@@ -1921,7 +2338,7 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
         {
             p->demux_eof = 1;
             p->v_flush = 1;
-            avcodec_send_packet(p->adec, NULL);
+            a_send(p, NULL);
             continue;
         }
         if (r < 0)
@@ -1935,7 +2352,7 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
             }
         }
         else if (p->pkt->stream_index == p->ai)
-            avcodec_send_packet(p->adec, p->pkt);
+            a_send(p, p->pkt);
         av_packet_unref(p->pkt);
     }
 }
@@ -1963,8 +2380,33 @@ typedef struct LaInfo
     char container[48]; // the demuxer: "mp3", "mov,mp4,m4a,3gp,3g2,mj2", "ogg"...
 } LaInfo;
 
+// MIDI files (.mid, .rmi, .kar) aren't FFmpeg's: FluidSynth plays them through Looker's SoundFont (GeneralUser
+// GS, beside this DLL), rendered as the reader is read. FluidSynth's player counts MIDI ticks; the tempo map below
+// turns ticks into time and back (for la_seek and the length).
+typedef struct MidiTempo
+{
+    long long tick;
+    double us_at;     // the time at `tick`
+    double us_per_tick;
+} MidiTempo;
+
+typedef struct Midi
+{
+    fluid_settings_t *settings;
+    fluid_synth_t *synth;
+    fluid_player_t *player;
+    unsigned char *smf; // the Standard MIDI File (an RMID's data chunk), owned here
+    size_t smf_len;
+    MidiTempo *tempo;
+    int n_tempo;
+    long long end_tick;
+    long long end_frame; // the last note's end, then a tail for the release
+    char title[256];
+} Midi;
+
 typedef struct LaReader
 {
+    Midi *midi; // a MIDI file: everything below but `pos`, `buf`, `rate`, `channels` is unused
     Input in;
     int ai;
     AVCodecContext *dec;
@@ -1982,10 +2424,387 @@ typedef struct LaReader
     volatile LONG interrupt;
 } LaReader;
 
+static void midi_free(Midi *m)
+{
+    if (!m)
+        return;
+    if (m->player)
+    {
+        fluid_player_stop(m->player);
+        delete_fluid_player(m->player);
+    }
+    if (m->synth)
+        delete_fluid_synth(m->synth);
+    if (m->settings)
+        delete_fluid_settings(m->settings);
+    free(m->smf);
+    free(m->tempo);
+    free(m);
+}
+
+static unsigned midi_be(const unsigned char *b, int n)
+{
+    unsigned v = 0;
+    for (int i = 0; i < n; i++)
+        v = v << 8 | b[i];
+    return v;
+}
+
+// A variable-length quantity at *at (advanced), within `end`; -1 when it runs off.
+static long long midi_vlq(const unsigned char *b, size_t *at, size_t end)
+{
+    long long v = 0;
+    for (int i = 0; i < 4; i++)
+    {
+        if (*at >= end)
+            return -1;
+        unsigned char c = b[(*at)++];
+        v = v << 7 | (c & 0x7f);
+        if (!(c & 0x80))
+            return v;
+    }
+    return -1;
+}
+
+static int tempo_cmp(const void *a, const void *b)
+{
+    long long x = ((const MidiTempo *)a)->tick, y = ((const MidiTempo *)b)->tick;
+    return x < y ? -1 : x > y;
+}
+
+// Reads the file's tempo changes, its last tick and its title (the first track's name), and builds the map.
+// 0, or AVERROR_INVALIDDATA when it isn't a MIDI file.
+static int midi_scan(Midi *m)
+{
+    const unsigned char *b = m->smf;
+    size_t n = m->smf_len;
+    if (n < 14 || memcmp(b, "MThd", 4) != 0)
+        return AVERROR_INVALIDDATA;
+    unsigned hlen = midi_be(b + 4, 4);
+    unsigned tracks = midi_be(b + 10, 2);
+    unsigned division = midi_be(b + 12, 2);
+    double us_per_tick_smpte = 0;
+    if (division & 0x8000)
+    {
+        int fps = -(signed char)(division >> 8);
+        int tpf = division & 0xff;
+        if (fps <= 0 || tpf <= 0)
+            return AVERROR_INVALIDDATA;
+        us_per_tick_smpte = 1e6 / ((fps == 29 ? 29.97 : fps) * tpf);
+    }
+    else if (division == 0)
+        return AVERROR_INVALIDDATA;
+    int cap = 16, count = 0;
+    MidiTempo *t = malloc(sizeof *t * cap);
+    if (!t)
+        return AVERROR(ENOMEM);
+    size_t at = 8 + hlen;
+    for (unsigned tr = 0; tr < tracks && at + 8 <= n; tr++)
+    {
+        if (memcmp(b + at, "MTrk", 4) != 0)
+        {
+            at += 8 + midi_be(b + at + 4, 4); // an unknown chunk
+            tr--;
+            continue;
+        }
+        size_t end = at + 8 + midi_be(b + at + 4, 4);
+        if (end > n)
+            end = n;
+        at += 8;
+        long long tick = 0;
+        unsigned char status = 0;
+        while (at < end)
+        {
+            long long d = midi_vlq(b, &at, end);
+            if (d < 0 || at >= end)
+                break;
+            tick += d;
+            unsigned char c = b[at];
+            if (c == 0xff)
+            {
+                if (at + 2 > end)
+                    break;
+                unsigned char type = b[at + 1];
+                at += 2;
+                long long len = midi_vlq(b, &at, end);
+                if (len < 0 || at + (size_t)len > end)
+                    break;
+                if (type == 0x51 && len == 3 && us_per_tick_smpte == 0)
+                {
+                    if (count == cap && !(t = realloc(t, sizeof *t * (cap *= 2))))
+                        return AVERROR(ENOMEM);
+                    t[count].tick = tick;
+                    t[count].us_per_tick = midi_be(b + at, 3) / (double)division;
+                    count++;
+                }
+                else if (type == 0x03 && tr == 0 && !m->title[0] && len > 0)
+                {
+                    size_t k = (size_t)len < sizeof m->title - 1 ? (size_t)len : sizeof m->title - 1;
+                    memcpy(m->title, b + at, k);
+                    m->title[k] = 0;
+                }
+                at += (size_t)len;
+                if (type == 0x2f)
+                    break; // end of track
+                continue;
+            }
+            if (c == 0xf0 || c == 0xf7)
+            {
+                at++;
+                long long len = midi_vlq(b, &at, end);
+                if (len < 0)
+                    break;
+                at += (size_t)len;
+                continue;
+            }
+            if (c & 0x80)
+            {
+                status = c;
+                at++;
+            }
+            if (!(status & 0x80))
+                break; // running status with nothing to run on
+            unsigned char kind = status & 0xf0;
+            at += (kind == 0xc0 || kind == 0xd0) ? 1 : 2;
+            if (kind == 0x80 || kind == 0x90)
+                m->end_tick = tick > m->end_tick ? tick : m->end_tick;
+        }
+        if (tick > m->end_tick && tick - m->end_tick < (long long)division * 8)
+            m->end_tick = tick; // the end-of-track mark, when it's near the last note (not a long silent pad)
+        at = end;
+    }
+    qsort(t, (size_t)count, sizeof *t, tempo_cmp);
+    // The map: 120 bpm until the first tempo change.
+    MidiTempo *map = malloc(sizeof *map * ((size_t)count + 1));
+    if (!map)
+    {
+        free(t);
+        return AVERROR(ENOMEM);
+    }
+    int k = 0;
+    map[k++] = (MidiTempo){0, 0, us_per_tick_smpte > 0 ? us_per_tick_smpte : 500000.0 / division};
+    for (int i = 0; i < count; i++)
+    {
+        MidiTempo *last = &map[k - 1];
+        double us = last->us_at + (t[i].tick - last->tick) * last->us_per_tick;
+        if (t[i].tick == last->tick)
+            last->us_per_tick = t[i].us_per_tick;
+        else
+            map[k++] = (MidiTempo){t[i].tick, us, t[i].us_per_tick};
+    }
+    free(t);
+    m->tempo = map;
+    m->n_tempo = k;
+    return 0;
+}
+
+static double midi_tick_us(const Midi *m, long long tick)
+{
+    int i = m->n_tempo - 1;
+    while (i > 0 && m->tempo[i].tick > tick)
+        i--;
+    return m->tempo[i].us_at + (tick - m->tempo[i].tick) * m->tempo[i].us_per_tick;
+}
+
+static long long midi_us_tick(const Midi *m, double us)
+{
+    int i = m->n_tempo - 1;
+    while (i > 0 && m->tempo[i].us_at > us)
+        i--;
+    return m->tempo[i].tick + (long long)((us - m->tempo[i].us_at) / m->tempo[i].us_per_tick);
+}
+
+static void midi_quiet(int level, const char *message, void *data)
+{
+    (void)level;
+    (void)message;
+    (void)data;
+}
+
+// The SoundFont beside this DLL: Looker ships GeneralUser GS as codecs\GeneralUser-GS.sf2.
+static int midi_soundfont(char *out, int cap)
+{
+    wchar_t w[MAX_PATH];
+    HMODULE self = NULL;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)(void *)midi_soundfont, &self) ||
+        !GetModuleFileNameW(self, w, MAX_PATH))
+        return 0;
+    wchar_t *slash = wcsrchr(w, L'\\');
+    if (!slash || (size_t)(slash - w) + 24 >= MAX_PATH)
+        return 0;
+    wcscpy(slash + 1, L"GeneralUser-GS.sf2");
+    if (GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES)
+        return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap, NULL, NULL) > 0;
+}
+
+// Whether the file starts like a MIDI file: a Standard MIDI File, or an RMID (RIFF) holding one.
+static int is_midi(const wchar_t *path)
+{
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    unsigned char b[12] = {0};
+    DWORD got = 0;
+    ReadFile(h, b, sizeof b, &got, NULL);
+    CloseHandle(h);
+    return (got >= 4 && memcmp(b, "MThd", 4) == 0) || (got >= 12 && memcmp(b, "RIFF", 4) == 0 && memcmp(b + 8, "RMID", 4) == 0);
+}
+
+#define MIDI_RATE 48000
+#define MIDI_TAIL_US 2000000 // after the last note: its release, and the reverb dying away
+
+static int midi_open(LaReader *r, const wchar_t *path, LaInfo *info)
+{
+    Midi *m = calloc(1, sizeof *m);
+    if (!m)
+        return AVERROR(ENOMEM);
+    r->midi = m;
+    // The whole file into memory: it's small, and the file stays free to rename or delete.
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return AVERROR(ENOENT);
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 14 || size.QuadPart > (64 << 20))
+    {
+        CloseHandle(h);
+        return AVERROR_INVALIDDATA;
+    }
+    unsigned char *data = malloc((size_t)size.QuadPart);
+    DWORD got = 0;
+    BOOL ok = data && ReadFile(h, data, (DWORD)size.QuadPart, &got, NULL) && got == (DWORD)size.QuadPart;
+    CloseHandle(h);
+    if (!ok)
+    {
+        free(data);
+        return AVERROR(EIO);
+    }
+    // An RMID: its "data" chunk is the SMF.
+    size_t off = 0, len = got;
+    if (memcmp(data, "RIFF", 4) == 0)
+    {
+        len = 0;
+        for (size_t at = 12; at + 8 <= got;)
+        {
+            size_t clen = midi_be(data + at + 4, 4);
+            clen = (clen >> 24) | ((clen >> 8) & 0xff00) | ((clen << 8) & 0xff0000) | (clen << 24 & 0xff000000u); // little-endian
+            if (memcmp(data + at, "data", 4) == 0)
+            {
+                off = at + 8;
+                len = clen <= got - off ? clen : got - off;
+                break;
+            }
+            at += 8 + clen + (clen & 1);
+        }
+    }
+    if (len < 14)
+    {
+        free(data);
+        return AVERROR_INVALIDDATA;
+    }
+    if (off)
+        memmove(data, data + off, len);
+    m->smf = data;
+    m->smf_len = len;
+    int e = midi_scan(m);
+    if (e < 0)
+        return e;
+    char sf[MAX_PATH * 3];
+    if (!midi_soundfont(sf, sizeof sf))
+        return AVERROR(ENOENT); // no SoundFont: no instruments to play it with
+    for (int level = 0; level < LAST_LOG_LEVEL; level++)
+        fluid_set_log_function(level, midi_quiet, NULL);
+    m->settings = new_fluid_settings();
+    if (!m->settings)
+        return AVERROR(ENOMEM);
+    fluid_settings_setnum(m->settings, "synth.sample-rate", MIDI_RATE);
+    fluid_settings_setstr(m->settings, "player.timing-source", "sample"); // driven by what's rendered, not a clock
+    fluid_settings_setint(m->settings, "synth.lock-memory", 0);
+    // FluidSynth's 0.2 played a piano scale at -37 LUFS; 0.6 sits General MIDI files near other music's level.
+    fluid_settings_setnum(m->settings, "synth.gain", 0.6);
+    m->synth = new_fluid_synth(m->settings);
+    if (!m->synth || fluid_synth_sfload(m->synth, sf, 1) == FLUID_FAILED)
+        return AVERROR(EINVAL);
+    m->player = new_fluid_player(m->synth);
+    if (!m->player || fluid_player_add_mem(m->player, m->smf, m->smf_len) != FLUID_OK || fluid_player_play(m->player) != FLUID_OK)
+        return AVERROR_INVALIDDATA;
+    double us = midi_tick_us(m, m->end_tick) + MIDI_TAIL_US;
+    m->end_frame = (long long)(us * MIDI_RATE / 1e6);
+    r->rate = MIDI_RATE;
+    r->channels = 2;
+    r->want = -1;
+    info->rate = MIDI_RATE;
+    info->channels = 2;
+    info->duration_us = (long long)us;
+    info->frames = m->end_frame;
+    copy_str(info->codec, sizeof info->codec, "midi");
+    copy_str(info->layout, sizeof info->layout, "stereo");
+    copy_str(info->container, sizeof info->container, "midi");
+    return 0;
+}
+
+// The next block of the synth's output (1024 frames), up to the end.
+static int midi_read(LaReader *r, const float **samples, int *frames, long long *pos)
+{
+    Midi *m = r->midi;
+    if (r->interrupt)
+        return AVERROR_EXIT;
+    if (r->pos >= m->end_frame)
+        return AVERROR_EOF;
+    int n = 1024;
+    if (r->pos + n > m->end_frame)
+        n = (int)(m->end_frame - r->pos);
+    if (r->buf_cap < n)
+    {
+        av_free(r->buf);
+        r->buf = av_malloc((size_t)n * 2 * sizeof(float));
+        r->buf_cap = r->buf ? n : 0;
+        if (!r->buf)
+            return AVERROR(ENOMEM);
+    }
+    if (fluid_synth_write_float(m->synth, n, r->buf, 0, 2, r->buf, 1, 2) != FLUID_OK)
+        return AVERROR_EXTERNAL;
+    *samples = r->buf;
+    *frames = n;
+    *pos = r->pos;
+    r->pos += n;
+    return 0;
+}
+
+static int midi_seek(LaReader *r, long long frame)
+{
+    Midi *m = r->midi;
+    InterlockedExchange(&r->interrupt, 0);
+    if (frame < 0)
+        frame = 0;
+    if (frame > m->end_frame)
+        frame = m->end_frame;
+    long long tick = midi_us_tick(m, frame * 1e6 / MIDI_RATE);
+    if (tick >= m->end_tick)
+    {
+        // In the tail after the last note (or past it): silence from here, nothing left to play.
+        fluid_synth_all_sounds_off(m->synth, -1);
+        fluid_player_stop(m->player);
+        r->pos = frame;
+        return 0;
+    }
+    fluid_synth_all_sounds_off(m->synth, -1);
+    if (fluid_player_get_status(m->player) != FLUID_PLAYER_PLAYING)
+        fluid_player_play(m->player);
+    if (fluid_player_seek(m->player, (int)tick) != FLUID_OK)
+        return AVERROR(EINVAL);
+    r->pos = frame;
+    return 0;
+}
+
 EXPORT void la_close(LaReader *r)
 {
     if (!r)
         return;
+    midi_free(r->midi);
     av_free(r->buf);
     swr_free(&r->swr);
     av_frame_free(&r->frame);
@@ -2003,6 +2822,19 @@ EXPORT int la_open(const wchar_t *path, int stream, LaInfo *info, LaReader **out
     LaReader *r = calloc(1, sizeof *r);
     if (!r)
         return AVERROR(ENOMEM);
+    r->in.file = INVALID_HANDLE_VALUE;
+    if (is_midi(path))
+    {
+        int e = midi_open(r, path, info);
+        if (e < 0)
+        {
+            la_close(r);
+            memset(info, 0, sizeof *info);
+            return e;
+        }
+        *out = r;
+        return 0;
+    }
     int e = input_open(&r->in, path, 1);
     if (e < 0)
     {
@@ -2095,6 +2927,8 @@ EXPORT int la_open(const wchar_t *path, int stream, LaInfo *info, LaReader **out
 // front cover when several are tagged.
 EXPORT int la_cover(const LaReader *r, const unsigned char **data, int *size)
 {
+    if (r->midi)
+        return AVERROR_STREAM_NOT_FOUND;
     const AVFormatContext *fmt = r->in.fmt;
     const AVStream *best = NULL;
     for (unsigned i = 0; i < fmt->nb_streams; i++)
@@ -2135,6 +2969,20 @@ static int append_tags(const AVDictionary *d, char *buf, int cap, int at)
 // 0x1E". Returns the length they need; writes them only when that fits in `cap`.
 EXPORT int la_tags(const LaReader *r, char *buf, int cap)
 {
+    if (r->midi)
+    {
+        // A MIDI file's title: its first track's name.
+        int k = (int)strlen(r->midi->title), n = k ? k + 7 : 0;
+        if (k && n < cap)
+        {
+            memcpy(buf, "title\x1f", 6);
+            memcpy(buf + 6, r->midi->title, (size_t)k);
+            buf[6 + k] = 0x1e;
+        }
+        if (n < cap)
+            buf[n] = 0;
+        return n;
+    }
     int n = append_tags(r->in.fmt->metadata, buf, cap, 0);
     n = append_tags(r->in.fmt->streams[r->ai]->metadata, buf, cap, n);
     if (n < cap)
@@ -2205,6 +3053,8 @@ static int la_convert(LaReader *r, AVFrame *f, const float **samples, int *frame
 // starting at frame `*pos`. AVERROR_EOF at the end; AVERROR_EXIT after la_interrupt, until la_seek.
 EXPORT int la_read(LaReader *r, const float **samples, int *frames, long long *pos)
 {
+    if (r->midi)
+        return midi_read(r, samples, frames, pos);
     for (;;)
     {
         if (r->interrupt)
@@ -2243,6 +3093,8 @@ EXPORT int la_read(LaReader *r, const float **samples, int *frames, long long *p
 // frames lean on the ones before: MP3's bit reservoir, Opus's pre-roll) so the first block heard is whole.
 EXPORT int la_seek(LaReader *r, long long frame)
 {
+    if (r->midi)
+        return midi_seek(r, frame);
     InterlockedExchange(&r->interrupt, 0);
     if (frame < 0)
         frame = 0;
@@ -2326,6 +3178,7 @@ typedef struct LvSubs
     volatile LONG interrupt;
     int si;
     int kind;
+    int clears; // teletext, ARIB: an empty text event ends the caption showing (it's handed out, not skipped)
     long long zero_us;
     AVCodecContext *dec;
     AVPacket *pkt;
@@ -2520,7 +3373,24 @@ static int subs_setup(LvSubs *s, int stream, LvSubInfo *info)
         if (r < 0)
             return r;
         s->dec->pkt_timebase = st->time_base;
-        if ((r = avcodec_open2(s->dec, c, NULL)) < 0)
+        // Teletext: the subtitle pages only (not the index and news pages), as plain text. ARIB: as ASS, whose
+        // dialogue text Looker shows (libaribcaption's own renderer isn't built). Both send an empty event when the
+        // caption clears, which ends what shows (lv_subs_next).
+        AVDictionary *opts = NULL;
+        if (st->codecpar->codec_id == AV_CODEC_ID_DVB_TELETEXT)
+        {
+            av_dict_set(&opts, "txt_format", "text", 0);
+            av_dict_set(&opts, "txt_page", "subtitle", 0);
+            s->clears = 1;
+        }
+        else if (st->codecpar->codec_id == AV_CODEC_ID_ARIB_CAPTION)
+        {
+            av_dict_set(&opts, "sub_type", "ass", 0);
+            s->clears = 1;
+        }
+        r = avcodec_open2(s->dec, c, &opts);
+        av_dict_free(&opts);
+        if (r < 0)
             return r;
     }
     memset(info, 0, sizeof *info);
@@ -2815,9 +3685,14 @@ EXPORT int lv_subs_next(LvSubs *s, LvSubEvent *out)
             else if (rc->type == SUBTITLE_TEXT && rc->text)
                 text_append(s, rc->text, strlen(rc->text));
         }
-        // A text event with nothing to say is nothing; an empty bitmap one ends what shows (PGS's clear).
+        // A text event with nothing to say is nothing; an empty bitmap one ends what shows (PGS's clear), and so
+        // does an empty teletext or ARIB one (until the next: end -1).
         if (s->kind == LV_SUB_TEXT && (s->text == NULL || s->text[0] == 0))
-            continue;
+        {
+            if (!s->clears)
+                continue;
+            out->end_us = -1;
+        }
         out->text = s->text ? s->text : "";
         out->n_rects = s->n_rects;
         out->rects = s->rects;

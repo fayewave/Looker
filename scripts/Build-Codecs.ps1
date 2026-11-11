@@ -79,20 +79,73 @@ foreach ($dll in 'heif.dll', 'libde265.dll', 'dav1d.dll', 'avif.dll') {
     Copy-Item (Join-Path $installed "bin\$dll") $OutDir
 }
 Copy-Item (Join-Path $rawInstalled 'bin\raw_r.dll') $OutDir
-Copy-Item (Join-Path $installed 'bin\looker_video.dll') $OutDir
-# libass and what it needs (ass-9.dll: its soname's number).
-Get-ChildItem (Join-Path $installed 'bin\ass-*.dll') | Copy-Item -Destination $OutDir
-foreach ($dll in 'freetype.dll', 'harfbuzz.dll', 'fribidi-0.dll') {
-    Copy-Item (Join-Path $installed "bin\$dll") $OutDir
+# looker_video.dll and every DLL it loads, as far down as they go, from vcpkg's bin\ (FFmpeg's, libass with
+# FreeType, HarfBuzz and FriBidi, zlib, FluidSynth, libopenmpt with mpg123 and Vorbis, libzvbi, liblc3,
+# libaribcaption...): read from their import tables, so a library added to the build ships without a list here.
+function Get-PeImports([string]$Path) {
+    $b = [IO.File]::ReadAllBytes($Path)
+    $pe = [BitConverter]::ToInt32($b, 0x3C)
+    $opt = $pe + 24
+    $magic = [BitConverter]::ToUInt16($b, $opt)
+    $dirs = $opt + $(if ($magic -eq 0x20B) { 112 } else { 96 })
+    $importRva = [BitConverter]::ToUInt32($b, $dirs + 8)
+    $nsec = [BitConverter]::ToUInt16($b, $pe + 6)
+    $sec = $opt + [BitConverter]::ToUInt16($b, $pe + 20)
+    $toOff = {
+        param($rva)
+        for ($i = 0; $i -lt $nsec; $i++) {
+            $s = $sec + 40 * $i
+            $va = [BitConverter]::ToUInt32($b, $s + 12); $size = [BitConverter]::ToUInt32($b, $s + 16); $raw = [BitConverter]::ToUInt32($b, $s + 20)
+            if ($rva -ge $va -and $rva -lt $va + [Math]::Max($size, [BitConverter]::ToUInt32($b, $s + 8))) { return $rva - $va + $raw }
+        }
+        return -1
+    }
+    $names = @()
+    $d = & $toOff $importRva
+    while ($d -ge 0 -and [BitConverter]::ToUInt32($b, $d + 12) -ne 0) {
+        $n = & $toOff ([BitConverter]::ToUInt32($b, $d + 12))
+        $e = $n; while ($b[$e] -ne 0) { $e++ }
+        $names += [Text.Encoding]::ASCII.GetString($b, $n, $e - $n)
+        $d += 20
+    }
+    $names
 }
-# zlib for FFmpeg's zlib-based decoders (ZMBV, TSCC, Flash Screen Video, LCL, PNG in AVI/MOV).
-Copy-Item (Join-Path $installed 'bin\z.dll') $OutDir
-foreach ($lib in 'avformat', 'avcodec', 'avfilter', 'avutil', 'swresample', 'swscale') {
-    Get-ChildItem (Join-Path $installed "bin\$lib-*.dll") | Copy-Item -Destination $OutDir
+$queue = [Collections.Generic.Queue[string]]::new()
+$queue.Enqueue('looker_video.dll')
+$shipped = @{}
+while ($queue.Count -gt 0) {
+    $name = $queue.Dequeue()
+    if ($shipped.ContainsKey($name.ToLowerInvariant())) { continue }
+    $src = Join-Path $installed "bin\$name"
+    if (-not (Test-Path $src)) { continue } # Windows' own (KERNEL32, USER32...)
+    $shipped[$name.ToLowerInvariant()] = $true
+    Copy-Item $src $OutDir
+    foreach ($dep in Get-PeImports $src) { $queue.Enqueue($dep) }
 }
-foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi', 'zlib') {
-    Copy-Item (Join-Path $installed "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
+Write-Host "looker_video.dll ships with: $(($shipped.Keys | Sort-Object) -join ', ')"
+foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi', 'zlib',
+    'fluidsynth', 'libopenmpt', 'mpg123', 'libogg', 'libvorbis', 'libzvbi', 'liblc3', 'libaribcaption') {
+    $c = Join-Path $installed "share\$port\copyright"
+    if (Test-Path $c) { Copy-Item $c (Join-Path $OutDir "licenses\$port.txt") }
 }
+# MIDI's instruments: GeneralUser GS (S. Christian Collins; free to ship in software, LICENSE.txt), pinned to a
+# commit and checked, kept outside Dropbox (32 MB) and downloaded once.
+$sfDir = Join-Path $env:LOCALAPPDATA 'Looker\soundfont'
+$sfRef = '684543d5e5efaef08d02be50dcda8d552478fa60'
+$sfFiles = @{
+    'GeneralUser-GS.sf2'       = @('GeneralUser-GS.sf2', '9575028C7A1F589F5770FCCC8CFF2734566AF40CD26ED836944E9A5152688CFE')
+    'documentation/LICENSE.txt' = @('LICENSE.txt', '7B32EFEFDF95CE38A043799F0659853DDC00FBAA14D8C50F0ACA16B9B8B405BE')
+}
+New-Item -ItemType Directory $sfDir -Force | Out-Null
+foreach ($k in $sfFiles.Keys) {
+    $dst = Join-Path $sfDir $sfFiles[$k][0]
+    if (-not (Test-Path $dst) -or (Get-FileHash $dst -Algorithm SHA256).Hash -ne $sfFiles[$k][1]) {
+        Invoke-WebRequest "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/$sfRef/$k" -OutFile $dst
+        if ((Get-FileHash $dst -Algorithm SHA256).Hash -ne $sfFiles[$k][1]) { throw "GeneralUser GS: $k doesn't match its hash" }
+    }
+}
+Copy-Item (Join-Path $sfDir 'GeneralUser-GS.sf2') $OutDir
+Copy-Item (Join-Path $sfDir 'LICENSE.txt') (Join-Path $OutDir 'licenses\GeneralUser-GS.txt')
 foreach ($port in 'libraw', 'lcms', 'jasper', 'zlib') {
     Copy-Item (Join-Path $rawInstalled "share\$port\copyright") (Join-Path $OutDir "licenses\$port.txt")
 }

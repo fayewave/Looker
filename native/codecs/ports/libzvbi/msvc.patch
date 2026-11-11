@@ -1,0 +1,173 @@
+diff --git a/src/caption.c b/src/caption.c
+index 004280c..7d12794 100644
+--- a/src/caption.c
++++ b/src/caption.c
+@@ -83,7 +83,14 @@ language[8] = {
+ 
+ static uint32_t hcrc[128];
+ 
++#ifdef _MSC_VER
++/* MSVC has no constructor attribute: a pointer in the CRT's initialiser table does the same. */
++static void init_hcrc(void);
++#pragma section(".CRT$XCU", read)
++__declspec(allocate(".CRT$XCU")) void (*_zvbi_init_hcrc_ctor)(void) = init_hcrc;
++#else
+ static void init_hcrc(void) __attribute__ ((constructor));
++#endif
+ 
+ 
+ /*
+diff --git a/src/exp-gfx.c b/src/exp-gfx.c
+index 569d3ec..e7a9986 100644
+--- a/src/exp-gfx.c
++++ b/src/exp-gfx.c
+@@ -55,7 +55,14 @@
+ 
+ #define CCPL (ccfont2_width / CCW * ccfont2_height / CCH)
+ 
++#ifdef _MSC_VER
++/* MSVC has no constructor attribute: a pointer in the CRT's initialiser table does the same. */
++static void init_gfx(void);
++#pragma section(".CRT$XCU", read)
++__declspec(allocate(".CRT$XCU")) void (*_zvbi_init_gfx_ctor)(void) = init_gfx;
++#else
+ static void init_gfx(void) __attribute__ ((constructor));
++#endif
+ 
+ static void
+ init_gfx(void)
+diff --git a/src/exp-html.c b/src/exp-html.c
+index a1ea21f..301146d 100644
+--- a/src/exp-html.c
++++ b/src/exp-html.c
+@@ -200,8 +200,8 @@ option_set(vbi_export *e, const char *keyword, va_list args)
+ #undef putc
+ #define putc(c) vbi_export_putc (&html->export, c)
+ #define puts(s) vbi_export_puts (&html->export, s)
+-#define printf(templ, args...) \
+-	vbi_export_printf (&html->export, templ, args)
++#define printf(templ, ...) \
++	vbi_export_printf (&html->export, templ, ##__VA_ARGS__)
+ 
+ static void
+ hash_color(html_instance *html, vbi_rgba color)
+diff --git a/src/exp-txt.c b/src/exp-txt.c
+index a337180..44183fa 100644
+--- a/src/exp-txt.c
++++ b/src/exp-txt.c
+@@ -508,26 +508,26 @@ print_char(text_instance *text, int endian, vbi_page *pg, vbi_char old, vbi_char
+ 		if (chg.size)
+ 			switch (this.size) {
+ 			case VBI_NORMAL_SIZE:
+-				p = _stpcpy(p, "\e#5");
++				p = _stpcpy(p, "\033#5");
+ 				break;
+ 			case VBI_DOUBLE_WIDTH:
+-				p = _stpcpy(p, "\e#6");
++				p = _stpcpy(p, "\033#6");
+ 				break;
+ 			case VBI_DOUBLE_HEIGHT:
+ 			case VBI_DOUBLE_HEIGHT2:
+ 				break; /* ignore */
+ 			case VBI_DOUBLE_SIZE:
+-				p = _stpcpy(p, "\e#3");
++				p = _stpcpy(p, "\033#3");
+ 				break;
+ 			case VBI_DOUBLE_SIZE2:
+-				p = _stpcpy(p, "\e#4");
++				p = _stpcpy(p, "\033#4");
+ 				break;
+ 			case VBI_OVER_TOP:
+ 			case VBI_OVER_BOTTOM:
+ 				return -1; /* don't print */
+ 			}
+ 
+-		p = _stpcpy(p, "\e[");
++		p = _stpcpy(p, "\033[");
+ 
+ 		if (text->term == 1) {
+ 			if (off.underline || off.bold || off.flash) {
+@@ -648,7 +648,7 @@ export				(vbi_export *		e,
+ 
+ 		if (row >= pg->rows) {
+ 			if (text->term > 0)
+-				vbi_export_printf (e, "\e[m\n"); /* reset */
++				vbi_export_printf (e, "\033[m\n"); /* reset */
+ 			else
+ 				vbi_export_putc (e, '\n');
+ 			break;
+diff --git a/src/export.c b/src/export.c
+index 26ae63a..443e1f1 100644
+--- a/src/export.c
++++ b/src/export.c
+@@ -729,7 +729,7 @@ vbi_export_option_get(vbi_export *export, const char *keyword,
+ 		value->num = export->reveal;
+ 	} else if (strcmp(keyword, "network") == 0) {
+ 		if (!(value->str = vbi_export_strdup(export, NULL,
+-						     export->network ? : "")))
++						     export->network ? export->network : "")))
+ 			return FALSE;
+ 	} else if (strcmp(keyword, "creator") == 0) {
+ 		if (!(value->str = vbi_export_strdup(export, NULL, export->creator)))
+diff --git a/src/packet.c b/src/packet.c
+index 603927a..6a110e8 100644
+--- a/src/packet.c
++++ b/src/packet.c
+@@ -166,7 +166,7 @@ unham_page_link(struct ttx_page_link *p, const uint8_t *raw, int magazine)
+ 
+ 	m = ((b3 >> 5) & 6) + (b2 >> 7);
+ 
+-	p->pgno = ((magazine ^ m) ? : 8) * 256 + b1;
++	p->pgno = ((magazine ^ m) ? (magazine ^ m) : 8) * 256 + b1;
+ 	p->subno = (b3 * 256 + b2) & 0x3f7f;
+ 
+ 	return TRUE;
+@@ -248,7 +248,7 @@ parse_mot(struct ttx_magazine *mag, uint8_t *raw, int packet)
+ 			if (err < 0) /* XXX unused bytes poss. not hammed (^ N3) */
+ 				continue;
+ 
+-			pop->pgno = (((n[0] & 7) ? : 8) << 8) + (n[1] << 4) + n[2];
++			pop->pgno = (((n[0] & 7) ? (n[0] & 7) : 8) << 8) + (n[1] << 4) + n[2];
+ 
+ 			/* n[3] number of subpages ignored */
+ 
+@@ -290,7 +290,7 @@ parse_mot(struct ttx_magazine *mag, uint8_t *raw, int packet)
+ 			if (err < 0)
+ 				continue;
+ 
+-			mag->drcs_link[0][index] = (((n[0] & 7) ? : 8) << 8) + (n[1] << 4) + n[2];
++			mag->drcs_link[0][index] = (((n[0] & 7) ? (n[0] & 7) : 8) << 8) + (n[1] << 4) + n[2];
+ 
+ 			/* n[3] number of subpages ignored */
+ 		}
+@@ -1837,7 +1837,7 @@ parse_27(vbi_decoder *vbi, uint8_t *p,
+ 
+ 			cvtp->data.unknown.link[designation * 6 + i].function = t1 & 3;
+ 			cvtp->data.unknown.link[designation * 6 + i].pgno =
+-				((((t1 >> 12) & 0x7) ^ mag0) ? : 8) * 256
++				((((t1 >> 12) & 0x7) ^ mag0) ? (((t1 >> 12) & 0x7) ^ mag0) : 8) * 256
+ 				+ ((t1 >> 11) & 0x0F0) + ((t1 >> 7) & 0x00F);
+ 			cvtp->data.unknown.link[designation * 6 + i].subno =
+ 				(t2 >> 3) & 0xFFFF;
+@@ -2209,7 +2209,7 @@ vbi_decode_teletext(vbi_decoder *vbi, uint8_t *buffer)
+ 		return FALSE;
+ 
+ 	mag0 = pmag & 7;
+-	mag8 = mag0 ? : 8;
++	mag8 = mag0 ? mag0 : 8;
+ 	packet = pmag >> 3;
+ 
+ 	if (packet < 30
+diff --git a/src/teletext.c b/src/teletext.c
+index e6145e8..8a50d34 100644
+--- a/src/teletext.c
++++ b/src/teletext.c
+@@ -1505,7 +1505,7 @@ enhance(vbi_decoder *vbi,
+ 			 *  Row address triplets
+ 			 */
+ 			int s = p->data >> 5;
+-			int row = (p->address - COLUMNS) ? : (ROWS - 1);
++			int row = (p->address - COLUMNS) ? (p->address - COLUMNS) : (ROWS - 1);
+ 			int column = 0;
+ 
+ 			if (pdc_hr)

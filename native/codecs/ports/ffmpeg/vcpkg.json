@@ -537,6 +537,27 @@
         "libopenmpt"
       ]
     },
+    "aribcaption": {
+      "description": "ARIB STD-B24 captions via libaribcaption (Looker)",
+      "dependencies": [
+        {
+          "name": "libaribcaption",
+          "default-features": false
+        }
+      ]
+    },
+    "zvbi": {
+      "description": "DVB teletext via libzvbi (Looker)",
+      "dependencies": [
+        "libzvbi"
+      ]
+    },
+    "lc3": {
+      "description": "LC3 audio via liblc3 (Looker)",
+      "dependencies": [
+        "liblc3"
+      ]
+    },
     "openssl": {
       "description": "Use OpenSSL for TLS support",
       "dependencies": [

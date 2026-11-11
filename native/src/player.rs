@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::imaging::video::{AUDIO_RATE, Decoder, Info, Interrupter, Item, LvFrame, Picture, TEXTURE, Tempo, Track};
+use crate::imaging::video::{AUDIO_RATE, Chapter, Decoder, Info, Interrupter, Item, LvFrame, Pass, Picture, TEXTURE, Tempo, Track};
 use crate::yuv::{Uploaded, Uploader};
 
 /// A picture in the queue: the decoder's frame, and its planes on the GPU when the decode thread uploaded them
@@ -230,6 +230,12 @@ struct State {
     /// The decoder can't reach more sound without decoding more pictures (it read as far ahead as it may), or
     /// the sound is over: when the device runs dry now, the sound has ended.
     audio_exhausted: bool,
+    /// The queued audio's shape: f32s per frame and frames a second (2 and 48 kHz; passthrough: the IEC stream's
+    /// channels and rate, each 16-bit sample in an f32). `pass`: passthrough is on (the audio thread opens the
+    /// device exclusively for it).
+    fpf: usize,
+    rate: u32,
+    pass: Option<Pass>,
 }
 
 impl State {
@@ -333,7 +339,7 @@ pub struct Due {
 
 /// What the decode thread hands over once the file is open: its facts, every picture's time, its audio, video and
 /// subtitle streams, and the zero of the clock in the file (`Decoder::start_us`).
-type Opened = (Info, Vec<i64>, Vec<Track>, Vec<Track>, Vec<Track>, i64);
+type Opened = (Info, Vec<i64>, Vec<Track>, Vec<Track>, Vec<Track>, i64, Vec<Chapter>);
 
 pub struct Player {
     shared: Arc<Shared>,
@@ -357,6 +363,8 @@ pub struct Player {
     /// Its subtitle streams (`Decoder::sub_tracks`), and the clock's zero in the file (for reading them).
     stracks: Vec<Track>,
     start_us: i64,
+    /// Its chapters (`Decoder::chapters`), by start time.
+    chapters: Vec<Chapter>,
     /// Pictures shown and skipped (late), and the times the next picture wasn't decoded when it was due (each
     /// such wait counted once), for the trace.
     shown_count: u64,
@@ -371,12 +379,14 @@ impl Player {
     /// once when `play`.
     #[cfg(test)]
     pub fn open(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool) -> Player {
-        Player::open_track(path, d3d11, play, volume, muted, None, None)
+        Player::open_track(path, d3d11, play, volume, muted, None, None, false)
     }
 
     /// `open`, showing the video stream `video` and playing the audio stream `audio` (`Track::stream`s), else the
-    /// file's best of each.
-    pub fn open_track(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool, video: Option<i32>, audio: Option<i32>) -> Player {
+    /// file's best of each. `passthrough`: AC-3/E-AC-3/DTS/TrueHD sound goes to a receiver undecoded, when the output
+    /// device takes it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_track(path: &Path, d3d11: crate::gfx::Sendable<*mut std::ffi::c_void>, play: bool, volume: f32, muted: bool, video: Option<i32>, audio: Option<i32>, passthrough: bool) -> Player {
         let now = Instant::now();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -404,6 +414,9 @@ impl Player {
                 audio_ended: false,
                 tempo_failed: false,
                 audio_exhausted: false,
+                fpf: 2,
+                rate: AUDIO_RATE,
+                pass: None,
             }),
             wake: Condvar::new(),
             interrupt: Mutex::new(None),
@@ -417,10 +430,10 @@ impl Player {
             .name("video-decode".into())
             .spawn(move || {
                 let device = device;
-                decode_thread(s, &p, device.0, o, video, audio)
+                decode_thread(s, &p, device.0, o, video, audio, passthrough)
             })
             .ok();
-        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), vtracks: Vec::new(), stracks: Vec::new(), start_us: 0, shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
+        Player { shared, info: None, shown: None, target: None, jump: false, looping: false, step: false, frames: Vec::new(), tracks: Vec::new(), vtracks: Vec::new(), stracks: Vec::new(), start_us: 0, chapters: Vec::new(), shown_count: 0, dropped: 0, starved: 0, waiting: false, opened }
     }
 
     /// The stream's facts once the decoder is open (`Err` when it couldn't be).
@@ -429,8 +442,9 @@ impl Player {
             return Some(Ok(()));
         }
         let r = self.opened.lock().ok()?.take()?;
-        Some(r.map(|(i, frames, tracks, vtracks, stracks, start_us)| {
+        Some(r.map(|(i, frames, tracks, vtracks, stracks, start_us, chapters)| {
             self.frames = frames;
+            self.chapters = chapters;
             self.tracks = tracks;
             self.vtracks = vtracks;
             self.stracks = stracks;
@@ -575,6 +589,11 @@ impl Player {
     /// The file's subtitle streams (empty until it has opened).
     pub fn sub_tracks(&self) -> &[Track] {
         &self.stracks
+    }
+
+    /// The file's chapters, by start time (empty until it has opened, or without any).
+    pub fn chapters(&self) -> &[Chapter] {
+        &self.chapters
     }
 
     /// Where the clock's zero (the video stream's start) is in the file, in µs: subtitle streams read on their own
@@ -742,13 +761,22 @@ fn frame_number_in(frames: &[i64], us: i64) -> Option<usize> {
     })
 }
 
-fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<Opened, String>>>>, video: Option<i32>, audio: Option<i32>) {
+fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void, opened: Arc<Mutex<Option<Result<Opened, String>>>>, video: Option<i32>, audio: Option<i32>, passthrough: bool) {
     let t = Instant::now();
     // CPU pictures go on the window's device from here, so the UI thread only draws them.
     let uploader = unsafe { <windows::Win32::Graphics::Direct3D11::ID3D11Device as windows::core::Interface>::from_raw_borrowed(&d3d11) }.and_then(|d| Uploader::new(d).ok());
     let mut upload_failed = false;
-    let mut dec = match Decoder::open_streams(path, d3d11, false, video, audio) {
+    // Passthrough: the codecs the output device takes as IEC 61937 (asked before the file is opened).
+    let pass_mask = if passthrough { unsafe { passthrough_codecs() } } else { 0 };
+    let mut dec = match Decoder::open_playing(path, d3d11, pass_mask, video, audio) {
         Ok((d, info)) => {
+            if let Some(p) = d.passthrough() {
+                crate::trace::mark(format!("video: passthrough {:?}", p));
+                let mut st = shared.lock();
+                st.pass = Some(p);
+                st.fpf = p.channels as usize;
+                st.rate = p.rate;
+            }
             crate::trace::mark(format!(
                 "video: opened {} ({}) in {:.0} ms",
                 crate::imaging::video::codec_label(&info.codec(), &info.profile()),
@@ -756,7 +784,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                 t.elapsed().as_secs_f64() * 1000.0
             ));
             if let Ok(mut o) = opened.lock() {
-                *o = Some(Ok((info, d.frame_times(), d.audio_tracks(), d.video_tracks(), d.sub_tracks(), d.start_us())));
+                *o = Some(Ok((info, d.frame_times(), d.audio_tracks(), d.video_tracks(), d.sub_tracks(), d.start_us(), d.chapters())));
             }
             *shared.interrupt.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.interrupter());
             shared.gpu.store(d.hardware(), std::sync::atomic::Ordering::Relaxed);
@@ -797,11 +825,11 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
                     continue;
                 }
                 let n = st.pictures.len();
-                let audio_full = st.audio_frames >= MAX_AUDIO;
+                let audio_full = st.audio_frames >= MAX_AUDIO * st.rate as usize / AUDIO_RATE as usize;
                 // The device drains the audio on its own; with little of it queued, the decoder goes on (up to the
                 // hard cap), then reads ahead for the sound alone, so it doesn't run dry behind the pictures (some
                 // files store their sound a second or more after the pictures it goes with).
-                let starving = !st.audio_dead && !st.audio_ended && !st.audio_exhausted && st.audio_frames < AUDIO_RATE as usize / 2;
+                let starving = !st.audio_dead && !st.audio_ended && !st.audio_exhausted && st.audio_frames < st.rate as usize / 2;
                 if !st.end && !(audio_full && n > 0) {
                     if n < MAX_PICTURES || (starving && n < HARD_PICTURES) {
                         break;
@@ -841,7 +869,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             }
             match item {
                 Ok(Some(Item::Audio(pts, samples))) if !samples.is_empty() => {
-                    st.audio_frames += samples.len() / 2;
+                    st.audio_frames += samples.len() / st.fpf;
                     st.audio.push_back(Chunk { pts, samples, read: 0 });
                 }
                 Ok(Some(_)) => {}
@@ -888,7 +916,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             }
             Ok(Item::Audio(pts, samples)) => {
                 if !st.audio_dead && !samples.is_empty() {
-                    st.audio_frames += samples.len() / 2;
+                    st.audio_frames += samples.len() / st.fpf;
                     st.audio.push_back(Chunk { pts, samples, read: 0 });
                 }
             }
@@ -954,10 +982,10 @@ fn exact_on_gpu(dec: &mut Decoder, shared: &Shared, us: i64, epoch: u32, dec_pos
                 best = Some(p);
             }
             Ok(Item::Audio(pts, samples)) => {
-                let end = pts + (samples.len() / 2) as i64 * 1_000_000 / AUDIO_RATE as i64;
                 let mut st = shared.lock();
+                let end = pts + (samples.len() / st.fpf) as i64 * 1_000_000 / st.rate as i64;
                 if end > us && !st.audio_dead && !samples.is_empty() && st.epoch == epoch {
-                    st.audio_frames += samples.len() / 2;
+                    st.audio_frames += samples.len() / st.fpf;
                     st.audio.push_back(Chunk { pts, samples, read: 0 });
                 }
             }
@@ -1128,7 +1156,12 @@ fn preview_thread(shared: &PreviewShared, path: &Path, rotation: i32, box_w: u32
 // --- Audio (WASAPI, shared mode) ---
 
 fn audio_thread(shared: Arc<Shared>) {
-    if let Err(e) = unsafe { run_audio(&shared) } {
+    let pass = shared.lock().pass;
+    let r = match pass {
+        Some(p) => unsafe { run_passthrough(&shared, p) },
+        None => unsafe { run_audio(&shared) },
+    };
+    if let Err(e) = r {
         crate::trace::mark(format!("video: no sound: {e}"));
         let mut st = shared.lock();
         st.audio_dead = true;
@@ -1385,14 +1418,224 @@ unsafe fn run_audio(shared: &Shared) -> windows::core::Result<()> {
     }
 }
 
+// --- Passthrough: IEC 61937 to a receiver (WASAPI, exclusive mode) ---
+
+/// An IEC 61937 stream format (`WAVEFORMATEXTENSIBLE_IEC61937`).
+#[repr(C, packed(1))]
+struct Iec61937 {
+    ext: windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE,
+    encoded_rate: u32,
+    encoded_channels: u32,
+    average_bytes: u32,
+}
+
+/// The format a receiver gets `codec` (`PASS_*`) in: its KSDATAFORMAT_SUBTYPE_IEC61937_*, at the IEC rate.
+fn iec_format(codec: i32, rate: u32, channels: u16) -> Option<Iec61937> {
+    use crate::imaging::video::{PASS_AC3, PASS_DTS, PASS_EAC3, PASS_TRUEHD};
+    use windows::Win32::Media::Audio::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0};
+    use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
+    use windows::core::GUID;
+    let (sub, encoded_rate, encoded_channels) = match codec {
+        PASS_AC3 => (GUID::from_u128(0x00000092_0000_0010_8000_00aa00389b71), rate, 6),
+        PASS_EAC3 => (GUID::from_u128(0x0000000a_0cea_0010_8000_00aa00389b71), rate / 4, 8),
+        PASS_DTS => (GUID::from_u128(0x00000008_0000_0010_8000_00aa00389b71), rate, 6),
+        PASS_TRUEHD => (GUID::from_u128(0x0000000b_0cea_0010_8000_00aa00389b71), 48_000, 8),
+        _ => return None,
+    };
+    let block = channels * 2;
+    Some(Iec61937 {
+        ext: WAVEFORMATEXTENSIBLE {
+            Format: WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_EXTENSIBLE as u16,
+                nChannels: channels,
+                nSamplesPerSec: rate,
+                nAvgBytesPerSec: rate * block as u32,
+                nBlockAlign: block,
+                wBitsPerSample: 16,
+                cbSize: (std::mem::size_of::<Iec61937>() - std::mem::size_of::<WAVEFORMATEX>()) as u16,
+            },
+            Samples: WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: 16 },
+            // Front left and right; 7.1 for TrueHD's eight (HDMI's high bit rate).
+            dwChannelMask: if channels == 8 { 0x63f } else { 0x3 },
+            SubFormat: sub,
+        },
+        encoded_rate,
+        encoded_channels,
+        average_bytes: 0,
+    })
+}
+
+/// The codecs (`PASS_*`) the default output device takes as IEC 61937 in exclusive mode: a receiver or a TV
+/// behind HDMI or S/PDIF says yes; speakers and headphones say no, and their sound is decoded as ever.
+unsafe fn passthrough_codecs() -> i32 {
+    use crate::imaging::video::{PASS_AC3, PASS_DTS, PASS_EAC3, PASS_TRUEHD};
+    use windows::Win32::Media::Audio::*;
+    use windows::Win32::System::Com::*;
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(devices) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else { return 0 };
+        let Ok(device) = devices.GetDefaultAudioEndpoint(eRender, eConsole) else { return 0 };
+        let Ok(client) = device.Activate::<IAudioClient>(CLSCTX_ALL, None) else { return 0 };
+        let mut mask = 0;
+        for (codec, rate, ch) in [(PASS_AC3, 48_000, 2), (PASS_EAC3, 192_000, 2), (PASS_DTS, 48_000, 2), (PASS_TRUEHD, 192_000, 8)] {
+            let Some(f) = iec_format(codec, rate, ch) else { continue };
+            if client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &f.ext.Format, None) == windows::Win32::Foundation::S_OK {
+                mask |= codec;
+            }
+        }
+        mask
+    }
+}
+
+/// The audio thread with passthrough: the device opened exclusively in the IEC format, fed the bursts as they
+/// were muxed, and its clock steering the pictures as `run_audio`'s does. No volume (the receiver has it); muted
+/// sends silence; at other speeds it plays silent (a receiver can't speed Dolby up).
+unsafe fn run_passthrough(shared: &Shared, pass: Pass) -> windows::core::Result<()> {
+    use windows::Win32::Media::Audio::*;
+    use windows::Win32::System::Com::*;
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let mut task = 0u32;
+        let _ = windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW(windows::core::w!("Pro Audio"), &mut task);
+        let format = iec_format(pass.codec, pass.rate, pass.channels).ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_INVALIDARG))?;
+        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = devices.GetDefaultAudioEndpoint(eRender, eConsole)?;
+        let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let (mut period, mut min) = (0i64, 0i64);
+        client.GetDevicePeriod(Some(&mut period), Some(&mut min))?;
+        let period = period.max(100_000); // 10 ms at least: bursts are 32 ms (AC-3) and larger
+        // Exclusive event mode wants the period and the buffer equal, and some devices want that aligned: when
+        // it isn't, try again at the size the device asks for.
+        if let Err(e) = client.Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, period, &format.ext.Format, None) {
+            if e.code() != AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED {
+                return Err(e);
+            }
+            let frames = client.GetBufferSize()? as i64;
+            let aligned = (10_000_000.0 * frames as f64 / pass.rate as f64 + 0.5) as i64;
+            client = device.Activate(CLSCTX_ALL, None)?;
+            client.Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, aligned, aligned, &format.ext.Format, None)?;
+        }
+        let event = CreateEventW(None, false, false, None)?;
+        client.SetEventHandle(event)?;
+        let size = client.GetBufferSize()? as usize;
+        let render: IAudioRenderClient = client.GetService()?;
+        let audio_clock: IAudioClock = client.GetService()?;
+        let clock_rate = audio_clock.GetFrequency()?.max(1) as f64;
+        let mut qpf = 0i64;
+        let _ = QueryPerformanceFrequency(&mut qpf);
+        let (rate, fpf) = (pass.rate as i64, pass.channels as usize);
+        let per_frame = 1e6 / rate as f64;
+        let mut dev_written = 0i64;
+        let mut dev_end = 0i64;
+        let heard = |dev_written: i64, dev_end: i64| -> Option<(i64, Instant)> {
+            let (mut pos, mut qpc) = (0u64, 0u64);
+            audio_clock.GetPosition(&mut pos, Some(&mut qpc)).ok()?;
+            let mut now_qpc = 0i64;
+            let _ = QueryPerformanceCounter(&mut now_qpc);
+            let now = Instant::now();
+            let now_100ns = (now_qpc as f64 * 1e7 / qpf.max(1) as f64) as u64;
+            let at = now.checked_sub(Duration::from_nanos(now_100ns.saturating_sub(qpc) * 100))?;
+            let played = pos as f64 * rate as f64 / clock_rate;
+            Some((dev_end - ((dev_written as f64 - played).max(0.0) * per_frame) as i64, at))
+        };
+        let mut started = false;
+        loop {
+            WaitForSingleObject(event, 20);
+            let now = Instant::now();
+            let mut st = shared.lock();
+            if st.quit {
+                let _ = client.Stop();
+                return Ok(());
+            }
+            if st.audio_reset {
+                st.audio_reset = false;
+                let _ = client.Stop();
+                let _ = client.Reset();
+                dev_written = 0;
+                started = false;
+                st.audio_clock = None;
+            }
+            if !st.playing || !st.audio_live() || !st.picture_up || st.speed != 1.0 {
+                if started {
+                    let _ = client.Stop();
+                    started = false;
+                }
+                if st.playing {
+                    let t = st.clock(now);
+                    drop_before(&mut st, t);
+                }
+                continue;
+            }
+            if st.audio_clock.is_none() {
+                let t = st.clock(now);
+                drop_before(&mut st, t);
+            }
+            let queued = client.GetCurrentPadding()? as usize;
+            let room = size.saturating_sub(queued);
+            let have = st.audio_frames;
+            let n = room.min(have);
+            if n > 0 {
+                let buf = render.GetBuffer(n as u32)? as *mut i16;
+                let out = std::slice::from_raw_parts_mut(buf, n * fpf);
+                let muted = st.muted;
+                let mut written = 0;
+                let mut end = st.audio_clock.map_or(0, |(e, _, _)| e);
+                while written < n {
+                    let Some(c) = st.audio.front_mut() else { break };
+                    let take = ((c.samples.len() - c.read) / fpf).min(n - written);
+                    for i in 0..take * fpf {
+                        out[written * fpf + i] = if muted { 0 } else { c.samples[c.read + i] as i16 };
+                    }
+                    c.read += take * fpf;
+                    written += take;
+                    end = c.pts + (c.read / fpf) as i64 * 1_000_000 / rate;
+                    if c.read >= c.samples.len() {
+                        st.audio.pop_front();
+                    }
+                }
+                st.audio_frames -= written;
+                render.ReleaseBuffer(written as u32, 0)?;
+                dev_written += written as i64;
+                dev_end = end;
+                st.audio_clock = Some((end, (queued + written) as i64 * 1_000_000 / rate, now));
+                shared.wake.notify_all();
+                if !started {
+                    client.Start()?;
+                    started = true;
+                }
+            } else if let Some((end, _, _)) = st.audio_clock {
+                st.audio_clock = Some((end, queued as i64 * 1_000_000 / rate, now));
+                if queued == 0 && have == 0 && (st.end || st.audio_exhausted) {
+                    let t = st.clock(now);
+                    st.audio_ended = true;
+                    st.set_anchor(t, now);
+                    if started {
+                        let _ = client.Stop();
+                        started = false;
+                    }
+                }
+            }
+            if started {
+                if let Some((t, at)) = heard(dev_written, dev_end) {
+                    st.steer(t, at);
+                }
+            }
+        }
+    }
+}
+
 /// Lets go of queued audio that ends before `t`.
 fn drop_before(st: &mut State, t: i64) {
+    let (fpf, rate) = (st.fpf, st.rate as i64);
     while let Some(c) = st.audio.front() {
-        let end = c.pts + (c.samples.len() / 2) as i64 * 1_000_000 / AUDIO_RATE as i64;
+        let end = c.pts + (c.samples.len() / fpf) as i64 * 1_000_000 / rate;
         if end > t {
             break;
         }
-        st.audio_frames -= (c.samples.len() - c.read) / 2;
+        st.audio_frames -= (c.samples.len() - c.read) / fpf;
         st.audio.pop_front();
     }
 }

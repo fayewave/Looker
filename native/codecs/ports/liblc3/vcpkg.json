@@ -1,0 +1,13 @@
+{
+  "name": "liblc3",
+  "version": "1.1.3",
+  "description": "Low Complexity Communication Codec (LC3, Bluetooth LE Audio). Looker's port, for FFmpeg's liblc3 decoder.",
+  "homepage": "https://github.com/google/liblc3",
+  "license": "Apache-2.0",
+  "dependencies": [
+    {
+      "name": "vcpkg-tool-meson",
+      "host": true
+    }
+  ]
+}

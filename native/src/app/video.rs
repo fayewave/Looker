@@ -21,7 +21,7 @@ use windows::core::Interface;
 
 use super::*;
 use crate::audio::AudioPlayer;
-use crate::imaging::video::{Info, Track};
+use crate::imaging::video::{Chapter, Info, Track};
 use crate::player::{Due, Player, Preview};
 use crate::yuv::{self, Converter, Look};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT};
@@ -523,7 +523,7 @@ impl App {
             let mut p = if v.audio {
                 Engine::Audio(AudioPlayer::open(&v.path, v.audio_track, play, volume, muted))
             } else {
-                Engine::Video(Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.video_track, v.audio_track))
+                Engine::Video(Player::open_track(&v.path, gfx::Sendable(dev), play, volume, muted, v.video_track, v.audio_track, self.settings.video_passthrough))
             };
             if at > 0 {
                 p.seek(at, true);
@@ -839,6 +839,9 @@ impl App {
             VK_G if self.player().is_some() => self.subtitle_delay(-1),
             VK_H if self.player().is_some() => self.subtitle_delay(1),
             VK_V if self.player().is_some() => self.cycle_subtitles(),
+            // VLC's: Shift+N the next chapter, Shift+P the previous.
+            VK_N if shift && self.player_ref().is_some_and(|p| !p.chapters().is_empty()) => self.step_chapter(false),
+            VK_P if shift && self.player_ref().is_some_and(|p| !p.chapters().is_empty()) => self.step_chapter(true),
             _ => {
                 let Some(p) = self.player() else {
                     // Not open yet: the keys that would act on it are still taken, not passed to the photo keys.
@@ -1234,6 +1237,18 @@ impl App {
             let mx = self.mouse.0.clamp(line.left, line.right);
             fill_track_to(g, line, mx, gfx::rgba(raised.text, 0.28 * k));
         }
+        // Chapters: a clean cut through the line at each one's start, in the bar's own colour, a whole number of
+        // device pixels (2 at least) wide so it never blurs into a smudge.
+        if dur > 0 {
+            if let Some(p) = self.player_ref() {
+                let px_w = (1.5 * g.dpi / 96.0).round().max(2.0);
+                let gap = px_w * 96.0 / g.dpi;
+                for c in p.chapters().iter().filter(|c| c.start_us > 0 && c.start_us < dur) {
+                    let x = g.snap(line.left + (line.right - line.left) * (c.start_us as f64 / dur as f64) as f32 - gap / 2.0);
+                    g.fill(D2D_RECT_F { left: x, right: x + gap, ..line }, rgb(t.sidebar));
+                }
+            }
+        }
 
         let vol = self.settings.video_volume;
         let muted = self.video_muted();
@@ -1290,7 +1305,12 @@ impl App {
 
     fn draw_seek_preview(&mut self, g: &Gfx, l: &BarLayout, x: f32, at: i64, _long: bool) {
         let area = self.image_area();
-        let label = self.time_text(at);
+        // The chapter there by name, then the time.
+        let chapter = self.chapter_at(at).and_then(|i| self.player_ref().map(|p| p.chapters()[i].title.clone())).filter(|t| !t.is_empty());
+        let label = match chapter {
+            Some(t) => format!("{t} \u{b7} {}", self.time_text(at)),
+            None => self.time_text(at),
+        };
         let Some(v) = self.video.as_mut() else { return };
         if v.preview.is_none() && !v.audio {
             let rotation = v.player.as_ref().and_then(|p| p.info()).map_or(0, |i| i.rotation);
@@ -1496,8 +1516,79 @@ impl App {
             entries.push(ui::Entry::Separator);
             entries.push(ui::Entry::Heading("Time".into()));
             entries.extend(self.time_display_entries());
+            entries.push(ui::Entry::Separator);
+            entries.push(ui::Entry::Heading("Sound".into()));
+            entries.push(menus::check(menus::Action::TogglePassthrough, "Passthrough to receiver", self.settings.video_passthrough));
+        }
+        // The chapters, the one playing ticked: a click goes to its start.
+        if let Some(p) = self.player_ref().filter(|p| !p.chapters().is_empty()) {
+            let now = self.chapter_at(p.position());
+            entries.push(ui::Entry::Separator);
+            entries.push(ui::Entry::Heading("Chapters".into()));
+            for (i, c) in p.chapters().iter().enumerate() {
+                entries.push(menus::check(menus::Action::Chapter(i), &chapter_label(c, i, &self.time_text(c.start_us)), now == Some(i)));
+            }
         }
         entries
+    }
+
+    /// The chapter playing at `us`: the last that starts at or before it.
+    fn chapter_at(&self, us: i64) -> Option<usize> {
+        let cs = self.player_ref()?.chapters();
+        let n = cs.partition_point(|c| c.start_us <= us);
+        (n > 0).then(|| n - 1)
+    }
+
+    /// Dolby and DTS sound to a receiver undecoded, or not: the video opens again where it was (the output is
+    /// opened differently), playing if it was.
+    pub(super) fn toggle_passthrough(&mut self) {
+        self.settings.video_passthrough = !self.settings.video_passthrough;
+        settings::save(&self.settings);
+        let on = self.settings.video_passthrough;
+        if let Some(v) = self.video.as_mut() {
+            if let Some(p) = v.player.as_ref().filter(|p| !p.is_audio()) {
+                v.resume = Some((v.position(), p.playing()));
+                v.player = None;
+            }
+        }
+        self.show_video_toast(if on { "Passthrough on" } else { "Passthrough off" });
+        self.invalidate();
+    }
+
+    /// Goes to chapter `i`'s start, saying which.
+    pub(super) fn go_to_chapter(&mut self, i: usize) {
+        let Some(c) = self.player_ref().and_then(|p| p.chapters().get(i)).cloned() else { return };
+        let label = chapter_label(&c, i, &self.time_text(c.start_us));
+        if let Some(p) = self.player() {
+            p.seek(c.start_us, true);
+        }
+        self.show_video_toast(label);
+        self.invalidate();
+    }
+
+    /// The next chapter, or (`back`) the start of this one, or the one before when this one has only just begun
+    /// (as a CD player's previous track does).
+    fn step_chapter(&mut self, back: bool) {
+        let Some(p) = self.player_ref() else { return };
+        let (pos, n) = (p.position(), p.chapters().len());
+        if n == 0 {
+            return;
+        }
+        let at = self.chapter_at(pos);
+        let to = if back {
+            match at {
+                Some(i) if pos - p.chapters()[i].start_us > 3_000_000 => i,
+                Some(i) => i.saturating_sub(1),
+                None => 0,
+            }
+        } else {
+            match at {
+                Some(i) if i + 1 < n => i + 1,
+                Some(_) => return,
+                None => 0,
+            }
+        };
+        self.go_to_chapter(to);
     }
 
     /// Timecode or Frames, ticked as set: the time menu's rows, and the Settings menu's last.
@@ -1679,6 +1770,10 @@ impl Engine {
     pub(super) fn sub_tracks(&self) -> &[Track] {
         if let Engine::Video(p) = self { p.sub_tracks() } else { &[] }
     }
+    /// The video's chapters (none for an audio file).
+    pub(super) fn chapters(&self) -> &[Chapter] {
+        if let Engine::Video(p) = self { p.chapters() } else { &[] }
+    }
     /// The video stream's start, which the player's clock counts from.
     pub(super) fn start_us(&self) -> i64 {
         if let Engine::Video(p) = self { p.start_us() } else { 0 }
@@ -1707,6 +1802,12 @@ impl Engine {
     fn settled(&self) -> bool {
         if let Engine::Video(p) = self { p.settled() } else { true }
     }
+}
+
+/// How a chapter is named in the Settings menu and the toast: its title, else "Chapter n", and where it starts.
+fn chapter_label(c: &Chapter, i: usize, at: &str) -> String {
+    let t = c.title.trim();
+    if t.is_empty() { format!("Chapter {} \u{b7} {at}", i + 1) } else { format!("{t} \u{b7} {at}") }
 }
 
 /// The bar's own hits: the pointer over them keeps it up, and the photo's clicks and drags don't apply.

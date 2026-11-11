@@ -1,0 +1,7 @@
+; Looker's MSVC build of libzvbi: the const tables hamm.h's inline helpers (vbi_rev8, vbi_unham8, vbi_ham8 ...) read
+; from the DLL. WINDOWS_EXPORT_ALL_SYMBOLS exports the functions but skips read-only data; CMake merges this in.
+EXPORTS
+    _vbi_bit_reverse DATA
+    _vbi_hamm8_fwd DATA
+    _vbi_hamm8_inv DATA
+    _vbi_hamm24_inv_par DATA

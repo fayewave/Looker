@@ -1,0 +1,14 @@
+{
+  "name": "libzvbi",
+  "version": "0.2.46",
+  "description": "VBI / Teletext decoding library. Looker's port: only the LGPL Teletext page decoder FFmpeg's libzvbi_teletext decoder needs, built with MSVC through a port-supplied CMakeLists.txt.",
+  "homepage": "https://github.com/zapping-vbi/zvbi",
+  "license": "LGPL-2.0-or-later",
+  "supports": "windows & !uwp",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}

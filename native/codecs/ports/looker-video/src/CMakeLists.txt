@@ -9,4 +9,7 @@ foreach(lib avformat avcodec avfilter swscale swresample avutil ass)
     find_library(${lib}_LIB NAMES ${lib} PATHS "${FFMPEG_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
     target_link_libraries(looker_video PRIVATE ${${lib}_LIB})
 endforeach()
+# FluidSynth (LGPL, a DLL of its own) plays MIDI files.
+find_library(fluidsynth_LIB NAMES fluidsynth libfluidsynth libfluidsynth-3 PATHS "${FFMPEG_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+target_link_libraries(looker_video PRIVATE ${fluidsynth_LIB})
 install(TARGETS looker_video RUNTIME DESTINATION bin LIBRARY DESTINATION lib ARCHIVE DESTINATION lib)

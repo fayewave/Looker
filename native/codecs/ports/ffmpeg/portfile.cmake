@@ -453,6 +453,24 @@ else()
     set(WITH_OPENMPT OFF)
 endif()
 
+# Looker: ARIB captions (libaribcaption, MIT), DVB teletext (libzvbi, LGPL; Looker's overlay port) and LC3
+# (liblc3, Apache-2.0; Looker's overlay port).
+if("aribcaption" IN_LIST FEATURES)
+    set(OPTIONS "${OPTIONS} --enable-libaribcaption")
+else()
+    set(OPTIONS "${OPTIONS} --disable-libaribcaption")
+endif()
+if("zvbi" IN_LIST FEATURES)
+    set(OPTIONS "${OPTIONS} --enable-libzvbi")
+else()
+    set(OPTIONS "${OPTIONS} --disable-libzvbi")
+endif()
+if("lc3" IN_LIST FEATURES)
+    set(OPTIONS "${OPTIONS} --enable-liblc3")
+else()
+    set(OPTIONS "${OPTIONS} --disable-liblc3")
+endif()
+
 set(WITH_OPENSSL OFF)
 set(WITH_SCHANNEL OFF)
 if("openssl" IN_LIST FEATURES)
@@ -785,10 +803,20 @@ endif()
 # Bink/Smacker; raw AC-3/E-AC-3/DTS/TrueHD/MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF);
 # and the codecs VLC decodes in them and in the containers above (old AVI/QuickTime, lossless capture, screen
 # recorders, RealVideo/RealAudio, ATRAC, speech codecs, the rest of PCM and ADPCM). All FFmpeg's own, all LGPL.
+# Then H.266/VVC; tracker modules (libopenmpt); game video and audio (id RoQ, Westwood VQA/AUD, PlayStation STR,
+# 4X, LucasArts SMUSH, GameCube THP, Sega FILM, Interplay MVE, Wing Commander III, Sierra VMD, EA, Xbox XMV, Cryo
+# HNM, Escape RPL, DXA, Autodesk FLIC, JV, RL2, BFI, CDXL, PAF, YOP, Motion Pixels; CRI HCA/ADX, Sony VAG/XVAG/ADS/
+# MSF, Nintendo BRSTM/BFSTM/AST, GENH, CD-XA, APM, SVS); rare audio (Bluetooth SBC/aptX, QCELP/EVRC, Olympus DSS,
+# IAMF, QOA, LC3 via liblc3); teletext (libzvbi) and ARIB captions (libaribcaption). No AC-4 (FFmpeg has no
+# decoder) and no MPEG-H (libmpeghdec is non-free).
 set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps mpegvideo flv srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
     microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub
     rm dv nsv nuv wtv yuv4mpegpipe gxf ivf obu h264 hevc m4v h261 bink smacker
-    ac3 eac3 dts dtshd truehd mlp mpc mpc8 tta tak shorten amr amrnb amrwb au voc gsm xwma dsf iff)
+    ac3 eac3 dts dtshd truehd mlp mpc mpc8 tta tak shorten amr amrnb amrwb au voc gsm xwma dsf iff
+    vvc libopenmpt
+    roq wsvqa wsaud str fourxm smush thp segafilm ipmovie wc3 vmd mm ea ea_cdata xmv hnm rpl dxa flic jv rl2 bfi cdxl paf
+    yop mvi hca adx vag xvag ads msf brstm bfstm ast genh xa apm svs
+    sbc aptx aptx_hd qcp dss iamf qoa lc3)
 set(LOOKER_DECODERS
     h264 hevc vp8 vp9 av1 libdav1d prores dnxhd cfhd mpeg1video mpeg2video mpeg4 h263 msmpeg4v3 mjpeg vc1 wmv1 wmv2 wmv3
     rawvideo v210 v210x png qtrle theora flv vp6 vp6f vp6a
@@ -808,14 +836,22 @@ set(LOOKER_DECODERS
     pcm_f16le pcm_f24le pcm_f64be pcm_u16le pcm_u16be pcm_u24le pcm_u24be pcm_u32le pcm_u32be pcm_lxf pcm_vidc
     adpcm_ima_qt adpcm_ima_dk3 adpcm_ima_dk4 adpcm_ima_ws adpcm_ima_amv adpcm_ima_smjpeg adpcm_ima_oki adpcm_ima_apc
     adpcm_swf adpcm_yamaha adpcm_ct adpcm_4xm adpcm_adx adpcm_ea adpcm_xa adpcm_thp
-    hdmv_text_subtitle xsub jacosub stl)
+    hdmv_text_subtitle xsub jacosub stl
+    vvc liblc3 libaribcaption libzvbi_teletext
+    roq roq_dpcm vqa vqc ws_snd1 mdec fourxm sanm adpcm_vima interplay_video interplay_dpcm interplay_acm vmdvideo vmdaudio
+    mmvideo eacmv eamad eatgq eatgv eatqi adpcm_ea_r1 adpcm_ea_r2 adpcm_ea_r3 adpcm_ea_xas xan_wc3 xan_dpcm hnm4_video
+    sdx2_dpcm escape124 escape130 dxa flic jv rl2 bfi cdxl paf_video paf_audio yop motionpixels kgv1 vp4 adpcm_ima_xbox
+    hca adpcm_psx adpcm_thp_le adpcm_afc adpcm_dtk adpcm_mtaf adpcm_ima_apm adpcm_ima_ssi adpcm_ima_cunning adpcm_ima_rad
+    sbc aptx aptx_hd qcelp evrc dss_sp qoa)
 set(LOOKER_PARSERS h264 hevc vp8 vp9 av1 mpeg4video mpegvideo vc1 mjpeg dnxhd aac aac_latm ac3 mpegaudio opus vorbis flac dca dvdsub dvbsub
-    h263 h261 rv34 vp3 dirac jpeg2000 mlp gsm amr cook sipr tak xma dvaudio dolby_e g723_1 g729)
+    h263 h261 rv34 vp3 dirac jpeg2000 mlp gsm amr cook sipr tak xma dvaudio dolby_e g723_1 g729
+    vvc sbc)
 set(LOOKER_HWACCELS h264 hevc vp9 av1 mpeg2 vc1 wmv3)
 set(LOOKER_FILTERS abuffer abuffersink aformat aresample atempo anull)
 # DVD ripping (native/PLAN.md N8, looker_rip.c): Matroska and MP4 out, H.264 through Windows' Media Foundation
 # encoder (h264_mf, LGPL; never x264), AAC, PCM for DVD LPCM in Matroska, bwdif to deinterlace.
-set(LOOKER_MUXERS matroska mp4)
+# spdif: audio passthrough wraps AC-3/E-AC-3/DTS/TrueHD in IEC 61937 for a receiver (looker_video.c lp_*).
+set(LOOKER_MUXERS matroska mp4 spdif)
 set(LOOKER_ENCODERS h264_mf aac pcm_s16le pcm_s24le)
 list(APPEND LOOKER_FILTERS buffer buffersink format scale bwdif null)
 string(APPEND OPTIONS " --disable-everything --disable-network --enable-protocol=file")

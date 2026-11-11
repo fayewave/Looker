@@ -14,7 +14,7 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 12;
+const API: c_int = 13;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]
@@ -295,6 +295,8 @@ pub(super) struct Lib {
     subs_interrupt: unsafe extern "C" fn(*mut c_void),
     subs_close: unsafe extern "C" fn(*mut c_void),
     rip: unsafe extern "C" fn(*const RipJob) -> c_int,
+    chapters: unsafe extern "C" fn(*const c_void, *mut *const LvChapter) -> c_int,
+    passthrough: unsafe extern "C" fn(*const c_void, *mut c_int, *mut c_int) -> c_int,
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -353,6 +355,8 @@ fn load() -> Result<Lib, String> {
             subs_interrupt: sym!("lv_subs_interrupt"),
             subs_close: sym!("lv_subs_close"),
             rip: sym!("lv_rip"),
+            chapters: sym!("lv_chapters"),
+            passthrough: sym!("lv_passthrough"),
         })
     }
 }
@@ -499,8 +503,40 @@ pub const TEXTURE: c_int = 1;
 pub const PLANAR: c_int = 2;
 /// CPU, straight RGBA, 8 bits a channel.
 pub const RGBA: c_int = 3;
-/// Audio always comes as interleaved float stereo at this rate.
+/// Audio: IEC 61937 for a receiver (passthrough), 16-bit samples in `data[0]`.
+pub const BITSTREAM: c_int = 4;
+/// Audio always comes as interleaved float stereo at this rate (but passthrough's, which is the IEC stream's).
 pub const AUDIO_RATE: u32 = 48_000;
+
+/// `LvChapter` in looker_video.c.
+#[repr(C)]
+struct LvChapter {
+    start_us: i64,
+    end_us: i64,
+    title: [c_char; 128],
+}
+
+/// A chapter of a video, on the player's clock.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chapter {
+    pub start_us: i64,
+    pub end_us: i64,
+    pub title: String,
+}
+
+/// `LV_PASS_*` in looker_video.c: the codecs the output device takes as IEC 61937 (passthrough to a receiver).
+pub const PASS_AC3: i32 = 8;
+pub const PASS_EAC3: i32 = 16;
+pub const PASS_DTS: i32 = 32;
+pub const PASS_TRUEHD: i32 = 64;
+
+/// Passthrough in use: which codec (`PASS_*`), and the IEC stream's rate and channel count (16-bit samples).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pass {
+    pub codec: i32,
+    pub rate: u32,
+    pub channels: u16,
+}
 
 /// `LvFrame` in looker_video.c: a picture or a block of audio.
 #[repr(C)]
@@ -806,10 +842,19 @@ impl Decoder {
     /// open, showing the video stream `video` and playing the audio stream `audio` (`Track::stream`s), else the
     /// file's best of each.
     pub fn open_streams(path: &Path, d3d11: *mut c_void, keyframes: bool, video: Option<i32>, audio: Option<i32>) -> Result<(Decoder, Info), String> {
+        Decoder::open_with(path, d3d11, if keyframes { LV_NO_AUDIO | LV_KEYFRAMES } else { 0 }, video, audio)
+    }
+
+    /// The player's: `open_streams` passing the sound through to a receiver in the codecs `pass` allows
+    /// (`PASS_*`, what the output device takes; 0 decodes it all).
+    pub fn open_playing(path: &Path, d3d11: *mut c_void, pass: i32, video: Option<i32>, audio: Option<i32>) -> Result<(Decoder, Info), String> {
+        Decoder::open_with(path, d3d11, pass & (PASS_AC3 | PASS_EAC3 | PASS_DTS | PASS_TRUEHD), video, audio)
+    }
+
+    fn open_with(path: &Path, d3d11: *mut c_void, flags: c_int, video: Option<i32>, audio: Option<i32>) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
         let mut p = std::ptr::null_mut();
-        let flags = if keyframes { LV_NO_AUDIO | LV_KEYFRAMES } else { 0 };
         let r = unsafe { (l.open_streams)(wide(path).as_ptr(), d3d11, flags, video.unwrap_or(-1), audio.unwrap_or(-1), &mut info, &mut p) };
         if r < 0 || p.is_null() {
             return Err(error(l, r));
@@ -874,6 +919,28 @@ impl Decoder {
         lib().map_or(0, |l| unsafe { (l.start_us)(self.0) })
     }
 
+    /// The file's chapters, by start time (none when it has none, or one covering it all).
+    pub fn chapters(&self) -> Vec<Chapter> {
+        let Ok(l) = lib() else { return Vec::new() };
+        let mut c: *const LvChapter = std::ptr::null();
+        let n = unsafe { (l.chapters)(self.0, &mut c) };
+        if n <= 0 || c.is_null() {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(c, n as usize) }
+            .iter()
+            .map(|c| Chapter { start_us: c.start_us, end_us: c.end_us, title: text(&c.title) })
+            .collect()
+    }
+
+    /// Passthrough in use (the sound comes as IEC 61937 for a receiver), else None.
+    pub fn passthrough(&self) -> Option<Pass> {
+        let l = lib().ok()?;
+        let (mut rate, mut channels) = (0, 0);
+        let codec = unsafe { (l.passthrough)(self.0, &mut rate, &mut channels) };
+        (codec != 0 && rate > 0 && channels > 0).then_some(Pass { codec, rate: rate as u32, channels: channels as u16 })
+    }
+
     pub fn audio_tracks(&self) -> Vec<Track> {
         let Ok(l) = lib() else { return Vec::new() };
         let mut t: *const Track = std::ptr::null();
@@ -899,11 +966,7 @@ impl Decoder {
             return Err(error(l, r));
         }
         Ok(match f.kind {
-            AUDIO => {
-                let n = f.nb_samples.max(0) as usize * 2;
-                let samples = if f.samples.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(f.samples, n) }.to_vec() };
-                Item::Audio(f.pts_us, samples)
-            }
+            AUDIO => Item::Audio(f.pts_us, audio_samples(&f)),
             VIDEO => Item::Picture(Picture(f)),
             k => return Err(format!("unknown item kind {k}")),
         })
@@ -926,9 +989,7 @@ impl Decoder {
         if r < 0 {
             return Err(error(l, r));
         }
-        let n = f.nb_samples.max(0) as usize * 2;
-        let samples = if f.samples.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(f.samples, n) }.to_vec() };
-        Ok(Some(Item::Audio(f.pts_us, samples)))
+        Ok(Some(Item::Audio(f.pts_us, audio_samples(&f))))
     }
 
     /// Jumps to `us`: the keyframe at or before it, or with `exact` the picture showing at `us`.
@@ -937,6 +998,21 @@ impl Decoder {
         let r = unsafe { (l.seek)(self.0, us, exact as c_int) };
         if r < 0 { Err(error(l, r)) } else { Ok(()) }
     }
+}
+
+/// A block of audio as `Item::Audio` carries it: float stereo, or (passthrough) each 16-bit IEC 61937 sample as
+/// an f32 holding its value exactly, interleaved over the IEC stream's channels.
+fn audio_samples(f: &LvFrame) -> Vec<f32> {
+    if f.layout == BITSTREAM {
+        let n = f.linesize[0].max(0) as usize / 2;
+        if f.data[0].is_null() || n == 0 {
+            return Vec::new();
+        }
+        let b = unsafe { std::slice::from_raw_parts(f.data[0], n * 2) };
+        return b.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]) as f32).collect();
+    }
+    let n = f.nb_samples.max(0) as usize * 2;
+    if f.samples.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(f.samples, n) }.to_vec() }
 }
 
 impl Drop for Decoder {
@@ -1337,6 +1413,45 @@ mod tests {
         // The fields in order with the 4 bytes of padding before duration_us, then the four strings:
         // sizeof(LvInfo) in looker_video.c.
         assert_eq!(std::mem::size_of::<Info>(), 4 * 4 + 4 + 4 + 8 + 4 * 2 + 8 + 4 * 8 + 8 + 32 + 48 + 32 + 32);
+    }
+
+    /// For each video in `LOOKER_VIDEOS`: its chapters, the spacing of its first pictures (an interlaced one
+    /// deinterlaced plays a picture per field: 20 ms apart at 25i), and with passthrough allowed for every codec,
+    /// whether the sound comes as IEC 61937 and how much of it.
+    /// `LOOKER_VIDEOS=<folder> cargo test --release -- --ignored --nocapture chapters_fields_passthrough`
+    #[test]
+    #[ignore]
+    fn chapters_fields_passthrough() {
+        let Some(d) = std::env::var_os("LOOKER_VIDEOS") else { return };
+        let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| crate::format::of_path(p) == crate::format::Format::Video).collect();
+        v.sort();
+        for p in &v {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let all = PASS_AC3 | PASS_EAC3 | PASS_DTS | PASS_TRUEHD;
+            let Ok((mut dec, info)) = Decoder::open_playing(p, std::ptr::null_mut(), all, None, None) else {
+                println!("FAIL {name}");
+                continue;
+            };
+            let chapters: Vec<String> = dec.chapters().iter().map(|c| format!("{:.1}-{:.1} {:?}", c.start_us as f64 / 1e6, c.end_us as f64 / 1e6, c.title)).collect();
+            let (mut pts, mut bits, mut blocks) = (Vec::new(), 0usize, 0);
+            for _ in 0..400 {
+                match dec.next() {
+                    Ok(Item::Picture(f)) if pts.len() < 6 => pts.push(f.pts_us),
+                    Ok(Item::Audio(_, s)) => {
+                        bits += s.len();
+                        blocks += 1;
+                    }
+                    Ok(Item::End) | Err(_) => break,
+                    _ => {}
+                }
+            }
+            let gaps: Vec<i64> = pts.windows(2).map(|w| (w[1] - w[0]) / 1000).collect();
+            println!(
+                "{name}: {} fps; chapters {chapters:?}; picture gaps {gaps:?} ms; passthrough {:?}, {blocks} audio blocks, {bits} samples",
+                info.fps().unwrap_or(0.0),
+                dec.passthrough()
+            );
+        }
     }
 
     /// The first picture of `LOOKER_DECODE` (or of every video in `LOOKER_VIDEOS`, a folder), written beside it

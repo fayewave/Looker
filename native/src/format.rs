@@ -108,12 +108,23 @@ pub const EXTENSIONS: &[&str] = &[
     // NuppelVideo, Windows Media Center, Y4M, GXF, IVF/OBU, raw H.264/HEVC streams, Bink, Smacker.
     "asf", "f4v", "3g2", "divx", "xvid", "ogm", "m1v", "mpv", "mpe", "m2p", "mod", "tod", "m2t", "trp", "tp", "dvr-ms",
     "rm", "rmvb", "dv", "nsv", "nuv", "wtv", "y4m", "gxf", "ivf", "obu", "264", "h264", "265", "hevc", "bik", "smk",
+    // H.266/VVC streams; game video: id RoQ, Westwood VQA, PlayStation STR, 4X, LucasArts SMUSH, GameCube THP, Sega
+    // FILM, Interplay MVE, Sierra VMD, American Laser Games MM, EA, Xbox XMV, Cryo HNM, Escape RPL, DXA, Autodesk
+    // FLIC, Bitmap Brothers JV, RL2, BFI, Amiga CDXL, PAF, YOP, Motion Pixels.
+    "266", "vvc", "roq", "vqa", "str", "4xm", "san", "snm", "thp", "cpk", "film", "mve", "vmd", "mm", "tgv", "tgq", "mad",
+    "wve", "xmv", "hnm", "rpl", "dxa", "fli", "flc", "jv", "rl2", "bfi", "cdxl", "paf", "yop", "mvi",
     // Audio.
     "mp3", "m4a", "m4b", "aac", "flac", "wav", "aif", "aiff", "ogg", "oga", "opus", "wma", "mka", "wv", "ape", "caf",
     // More audio (VLC parity): MPEG layer 1/2, Wave64, WebM audio, raw Dolby/DTS streams, Musepack, TTA, TAK, Shorten,
     // AMR, Sun/NeXT, Creative Voice, GSM, xWMA, DSD, RealAudio.
     "mp1", "mp2", "mpa", "w64", "weba", "ac3", "eac3", "dts", "thd", "mlp", "mpc", "tta", "tak", "shn", "amr", "awb",
     "au", "snd", "voc", "gsm", "xwma", "dsf", "dff", "ra",
+    // Tracker modules (libopenmpt; .mod also means a camcorder's video: sniffed), MIDI (FluidSynth), game audio (CRI
+    // HCA/ADX, Sony VAG/XVAG/ADS/MSF, Nintendo BRSTM/BFSTM/BCSTM/AST, GENH, CD-XA, APM), and rarer codecs: Bluetooth
+    // SBC/aptX, QCELP, Olympus DSS, IAMF, QOA, LC3.
+    "xm", "it", "s3m", "mptm", "stm", "669", "mtm", "med", "okt", "far", "ult", "umx", "mo3", "dmf", "amf", "psm", "j2b",
+    "dsm", "mid", "midi", "rmi", "kar", "hca", "adx", "vag", "xvag", "ads", "ss2", "msf", "brstm", "bfstm", "bcstm", "ast",
+    "genh", "xa", "apm", "sbc", "aptx", "aptxhd", "qcp", "dss", "iamf", "qoa", "lc3",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -202,12 +213,18 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "vtf" => Format::Vtf,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" | "ts" | "flv" | "ogv"
-        | "m2v" | "vob" | "asf" | "f4v" | "3g2" | "divx" | "xvid" | "ogm" | "m1v" | "mpv" | "mpe" | "m2p" | "mod" | "tod"
+        | "m2v" | "vob" | "asf" | "f4v" | "3g2" | "divx" | "xvid" | "ogm" | "m1v" | "mpv" | "mpe" | "m2p" | "tod"
         | "m2t" | "trp" | "tp" | "dvr-ms" | "rm" | "rmvb" | "dv" | "nsv" | "nuv" | "wtv" | "y4m" | "gxf" | "ivf" | "obu"
-        | "264" | "h264" | "265" | "hevc" | "bik" | "smk" => Format::Video,
+        | "264" | "h264" | "265" | "hevc" | "bik" | "smk" | "266" | "vvc" | "roq" | "vqa" | "str" | "4xm" | "san" | "snm"
+        | "thp" | "cpk" | "film" | "mve" | "vmd" | "mm" | "tgv" | "tgq" | "mad" | "wve" | "xmv" | "hnm" | "rpl" | "dxa"
+        | "fli" | "flc" | "jv" | "rl2" | "bfi" | "cdxl" | "paf" | "yop" | "mvi" => Format::Video,
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
         | "caf" | "mp1" | "mp2" | "mpa" | "w64" | "weba" | "ac3" | "eac3" | "dts" | "thd" | "mlp" | "mpc" | "tta" | "tak"
-        | "shn" | "amr" | "awb" | "au" | "snd" | "voc" | "gsm" | "xwma" | "dsf" | "dff" | "ra" => Format::Audio,
+        | "shn" | "amr" | "awb" | "au" | "snd" | "voc" | "gsm" | "xwma" | "dsf" | "dff" | "ra" | "mod" | "xm" | "it" | "s3m"
+        | "mptm" | "stm" | "669" | "mtm" | "med" | "okt" | "far" | "ult" | "umx" | "mo3" | "dmf" | "amf" | "psm" | "j2b"
+        | "dsm" | "mid" | "midi" | "rmi" | "kar" | "hca" | "adx" | "vag" | "xvag" | "ads" | "ss2" | "msf" | "brstm"
+        | "bfstm" | "bcstm" | "ast" | "genh" | "xa" | "apm" | "sbc" | "aptx" | "aptxhd" | "qcp" | "dss" | "iamf" | "qoa"
+        | "lc3" => Format::Audio,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -376,8 +393,9 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     if h.len() >= 2 && h[0] == 0xFF && h[1] & 0xE0 == 0xE0 {
         return Format::Audio;
     }
-    // .mod is a camcorder's MPEG program stream (caught above) or a tracker module, which Looker doesn't play.
-    if !h.is_empty() && ext.is_some_and(|e| e.trim_start_matches('.').eq_ignore_ascii_case("mod")) {
+    // .mod is a camcorder's MPEG program stream (caught above as video) or a tracker module (audio, by name). .cpk
+    // is a Sega FILM movie, or else a CRI archive (game data, not a movie).
+    if !h.is_empty() && ext.is_some_and(|e| e.trim_start_matches('.').eq_ignore_ascii_case("cpk")) && !ascii(h, 0, "FILM") {
         return Format::Unknown;
     }
     from_extension(ext)
@@ -538,9 +556,15 @@ mod tests {
         assert_eq!(sniff(b"DSD \x1c\0\0\0", Some("dsf")), Format::Audio);
         assert_eq!(sniff(&[0x0B, 0x77, 0x01, 0x02], Some("ac3")), Format::Audio);
         assert_eq!(sniff(b"[Script Info]", Some("ass")), Format::Text);
-        // .mod: a camcorder's program stream is video, a tracker module isn't opened.
+        // .mod: a camcorder's program stream is video, a tracker module audio.
         assert_eq!(sniff(&[0, 0, 1, 0xBA, 0x44], Some("mod")), Format::Video);
-        assert_eq!(sniff(b"Song title here\0\0\0\0\0", Some("mod")), Format::Unknown);
+        assert_eq!(sniff(b"Song title here\0\0\0\0\0", Some("mod")), Format::Audio);
+        // .cpk: a Sega FILM movie, or a CRI archive.
+        assert_eq!(sniff(b"FILM\0\0\0\x20", Some("cpk")), Format::Video);
+        assert_eq!(sniff(b"CPK \xff\0\0\0", Some("cpk")), Format::Unknown);
+        assert_eq!(sniff(b"MThd\0\0\0\x06", Some("mid")), Format::Audio);
+        assert_eq!(sniff(b"RIFF\0\0\0\0RMIDdata", Some("rmi")), Format::Audio);
+        assert_eq!(sniff(b"Extended Module: ", Some("xm")), Format::Audio);
     }
 
     #[test]

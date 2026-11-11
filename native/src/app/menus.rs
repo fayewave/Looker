@@ -38,6 +38,10 @@ pub(super) enum Action {
     VideoTrack(i32),
     /// The video bar's times: picture numbers (true) or timecode.
     VideoFrames(bool),
+    /// The video bar's Settings menu: go to this chapter (its place in the list).
+    Chapter(usize),
+    /// The video bar's Settings menu: passthrough to a receiver on/off.
+    TogglePassthrough,
     /// The context menu's Subtitles: none, one of the video's streams, a sidecar (by its place in the list), a
     /// file picked by hand, the delay (-1 earlier, +1 later, 0 none), the text's size (percent).
     SubOff,
@@ -328,6 +332,8 @@ impl App {
                 Action::Choose(i) => self.set_video_speed(video::SPEEDS[i.min(video::SPEEDS.len() - 1)]),
                 Action::ToggleVideoLoop => self.toggle_video_loop(),
                 Action::VideoFrames(on) => self.set_video_frames(on),
+                Action::Chapter(i) => self.go_to_chapter(i),
+                Action::TogglePassthrough => self.toggle_passthrough(),
                 _ => {}
             }
             let entries = self.video_settings_entries();
@@ -493,6 +499,8 @@ impl App {
             Action::AudioTrack(s) => self.set_audio_track(s),
             Action::VideoTrack(s) => self.set_video_track(s),
             Action::ToggleVideoLoop => self.toggle_video_loop(),
+            Action::Chapter(i) => self.go_to_chapter(i),
+            Action::TogglePassthrough => self.toggle_passthrough(),
             Action::SubOff => self.set_subtitles(crate::subs::Choice::Off),
             Action::SubStream(s) => self.set_subtitles(crate::subs::Choice::Stream(s)),
             Action::SubFile(i) => {

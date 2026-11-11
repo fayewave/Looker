@@ -14,10 +14,18 @@
         "dav1d",
         "swresample",
         "swscale",
-        "zlib"
+        "zlib",
+        "openmpt",
+        "aribcaption",
+        "zvbi",
+        "lc3"
       ]
     },
     "libass",
+    {
+      "name": "fluidsynth",
+      "default-features": false
+    },
     {
       "name": "vcpkg-cmake",
       "host": true

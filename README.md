@@ -49,7 +49,10 @@ it keeps itself up to date.
 
 - Videos play, HDR and 4K60 included, with frame stepping, frame-accurate scrubbing, a timecode or frame count,
   and the media keys and taskbar progress; subtitles from the file itself (SRT, ASS/SSA with its styling and
-  fonts, WebVTT, MP4 timed text, PGS, VobSub, DVB) or from files beside it, in any encoding.
+  fonts, WebVTT, MP4 timed text, PGS, VobSub, DVB, teletext, ARIB) or from files beside it, in any encoding.
+- Chapters marked on the seek bar, listed in the bar's Settings menu, and `Shift+N` / `Shift+P` to move between
+  them; interlaced video (DVDs, camcorders, TV recordings) deinterlaced as it plays; Dolby and DTS sound can go
+  undecoded to a receiver (Passthrough, in the bar's Settings).
 - Audio files play with their cover, tags and a waveform (or spectrogram) per channel: click to seek, drag to loop
   a part, Ctrl+wheel to zoom; loudness in LUFS.
 - Rip unprotected DVDs to MKV or MP4.
@@ -74,10 +77,13 @@ it keeps itself up to date.
   KDC, ERF, MEF
 - **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, ASF, MXF, MTS/M2TS, TS, MPG/MPEG, M2V, VOB, 3GP/3G2, FLV, F4V,
   OGV/OGM, DivX/Xvid, RealMedia (RM/RMVB), DV, WTV/DVR-MS, NSV, NUV, GXF, Y4M, IVF, raw H.264/HEVC/MPEG/AV1 streams,
-  Bink, Smacker; old and pro codecs too (Cinepak, Indeo, HuffYUV, FFV1, Ut Video, MagicYUV, HAP, ZMBV, Camtasia, Flash
-  Screen Video, JPEG 2000, Dirac...)
+  Bink, Smacker, H.266/VVC; old and pro codecs too (Cinepak, Indeo, HuffYUV, FFV1, Ut Video, MagicYUV, HAP, ZMBV,
+  Camtasia, Flash Screen Video, JPEG 2000, Dirac...); game video (RoQ, VQA, PlayStation STR, SMUSH, THP, Sega FILM,
+  Interplay MVE, VMD, EA, XMV, HNM, FLIC, DXA and more)
 - **Audio:** MP3, MP2, M4A/M4B, AAC, FLAC, WAV, W64, AIFF, Ogg/Opus/Speex, WMA, MKA, WebM audio, WavPack, APE, CAF,
-  AC-3/E-AC-3, DTS, TrueHD, MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF), RealAudio
+  AC-3/E-AC-3, DTS, TrueHD, MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF), RealAudio,
+  LC3, SBC, aptX, QCELP, DSS, IAMF, QOA; tracker modules (MOD, XM, IT, S3M and more); MIDI (with GeneralUser GS);
+  game audio (HCA, ADX, VAG, XVAG, MSF, BRSTM/BFSTM, AST...)
 - **Documents:** PDF
 - **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO, Valve VMT/VMF/VDF/QC
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries
@@ -96,6 +102,7 @@ it keeps itself up to date.
 | `F11`, `F5`, `Space` | Fullscreen, slideshow, pause |
 | `,` `.`, `J` `K` `L`, `M` | Video: previous / next frame, slower / pause / faster, mute |
 | `V`, `G` `H` | Video: next subtitle track, subtitles 50 ms earlier / later |
+| `Shift+N`, `Shift+P` | Video: next / previous chapter |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |
 | `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+Shift+E` | Copy image, copy path, show in File Explorer |
