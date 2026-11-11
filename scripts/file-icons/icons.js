@@ -71,9 +71,11 @@ const DRAW = {
   // A waveform: mirrored bars about the middle, as the audio view draws it, symmetric and centred in the square
   // both ways (Faye, 2026-11-11: it was lopsided and sat high).
   audio: (ext, small) => {
-    const hs = small ? [0.4, 0.75, 1, 0.75, 0.4] : [0.3, 0.5, 0.72, 0.9, 1, 0.9, 0.72, 0.5, 0.3];
-    const bw = small ? 26 : 16, pitch = small ? 38 : 24;
-    const x0 = 128 - ((hs.length - 1) * pitch + bw) / 2, top = 128, amp = small ? 82 : 70;
+    // The same five bars at every size, the large ones a touch slimmer (Faye, 2026-11-11: the large one had
+    // nine, flatter).
+    const hs = [0.4, 0.75, 1, 0.75, 0.4];
+    const bw = small ? 26 : 22, pitch = small ? 38 : 36;
+    const x0 = 128 - ((hs.length - 1) * pitch + bw) / 2, top = 128, amp = small ? 82 : 78;
     let s = `<rect x="12" y="12" width="232" height="232" rx="30" fill="${RED}"/>`;
     hs.forEach((h, i) => {
       const half = Math.max(bw / 2, h * amp);
