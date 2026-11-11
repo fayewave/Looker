@@ -203,7 +203,6 @@ enum Hit {
     ExplorerBookmarks,
     ExplorerCollections,
     ExplorerGroup,
-    ExplorerBookmark,
     ExplorerSidebar,
     ExplorerBrowse,
     Crumb(usize),
@@ -658,6 +657,8 @@ pub struct App {
     /// What the viewport drew last (the bitmap, where, and whether it is SDR: `Gfx::draw_photo`), for the
     /// dissolve to start from.
     last_drawn: Option<(ID2D1Bitmap1, D2D_RECT_F, bool)>,
+    /// The files shown, for the mouse's Back and Forward buttons.
+    trail: crate::trail::Trail,
     /// The page of a document the bar points at (zero-based).
     pdf_page: usize,
     renderer: crate::pages::Renderer,
@@ -755,10 +756,18 @@ impl App {
         if self.settings.push_recent(&path) {
             settings::save(&self.settings);
         }
+        self.trail.record(&path);
         self.explorer_follow();
         self.sync_model();
         self.sync_video();
         self.invalidate();
+    }
+
+    /// The mouse's Back (`-1`) or Forward (`1`) button while viewing: the file shown before or after this one.
+    pub(super) fn trail_step(&mut self, dir: isize) {
+        if let Some(path) = self.trail.step(dir) {
+            self.open_file(path);
+        }
     }
 
     /// Leaving the current image drops its unsaved rotation preview (the previous image may stay on screen
@@ -1399,6 +1408,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             video_moved: std::time::Instant::now(),
             fade: None,
             last_drawn: None,
+            trail: Default::default(),
             pdf_page: 0,
             renderer: crate::pages::Renderer::start(hwnd),
             pages_wanted: false,

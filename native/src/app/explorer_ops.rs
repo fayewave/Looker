@@ -558,6 +558,12 @@ impl App {
         if e.is_empty() {
             return;
         }
+        // Bookmarking the folder listed heads the Bookmarks (Faye, 2026-11-11: it was a button of its own).
+        if let Some(f) = self.explorer.folder().filter(|_| !collections) {
+            let marked = self.settings.is_bookmarked(&f);
+            e.insert(0, item(Action::Bookmark, if marked { 0xE738 } else { 0xE710 }, if marked { "Remove bookmark" } else { "Add bookmark" }, None, true));
+            e.insert(1, Entry::Separator);
+        }
         self.show_menu_below(MenuKind::Jump(collections, places), e, anchor);
     }
 

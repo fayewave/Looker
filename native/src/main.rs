@@ -39,6 +39,7 @@ mod textedit;
 mod theme;
 mod thumbs;
 mod trace;
+mod trail;
 mod ui;
 mod view;
 mod viewer;

@@ -398,7 +398,6 @@ impl App {
                             | Hit::ExplorerBookmarks
                             | Hit::ExplorerCollections
                             | Hit::ExplorerGroup
-                            | Hit::ExplorerBookmark
                             | Hit::ExplorerSidebar
                             | Hit::ExplorerBrowse
                             | Hit::CrumbChevron(_)
@@ -550,7 +549,6 @@ impl App {
                             Some(Hit::ExplorerBookmarks) => self.explorer_jump_menu(false, r.unwrap_or_default()),
                             Some(Hit::ExplorerCollections) => self.explorer_jump_menu(true, r.unwrap_or_default()),
                             Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
-                            Some(Hit::ExplorerBookmark) => self.explorer_toggle_bookmark(None),
                             Some(Hit::ExplorerSidebar) => {
                                 self.explorer.sidebar_open = !self.explorer.sidebar_open;
                             }
@@ -1147,12 +1145,17 @@ impl App {
                     self.on_explorer_changed();
                     Some(LRESULT(0))
                 }
-                // Mouse buttons 4 and 5: Back / Forward through the explorer's folders.
-                WM_XBUTTONUP if self.explorer_shown() && self.dialog.is_none() => {
-                    match (wp.0 >> 16) & 0xFFFF {
-                        1 => self.explorer_back(),
-                        2 => self.explorer_forward(),
-                        _ => {}
+                // Mouse buttons 4 and 5: Back / Forward. Over the explorer (or in browse mode, or with no file up)
+                // through its folders; viewing a file, through the files shown, as a browser's pages.
+                WM_XBUTTONUP if self.dialog.is_none() => {
+                    let (x, _) = self.dip_from_lparam(lp);
+                    let viewing = self.viewer.current.is_some() && !self.browsing();
+                    let explorer = self.explorer_shown() && (!viewing || x < self.explorer_rect().right);
+                    let back = (wp.0 >> 16) & 0xFFFF == 1;
+                    if explorer {
+                        if back { self.explorer_back() } else { self.explorer_forward() }
+                    } else if viewing {
+                        self.trail_step(if back { -1 } else { 1 });
                     }
                     Some(LRESULT(1))
                 }

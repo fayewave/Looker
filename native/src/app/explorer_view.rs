@@ -270,20 +270,6 @@ impl App {
         g.text(&[0xE713], &g.fonts.caption_icons, rect(gx - 6.0, gy - 6.0, 12.0, 12.0), fg, Align::Center);
     }
 
-    /// The bookmark button: a pin with a plus at its bottom right, in a notch cut out of it (Faye, 2026-11-10: the
-    /// plain pin is the Bookmarks drop-down's), toggled on while the folder is bookmarked.
-    fn bookmark_button(&mut self, g: &Gfx, r: D2D_RECT_F, marked: bool) {
-        let id = Hit::ExplorerBookmark;
-        self.hits.add(id, r);
-        let st = self.state(id, true);
-        let fg = ui::button_frame(g, r, if marked { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
-        let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
-        let pin = rect(cx - 9.0, cy - 9.0, 16.0, 16.0);
-        let (px, py) = (g.snap(cx + 4.5), g.snap(cy + 4.5));
-        g.with_hole(pin, px, py, 6.0, || g.text(&[if marked { 0xE840 } else { 0xE718 }], &g.fonts.body_icons, pin, fg, Align::Center));
-        g.text(&[0xE710], &g.fonts.caption_icons, rect(px - 6.0, py - 6.0, 12.0, 12.0), fg, Align::Center);
-    }
-
     /// The breadcrumb rows: the buttons, then the crumbs under them. Returns where they end.
     /// The tab strip along the top (tabstrip.rs, shared with the text editor). Returns the strip's bottom, and
     /// whether the tabs are still moving.
@@ -332,7 +318,7 @@ impl App {
         g.text(&[0xE70D], &g.fonts.caption_icons, hist, fg, Align::Center);
         let left_end = hist.right + 8.0;
 
-        // From the right: browse mode, the bookmark, the grouping, the sidebar (when it isn't a column).
+        // From the right: browse mode, the grouping, the sidebar (when it isn't a column).
         let mut rx = main.right - 6.0 - NAV;
         let browsing = self.browsing();
         let glyph = if browsing { 0xE73F } else { 0xE740 };
@@ -347,12 +333,6 @@ impl App {
             let fg = ui::button_frame(g, br, ui::Kind::Toggle(true), &ui::State::IDLE);
             g.text(&[glyph], &g.fonts.body_icons, br, fg, Align::Center);
             g.pop_fade();
-        }
-        if let Some(f) = self.explorer.folder() {
-            rx -= NAV + 2.0;
-            let marked = self.settings.is_bookmarked(&f);
-            // Bookmarked: toggled on, as the other buttons are when they're on.
-            self.bookmark_button(g, rect(rx, y, NAV, NAV), marked);
         }
         rx -= NAV + 2.0;
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));

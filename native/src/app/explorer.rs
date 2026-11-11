@@ -36,6 +36,8 @@ const SPRING_SECS: f32 = 0.62;
 /// Browse mode coming in or out and the edge gliding to its place: slower than the app's 190 ms, so the explorer
 /// moves with some weight (Faye, 2026-11-10).
 pub(super) const EDGE_SECS: f32 = 0.30;
+/// A jump's pop as far as the pointer is concerned: the glide, and the bounce until its swing is under a DIP.
+const POP_SECS: f32 = 0.45;
 
 /// A pull of `d` DIPs off the sticky line as the edge shows it: it gives less the further it's pulled, about 23 DIPs
 /// at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
@@ -449,8 +451,9 @@ pub(super) struct Explorer {
     /// the pointer was on last (for when it crosses).
     /// Held on a sticky line: the card's widest (false) or browse mode's default (true).
     pub(super) latched: Option<bool>,
-    /// Popping across to that line after a jump, not following the pointer until it gets there.
-    pub(super) coast: Option<bool>,
+    /// Popping across to that line after a jump (since when), not following the pointer until it gets there or the
+    /// pop has played out.
+    pub(super) coast: Option<(bool, Instant)>,
     pub(super) last_side: f32,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
@@ -2796,9 +2799,12 @@ impl App {
         let mut just_latched = false;
         // After a jump the edge pops to the other line on its own and doesn't follow the pointer until the pointer
         // has got there too (Faye, 2026-11-10: one long drag still sizes it, without it being tugged back by a
-        // slower hand); then it's held on that line as usual.
-        if let Some(to_browse) = self.explorer.coast {
-            if (to_browse && w >= browse_line) || (!to_browse && w <= card_line) {
+        // slower hand), or until the pop has played out (2026-11-11: held still or turned back mid-pop, it follows
+        // again once the glide and most of the bounce are done, rather than never); then it's held on that line as
+        // usual, and pulled back far enough it jumps back.
+        if let Some((to_browse, since)) = self.explorer.coast {
+            let popped = !motion_on() || since.elapsed().as_secs_f32() >= POP_SECS;
+            if popped || (to_browse && w >= browse_line) || (!to_browse && w <= card_line) {
                 self.explorer.coast = None;
                 self.explorer.latched = Some(to_browse);
                 just_latched = true;
@@ -2899,7 +2905,7 @@ impl App {
         if let_go != 0.0 {
             self.explorer.spring = Some((BOUNCE * let_go, now));
             self.explorer.width_settle = Some(crate::motion::Settle::over(from, EDGE_SECS));
-            self.explorer.coast = self.explorer.latched;
+            self.explorer.coast = self.explorer.latched.map(|l| (l, now));
             self.explorer.latched = None;
         }
         if self.browsing() != was {
@@ -3140,7 +3146,6 @@ impl App {
             Hit::ExplorerGroup => Some("Folders and files".into()),
             Hit::TabNew => Some("New tab  (Ctrl+T)".into()),
             Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
-            Hit::ExplorerBookmark => Some(if self.explorer.folder().is_some_and(|f| self.settings.is_bookmarked(&f)) { "Remove bookmark".into() } else { "Bookmark this folder".into() }),
             Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
             Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (Ctrl+B)".into() } else { "Browse mode (Ctrl+B)".into() }),
             // A sidebar folder's path; anything else there (This PC, a collection) its name.
@@ -3218,7 +3223,6 @@ impl App {
                     | Hit::ExplorerBookmarks
                     | Hit::ExplorerCollections
                     | Hit::ExplorerGroup
-                    | Hit::ExplorerBookmark
                     | Hit::ExplorerSidebar
                     | Hit::ExplorerBrowse
                     | Hit::Tab(_)

@@ -343,7 +343,9 @@ impl App {
                 }
             }
             Some(MenuKind::Crumbs(places) | MenuKind::Jump(_, places)) => {
-                if let Action::Crumb(i) = action {
+                if action == Action::Bookmark {
+                    self.explorer_toggle_bookmark(None);
+                } else if let Action::Crumb(i) = action {
                     if let Some(p) = places.get(i) {
                         self.explorer_crumb(p.clone());
                     }
