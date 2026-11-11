@@ -42,9 +42,10 @@ pub(super) fn shell_icon(g: &Gfx, kind: &shell_icons::Kind, r: D2D_RECT_F, opaci
 /// The same, `dip` across (the system image lists go to 48 at 100 %).
 pub(super) fn shell_icon_at(g: &Gfx, kind: &shell_icons::Kind, r: D2D_RECT_F, dip: f32, opacity: f32, tint: Option<u32>) -> bool {
     let px = (dip * g.dpi / 96.0).round() as u32;
-    // A text type Looker opens: Looker's own red icon for it, not Notepad's (Faye, 2026-11-11).
+    // A text type, PDF or audio file Looker opens: Looker's own red icon for it, not Notepad's, a PDF reader's or
+    // a player's (Faye, 2026-11-11).
     if let shell_icons::Kind::Extension(e) = kind {
-        if let Some(icon) = crate::file_icons::text_icon(e, px) {
+        if let Some(icon) = crate::file_icons::explorer_icon(e, px) {
             g.draw_icon(&icon, r, dip, opacity, tint);
             return true;
         }
@@ -635,7 +636,9 @@ impl App {
             let moving_picture = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Gif);
             // Audio shows a plain waveform icon, not the file's own waveform (Faye, 2026-11-11).
             let is_audio = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Audio;
-            let is_text = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Text;
+            // Text, PDFs and audio show Looker's red icon for the type, not a picture (Faye, 2026-11-11).
+            let is_text = r.kind == Kind::Image
+                && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Text | format::Format::Pdf | format::Format::Audio);
             if r.kind == Kind::Image && !is_audio {
                 if !is_text {
                     self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
@@ -668,14 +671,15 @@ impl App {
                 // Name: the thumbnail or glyph, the name, its tags.
                 let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
                 let mut drew = false;
-                if is_audio {
-                    draw_wave_icon(g, ib, ink(t.icon));
-                    drew = true;
-                } else if is_text {
+                if is_text {
                     // Looker's red icon for the type, rather than a picture of the page (Faye, 2026-11-11).
                     if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
                         let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
                         drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
+                    }
+                    if !drew && is_audio {
+                        draw_wave_icon(g, ib, ink(t.icon));
+                        drew = true;
                     }
                 } else if r.kind == Kind::Image {
                     if let Some(th) = self.thumbs.get(&r.path, r.stamp) {

@@ -439,6 +439,15 @@ impl App {
                     }
                 }
             }
+            // Looker's red icon for the file's type at the bottom left (Faye, 2026-11-11), on cells tall enough.
+            if img.is_some() && inner.bottom - inner.top >= 40.0 {
+                if let Some(e) = path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                    const ICON: f32 = 16.0;
+                    if let Some(icon) = crate::file_icons::icon(&e, (ICON * g.dpi / 96.0).round() as u32) {
+                        g.draw_icon(&icon, rect(inner.left + 4.0, inner.bottom - 4.0 - ICON, ICON, ICON), ICON, 1.0, None);
+                    }
+                }
+            }
             // As Snapper's strip: an ink wash and outline on hover, the accent round the current photo.
             if pressed {
                 g.fill_round(inner, 3.0, gfx::rgba(th.ink, 0.20));

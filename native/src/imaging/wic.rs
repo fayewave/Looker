@@ -490,8 +490,9 @@ pub fn from_rgba(f: &IWICImagingFactory, rgba: &[u8], w: u32, h: u32, box_w: u32
     }
 }
 
-/// Decodes a small embedded asset (the app icon) at roughly `px` pixels: the ICO frame closest above it.
-pub fn decode_icon(bytes: &'static [u8], px: u32) -> Result<Decoded> {
+/// Decodes a small asset (the app icon, a file type icon) at roughly `px` pixels: the ICO frame closest above it.
+/// Every WIC object here is gone by the return (the pixels are copied out), so `bytes` need only live this long.
+pub fn decode_icon(bytes: &[u8], px: u32) -> Result<Decoded> {
     unsafe {
         let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER)?;
         let stream = f.CreateStream()?;
