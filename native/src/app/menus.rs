@@ -84,6 +84,9 @@ pub(super) enum Action {
     ColToggle(crate::explorer::ColKind),
     /// The text editor's right-click menu and foot (textview.rs).
     Text(super::textview::TextAct),
+    /// The info card's: copy the property the menu is for, or every one of them.
+    InfoCopy,
+    InfoCopyAll,
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -246,6 +249,24 @@ impl App {
         self.invalidate();
     }
 
+    /// The info card's right-click menu: copy this property (or show the file, on its path), or copy them all.
+    pub(super) fn open_info_menu(&mut self, i: Option<usize>, x: f32, y: f32) {
+        let mut entries = Vec::new();
+        if let Some((label, _, path)) = i.and_then(|i| self.info_property(i)) {
+            entries.push(item(Action::InfoCopy, 0xE8C8, &format!("Copy {label}"), None, true));
+            if path {
+                entries.push(item(Action::Reveal, 0xEC50, "Show in File Explorer", None, true));
+            }
+            entries.push(Entry::Separator);
+        }
+        entries.push(item(Action::InfoCopyAll, 0xE8A4, "Copy all details", None, true));
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::Info(i), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
     /// The breadcrumb "…": the folded-away ancestors, top-down.
     pub(super) fn open_crumb_menu(&mut self) {
         let hidden = self.hidden_crumbs();
@@ -351,6 +372,7 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::Info(i)) => self.info_action(action, i),
             Some(MenuKind::TextTab(i)) => match action {
                 Action::NewTab => self.text_new_tab(),
                 Action::CloseTab => self.text_close_tab(i),
@@ -488,6 +510,8 @@ pub(super) enum MenuKind {
     TextTab(usize),
     /// The text editor's foot: its encodings (0) or line endings (1).
     TextFoot(u8),
+    /// The info card's, for the property at this place in `info_blocks` (None: the card around them).
+    Info(Option<usize>),
 }
 
 /// Which row of drop-down buttons `h` belongs to, if it opens a drop-down. While one of a row's drop-downs is

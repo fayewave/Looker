@@ -194,6 +194,8 @@ pub struct Fonts {
     pub hero_icons: IDWriteTextFormat,
     /// 14 px, wrapping, centred, top-aligned: that file's name.
     pub subtitle_wrap: IDWriteTextFormat,
+    /// 14 px semibold, wrapping, top-aligned, 19 px lines: the info card's file name.
+    pub heading_wrap: IDWriteTextFormat,
     /// Inter's tabular figures (`tnum`): every digit the same width, so the status row's numbers don't
     /// shuffle as they change (`Gfx::text_tabular`).
     pub tabular: IDWriteTypography,
@@ -1565,6 +1567,10 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         let subtitle_wrap = inter(14.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         subtitle_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         subtitle_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        let heading_wrap = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        heading_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
+        heading_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        heading_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 19.0, 14.0)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
             let f = dw.CreateTextFormat(
                 w!("Segoe Fluent Icons"),
@@ -1581,7 +1587,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         };
         let tabular = dw.CreateTypography()?;
         tabular.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 })?;
-        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, body_large, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, large_icons: icon(18.0)?, hero_icons: icon(96.0)?, subtitle_wrap, tabular, _ellipsis: ellipsis })
+        Ok(Fonts { caption, body, body_wrap, title, caption_wrap, overline, page_title, body_large, icons: icon(16.0)?, caption_icons: icon(10.0)?, small_icons: icon(12.0)?, body_icons: icon(14.0)?, large_icons: icon(18.0)?, hero_icons: icon(96.0)?, subtitle_wrap, heading_wrap, tabular, _ellipsis: ellipsis })
     }
 }
 

@@ -44,11 +44,13 @@ pub(super) struct Card {
     pub drag: Option<(f32, f32)>,
     /// Its width easing back to the default (its edge double-clicked).
     pub settle: Option<crate::motion::Settle>,
+    /// The file it last showed: another one starts back at the top (Transient's).
+    shown: Option<PathBuf>,
 }
 
 impl Card {
     pub fn new() -> Card {
-        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None }
+        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None }
     }
 
     /// The scroll offset to draw this frame, and whether it is still moving.
@@ -69,10 +71,34 @@ impl Card {
     }
 }
 
-enum Block {
+pub(super) enum Block {
+    /// The file's name, over everything (a click copies it).
+    Heading(String),
     Histogram,
     Title(&'static str),
     Row { label: &'static str, value: String, path: bool },
+}
+
+/// 1,234,567.
+fn grouped(v: u64) -> String {
+    let s = v.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A size as Explorer's Properties gives it: "2.4 MB (2,456,789 bytes)".
+fn size_text(b: u64) -> String {
+    if b < 1024 { format_bytes(b) } else { format!("{} ({} bytes)", format_bytes(b), grouped(b)) }
+}
+
+fn ft_set(t: FILETIME) -> bool {
+    t.dwLowDateTime != 0 || t.dwHighDateTime != 0
 }
 
 /// An EXIF wall-clock time in the user's short date and time format.
@@ -222,17 +248,77 @@ impl App {
 
     // --- Content ------------------------------------------------------------------------------------
 
+    /// The property at `i` in `info_blocks`: its name, value and whether it's the file's path (the heading's
+    /// name is "Name").
+    pub(super) fn info_property(&self, i: usize) -> Option<(&'static str, String, bool)> {
+        match self.info_blocks().into_iter().nth(i)? {
+            Block::Heading(name) => Some(("Name", name, false)),
+            Block::Row { label, value, path } => Some((label, value, path)),
+            _ => None,
+        }
+    }
+
+    /// Where the path is in `info_blocks`.
+    pub(super) fn info_path_row(&self) -> Option<usize> {
+        self.info_blocks().iter().position(|b| matches!(b, Block::Row { path: true, .. }))
+    }
+
+    /// A click on a property: its value to the clipboard.
+    pub(super) fn info_copy(&mut self, i: usize) {
+        let Some((label, value, _)) = self.info_property(i) else { return };
+        if clipboard::set_text(self.hwnd, &value) {
+            // The property's own name ("Copied Modified", "Copied ISO"): "the modified" read badly.
+            self.show_toast(format!("Copied {label}"), false);
+        }
+    }
+
+    /// Every property, a group to a paragraph ("Camera", then "Model: X100V" lines), the name first.
+    fn info_text(&self) -> String {
+        let mut out = String::new();
+        for b in self.info_blocks() {
+            match b {
+                Block::Heading(name) => out.push_str(&name),
+                Block::Histogram => {}
+                Block::Title(t) => {
+                    out.push_str("\r\n\r\n");
+                    out.push_str(t);
+                }
+                Block::Row { label, value, .. } => out.push_str(&format!("\r\n{label}: {value}")),
+            }
+        }
+        out
+    }
+
+    pub(super) fn info_action(&mut self, action: super::menus::Action, i: Option<usize>) {
+        use super::menus::Action;
+        match action {
+            Action::InfoCopy => {
+                if let Some(i) = i {
+                    self.info_copy(i);
+                }
+            }
+            Action::InfoCopyAll => {
+                let text = self.info_text();
+                if clipboard::set_text(self.hwnd, &text) {
+                    self.show_toast("Copied all details", false);
+                }
+            }
+            Action::Reveal => self.reveal(),
+            _ => {}
+        }
+    }
+
     fn info_blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
         let row = |label, value: String| Block::Row { label, value, path: false };
         // A file Looker can't open covers the photo: what Explorer would say about it.
         if let Some(p) = &self.placeholder {
             let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            out.push(Block::Heading(file_name(&p.path)));
             out.push(Block::Title("File"));
-            out.push(row("Name", file_name(&p.path)));
             out.push(row("Type", if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }));
             if let Some(s) = p.size {
-                out.push(row("Size", format_bytes(s)));
+                out.push(row("Size", size_text(s)));
             }
             if let Some(t) = p.modified {
                 out.push(row("Modified", format_time(t)));
@@ -248,11 +334,11 @@ impl App {
         let text = entry.is_some_and(|e| e.format == format::Format::Text);
         // A model's histogram would be of its render, not of anything in the file; a video's of its first picture
         // only (hidden: Faye, 2026-11-10).
+        out.push(Block::Heading(file_name(path)));
         if entry.is_some_and(|e| e.histogram.is_some()) && !model && !video && !text {
             out.push(Block::Histogram);
         }
         out.push(Block::Title("File"));
-        out.push(row("Name", file_name(path)));
         if let Some(e) = entry {
             if let Some(t) = format::display_name(e.format, Some(path)) {
                 out.push(row("Type", t));
@@ -276,9 +362,15 @@ impl App {
         }
         if let Some(i) = &self.info {
             if i.size > 0 {
-                out.push(row("Size", format_bytes(i.size)));
+                out.push(row("Size", size_text(i.size)));
             }
             out.push(row("Modified", format_time(i.modified)));
+            if ft_set(i.created) {
+                out.push(row("Created", format_time(i.created)));
+            }
+            if ft_set(i.accessed) {
+                out.push(row("Accessed", format_time(i.accessed)));
+            }
         }
         out.push(Block::Row { label: "File Path", value: path.to_string_lossy().into_owned(), path: true });
         let stamp = self.viewer.current.as_ref().map(|(_, s)| *s);
@@ -301,6 +393,13 @@ impl App {
             return false;
         }
         self.request_exif();
+        // Another file: back to the top at once, no animation (Transient's).
+        let showing = self.placeholder.as_ref().map(|p| p.path.clone()).or_else(|| self.current_path().map(Path::to_path_buf));
+        if showing != self.info_card.shown {
+            self.info_card.shown = showing;
+            self.info_card.scroll = 0.0;
+            self.info_card.anim = None;
+        }
         let card = self.info_card_rect();
         if card.bottom - card.top < 40.0 {
             return false;
@@ -324,6 +423,7 @@ impl App {
         let mut label_hs = Vec::with_capacity(blocks.len());
         for b in &blocks {
             let (h, lh) = match b {
+                Block::Heading(name) => (g.measure_height(&wide(name), &g.fonts.heading_wrap, w).max(19.0).ceil(), 0.0),
                 Block::Histogram => (hist_h, 0.0),
                 Block::Title(_) => (TITLE_H + 2.0, 0.0),
                 Block::Row { label, value, .. } => {
@@ -358,24 +458,32 @@ impl App {
             }
             let lh = label_hs[i];
             if y + h >= inner.top && y <= inner.bottom {
+                // A property (and the name) is a whole-row target with Transient's rounded wash under the pointer,
+                // fading in and out, a touch less while pressed. A click copies it; the path's shows the file.
+                let hit = match b {
+                    Block::Row { path: true, .. } => Some(Hit::InfoPath),
+                    Block::Row { .. } | Block::Heading(_) => Some(Hit::InfoRow(i)),
+                    _ => None,
+                };
+                if let Some(hit) = hit {
+                    let rr = D2D_RECT_F { left: x - 6.0, top: y - 3.0, right: x + w + 4.0, bottom: y + h + 3.0 };
+                    let st = self.state(hit, true);
+                    ui::link_fill(g, rr, st.hover, st.pressed);
+                    let visible = D2D_RECT_F { top: rr.top.max(inner.top), bottom: rr.bottom.min(inner.bottom), ..rr };
+                    if visible.bottom > visible.top {
+                        self.hits.add(hit, visible);
+                    }
+                }
                 match b {
+                    Block::Heading(name) => g.text(&wide(name), &g.fonts.heading_wrap, rect(x, y, w, *h), rgb(th.text), Align::Left),
                     Block::Histogram => self.draw_histogram(g, rect(x, y, w, *h)),
                     Block::Title(t) => {
                         ui::section(g, t, rect(x, y, w, TITLE_H));
                     }
-                    Block::Row { label, value, path } => {
+                    Block::Row { label, value, .. } => {
                         g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), rgb(th.label), Align::Left);
                         let vr = rect(x, y + 1.0 + lh, w, h - 2.0 - lh);
-                        if *path {
-                            // A link (shows the file in Explorer): the rounded hover fill, brighter while pressed.
-                            let st = self.state(Hit::InfoPath, true);
-                            ui::link_fill(g, D2D_RECT_F { left: vr.left - 4.0, top: vr.top - 2.0, right: vr.right + 2.0, bottom: vr.bottom + 2.0 }, st.hover, st.pressed);
-                        }
                         g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(th.text), Align::Left);
-                        if *path {
-                            let visible = D2D_RECT_F { top: vr.top.max(inner.top), bottom: vr.bottom.min(inner.bottom), ..vr };
-                            self.hits.add(Hit::InfoPath, visible);
-                        }
                     }
                 }
             }
@@ -384,7 +492,7 @@ impl App {
         g.pop_clip();
 
         // The scroll thumb while the pointer is over an overflowing card, or while it scrolls.
-        let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath));
+        let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_)));
         if self.info_card.max_scroll > 0.0 && (over || moving) {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let track = inner.bottom - inner.top - 8.0;

@@ -244,6 +244,7 @@ impl App {
             Hit::Reveal => "Show this file in File Explorer",
             Hit::StatusZoom => "Fit or 100 %",
             Hit::InfoPath => "Show in File Explorer",
+            Hit::InfoRow(_) => "Click to copy",
             Hit::PagePrevious => "Previous page (Page Up)",
             Hit::DefaultHintClose => "Don't show this again",
             Hit::PageNext => "Next page (Page Down)",

@@ -244,10 +244,12 @@ enum Hit {
     SideChevron(usize),
     /// A colour swatch in the open menu: (entry, swatch).
     MenuSwatch(usize, usize),
-    /// The info card's surface (scrolls under the wheel), its resize grip and its file-path link.
+    /// The info card's surface (scrolls under the wheel), its resize grip, its file-path link, and a property
+    /// by its place in `info_blocks` (a click copies its value).
     InfoCard,
     InfoGrip,
     InfoPath,
+    InfoRow(usize),
     /// "Get it from the Microsoft Store" under "Can't display this file", when a Windows extension is missing.
     GetExtension,
     /// The landing page's "Set Looker as your default photo viewer" and its X.
@@ -336,6 +338,9 @@ pub(super) struct Placeholder {
 struct FileInfo {
     size: u64,
     modified: FILETIME,
+    /// Zero when the file system doesn't keep them.
+    created: FILETIME,
+    accessed: FILETIME,
 }
 
 pub struct Placement {
@@ -751,8 +756,8 @@ impl App {
     fn current_changed(&mut self) {
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         self.info = std::fs::metadata(&path).ok().map(|m| {
-            let t = m.last_write_time();
-            FileInfo { size: m.len(), modified: FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 } }
+            let ft = |t: u64| FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 };
+            FileInfo { size: m.len(), modified: ft(m.last_write_time()), created: ft(m.creation_time()), accessed: ft(m.last_access_time()) }
         });
         unsafe {
             let _ = SetWindowTextW(self.hwnd, &HSTRING::from(format!("{} - Looker", file_name(&path))));

@@ -352,6 +352,7 @@ impl App {
                             Hit::Reveal
                             | Hit::StatusZoom
                             | Hit::InfoPath
+                            | Hit::InfoRow(_)
                             | Hit::Open
                             | Hit::LandingFolder
                             | Hit::RecentRow(_)
@@ -581,6 +582,7 @@ impl App {
                             Some(Hit::MenuSwatch(i, k)) => self.activate_swatch(i, k),
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
+                            Some(Hit::InfoRow(i)) => self.info_copy(i),
                             Some(Hit::StatusZoom) => self.status_zoom_click(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
@@ -686,6 +688,15 @@ impl App {
                         Some(Hit::RecentRow(i)) => {
                             self.close_menu();
                             self.open_recent_menu(i, x, y);
+                        }
+                        Some(h @ (Hit::InfoRow(_) | Hit::InfoPath | Hit::InfoCard)) => {
+                            self.close_menu();
+                            let i = match h {
+                                Hit::InfoRow(i) => Some(i),
+                                Hit::InfoPath => self.info_path_row(),
+                                _ => None,
+                            };
+                            self.open_info_menu(i, x, y);
                         }
                         Some(Hit::Strip | Hit::StripCell(_) | Hit::StripGrip) => {
                             self.close_menu();
@@ -874,7 +885,7 @@ impl App {
                         self.audio_wheel(delta as f32, x, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
                     }
-                    if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoGrip)) {
+                    if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_) | Hit::InfoGrip)) {
                         self.scroll_info(delta as f32);
                         return Some(LRESULT(0));
                     }
