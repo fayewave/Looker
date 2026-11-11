@@ -26,6 +26,8 @@ pub(super) enum DialogKind {
     DeleteMany(Vec<PathBuf>),
     Rename(PathBuf),
     Reset,
+    /// Save as default in the Folders and files menu (it replaces every saved view).
+    DefaultView,
     /// Rip DVD's dialog, and a message with only OK.
     Rip(Box<super::rip::RipSetup>),
     Notice,
@@ -450,6 +452,7 @@ impl App {
                 self.start_rip(*setup, title, mp4, name);
             }
             DialogKind::Reset => self.reset_app(),
+            DialogKind::DefaultView => self.set_default_view(),
             DialogKind::Rename(path) => {
                 let name = d.field.map(|f| f.edit.text()).unwrap_or_default();
                 if name.trim().is_empty() {

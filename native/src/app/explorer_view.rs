@@ -470,8 +470,8 @@ impl App {
 
         // Headers: click sorts, drag moves (the others ease aside), an edge resizes, right-click customises.
         let hy = body.top + 2.0;
-        let sort = self.settings.sort;
-        let xsort = self.explorer.xsort;
+        let sort = self.explorer.look.sort;
+        let xsort = self.explorer.look.xsort;
         let resizing = self.explorer.col_resize.as_ref().and_then(|r| r.widths.get(r.pos).map(|&(i, _, _)| i));
         let raised = theme::raised();
         let last_idx = cols.iter().filter(|c| !c.dragged).max_by(|a, b| a.x.total_cmp(&b.x)).map(|c| c.idx);

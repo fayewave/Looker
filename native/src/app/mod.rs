@@ -966,7 +966,7 @@ impl App {
 
     fn list_folder_async(&self, folder: PathBuf) {
         let hwnd = self.hwnd.0 as isize;
-        let sort = self.settings.sort;
+        let sort = self.sort_for_folder(&folder);
         std::thread::Builder::new()
             .name("listing".into())
             .spawn(move || {

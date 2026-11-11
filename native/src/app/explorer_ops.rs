@@ -589,16 +589,27 @@ impl App {
             inc: (h < crate::explorer::HEIGHT_MAX).then_some(Action::RowHeight(h + 1)),
         }));
         e.push(Entry::Separator);
+        // Any change above is kept for this place alone ("This folder"); Save as default is the only way to change
+        // what every folder shows (Faye, 2026-11-11).
         e.push(Entry::Heading("Saved view".into()));
-        let scope = self.view_entry().map(|i| self.settings.views[i].scope);
-        e.push(ticked(Action::SavedView(None), 0xE785, "None", scope.is_none(), folder));
-        e.push(ticked(Action::SavedView(Some(Scope::Folder)), 0xE72E, "This folder", scope == Some(Scope::Folder), folder));
+        let place = self.explorer.place.as_ref();
+        let key = place.map(crate::explorer::view_key);
+        let entry = self.view_entry().map(|i| &self.settings.views[i]);
+        // A parent's "and subfolders" covering this folder: said so, nothing of this folder's own ticked.
+        let inherited = entry.filter(|s| key.as_ref().is_some_and(|k| crate::explorer::norm(&s.path) != crate::explorer::norm(k)));
+        let scope = entry.filter(|_| inherited.is_none()).map(|s| s.scope);
+        let any = place.is_some();
+        e.push(ticked(Action::SavedView(None), 0xE785, "Use default", scope.is_none() && inherited.is_none(), any));
+        e.push(ticked(Action::SavedView(Some(Scope::Folder)), 0xE72E, "This folder", scope == Some(Scope::Folder), any));
         e.push(ticked(Action::SavedView(Some(Scope::Tree)), 0xE72E, "This folder and subfolders", scope == Some(Scope::Tree), folder));
+        if let Some(s) = inherited {
+            let name = crate::explorer::Place::Folder(s.path.clone()).name();
+            e.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::Crumb(usize::MAX), glyph: None, label: format!("Following \u{201C}{name}\u{201D}"), accel: None, check: None, enabled: false, current: false }));
+        }
         e.push(Entry::Separator);
-        // Without a saved view every change already is the default (`store_view`), so there's nothing to set: say
-        // so rather than show a button that never lights up.
-        let differs = *v != self.settings.default_view();
-        e.push(item(Action::SetDefaultView, 0xE7F4, if differs { "Set as default" } else { "Already the default" }, None, differs));
+        // Save as default also clears every saved view, so it's worth it while any exist even if this one matches.
+        let can = *v != self.settings.default_view() || self.settings.views.iter().any(|s| s.scope != Scope::Off);
+        e.push(item(Action::SetDefaultView, 0xE7F4, if can { "Save as default\u{2026}" } else { "Already the default" }, None, can));
         e
     }
 
@@ -794,7 +805,7 @@ impl App {
             }
             (Action::RowHeight(h), _) => self.set_row_height(h),
             (Action::SavedView(s), _) => self.set_saved_view(s),
-            (Action::SetDefaultView, _) => self.set_default_view(),
+            (Action::SetDefaultView, _) => self.confirm_default_view(),
             _ => {}
         }
     }

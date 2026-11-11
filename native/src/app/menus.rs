@@ -176,7 +176,7 @@ impl App {
     }
 
     fn sort_entries(&self) -> Vec<Entry<Action>> {
-        let s = self.settings.sort;
+        let s = self.viewer_sort();
         vec![
             check(Action::SortField(SortField::Name), "Name", s.field == SortField::Name),
             check(Action::SortField(SortField::Date), "Date modified", s.field == SortField::Date),
@@ -405,8 +405,8 @@ impl App {
             Action::Delete => self.confirm_delete(false),
             Action::Wallpaper => self.set_wallpaper(),
             Action::Reveal => self.reveal(),
-            Action::SortField(f) => self.set_sort(Sort { field: f, ..self.settings.sort }),
-            Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.settings.sort }),
+            Action::SortField(f) => self.set_sort(Sort { field: f, ..self.viewer_sort() }),
+            Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.viewer_sort() }),
             Action::Rename => self.begin_rename(false),
             Action::ToggleInfo => self.toggle_info(),
             Action::ToggleCheckerboard => {
@@ -435,20 +435,9 @@ impl App {
         }
     }
 
+    /// The toolbar's Sort menu: kept for the viewer's folder (`set_viewer_sort`).
     pub(super) fn set_sort(&mut self, sort: Sort) {
-        if sort == self.settings.sort {
-            return;
-        }
-        self.settings.sort = sort;
-        settings::save(&self.settings);
-        self.viewer.set_sort(sort);
-        self.explorer.resort(sort, self.explorer.look.group);
-        let field = match sort.field {
-            SortField::Name => "Name",
-            SortField::Date => "Date modified",
-            SortField::Size => "Size",
-        };
-        self.show_toast(format!("Sort: {field} {}", if sort.descending { "\u{2193}" } else { "\u{2191}" }), false);
+        self.set_viewer_sort(sort);
     }
 }
 

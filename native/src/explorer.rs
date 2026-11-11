@@ -648,8 +648,9 @@ impl SideSection {
 }
 
 /// How the explorer shows a folder (Transient's Folders and files menu): where the folders go, whether the
-/// subfolders' files are listed too, whether files Looker can't open show, how tall the rows are, and the
-/// columns. The default is the settings'; a folder can keep its own (`SavedView`).
+/// subfolders' files are listed too, whether files Looker can't open show, how tall the rows are, the columns,
+/// and the sort. The default is the settings'; any change in a folder is kept for that folder (`SavedView`;
+/// Faye, 2026-11-11), and only Save as default changes the default.
 #[derive(Clone, PartialEq, Debug)]
 pub struct View {
     pub group: Group,
@@ -658,13 +659,36 @@ pub struct View {
     /// Row height in rows (1-4): taller rows, bigger thumbnails.
     pub height: u8,
     pub columns: Vec<(ColKind, f32)>,
+    /// Name, date or size, as the toolbar sorts (the viewer steps through the folder in this order).
+    pub sort: Sort,
+    /// A column the list alone is sorted by instead (Camera, Dimensions, …), and descending.
+    pub xsort: Option<(ColKind, bool)>,
 }
 
 pub const HEIGHT_MAX: u8 = 4;
 
 impl Default for View {
     fn default() -> Self {
-        View { group: Group::default(), subfolders: false, other_files: true, height: 1, columns: ColKind::defaults() }
+        View { group: Group::default(), subfolders: false, other_files: true, height: 1, columns: ColKind::defaults(), sort: Sort::default(), xsort: None }
+    }
+}
+
+/// A column sort for the settings file: "camera desc", or "-" for none.
+pub fn format_xsort(x: Option<(ColKind, bool)>) -> String {
+    x.map_or("-".to_string(), |(c, d)| format!("{} {}", c.key(), if d { "desc" } else { "asc" }))
+}
+
+pub fn parse_xsort(s: &str) -> Option<(ColKind, bool)> {
+    s.split_once(' ').and_then(|(c, d)| Some((ColKind::parse(c)?, d == "desc")))
+}
+
+/// The key a place's saved view is kept under: a folder's path, or a name for the places that aren't folders.
+pub fn view_key(place: &Place) -> PathBuf {
+    match place {
+        Place::Folder(f) => f.clone(),
+        Place::Computer => PathBuf::from("::computer"),
+        Place::Collection(Collection::Favourites) => PathBuf::from("::favourites"),
+        Place::Collection(Collection::Colour(c)) => PathBuf::from(format!("::colour{c}")),
     }
 }
 
@@ -698,22 +722,40 @@ pub struct SavedView {
 }
 
 impl SavedView {
-    /// `scope;group;subfolders;other;height;columns;path` (the path last: it may hold anything but `|`).
+    /// `scope;group;subfolders;other;height;columns;sort;xsort;path` (a `view2=` line; the path last: it may hold
+    /// anything). `xsort` is `-` or "column asc|desc".
     pub fn format(&self) -> String {
         let v = &self.view;
+        let xsort = format_xsort(v.xsort);
         format!(
-            "{};{};{};{};{};{};{}",
+            "{};{};{};{};{};{};{};{};{}",
             self.scope.key(),
             v.group.key(),
             v.subfolders as i32,
             v.other_files as i32,
             v.height,
             ColKind::format(&v.columns),
+            v.sort.to_setting(),
+            xsort,
             self.path.display()
         )
     }
 
+    /// A `view2=` line (`format`).
     pub fn parse(s: &str) -> Option<SavedView> {
+        let f: Vec<&str> = s.splitn(9, ';').collect();
+        if f.len() != 9 || f[8].is_empty() {
+            return None;
+        }
+        let head = f[..6].join(";");
+        let mut sv = SavedView::parse_v1(&format!("{head};{}", f[8]), Sort::parse(f[6]).unwrap_or_default())?;
+        sv.view.xsort = parse_xsort(f[7]);
+        Some(sv)
+    }
+
+    /// A `view=` line from before views kept their sort: `scope;group;subfolders;other;height;columns;path`, its
+    /// sort the default's then (`sort`).
+    pub fn parse_v1(s: &str, sort: Sort) -> Option<SavedView> {
         let f: Vec<&str> = s.splitn(7, ';').collect();
         if f.len() != 7 || f[6].is_empty() {
             return None;
@@ -726,6 +768,8 @@ impl SavedView {
             other_files: true,
             height: f[4].parse::<u8>().map_or(1, |h| h.clamp(1, HEIGHT_MAX)),
             columns: ColKind::parse_list(f[5]),
+            sort,
+            xsort: None,
         };
         Some(SavedView { path: PathBuf::from(f[6]), scope, view })
     }
@@ -1472,8 +1516,18 @@ mod tests {
         assert_eq!(saved_for(&views, Path::new(r"C:\Photos\2026\May\1")), Some(3));
         assert_eq!(saved_for(&views, Path::new(r"C:\Photos\Raw")), None);
         assert_eq!(saved_for(&views, Path::new(r"C:\Photoshop")), None);
-        let one = &views[3];
-        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(one));
+        let mut one = views[3].clone();
+        one.view.sort = Sort { field: SortField::Size, descending: true };
+        one.view.xsort = Some((ColKind::Camera, true));
+        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        // A path with semicolons in it, and a place that isn't a folder.
+        one.path = PathBuf::from(r"C:\a;b\c");
+        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        one.path = view_key(&Place::Collection(Collection::Colour(3)));
+        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        // An old line keeps the sort it's given (the default's when it was written).
+        let old = SavedView::parse_v1(r"folder;mixed;0;1;2;name:0;C:\x", Sort { field: SortField::Date, descending: true }).unwrap();
+        assert_eq!(old.view.sort, Sort { field: SortField::Date, descending: true });
     }
 
     #[test]
