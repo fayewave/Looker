@@ -2,38 +2,48 @@
 //! Description group, or a double-click, edits it in place (Enter keeps it, empty removes it, Esc or a click
 //! away leaves it); the rating is picked from five stars; "+ Add a field" offers the ones the file lacks.
 //!
+//! With several files selected the summary edits them all at once (Transient's): a value typed goes to every
+//! selected file Looker can write (JPEG and TIFF), as one undo step. A field whose values differ starts empty;
+//! left empty it changes nothing, and keywords typed there are added to each file's own instead of replacing
+//! them.
+//!
 //! Nothing is written until Ctrl+S (Faye, 2026-11-11, as Transient's): edits wait in an unsaved layer per file
 //! (each field's value in the file and its new one), shown at once and undoable (Ctrl+Z / Ctrl+Y while the
-//! photo they're on is up). Ctrl+S writes every file's edits on a thread (`metawrite`); a failure keeps them
-//! and says why. Closing with unsaved edits asks Save / Don't save / Cancel.
+//! photo or selection they're on is up). Ctrl+S writes every file's edits on a thread (`metawrite`); a failure
+//! keeps them and says why. Closing with unsaved edits asks Save / Don't save / Cancel.
 
 use std::collections::{BTreeMap, HashMap};
 
 use super::actions::{Choice, DialogKind};
-use super::info::Block;
+use super::info::{Block, grouped};
 use crate::fileops::{self, Done};
 use super::*;
+use crate::metadata::Exif;
 use crate::metawrite::{self, Field};
 use crate::textedit::TextEdit;
 use crate::ui::TextField;
 
-/// One file's unsaved edits: each field's value in the file, and its new one (None: removed).
-pub(super) type FileEdits = BTreeMap<Field, (Option<String>, Option<String>)>;
+/// A field's unsaved state in one file: its value in the file, and its new one (None: removed).
+type Change = (Option<String>, Option<String>);
 
-/// An undo step: one field of one file's unsaved layer, before and after.
+/// One file's unsaved edits.
+pub(super) type FileEdits = BTreeMap<Field, Change>;
+
+/// An undo step: one field, in each file the edit changed, before and after.
 #[derive(Clone)]
 struct Step {
-    path: PathBuf,
     field: Field,
-    before: Option<(Option<String>, Option<String>)>,
-    after: Option<(Option<String>, Option<String>)>,
+    changes: Vec<(PathBuf, Option<Change>, Option<Change>)>,
 }
 
-/// The field being typed into (or its rating picked).
+/// The field being typed into (or its rating picked), and the files it goes to.
 pub(super) struct Editing {
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
     pub field: Field,
     pub text: TextField,
+    /// The files differed (or only some had it) when it began: left empty it changes nothing, and keywords
+    /// typed are added to each file's own.
+    pub mixed: bool,
 }
 
 #[derive(Default)]
@@ -68,6 +78,23 @@ fn normalize(f: Field, s: &str) -> Option<String> {
     }
 }
 
+/// A file's keywords with `add`'s appended (those it lacks, case aside).
+fn add_keywords(own: Option<&str>, add: &str) -> Option<String> {
+    let mut k = own.map(metawrite::split_keywords).unwrap_or_default();
+    for w in metawrite::split_keywords(add) {
+        if !k.iter().any(|x| x.eq_ignore_ascii_case(&w)) {
+            k.push(w);
+        }
+    }
+    (!k.is_empty()).then(|| k.join(", "))
+}
+
+/// "Undid the keywords edit" (", in 6 files").
+fn step_text(verb: &str, s: &Step) -> String {
+    let what = format!("{verb} the {} edit", s.field.label().to_lowercase());
+    if s.changes.len() > 1 { format!("{what} in {} files", grouped(s.changes.len() as u64)) } else { what }
+}
+
 impl App {
     /// The photo the card can edit now: one file shown (not a selection's summary or a file Looker can't open),
     /// in a format Looker writes, its metadata read.
@@ -79,17 +106,50 @@ impl App {
         (metawrite::can_write(path) && self.current_exif().is_some()).then(|| path.to_path_buf())
     }
 
-    /// The field's value in the file.
-    fn file_value(&self, f: Field) -> Option<String> {
-        self.current_exif()?.words.iter().find(|(l, _)| *l == f.label()).map(|(_, v)| v.clone())
+    /// The files an edit in the card goes to: the photo shown, or the selection's files Looker can write (once
+    /// they're all read). Empty: nothing to edit.
+    pub(super) fn info_targets(&self) -> Vec<PathBuf> {
+        if self.info_many() {
+            return self.many_read().map(|v| v.into_iter().filter(|(p, e)| e.is_some() && metawrite::can_write(p)).map(|(p, _)| p.to_path_buf()).collect()).unwrap_or_default();
+        }
+        self.info_edit_path().into_iter().collect()
+    }
+
+    /// Where Ctrl+Z reaches: the photo shown, or every file of the selection.
+    fn info_scope(&self) -> Vec<PathBuf> {
+        if self.info_many() { self.many_paths() } else { self.current_path().map(Path::to_path_buf).into_iter().collect() }
+    }
+
+    /// The field's value in the file, as last read.
+    fn file_value(&self, path: &Path, f: Field) -> Option<String> {
+        let exif: Option<&Exif> = if self.info_many() {
+            self.many_exif(path)
+        } else if self.current_path() == Some(path) {
+            self.current_exif()
+        } else {
+            None
+        };
+        exif?.words.iter().find(|(l, _)| *l == f.label()).map(|(_, v)| v.clone())
     }
 
     /// The field's value as the card shows it: the unsaved one, else the file's.
     fn shown_value(&self, path: &Path, f: Field) -> Option<String> {
         match self.info_card.edits.pending.get(path).and_then(|m| m.get(&f)) {
             Some((_, new)) => new.clone(),
-            None => self.file_value(f),
+            None => self.file_value(path, f),
         }
+    }
+
+    /// The value `paths` share for `f` (None: none of them has it), or (None, true) when they differ.
+    fn info_common(&self, paths: &[PathBuf], f: Field) -> (Option<String>, bool) {
+        let values: Vec<Option<String>> = paths.iter().map(|p| self.shown_value(p, f)).collect();
+        if values.windows(2).all(|w| w[0] == w[1]) { (values.into_iter().next().flatten(), false) } else { (None, true) }
+    }
+
+    /// The rating the star picker starts from: the one the files being edited share.
+    pub(super) fn info_rating_now(&self) -> u32 {
+        let Some(e) = &self.info_card.edits.editing else { return 0 };
+        self.info_common(&e.paths, Field::Rating).0.and_then(|s| metawrite::parse_rating(&s)).unwrap_or(0)
     }
 
     pub(super) fn info_unsaved(&self, path: &Path) -> bool {
@@ -98,6 +158,19 @@ impl App {
 
     pub(super) fn info_unsaved_files(&self) -> usize {
         self.info_card.edits.pending.values().filter(|m| !m.is_empty()).count()
+    }
+
+    /// The fields with unsaved edits in the files the card shows: their rows are tinted.
+    pub(super) fn info_changed_fields(&self) -> Vec<Field> {
+        let mut out = Vec::new();
+        for p in self.info_targets() {
+            for f in self.info_card.edits.pending.get(&p).into_iter().flat_map(|m| m.keys()) {
+                if !out.contains(f) {
+                    out.push(*f);
+                }
+            }
+        }
+        out
     }
 
     pub(super) fn info_editing(&self) -> bool {
@@ -111,7 +184,7 @@ impl App {
 
     /// Which field each block is, when the card can edit it (a row of the Description group).
     pub(super) fn info_fields(&self, blocks: &[Block]) -> Vec<Option<Field>> {
-        let editable = self.info_edit_path().is_some();
+        let editable = !self.info_targets().is_empty();
         let mut group = "";
         blocks
             .iter()
@@ -132,18 +205,25 @@ impl App {
         self.info_fields(&blocks).get(i).copied().flatten()
     }
 
-    /// The single card's blocks with the unsaved layer over them: changed values, added and removed fields, the
-    /// field being typed (even an empty one), "+ Add a field", and the unsaved note under the name.
+    /// The card's blocks (one photo's, or a selection's summary) with the unsaved layer over them: changed values
+    /// (a selection's as shared or mixed), added and removed fields, the field being typed (even an empty one),
+    /// "+ Add a field", and which of a selection's files edits reach.
     pub(super) fn apply_info_edits(&self, blocks: &mut Vec<Block>) {
-        let Some(path) = self.info_edit_path() else { return };
-        let edits = self.info_card.edits.pending.get(&path);
-        let editing = self.info_card.edits.editing.as_ref().filter(|e| e.path == path).map(|e| e.field);
-        // The Description group: where it is, or a new one after Image (else after File).
+        let targets = self.info_targets();
+        if targets.is_empty() {
+            return;
+        }
+        let many = self.info_many();
+        // Every file the card sums up (a selection's unwritable ones too: their values count in "Mixed").
+        let covered: Vec<PathBuf> = if many { self.many_read().unwrap_or_default().into_iter().map(|(p, _)| p.to_path_buf()).collect() } else { targets.clone() };
+        let pending = &self.info_card.edits.pending;
+        let editing = self.info_card.edits.editing.as_ref().filter(|e| e.paths == targets).map(|e| e.field);
+        // The Description group: where it is, or a new one after Image (else after File or Selection).
         let group_end = |blocks: &Vec<Block>, start: usize| (start + 1..blocks.len()).find(|&i| matches!(blocks[i], Block::Title(_))).unwrap_or(blocks.len());
         let start = match blocks.iter().position(|b| matches!(b, Block::Title("Description"))) {
             Some(s) => s,
             None => {
-                let after = blocks.iter().position(|b| matches!(b, Block::Title("Image"))).or_else(|| blocks.iter().position(|b| matches!(b, Block::Title("File"))));
+                let after = ["Image", "File", "Selection"].iter().find_map(|t| blocks.iter().position(|b| matches!(b, Block::Title(x) if x == t)));
                 let at = after.map_or(blocks.len(), |s| group_end(blocks, s));
                 blocks.insert(at, Block::Title("Description"));
                 at
@@ -151,46 +231,37 @@ impl App {
         };
         let rank = |l: &str| ORDER.iter().position(|o| *o == l).unwrap_or(ORDER.len());
         for f in Field::ALL {
-            let end = group_end(blocks, start);
-            let row = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if *label == f.label()));
-            let change = edits.and_then(|m| m.get(&f));
-            // Removed: the row stays (tinted, dimmed) until the save takes it out.
-            if matches!(change, Some((Some(_), None))) && editing != Some(f) {
-                let gone = Block::Row { label: f.label(), value: "Removed when you save".to_string(), path: false, copy: Some(String::new()), dim: true };
-                match row {
-                    Some(i) => blocks[i] = gone,
-                    None => {
-                        let at = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if rank(label) > rank(f.label()))).unwrap_or(end);
-                        blocks.insert(at, gone);
-                    }
-                }
+            let touched = targets.iter().any(|p| pending.get(p).is_some_and(|m| m.contains_key(&f)));
+            let being = editing == Some(f);
+            // Untouched: as the files have it.
+            if !touched && !being {
                 continue;
             }
-            let value = match change {
-                Some((_, new)) => new.clone(),
-                None => row.and_then(|i| match &blocks[i] {
-                    Block::Row { value, .. } => Some(value.clone()),
-                    _ => None,
-                }),
-            };
-            let value = match (value, editing == Some(f)) {
-                (Some(v), _) => Some(v),
-                (None, true) => Some(String::new()),
-                (None, false) => None,
-            };
-            match (row, value) {
-                (Some(i), Some(v)) => {
-                    if let Block::Row { value, copy, .. } = &mut blocks[i] {
-                        *value = v;
-                        *copy = None;
-                    }
+            let end = group_end(blocks, start);
+            let row = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if *label == f.label()));
+            let values: Vec<Option<String>> = covered.iter().map(|p| self.shown_value(p, f)).collect();
+            let plain = |v: String| Block::Row { label: f.label(), value: v, path: false, copy: None, dim: false };
+            let new_row = if values.iter().all(Option::is_none) {
+                if being {
+                    Some(plain(String::new()))
+                } else {
+                    // Removed: the row stays (tinted, dimmed) until the save takes it out.
+                    Some(Block::Row { label: f.label(), value: "Removed when you save".to_string(), path: false, copy: Some(String::new()), dim: true })
                 }
+            } else if many {
+                let refs: Vec<Option<&String>> = values.iter().map(Option::as_ref).collect();
+                Some(super::info_many::shared(f.label(), &refs, values.len()))
+            } else {
+                values.into_iter().next().flatten().map(plain)
+            };
+            match (row, new_row) {
+                (Some(i), Some(b)) => blocks[i] = b,
                 (Some(i), None) => {
                     blocks.remove(i);
                 }
-                (None, Some(v)) => {
+                (None, Some(b)) => {
                     let at = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if rank(label) > rank(f.label()))).unwrap_or(end);
-                    blocks.insert(at, Block::Row { label: f.label(), value: v, path: false, copy: None, dim: false });
+                    blocks.insert(at, b);
                 }
                 (None, None) => {}
             }
@@ -201,20 +272,29 @@ impl App {
         if have < Field::ALL.len() {
             blocks.insert(end, Block::Add);
         }
+        // A selection with files Looker can't write: which ones an edit reaches, first in the group.
+        if many && targets.len() < covered.len() {
+            let value = format!("{} of {} files (Looker writes JPEG and TIFF)", grouped(targets.len() as u64), grouped(covered.len() as u64));
+            blocks.insert(start + 1, Block::Row { label: "Edits go to", value, path: false, copy: None, dim: true });
+        }
         // (The count of unsaved edits, Save and Discard all are in the card's footer.)
     }
 
-    /// Starts typing into field `f` (the rating: its stars).
+    /// Starts typing into field `f` (the rating: its stars), for the photo or every writable selected file.
     pub(super) fn info_start_edit(&mut self, f: Field) {
-        let Some(path) = self.info_edit_path() else { return };
+        let paths = self.info_targets();
+        if paths.is_empty() {
+            return;
+        }
         if self.explorer.field.is_some() {
             self.explorer_blur_field();
         }
         self.explorer.focused = false;
-        let value = if f == Field::Rating { String::new() } else { self.shown_value(&path, f).unwrap_or_default() };
+        let (common, mixed) = self.info_common(&paths, f);
+        let value = if f == Field::Rating { String::new() } else { common.unwrap_or_default() };
         let mut text = TextField::new(TextEdit::new(&value));
         text.edit.select_all();
-        self.info_card.edits.editing = Some(Editing { path, field: f, text });
+        self.info_card.edits.editing = Some(Editing { paths, field: f, text, mixed });
         self.hide_tooltip();
         self.set_ime(f != Field::Rating);
         self.restart_caret();
@@ -232,11 +312,21 @@ impl App {
         e
     }
 
-    /// Enter: what was typed goes into the unsaved layer.
+    /// Enter: what was typed goes into the unsaved layer (of every file it's for).
     pub(super) fn info_commit(&mut self) {
         let Some(e) = self.info_end_edit() else { return };
         let new = normalize(e.field, &e.text.edit.text());
-        self.set_info_value(&e.path, e.field, new);
+        match new {
+            // Left empty over differing values: they stay as they are.
+            None if e.mixed => {}
+            Some(add) if e.mixed && e.field == Field::Keywords => {
+                self.set_info_values(&e.paths, e.field, |own| add_keywords(own.as_deref(), &add));
+                if e.paths.len() > 1 {
+                    self.show_toast(format!("Added to each file's keywords ({} files)", grouped(e.paths.len() as u64)), false);
+                }
+            }
+            new => self.set_info_values(&e.paths, e.field, |_| new.clone()),
+        }
     }
 
     /// Esc or a click away: the field is left as it was.
@@ -244,40 +334,48 @@ impl App {
         self.info_end_edit();
     }
 
-    /// A star of the rating picker: that many stars; the current count again clears it.
+    /// A star of the rating picker: that many stars; the shared count again clears it.
     pub(super) fn info_pick_stars(&mut self, k: u32) {
+        let now = self.info_rating_now();
         let Some(e) = self.info_end_edit() else { return };
-        let now = self.shown_value(&e.path, Field::Rating).and_then(|s| metawrite::parse_rating(&s)).unwrap_or(0);
         let new = (k != now && k > 0).then(|| stars(k));
-        self.set_info_value(&e.path, Field::Rating, new);
+        self.set_info_values(&e.paths, Field::Rating, |_| new.clone());
     }
 
-    /// Sets field `f` of the shown photo to `new` in the unsaved layer (the file's own value again drops the
-    /// edit), as one undo step.
-    fn set_info_value(&mut self, path: &Path, f: Field, new: Option<String>) {
-        let file = self.file_value(f);
-        let edits = &mut self.info_card.edits;
-        let m = edits.pending.entry(path.to_path_buf()).or_default();
-        let before = m.get(&f).cloned();
-        let old = before.as_ref().map_or(file, |b| b.0.clone());
-        let after = if new == old {
-            m.remove(&f);
-            None
-        } else {
-            m.insert(f, (old.clone(), new.clone()));
-            Some((old, new))
-        };
-        if m.is_empty() {
-            edits.pending.remove(path);
+    /// Sets field `f` of each of `paths` to `make(its shown value)` in the unsaved layer (a file's own value
+    /// again drops its edit), as one undo step.
+    fn set_info_values(&mut self, paths: &[PathBuf], f: Field, make: impl Fn(Option<String>) -> Option<String>) {
+        let mut changes = Vec::new();
+        for p in paths {
+            let file = self.file_value(p, f);
+            let new = make(self.shown_value(p, f));
+            let pending = &mut self.info_card.edits.pending;
+            let m = pending.entry(p.clone()).or_default();
+            let before = m.get(&f).cloned();
+            let old = before.as_ref().map_or(file, |b| b.0.clone());
+            let after = if new == old {
+                m.remove(&f);
+                None
+            } else {
+                m.insert(f, (old.clone(), new));
+                m.get(&f).cloned()
+            };
+            if m.is_empty() {
+                pending.remove(p);
+            }
+            if before != after {
+                changes.push((p.clone(), before, after));
+            }
         }
-        if before != after {
-            edits.undo.push(Step { path: path.to_path_buf(), field: f, before, after });
+        if !changes.is_empty() {
+            let edits = &mut self.info_card.edits;
+            edits.undo.push(Step { field: f, changes });
             edits.redo.clear();
         }
         self.invalidate();
     }
 
-    fn put_step_state(&mut self, path: &Path, f: Field, state: Option<(Option<String>, Option<String>)>) {
+    fn put_step_state(&mut self, path: &Path, f: Field, state: Option<Change>) {
         let pending = &mut self.info_card.edits.pending;
         let m = pending.entry(path.to_path_buf()).or_default();
         match state {
@@ -294,28 +392,37 @@ impl App {
         self.invalidate();
     }
 
-    /// Ctrl+Z: the last edit, when it's on the photo shown. Returns whether it undid one.
+    /// Whether `s` touches the photo or selection shown (Ctrl+Z reaches only those).
+    fn step_in_scope(&self, s: Option<&Step>) -> bool {
+        let Some(s) = s else { return false };
+        let scope = self.info_scope();
+        s.changes.iter().any(|c| scope.contains(&c.0))
+    }
+
+    /// Ctrl+Z: the last edit, when it's on the photo or selection shown. Returns whether it undid one.
     pub(super) fn info_undo(&mut self) -> bool {
-        let Some(path) = self.current_path().map(Path::to_path_buf) else { return false };
-        if !self.info_card.edits.undo.last().is_some_and(|s| s.path == path) {
+        if !self.step_in_scope(self.info_card.edits.undo.last()) {
             return false;
         }
         let s = self.info_card.edits.undo.pop().unwrap();
-        self.put_step_state(&s.path, s.field, s.before.clone());
-        self.show_toast(format!("Undid the {} edit", s.field.label().to_lowercase()), false);
+        for (p, before, _) in &s.changes {
+            self.put_step_state(p, s.field, before.clone());
+        }
+        self.show_toast(step_text("Undid", &s), false);
         self.info_card.edits.redo.push(s);
         true
     }
 
-    /// Ctrl+Y: the edit undone last, when it's on the photo shown.
+    /// Ctrl+Y: the edit undone last, when it's on the photo or selection shown.
     pub(super) fn info_redo(&mut self) -> bool {
-        let Some(path) = self.current_path().map(Path::to_path_buf) else { return false };
-        if !self.info_card.edits.redo.last().is_some_and(|s| s.path == path) {
+        if !self.step_in_scope(self.info_card.edits.redo.last()) {
             return false;
         }
         let s = self.info_card.edits.redo.pop().unwrap();
-        self.put_step_state(&s.path, s.field, s.after.clone());
-        self.show_toast(format!("Redid the {} edit", s.field.label().to_lowercase()), false);
+        for (p, _, after) in &s.changes {
+            self.put_step_state(p, s.field, after.clone());
+        }
+        self.show_toast(step_text("Redid", &s), false);
         self.info_card.edits.undo.push(s);
         true
     }
@@ -345,10 +452,13 @@ impl App {
         }
     }
 
-    /// The "+ Add a field" menu: the fields the photo doesn't have.
+    /// The "+ Add a field" menu: the fields none of the files has.
     pub(super) fn open_info_add_menu(&mut self, r: D2D_RECT_F) {
-        let Some(path) = self.info_edit_path() else { return };
-        let missing: Vec<Field> = Field::ALL.into_iter().filter(|&f| self.shown_value(&path, f).is_none()).collect();
+        let paths = self.info_targets();
+        if paths.is_empty() {
+            return;
+        }
+        let missing: Vec<Field> = Field::ALL.into_iter().filter(|&f| paths.iter().all(|p| self.shown_value(p, f).is_none())).collect();
         self.open_info_add(missing, r);
     }
 
@@ -386,6 +496,7 @@ impl App {
         self.info_card.edits.saving = false;
         let mut saved = 0;
         let mut failed: Vec<(PathBuf, String)> = Vec::new();
+        let mut written_paths: Vec<PathBuf> = Vec::new();
         for (path, written, r) in results {
             match r {
                 Ok(()) => {
@@ -404,9 +515,14 @@ impl App {
                     }
                     if !self.info_unsaved(&path) {
                         let edits = &mut self.info_card.edits;
-                        edits.undo.retain(|s| s.path != path);
-                        edits.redo.retain(|s| s.path != path);
+                        for list in [&mut edits.undo, &mut edits.redo] {
+                            for s in list.iter_mut() {
+                                s.changes.retain(|c| c.0 != path);
+                            }
+                            list.retain(|s| !s.changes.is_empty());
+                        }
                     }
+                    written_paths.push(path.clone());
                     if let Some(l) = self.viewer.listing.as_mut() {
                         l.refresh(&path);
                     }
@@ -417,6 +533,8 @@ impl App {
                 Err(e) => failed.push((path, e)),
             }
         }
+        // A selection's summary reads what was written.
+        self.reread_many(&written_paths);
         match failed.first() {
             None => {
                 self.show_toast(if saved == 1 { "Saved".to_string() } else { format!("Saved {saved} files") }, false);
@@ -514,5 +632,11 @@ mod tests {
         assert_eq!(normalize(Field::Title, "   "), None);
         assert_eq!(normalize(Field::Rating, "3"), Some(stars(3)));
         assert_eq!(normalize(Field::Rating, "0"), None);
+    }
+
+    #[test]
+    fn keywords_are_added_once() {
+        assert_eq!(add_keywords(Some("sea, Sand"), "sand, sun"), Some("sea, Sand, sun".into()));
+        assert_eq!(add_keywords(None, "sun"), Some("sun".into()));
     }
 }

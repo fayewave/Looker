@@ -92,6 +92,42 @@ impl App {
         self.info_card.many.current.as_ref().map(|c| c.blocks.clone().unwrap_or_default())
     }
 
+    /// The selection's files as read, each with what it had: all of them, or None while some are still being
+    /// read (online-only ones and those past `MAX_READ` aren't counted).
+    pub(super) fn many_read(&self) -> Option<Vec<(&Path, Option<&Exif>)>> {
+        let c = self.info_card.many.current.as_ref()?;
+        let cache = &self.info_card.many.cache;
+        let mut out = Vec::new();
+        for f in c.files.iter().take(MAX_READ).filter(|f| !f.cloud) {
+            let (stamp, exif) = cache.get(&f.path)?;
+            if *stamp != f.stamp {
+                return None;
+            }
+            out.push((f.path.as_path(), exif.as_ref()));
+        }
+        Some(out)
+    }
+
+    /// What a selected file had, as last read.
+    pub(super) fn many_exif(&self, path: &Path) -> Option<&Exif> {
+        self.info_card.many.cache.get(path).and_then(|(_, e)| e.as_ref())
+    }
+
+    /// Every file of the selection showing.
+    pub(super) fn many_paths(&self) -> Vec<PathBuf> {
+        self.info_card.many.current.as_ref().map(|c| c.files.iter().map(|f| f.path.clone()).collect()).unwrap_or_default()
+    }
+
+    /// Reads `paths` of the selection again (just written): the cache keeps the old reading until then, so the
+    /// summary doesn't flash "Reading".
+    pub(super) fn reread_many(&self, paths: &[PathBuf]) {
+        let Some(c) = &self.info_card.many.current else { return };
+        let todo: Vec<(PathBuf, u64)> = c.files.iter().filter(|f| paths.contains(&f.path)).map(|f| (f.path.clone(), f.stamp)).collect();
+        if !todo.is_empty() {
+            self.read_many(todo, self.info_card.many.generation.load(Ordering::SeqCst));
+        }
+    }
+
     /// Follows the explorer's selection: a new one starts its reader; the summary is (re)built when stale.
     pub(super) fn sync_many(&mut self) {
         let picked = self.explorer_picked();
@@ -287,7 +323,7 @@ fn summary(files: &[Picked], folders: usize, cache: &HashMap<PathBuf, (u64, Opti
 }
 
 /// One property across the files: shared, shared by some, or mixed.
-fn shared(label: &'static str, values: &[Option<&String>], n: usize) -> Block {
+pub(super) fn shared(label: &'static str, values: &[Option<&String>], n: usize) -> Block {
     let have: Vec<&String> = values.iter().flatten().copied().collect();
     let mut counts: Vec<(&String, usize)> = Vec::new();
     for v in &have {

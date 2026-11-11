@@ -352,7 +352,8 @@ impl App {
 
     pub(super) fn info_blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
-        if let Some(blocks) = self.many_blocks() {
+        if let Some(mut blocks) = self.many_blocks() {
+            self.apply_info_edits(&mut blocks);
             return blocks;
         }
         let row = |label, value: String| Block::Row { label, value, path: false, copy: None, dim: false };
@@ -440,8 +441,8 @@ impl App {
         }
         self.request_exif();
         self.sync_many();
-        // An edit belongs to its photo: moving on leaves it.
-        if self.info_card.edits.editing.as_ref().is_some_and(|e| self.info_edit_path().as_ref() != Some(&e.path)) {
+        // An edit belongs to its photo (or selection): moving on leaves it.
+        if self.info_card.edits.editing.as_ref().is_some_and(|e| self.info_targets() != e.paths) {
             self.info_cancel();
         }
         // Another file (or selection): back to the top at once, no animation (Transient's).
@@ -470,8 +471,8 @@ impl App {
             Some(f) => D2D_RECT_F { bottom: f.top, ..inner },
             None => inner,
         };
-        // The fields of the shown photo with unsaved edits: their rows are tinted.
-        let changed: Vec<crate::metawrite::Field> = self.info_edit_path().and_then(|p| self.info_card.edits.pending.get(&p)).map(|m| m.keys().copied().collect()).unwrap_or_default();
+        // The fields with unsaved edits in the photo (or selection) shown: their rows are tinted.
+        let changed = self.info_changed_fields();
         let x = inner.left + PAD_X;
         // 2 more on the right: clear of the scrollbar now it's always 8 wide.
         let w = (inner.right - PAD_X - 2.0 - x).max(1.0);
@@ -644,8 +645,9 @@ impl App {
         let text = if saving {
             "Saving\u{2026}".to_string()
         } else {
-            // Short, beside two buttons in a card that can be 260 wide.
-            if files > 1 { format!("{unsaved} unsaved \u{b7} {files} files") } else { format!("{unsaved} unsaved") }
+            // Short, beside two buttons in a card that can be 260 wide: files once there are several (a
+            // selection's edit is one change in each).
+            if files > 1 { format!("{files} files unsaved") } else { format!("{unsaved} unsaved") }
         };
         let bh = 28.0;
         let by = f.top + (f.bottom - f.top - bh) / 2.0;
@@ -667,8 +669,7 @@ impl App {
     /// The rating picker: five stars from `x`, filled up to the hovered one (else the rating as it stands).
     fn draw_star_picker(&mut self, g: &Gfx, x: f32, y: f32) {
         let th = theme::t();
-        let now = self.info_edit_path().and_then(|p| self.info_card.edits.pending.get(&p).and_then(|m| m.get(&crate::metawrite::Field::Rating)).map(|(_, n)| n.clone()).unwrap_or_else(|| self.current_exif().and_then(|e| e.words.iter().find(|(l, _)| *l == "Rating").map(|(_, v)| v.clone()))));
-        let now = now.and_then(|s| crate::metawrite::parse_rating(&s)).unwrap_or(0);
+        let now = self.info_rating_now();
         let lit = match self.hover {
             Some(Hit::InfoStar(k)) => k as u32 + 1,
             _ => now,
