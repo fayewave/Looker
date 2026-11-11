@@ -14,6 +14,15 @@ use super::*;
 /// Held this long without moving, a press on a motion photo plays it (shorter, and every click would flicker).
 const HOLD: Duration = Duration::from_millis(280);
 
+/// How long the pill takes to grow into the bar, or back: longer than the app's usual 190 ms, and eased in and out,
+/// so the change of shape reads as one smooth movement (Faye, 2026-11-11: the quick ease-out looked like a jump).
+const MORPH: Duration = Duration::from_millis(450);
+
+/// Ease in and out (cubic): slow off the mark, quick through the middle, slow into place.
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
+}
+
 /// The current photo's motion part: found (and copied out) on a thread of its own.
 pub(super) struct MotionPhoto {
     pub photo: PathBuf,
@@ -43,7 +52,7 @@ impl App {
             self.stop_motion();
             self.motion_hold = None;
             self.motion_open = false;
-            self.fades.set_now(Hit::MotionMorph, false);
+            self.motion_morph = (0.0, 0.0, None);
             self.motion = current.map(|photo| {
                 let found = Arc::new(Mutex::new(None));
                 let (f, p) = (found.clone(), photo.clone());
@@ -81,7 +90,7 @@ impl App {
             self.stop_motion();
         }
         // Back in photo mode and the bar all the way back into the pill: the video goes.
-        if !self.motion_open && !self.motion_held && self.motion_playing() && self.fades.get(Hit::MotionMorph, false) <= 0.0 {
+        if !self.motion_open && !self.motion_held && self.motion_playing() && self.motion_k() <= 0.0 {
             self.stop_motion();
         }
     }
@@ -95,10 +104,34 @@ impl App {
         self.video.as_ref().is_some_and(|v| v.motion)
     }
 
-    /// Still looking for a motion part, waiting out a hold, or a motion video up (a held one's end, which the
-    /// player itself no longer animates, brings the still back): draw again next vsync.
+    /// Still looking for a motion part, waiting out a hold, the pill and bar changing shape, or a motion video up
+    /// (a held one's end, which the player itself no longer animates, brings the still back; a shrunk bar lets its
+    /// video go): draw again next vsync.
     pub(super) fn motion_animating(&self) -> bool {
-        self.motion.as_ref().is_some_and(|m| !m.looked) || self.motion_hold.is_some() || (self.motion_playing() && self.motion_held)
+        self.motion.as_ref().is_some_and(|m| !m.looked)
+            || self.motion_hold.is_some()
+            || self.motion_morph.2.is_some_and(|at| at.elapsed() < MORPH)
+            || (self.motion_playing() && (self.motion_held || !self.motion_open))
+    }
+
+    /// How far the pill has grown into the bar: 0 the pill, 1 the bar.
+    pub(super) fn motion_k(&self) -> f32 {
+        let (from, to, at) = self.motion_morph;
+        let Some(at) = at else { return to };
+        let t = (at.elapsed().as_secs_f32() / MORPH.as_secs_f32()).clamp(0.0, 1.0);
+        from + (to - from) * ease_in_out(t)
+    }
+
+    /// Sets the pill growing into the bar (or back) from wherever it is now, over the time that much of the way
+    /// takes.
+    fn morph_to(&mut self, open: bool) {
+        let now = self.motion_k();
+        let to = if open { 1.0 } else { 0.0 };
+        // Part way already (pressed again mid-change): the rest of the way, at the same pace.
+        let left = (to - now).abs();
+        let start = std::time::Instant::now() - MORPH.mul_f32(1.0 - left).min(MORPH);
+        let from = if left >= 1.0 { now } else { 1.0 - to };
+        self.motion_morph = (from, to, Some(start));
     }
 
     /// Plays the motion part from its start. `held`: while the button is down (it stops when it comes up); else
@@ -130,9 +163,11 @@ impl App {
             self.motion_hold = None;
             self.start_motion(false);
             self.motion_open = true;
+            self.morph_to(true);
             self.video_moved = Instant::now();
         } else {
             self.motion_open = false;
+            self.morph_to(false);
             if let Some(p) = self.player() {
                 p.set_playing(false);
             }
@@ -171,7 +206,7 @@ impl App {
         if !self.motion_ready() && !(self.motion_playing() && !self.motion_held) {
             return;
         }
-        let k = self.fades.get(Hit::MotionMorph, self.motion_open);
+        let k = self.motion_k();
         if k >= 1.0 && self.motion_open && self.video_shown() && self.player_ref().is_some() {
             return;
         }
@@ -195,7 +230,7 @@ impl App {
         }
         ui::stroke(g, c, radius, rgb(t.divider));
         // The pill's face: the mark and the word, centred.
-        let face = (1.0 - k * 2.0).clamp(0.0, 1.0);
+        let face = (1.0 - k / 0.4).clamp(0.0, 1.0);
         if face > 0.0 {
             g.push_fade(face, 1.0, 0.0, 0.0);
             let w = 13.0 + 8.0 + tw;
@@ -209,7 +244,7 @@ impl App {
             self.hits.add(Hit::MotionBadge, c);
         }
         // The bar's controls, coming in (or going) inside the box.
-        let inside = ((k - 0.5) * 2.0).clamp(0.0, 1.0);
+        let inside = ((k - 0.6) / 0.4).clamp(0.0, 1.0);
         if inside > 0.0 && self.video.as_ref().is_some_and(|v| v.motion) && self.player_ref().is_some() {
             self.draw_video_bar_with(g, Some((c, inside)));
         }

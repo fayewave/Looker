@@ -282,8 +282,6 @@ enum Hit {
     /// A motion photo's Motion button: the pill at the bottom in photo mode, the toggle at the bar's left in
     /// video mode.
     MotionBadge,
-    /// Not a place: the key of the pill's growing into the bar (a fade).
-    MotionMorph,
     /// An audio file's waveform (and ruler), its scrollbar while zoomed in, the Waveform / Spectrogram toggle, and
     /// the loop region's clear button.
     AudioWave,
@@ -678,6 +676,8 @@ pub struct App {
     motion_held: bool,
     /// A motion photo in video mode (the pill grown into the video bar), or on its way back.
     motion_open: bool,
+    /// The pill growing into the bar (1) or back (0): from, to, and when it set off (None: at `to`).
+    motion_morph: (f32, f32, Option<std::time::Instant>),
     /// An audio file's view (cover, waveform), while one is up.
     audio_view: Option<audio::AudioView>,
     /// The playing video on the taskbar button and in Windows' media controls (media.rs).
@@ -1446,6 +1446,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             motion_hold: None,
             motion_held: false,
             motion_open: false,
+            motion_morph: (0.0, 0.0, None),
             audio_view: None,
             media: Default::default(),
             accent_picker: None,

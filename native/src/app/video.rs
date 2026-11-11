@@ -1168,7 +1168,7 @@ impl App {
             return;
         }
         // A motion photo's bar while it grows out of (or back into) its pill is drawn by draw_motion_bar.
-        if self.video.as_ref().is_some_and(|v| v.motion) && (!self.motion_open || self.fades.get(Hit::MotionMorph, true) < 1.0) {
+        if self.video.as_ref().is_some_and(|v| v.motion) && (!self.motion_open || self.motion_k() < 1.0) {
             return;
         }
         self.draw_video_bar_with(g, None);

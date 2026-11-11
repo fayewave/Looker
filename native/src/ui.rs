@@ -144,11 +144,6 @@ impl<T: Copy + Eq + Hash> Fades<T> {
         e.value(now)[0]
     }
 
-    /// Puts `id` at `on` at once, no easing (a new photo's controls start where they belong).
-    pub fn set_now(&mut self, id: T, on: bool) {
-        self.map.insert(id, Ease::at([on as u8 as f32]));
-    }
-
     /// A hover highlight: on at once, fading back out once it isn't.
     pub fn hover(&mut self, id: T, on: bool) -> f32 {
         if on || self.instant_out {
