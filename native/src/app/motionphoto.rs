@@ -14,9 +14,13 @@ use super::*;
 /// Held this long without moving, a press on a motion photo plays it (shorter, and every click would flicker).
 const HOLD: Duration = Duration::from_millis(280);
 
-/// How long the pill takes to grow into the bar, or back: longer than the app's usual 190 ms, and eased in and out,
-/// so the change of shape reads as one smooth movement (Faye, 2026-11-11: the quick ease-out looked like a jump).
-const MORPH: Duration = Duration::from_millis(450);
+/// How long the pill takes to grow into the bar, or back: eased in and out, so the change of shape reads as one
+/// smooth movement (Faye, 2026-11-11: the app's 190 ms ease-out looked like a jump; 450 ms was then too slow).
+const MORPH: Duration = Duration::from_millis(300);
+
+/// The wash over the box while it changes shape: on at once with the click, fading out over the movement's last
+/// half, so the eye follows the box (Faye, 2026-11-11).
+const WASH: f32 = 0.22;
 
 /// Ease in and out (cubic): slow off the mark, quick through the middle, slow into place.
 fn ease_in_out(t: f32) -> f32 {
@@ -112,6 +116,11 @@ impl App {
             || self.motion_hold.is_some()
             || self.motion_morph.2.is_some_and(|at| at.elapsed() < MORPH)
             || (self.motion_playing() && (self.motion_held || !self.motion_open))
+    }
+
+    /// How far through its change of shape the box is, in time (0 to 1; 1 when it isn't changing).
+    fn motion_t(&self) -> f32 {
+        self.motion_morph.2.map_or(1.0, |at| (at.elapsed().as_secs_f32() / MORPH.as_secs_f32()).clamp(0.0, 1.0))
     }
 
     /// How far the pill has grown into the bar: 0 the pill, 1 the bar.
@@ -227,6 +236,12 @@ impl App {
         let over = self.hover == Some(Hit::MotionBadge) && k < 0.5;
         if over {
             g.fill_round(c, radius, gfx::rgba(t.text, 0.06));
+        }
+        // The wash: full from the click, gone as the box settles.
+        let t_lin = self.motion_t();
+        let wash = WASH * (1.0 - ((t_lin - 0.5) / 0.5).clamp(0.0, 1.0)).powi(2);
+        if wash > 0.0 && self.motion_morph.2.is_some() {
+            g.fill_round(c, radius, gfx::rgba(t.text, wash));
         }
         ui::stroke(g, c, radius, rgb(t.divider));
         // The pill's face: the mark and the word, centred.
