@@ -26,6 +26,7 @@ mod media;
 mod instance;
 mod keyvalues;
 mod metadata;
+mod metawrite;
 mod model;
 mod motion;
 mod pages;

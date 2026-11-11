@@ -48,11 +48,13 @@ pub(super) struct Card {
     shown: Option<PathBuf>,
     /// Several files selected in the explorer: their summary (info_many.rs).
     pub(super) many: super::info_many::ManyState,
+    /// Edits waiting for Ctrl+S, and the field being typed (info_edit.rs).
+    pub(super) edits: super::info_edit::Edits,
 }
 
 impl Card {
     pub fn new() -> Card {
-        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None, many: Default::default() }
+        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None, many: Default::default(), edits: Default::default() }
     }
 
     /// The scroll offset to draw this frame, and whether it is still moving.
@@ -82,6 +84,10 @@ pub(super) enum Block {
     /// A property. `copy`: what a click copies when it isn't the value shown (a selection's mixed values);
     /// `dim`: the value in the label colour ("Mixed values").
     Row { label: &'static str, value: String, path: bool, copy: Option<String>, dim: bool },
+    /// A line under the name in the warning colour ("Unsaved changes...").
+    Note(String),
+    /// "+ Add a field", at the end of the Description group.
+    Add,
 }
 
 /// The Location group's rows: right-click offers the map on any of them.
@@ -167,6 +173,13 @@ impl App {
         let (bw, bh) = self.fit_box();
         self.viewer.set_fit_box(bw, bh);
         self.schedule_upgrade();
+        self.invalidate();
+    }
+
+    /// The shown file's metadata is read again (its words were just saved into it).
+    pub(super) fn forget_exif(&mut self) {
+        self.info_card.exif = None;
+        self.info_card.loading = None;
         self.invalidate();
     }
 
@@ -287,7 +300,7 @@ impl App {
         for b in self.info_blocks() {
             match b {
                 Block::Heading(name, _) => out.push_str(&name),
-                Block::Histogram => {}
+                Block::Histogram | Block::Note(_) | Block::Add => {}
                 Block::Title(t) => {
                     out.push_str("\r\n\r\n");
                     out.push_str(t);
@@ -313,6 +326,7 @@ impl App {
                 }
             }
             Action::Reveal => self.reveal(),
+            Action::InfoEditField(f) => self.info_start_edit(f),
             Action::InfoCopyCoordinates => {
                 if let Some((lat, lon)) = self.photo_coordinates() {
                     if clipboard::set_text(self.hwnd, &format!("{lat:.6}, {lon:.6}")) {
@@ -336,7 +350,7 @@ impl App {
         Some((e.latitude?, e.longitude?))
     }
 
-    fn info_blocks(&self) -> Vec<Block> {
+    pub(super) fn info_blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
         if let Some(blocks) = self.many_blocks() {
             return blocks;
@@ -415,6 +429,7 @@ impl App {
                 }
             }
         }
+        self.apply_info_edits(&mut out);
         out
     }
 
@@ -425,6 +440,10 @@ impl App {
         }
         self.request_exif();
         self.sync_many();
+        // An edit belongs to its photo: moving on leaves it.
+        if self.info_card.edits.editing.as_ref().is_some_and(|e| self.info_edit_path().as_ref() != Some(&e.path)) {
+            self.info_cancel();
+        }
         // Another file (or selection): back to the top at once, no animation (Transient's).
         let showing = match self.info_card.many.key() {
             Some(k) => Some(PathBuf::from(format!("::selection:{k:x}"))),
@@ -451,20 +470,31 @@ impl App {
 
         // Measure first: the content height decides how far the card scrolls.
         let blocks = self.info_blocks();
+        let fields = self.info_fields(&blocks);
+        let editing = self.info_card.edits.editing.as_ref().map(|e| e.field);
         let hist_h = (w - 14.0) * 120.0 / 256.0 + 14.0;
         // A property is its name on one line and its value (tabular figures) under it, both full width; the
         // name's height is kept to place the value.
         let mut heights = Vec::with_capacity(blocks.len());
         let mut label_hs = Vec::with_capacity(blocks.len());
-        for b in &blocks {
+        for (bi, b) in blocks.iter().enumerate() {
+            let being_edited = editing.is_some() && fields[bi] == editing;
             let (h, lh) = match b {
                 Block::Heading(name, _) => (g.measure_height(&wide(name), &g.fonts.heading_wrap, w).max(19.0).ceil(), 0.0),
                 Block::Histogram => (hist_h, 0.0),
                 Block::Title(_) => (TITLE_H + 2.0, 0.0),
+                Block::Note(n) => (g.measure_height(&wide(n), &g.fonts.caption_wrap, w).max(16.0).ceil(), 0.0),
+                Block::Add => (26.0, 0.0),
                 Block::Row { label, value, .. } => {
                     let lh = g.measure_height(&wide(label), &g.fonts.caption_wrap, w).max(16.0).ceil();
-                    let vh = g.measure_height_tabular(&wide(value), &g.fonts.caption_wrap, w).max(16.0).ceil();
-                    (lh + vh + 2.0, lh)
+                    // Being typed into: a text box under its name (the rating: a row of stars).
+                    if being_edited {
+                        let bh = if editing == Some(crate::metawrite::Field::Rating) { 24.0 } else { ui::FIELD_H };
+                        (lh + bh + 4.0, lh)
+                    } else {
+                        let vh = g.measure_height_tabular(&wide(value), &g.fonts.caption_wrap, w).max(16.0).ceil();
+                        (lh + vh + 2.0, lh)
+                    }
                 }
             };
             heights.push(h);
@@ -495,7 +525,9 @@ impl App {
             if y + h >= inner.top && y <= inner.bottom {
                 // A property (and the name) is a whole-row target with Transient's rounded wash under the pointer,
                 // fading in and out, a touch less while pressed. A click copies it; the path's shows the file.
+                let being_edited = editing.is_some() && fields[i] == editing;
                 let hit = match b {
+                    _ if being_edited => None,
                     Block::Row { path: true, .. } => Some(Hit::InfoPath),
                     Block::Row { .. } | Block::Heading(..) => Some(Hit::InfoRow(i)),
                     _ => None,
@@ -515,10 +547,41 @@ impl App {
                     Block::Title(t) => {
                         ui::section(g, t, rect(x, y, w, TITLE_H));
                     }
+                    Block::Note(n) => g.text(&wide(n), &g.fonts.caption_wrap, rect(x, y, w, *h), rgb(th.warn), Align::Left),
+                    Block::Add => {
+                        let r = rect(x - 6.0, y, ui::icon_label_width(g, "Add a field") - 8.0, *h);
+                        let st = self.state(Hit::InfoAdd, true);
+                        ui::icon_label_button(g, r, 0xE710, "Add a field", ui::Kind::Subtle, &st);
+                        if r.bottom > inner.top && r.top < inner.bottom {
+                            self.hits.add(Hit::InfoAdd, r);
+                        }
+                    }
+                    Block::Row { label, .. } if being_edited => {
+                        g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), rgb(th.label), Align::Left);
+                        if editing == Some(crate::metawrite::Field::Rating) {
+                            self.draw_star_picker(g, x, y + lh + 3.0);
+                        } else {
+                            let fr = rect(x - 6.0, y + lh + 3.0, w + 10.0, ui::FIELD_H);
+                            if let Some(e) = self.info_card.edits.editing.as_mut() {
+                                self.caret_rect = e.text.draw(g, fr, th, true, 0.0, None);
+                            }
+                            self.hits.add(Hit::InfoField, fr);
+                        }
+                    }
                     Block::Row { label, value, dim, .. } => {
                         g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), rgb(th.label), Align::Left);
                         let vr = rect(x, y + 1.0 + lh, w, h - 2.0 - lh);
                         g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(if *dim { th.label } else { th.text }), Align::Left);
+                        // An editable field: a pencil while the row's hovered (or double-click it).
+                        if fields[i].is_some() && matches!(self.hover, Some(Hit::InfoRow(k) | Hit::InfoEdit(k)) if k == i) {
+                            let pr = rect(x + w - 22.0, y - 2.0, 24.0, 22.0);
+                            let st = self.state(Hit::InfoEdit(i), true);
+                            let fg = ui::button_frame(g, pr, ui::Kind::Subtle, &st);
+                            g.text(&[0xE70F], &g.fonts.small_icons, pr, fg, Align::Center);
+                            if pr.top > inner.top && pr.bottom < inner.bottom {
+                                self.hits.add(Hit::InfoEdit(i), pr);
+                            }
+                        }
                     }
                 }
                 // A faint hairline between the properties of a group and under the name, halfway down the gap
@@ -539,7 +602,7 @@ impl App {
         g.pop_clip();
 
         // The scroll thumb while the pointer is over an overflowing card, or while it scrolls.
-        let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_)));
+        let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_) | Hit::InfoEdit(_) | Hit::InfoField | Hit::InfoStar(_) | Hit::InfoAdd));
         if self.info_card.max_scroll > 0.0 && (over || moving) {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let track = inner.bottom - inner.top - 8.0;
@@ -554,6 +617,23 @@ impl App {
         let t = self.fades.hover(Hit::InfoGrip, self.hover == Some(Hit::InfoGrip) || dragging);
         ui::grip_line(g, rect(card.left - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving
+    }
+
+    /// The rating picker: five stars from `x`, filled up to the hovered one (else the rating as it stands).
+    fn draw_star_picker(&mut self, g: &Gfx, x: f32, y: f32) {
+        let th = theme::t();
+        let now = self.info_edit_path().and_then(|p| self.info_card.edits.pending.get(&p).and_then(|m| m.get(&crate::metawrite::Field::Rating)).map(|(_, n)| n.clone()).unwrap_or_else(|| self.current_exif().and_then(|e| e.words.iter().find(|(l, _)| *l == "Rating").map(|(_, v)| v.clone()))));
+        let now = now.and_then(|s| crate::metawrite::parse_rating(&s)).unwrap_or(0);
+        let lit = match self.hover {
+            Some(Hit::InfoStar(k)) => k as u32 + 1,
+            _ => now,
+        };
+        for k in 0..5u8 {
+            let r = rect(x - 3.0 + k as f32 * 24.0, y, 24.0, 24.0);
+            let on = (k as u32) < lit;
+            g.text(&wide(if on { "\u{2605}" } else { "\u{2606}" }), &g.fonts.body_large, r, rgb(if on { th.text } else { th.label }), Align::Center);
+            self.hits.add(Hit::InfoStar(k), r);
+        }
     }
 
     /// Luma as a filled area, red, green and blue as curves over it, in a small inset card; drawn to the

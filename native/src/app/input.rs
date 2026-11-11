@@ -346,13 +346,16 @@ impl App {
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
-                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_)) => IDC_IBEAM,
+                        Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
                             Hit::Reveal
                             | Hit::StatusZoom
                             | Hit::InfoPath
                             | Hit::InfoRow(_)
+                            | Hit::InfoEdit(_)
+                            | Hit::InfoStar(_)
+                            | Hit::InfoAdd
                             | Hit::Open
                             | Hit::LandingFolder
                             | Hit::RecentRow(_)
@@ -446,6 +449,13 @@ impl App {
                     self.explorer_press_focus(h);
                     if h == Some(Hit::DialogField) {
                         self.field_press(x, false);
+                    }
+                    if self.info_editing() {
+                        match h {
+                            Some(Hit::InfoField) => self.field_press(x, false),
+                            Some(Hit::InfoStar(_)) => {}
+                            _ => self.info_cancel(),
+                        }
                     }
                     match h {
                         Some(Hit::ExplorerRow(_)) if self.marquee_starts_at(x, true) => self.marquee_press(x, y),
@@ -583,6 +593,13 @@ impl App {
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::InfoRow(i)) => self.info_copy(i),
+                            Some(Hit::InfoEdit(i)) => {
+                                if let Some(f) = self.info_row_field(i) {
+                                    self.info_start_edit(f);
+                                }
+                            }
+                            Some(Hit::InfoStar(k)) => self.info_pick_stars(k as u32 + 1),
+                            Some(Hit::InfoAdd) => self.open_info_add_menu(r.unwrap_or_default()),
                             Some(Hit::StatusZoom) => self.status_zoom_click(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
@@ -740,6 +757,23 @@ impl App {
                         self.info_grip_reset();
                         return Some(LRESULT(0));
                     }
+                    if self.menu.is_none() && self.dialog.is_none() {
+                        match self.hit(x, y) {
+                            Some(Hit::InfoField) => {
+                                self.pressed = Some(Hit::InfoField);
+                                SetCapture(self.hwnd);
+                                self.field_press(x, true);
+                                return Some(LRESULT(0));
+                            }
+                            Some(Hit::InfoRow(i)) => {
+                                if let Some(f) = self.info_row_field(i) {
+                                    self.info_start_edit(f);
+                                    return Some(LRESULT(0));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     if self.hit(x, y) == Some(Hit::StripGrip) {
                         self.strip_grip_reset();
                         return Some(LRESULT(0));
@@ -885,7 +919,7 @@ impl App {
                         self.audio_wheel(delta as f32, x, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
                     }
-                    if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_) | Hit::InfoGrip)) {
+                    if matches!(self.hit(x, y), Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_) | Hit::InfoGrip | Hit::InfoEdit(_) | Hit::InfoField | Hit::InfoStar(_) | Hit::InfoAdd)) {
                         self.scroll_info(delta as f32);
                         return Some(LRESULT(0));
                     }
@@ -945,6 +979,14 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     self.hide_tooltip();
+                    if self.info_editing() && !self.page_open() {
+                        self.info_edit_key(vk, shift, ctrl);
+                        return Some(LRESULT(0));
+                    }
+                    // Ctrl+Z / Ctrl+Y: the info card's edits on the photo shown, before the explorer's.
+                    if ctrl && !self.page_open() && ((vk == VK_Z && !shift && self.info_undo()) || (vk == VK_Y && self.info_redo())) {
+                        return Some(LRESULT(0));
+                    }
                     if self.text_focused() && !self.page_open() && self.text_key(vk, shift, ctrl) {
                         return Some(LRESULT(0));
                     }
@@ -1020,7 +1062,10 @@ impl App {
                         VK_C if ctrl && shift => self.copy_path(),
                         VK_C if ctrl => self.copy_image(),
                         VK_R if ctrl => self.rotate_preview(!shift),
-                        VK_S if ctrl => self.save_rotation(),
+                        VK_S if ctrl => {
+                            self.save_rotation();
+                            self.save_info_edits();
+                        }
                         VK_DELETE => self.confirm_delete(true),
                         VK_F2 => self.begin_rename(true),
                         VK_UP if self.explorer_shown() => self.explorer_move(-1),
@@ -1089,6 +1134,8 @@ impl App {
                         self.picker_char(wp.0 as u16);
                     } else if self.dialog.is_some() {
                         self.dialog_char(wp.0 as u16);
+                    } else if self.info_editing() && self.menu.is_none() && !self.page_open() {
+                        self.info_edit_char(wp.0 as u16);
                     } else if self.text_focused() && self.menu.is_none() && !self.page_open() {
                         self.text_char(wp.0 as u16);
                     } else if self.explorer.field.is_some() {
@@ -1330,6 +1377,9 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_CLOSE => {
+                    if self.ask_info_close() {
+                        return Some(LRESULT(0));
+                    }
                     self.close_text(); // unsaved edits are saved, as when moving to another file
                     self.stop_rip_for_close();
                     self.save_placement();

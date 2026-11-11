@@ -59,6 +59,8 @@ pub enum Done {
     /// Rip DVD: the disc read (or why it can't be ripped), and a finished rip.
     DvdOpened(Result<Box<crate::dvd::Disc>, String>),
     Ripped { out: PathBuf, result: Result<(), String> },
+    /// The info card's Ctrl+S: each file, the edits written into it, and how it went.
+    MetaWritten { results: Vec<(PathBuf, Vec<(crate::metawrite::Field, Option<String>)>, Result<(), String>)> },
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work
@@ -328,7 +330,7 @@ fn rotation(delta: i32) -> BitmapRotation {
     }
 }
 
-fn open_stream(path: &Path, mode: FileAccessMode) -> Result<windows::Storage::Streams::IRandomAccessStream, String> {
+pub(crate) fn open_stream(path: &Path, mode: FileAccessMode) -> Result<windows::Storage::Streams::IRandomAccessStream, String> {
     let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
     FileRandomAccessStream::OpenAsync(&HSTRING::from(absolute.as_os_str()), mode).and_then(|op| op.join()).map_err(err)
 }
@@ -407,7 +409,7 @@ pub fn rotate_bgra(src: &[u8], w: u32, h: u32, delta: i32) -> (Vec<u8>, u32, u32
 
 /// Swaps `temp` in for `dest`, keeping dest's attributes; an overwrite copy where the filesystem can't
 /// (some network shares, FAT).
-fn replace_file(temp: &Path, dest: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(temp: &Path, dest: &Path) -> Result<(), String> {
     let ok = unsafe {
         ReplaceFileW(&HSTRING::from(dest.as_os_str()), &HSTRING::from(temp.as_os_str()), PCWSTR::null(), REPLACE_FILE_FLAGS(0), None, None)
             .is_ok()

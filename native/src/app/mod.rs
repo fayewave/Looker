@@ -10,6 +10,7 @@ mod explorer;
 mod explorer_ops;
 mod explorer_view;
 mod info;
+mod info_edit;
 mod info_many;
 mod landing;
 mod strip;
@@ -251,6 +252,12 @@ enum Hit {
     InfoGrip,
     InfoPath,
     InfoRow(usize),
+    /// Editing a field: the pencil on a hovered row (by its place in `info_blocks`), the text box, a star of the
+    /// rating picker, and "+ Add a field".
+    InfoEdit(usize),
+    InfoField,
+    InfoStar(u8),
+    InfoAdd,
     /// "Get it from the Microsoft Store" under "Can't display this file", when a Windows extension is missing.
     GetExtension,
     /// The landing page's "Set Looker as your default photo viewer" and its X.

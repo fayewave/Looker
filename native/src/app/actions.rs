@@ -33,6 +33,8 @@ pub(super) enum DialogKind {
     Notice,
     /// Closing a text tab with unsaved edits: Save, Don't save, Cancel (the tab's id).
     TextClose(u64),
+    /// Closing the window with the info card's edits unsaved: Save, Don't save, Cancel.
+    InfoClose,
 }
 
 impl App {
@@ -251,6 +253,9 @@ impl App {
         if self.dialog.is_some() {
             return self.dialog.as_mut().and_then(|(_, d)| d.field.as_mut());
         }
+        if self.info_editing() {
+            return self.info_field_mut();
+        }
         self.explorer_field_mut()
     }
 
@@ -261,6 +266,9 @@ impl App {
         }
         if self.dialog.is_some() {
             return self.hits.rect_of(Hit::DialogField);
+        }
+        if self.info_editing() {
+            return self.hits.rect_of(Hit::InfoField);
         }
         let h = self.explorer_field_hit()?;
         let r = self.hits.rect_of(h)?;
@@ -293,6 +301,8 @@ impl App {
             self.picker_field()
         } else if self.dialog.is_some() {
             self.dialog.as_mut().filter(|(_, d)| d.field_focused()).and_then(|(_, d)| d.field.as_mut())
+        } else if self.info_editing() {
+            self.info_field_mut()
         } else {
             self.explorer_field_mut()
         };
@@ -440,11 +450,14 @@ impl App {
         if let DialogKind::TextClose(id) = kind {
             return self.text_close_answer(id, choice);
         }
+        if let DialogKind::InfoClose = kind {
+            return self.info_close_answer(choice);
+        }
         if choice != Choice::Confirm {
             return;
         }
         match kind {
-            DialogKind::TextClose(_) => {}
+            DialogKind::TextClose(_) | DialogKind::InfoClose => {}
             DialogKind::Notice => {}
             DialogKind::Rip(setup) => {
                 let (title, mp4) = (d.picked(0), d.picked(1) == 1);
@@ -558,6 +571,7 @@ impl App {
     pub(super) fn on_file_op(&mut self, done: Done) {
         match done {
             Done::Rotated { path, ok } => self.on_rotated(path, ok),
+            Done::MetaWritten { results } => self.on_meta_written(results),
             Done::Recycled { path, ok } => self.on_recycled(path, ok),
             Done::Renamed { from, to } => self.on_renamed(from, to),
             Done::Wallpaper { ok } => self.show_toast(if ok { "Wallpaper set" } else { "Couldn't set the wallpaper" }, false),

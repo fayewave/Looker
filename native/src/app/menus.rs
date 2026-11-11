@@ -90,6 +90,10 @@ pub(super) enum Action {
     /// A Location row's: the photo's coordinates on a map (the browser), or to the clipboard as "lat, lon".
     InfoMap,
     InfoCopyCoordinates,
+    /// "+ Add a field": start typing this one.
+    InfoAddField(crate::metawrite::Field),
+    /// A field's menu: edit it.
+    InfoEditField(crate::metawrite::Field),
 }
 
 fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -260,6 +264,9 @@ impl App {
             if path {
                 entries.push(item(Action::Reveal, 0xEC50, "Show in File Explorer", None, true));
             }
+            if let Some(f) = i.and_then(|i| self.info_row_field(i)) {
+                entries.push(item(Action::InfoEditField(f), 0xE70F, &format!("Edit {label}"), None, true));
+            }
             if super::info::LOCATION_ROWS.contains(&label) && !self.info_many() && self.photo_coordinates().is_some() {
                 entries.push(item(Action::InfoCopyCoordinates, 0xE8C8, "Copy coordinates", None, true));
                 entries.push(item(Action::InfoMap, 0xE707, "Show on a map", None, true));
@@ -270,6 +277,19 @@ impl App {
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((MenuKind::Info(i), Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    /// "+ Add a field": the fields the photo doesn't have yet.
+    pub(super) fn open_info_add(&mut self, fields: Vec<crate::metawrite::Field>, r: D2D_RECT_F) {
+        if fields.is_empty() {
+            return;
+        }
+        let entries = fields.iter().map(|&f| item(Action::InfoAddField(f), 0xE710, f.label(), None, true)).collect();
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::InfoAdd, Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
         self.invalidate();
     }
@@ -380,6 +400,11 @@ impl App {
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
             Some(MenuKind::Info(i)) => self.info_action(action, i),
+            Some(MenuKind::InfoAdd) => {
+                if let Action::InfoAddField(f) = action {
+                    self.info_start_edit(f);
+                }
+            }
             Some(MenuKind::TextTab(i)) => match action {
                 Action::NewTab => self.text_new_tab(),
                 Action::CloseTab => self.text_close_tab(i),
@@ -519,6 +544,8 @@ pub(super) enum MenuKind {
     TextFoot(u8),
     /// The info card's, for the property at this place in `info_blocks` (None: the card around them).
     Info(Option<usize>),
+    /// The info card's "+ Add a field".
+    InfoAdd,
 }
 
 /// Which row of drop-down buttons `h` belongs to, if it opens a drop-down. While one of a row's drop-downs is

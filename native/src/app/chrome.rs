@@ -205,6 +205,7 @@ impl App {
             // A text tab: its file's path (an untitled one, its name).
             Hit::TextTab(i) => self.text.docs.get(i as usize).map(|d| if d.untitled > 0 { d.title() } else { d.path.to_string_lossy().into_owned() }),
             Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
+            Hit::InfoRow(i) if self.info_row_field(i).is_some() => Some("Click to copy, double-click to edit".to_string()),
             Hit::ExplorerRow(_)
             | Hit::Crumb(_)
             | Hit::CrumbMore
@@ -245,6 +246,9 @@ impl App {
             Hit::StatusZoom => "Fit or 100 %",
             Hit::InfoPath => "Show in File Explorer",
             Hit::InfoRow(_) => "Click to copy",
+            Hit::InfoEdit(_) => "Edit",
+            Hit::InfoAdd => "Add a field this photo doesn't have yet",
+            Hit::InfoStar(_) => "Set the rating (the same star again clears it)",
             Hit::PagePrevious => "Previous page (Page Up)",
             Hit::DefaultHintClose => "Don't show this again",
             Hit::PageNext => "Next page (Page Down)",
