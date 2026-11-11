@@ -610,7 +610,7 @@ impl App {
                     g.draw_photo(&v, dest, 1.0, sdr);
                     self.last_drawn = Some((v, dest, sdr));
                 } else if self.turns == 0 {
-                    g.draw_photo(frame, dest, 1.0, c.sdr());
+                    g.draw_photo_px(frame, dest, 1.0, c.sdr(), c.full_size());
                     self.last_drawn = Some((frame.clone(), dest, c.sdr()));
                 } else {
                     // `dest` is the turned image's bounds: draw the unturned frame into the box that lands on
@@ -619,7 +619,7 @@ impl App {
                     let (w, h) = (dest.right - dest.left, dest.bottom - dest.top);
                     let (dw, dh) = if self.turns & 1 == 1 { (h, w) } else { (w, h) };
                     let unturned = rect(cx - dw / 2.0, cy - dh / 2.0, dw, dh);
-                    g.with_transform(&quarter_turns(self.turns, cx, cy), || g.draw_photo(frame, unturned, 1.0, c.sdr()));
+                    g.with_transform(&quarter_turns(self.turns, cx, cy), || g.draw_photo_px(frame, unturned, 1.0, c.sdr(), c.full_size()));
                 }
                 unsafe {
                     g.dev.dc.PopAxisAlignedClip();

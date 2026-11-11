@@ -732,8 +732,36 @@ impl Gfx {
     /// the paper (up to 115 % of SDR white) and a fringe below black. HDR and wide-gamut pixels go past both
     /// legitimately and are drawn as they are.
     pub fn draw_photo(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32, sdr: bool) {
+        self.draw_photo_px(bmp, dest, opacity, sdr, false);
+    }
+
+    /// [`draw_photo`](Self::draw_photo), and `pixels`: the bitmap is the image's own pixels (a full-size decode),
+    /// so at 100 % and above each one is drawn as a hard square (nearest neighbour), pin sharp for pixel
+    /// peeping, instead of the cubic filter's blur (Faye, 2026-11-11). Nearest neighbour never rings, so it
+    /// needs no clamp under scRGB either. Below 100 % it stays the high-quality cubic.
+    pub fn draw_photo_px(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32, sdr: bool, pixels: bool) {
+        if pixels && self.device_scale(bmp, dest) >= 0.999 {
+            unsafe {
+                self.dev.dc.DrawBitmap(bmp, Some(&dest), opacity, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, None, None);
+            }
+            return;
+        }
         if !sdr || !self.space.is_scrgb() || self.draw_clamped(bmp, dest, opacity).is_err() {
             self.draw_bitmap(bmp, dest, opacity);
+        }
+    }
+
+    /// Device pixels per bitmap pixel when `bmp` is drawn into `dest` under the current transform.
+    fn device_scale(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F) -> f32 {
+        unsafe {
+            let size = bmp.GetSize();
+            if size.width <= 0.0 {
+                return 0.0;
+            }
+            let mut world = windows_numerics::Matrix3x2::identity();
+            self.dev.dc.GetTransform(&mut world);
+            let world_scale = (world.M11 * world.M11 + world.M12 * world.M12).sqrt();
+            (dest.right - dest.left) / size.width * world_scale * self.dpi / 96.0
         }
     }
 

@@ -134,6 +134,12 @@ impl Entry {
         }
     }
 
+    /// The bitmap holds the image's own pixels: a raster decoded at full size (not a fit decode, not a vector or
+    /// a document rendered at some scale), so magnified it may be drawn as hard pixels.
+    pub fn full_size(&self) -> bool {
+        !self.vector && self.layout.is_none() && self.width.max(self.height) >= self.native_w.max(self.native_h)
+    }
+
     /// The same decode under another key (the file was renamed). Bitmaps are shared, not copied.
     fn rekeyed(&self, key: Key) -> Entry {
         Entry {
