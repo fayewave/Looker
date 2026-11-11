@@ -6,10 +6,12 @@
 
 use std::time::Instant;
 
-/// How far out and in the zoom goes: a tenth of the smaller of fit and 100 %, and 32 times the larger (Faye,
-/// 2026-11-09: it was half and 8 times).
+/// How far out and in the zoom goes: a tenth of the smaller of fit and 100 %, and in to 32 times fit or 256 times
+/// 100 % (25 600 %: one image pixel 256 screen pixels across), whichever is further (Faye, 2026-11-09: it was half
+/// and 8 times; 2026-11-11: 3200 % on a big photo wasn't enough for pixel peeping).
 const MIN_SCALE_FACTOR: f64 = 0.1;
 const MAX_SCALE_FACTOR: f64 = 32.0;
+const MAX_ACTUAL_FACTOR: f64 = 256.0;
 const MIN_VISIBLE_FRACTION: f64 = 0.2;
 const ANIM_MS: f64 = 160.0;
 
@@ -108,7 +110,7 @@ impl View {
         self.fit_scale().min(self.actual_scale()) * MIN_SCALE_FACTOR
     }
     fn max_scale(&self) -> f64 {
-        self.fit_scale().max(self.actual_scale()) * MAX_SCALE_FACTOR
+        (self.fit_scale() * MAX_SCALE_FACTOR).max(self.actual_scale() * MAX_ACTUAL_FACTOR)
     }
 
     pub fn zoom_percent(&self) -> f64 {
