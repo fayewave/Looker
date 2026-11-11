@@ -470,9 +470,10 @@ impl TextView {
         self.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
     }
 
-    /// Prose, which spell check reads: text and Markdown, not Source's materials or configs.
+    /// Prose, which spell check reads: text and Markdown, not logs (Faye, 2026-11-11: every word squiggled),
+    /// Source's materials or configs.
     fn is_prose(&self) -> bool {
-        self.untitled > 0 || self.path.extension().is_some_and(|e| ["txt", "md", "markdown", "log"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+        self.untitled > 0 || self.path.extension().is_some_and(|e| ["txt", "md", "markdown"].iter().any(|x| e.eq_ignore_ascii_case(x)))
     }
 
     pub(super) fn set_font(&mut self, f: &FontSpec) {
