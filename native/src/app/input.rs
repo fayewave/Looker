@@ -318,7 +318,7 @@ impl App {
                     self.mouse = (x, y);
                     let h = self.hit(x, y);
                     self.set_hover(h);
-                    self.text_menubar_hover();
+                    self.menu_bar_hover();
                     // The waveform's pointer line follows the pointer: playing, the vsync redraws it anyway;
                     // stopped, only this does (it froze and jumped otherwise).
                     if matches!(self.hover, Some(Hit::AudioWave)) {

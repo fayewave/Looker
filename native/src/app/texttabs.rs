@@ -531,17 +531,6 @@ impl App {
         moving
     }
 
-    /// The pointer onto File, Edit or View while another of them is open: that one opens instead, as menu bars do.
-    /// (Here, not while drawing: the menu is measured with the Gfx, which drawing has out.)
-    pub(super) fn text_menubar_hover(&mut self) {
-        let (Some(Hit::TextMenuBar(k)), Some((menus::MenuKind::TextBar(o), _))) = (self.hover, &self.menu) else { return };
-        if *o == k {
-            return;
-        }
-        let Some(r) = self.hits.rect_of(Hit::TextMenuBar(k)) else { return };
-        self.text_open_bar_menu(k, r);
-    }
-
     pub(super) fn text_menubar_click(&mut self, k: u8) {
         if matches!(self.menu, Some((menus::MenuKind::TextBar(o), _)) if o == k) {
             self.close_menu();

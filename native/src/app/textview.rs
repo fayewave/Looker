@@ -1635,7 +1635,7 @@ impl App {
                 let mut menu = menu;
                 let mh = menu.height();
                 menu.y = (r.top - mh - 4.0).max(4.0);
-                self.menu = Some((menus::MenuKind::Text, menu));
+                self.menu = Some((menus::MenuKind::TextFoot(i), menu));
                 self.hide_tooltip();
                 self.invalidate();
             }

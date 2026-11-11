@@ -146,7 +146,8 @@ pub const LOOP_CHOICES: [u32; 6] = [0, 5, 10, 30, 60, u32::MAX];
 pub const RESUME_MIN_SECS: u32 = 300;
 
 pub const EXPLORER_WIDTH: f32 = 320.0;
-pub const RECENT_CAPACITY: usize = 12;
+/// The home page lists this many recent files (Faye, 2026-11-11: it was 12).
+pub const RECENT_CAPACITY: usize = 50;
 pub const VISITED_CAPACITY: usize = 10;
 pub const SIDEBAR_WIDTH: f32 = 210.0;
 pub const CACHE_MB: u32 = 512;
@@ -665,11 +666,12 @@ mod tests {
     #[test]
     fn recents_move_to_the_front_and_cap() {
         let mut s = Settings::default();
-        for i in 0..15 {
+        let last = RECENT_CAPACITY + 2;
+        for i in 0..=last {
             assert!(s.push_recent(&PathBuf::from(format!(r"C:\p\{i}.jpg"))));
         }
         assert_eq!(s.recents.len(), RECENT_CAPACITY);
-        assert!(!s.push_recent(&PathBuf::from(r"c:\P\14.JPG"))); // already first
+        assert!(!s.push_recent(&PathBuf::from(format!(r"c:\P\{last}.JPG")))); // already first
         assert!(s.push_recent(&PathBuf::from(r"C:\p\10.jpg")));
         assert_eq!(s.recents[0], PathBuf::from(r"C:\p\10.jpg"));
         assert_eq!(s.recents.iter().filter(|r| r.ends_with("10.jpg")).count(), 1);

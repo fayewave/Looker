@@ -327,7 +327,7 @@ impl App {
                 Action::CloseOtherTabs => self.text_close_others(i),
                 _ => {}
             },
-            Some(MenuKind::Text | MenuKind::TextBar(_)) => {
+            Some(MenuKind::Text | MenuKind::TextBar(_) | MenuKind::TextFoot(_)) => {
                 if let Action::Text(a) = action {
                     self.text_action(a);
                 }
@@ -452,10 +452,75 @@ pub(super) enum MenuKind {
     VideoSettings,
     /// The menu off the video bar's times: Timecode or Frames.
     VideoTime,
-    /// The text editor's right-click menu, and its foot's encodings and line endings.
+    /// The text editor's right-click menu.
     Text,
     /// The text editor's menu bar: File, Edit or View.
     TextBar(u8),
     /// A text tab's menu (right-click), for the tab at this index: the explorer tab menu's entries.
     TextTab(usize),
+    /// The text editor's foot: its encodings (0) or line endings (1).
+    TextFoot(u8),
+}
+
+/// Which row of drop-down buttons `h` belongs to, if it opens a drop-down. While one of a row's drop-downs is
+/// open, hovering another button of the row opens that one instead, as a menu bar does (Faye, 2026-11-11: the
+/// text editor's File/Edit/View did; every row of drop-downs should).
+fn menu_bar_of(h: Hit) -> Option<u8> {
+    match h {
+        Hit::ExplorerHistory | Hit::ExplorerBookmarks | Hit::ExplorerCollections | Hit::ExplorerGroup => Some(0),
+        Hit::CrumbMore | Hit::CrumbChevron(_) => Some(1),
+        Hit::VideoSettings | Hit::VideoTime => Some(2),
+        Hit::TextMenuBar(_) => Some(3),
+        Hit::TextFoot(0 | 1) => Some(4),
+        _ => None,
+    }
+}
+
+impl App {
+    /// The button whose drop-down is open now: the open menu's, or the breadcrumb chevron whose folder popup is.
+    fn open_menu_button(&self) -> Option<Hit> {
+        if let Some((kind, _)) = &self.menu {
+            return match kind {
+                MenuKind::History => Some(Hit::ExplorerHistory),
+                MenuKind::Jump(false, _) => Some(Hit::ExplorerBookmarks),
+                MenuKind::Jump(true, _) => Some(Hit::ExplorerCollections),
+                MenuKind::Group => Some(Hit::ExplorerGroup),
+                MenuKind::Crumbs(_) => Some(Hit::CrumbMore),
+                MenuKind::VideoSettings => Some(Hit::VideoSettings),
+                MenuKind::VideoTime => Some(Hit::VideoTime),
+                MenuKind::TextBar(k) => Some(Hit::TextMenuBar(*k)),
+                MenuKind::TextFoot(i) => Some(Hit::TextFoot(*i)),
+                _ => None,
+            };
+        }
+        // A chevron opens the folder popup of the crumb after it.
+        self.explorer.path_edit.as_ref().and_then(|p| p.crumb).filter(|&c| c > 0).map(|c| Hit::CrumbChevron(c - 1))
+    }
+
+    /// The pointer moved onto another button of the row whose drop-down is open: open that one's.
+    pub(super) fn menu_bar_hover(&mut self) {
+        let Some(h) = self.hover else { return };
+        let Some(bar) = menu_bar_of(h) else { return };
+        let Some(open) = self.open_menu_button() else { return };
+        if open == h || menu_bar_of(open) != Some(bar) {
+            return;
+        }
+        let Some(r) = self.hits.rect_of(h) else { return };
+        match h {
+            Hit::ExplorerHistory => self.explorer_history_menu(r),
+            Hit::ExplorerBookmarks => self.explorer_jump_menu(false, r),
+            Hit::ExplorerCollections => self.explorer_jump_menu(true, r),
+            Hit::ExplorerGroup => self.explorer_group_menu(r),
+            Hit::CrumbMore => {
+                self.close_popup();
+                self.open_crumb_menu();
+            }
+            Hit::CrumbChevron(i) => self.crumb_popup(i + 1, r),
+            Hit::VideoSettings | Hit::VideoTime => self.video_bar_click(h),
+            Hit::TextMenuBar(k) => self.text_menubar_click(k),
+            Hit::TextFoot(i) => self.text_foot_click(i),
+            _ => {}
+        }
+        self.invalidate();
+    }
 }
