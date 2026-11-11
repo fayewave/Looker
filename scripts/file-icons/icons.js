@@ -106,8 +106,9 @@ const DRAW = {
     if (small) return s + `<rect x="80" y="104" width="108" height="20" rx="8" fill="${INK}"/><rect x="80" y="146" width="108" height="20" rx="8" fill="${INK}"/><rect x="80" y="188" width="72" height="20" rx="8" fill="${INK}"/>`;
     // Lines of text down the page; the extension is the black tag at the bottom right, as on every other kind
     // (Faye, 2026-11-11: it was the extension in the middle over the Looker mark).
-    const line = (y, w) => `<rect x="78" y="${y}" width="${w}" height="12" rx="6" fill="${INK}" opacity=".85"/>`;
-    return s + line(44, 70) + line(70, 54) + line(100, 112) + line(126, 112) + line(152, 84);
+    // Three even lines, the last shorter, as the small icon has (Faye, 2026-11-11: five uneven ones looked random).
+    const line = (y, w) => `<rect x="80" y="${y}" width="${w}" height="16" rx="8" fill="${INK}"/>`;
+    return s + line(82, 108) + line(116, 108) + line(150, 72);
   },
   model: () => `<g stroke-linejoin="round" stroke-width="10">
     <path d="M128 20 L228 74 L128 128 L28 74 Z" fill="${LIGHT}" stroke="${LIGHT}"/>
