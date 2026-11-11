@@ -274,7 +274,7 @@ impl App {
             Hit::VideoSettings => "Settings",
             Hit::VideoTime => "Timecode or frames",
             Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
-            Hit::MotionBadge => "Motion: play it as a video, or back to the photo",
+            Hit::MotionBadge => "Live Photo: play it as a video, or back to the photo",
             _ => return None,
         })
     }

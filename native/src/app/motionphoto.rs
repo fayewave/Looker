@@ -1,5 +1,5 @@
-//! Motion photos (`crate::motionphoto`): a photo with a short video. In photo mode a Motion pill sits where a video's
-//! bar would, at the bottom in the middle, in the bar's own look; pressing it grows it smoothly into the full video
+//! Motion photos (`crate::motionphoto`): a photo with a short video. In photo mode a Motion pill sits at the left end of where a video's
+//! bar would be, bottom left, in the bar's own look; pressing it grows it smoothly to the right into the full video
 //! bar (video mode: the clip plays with every control a video has, its Motion toggle at the bar's left end), and
 //! that toggle shrinks it back into the pill and the still. Holding the left button still on the photo in photo
 //! mode plays the clip while it's held, as a phone does. The clip plays in the video view (`VideoView` with
@@ -220,16 +220,11 @@ impl App {
             return;
         }
         let Some((full, radius)) = self.video_bar_rect(g) else { return };
-        let label = wide("Motion");
+        let label = wide("Live Photo");
         let tw = g.measure(&label, &g.fonts.caption).ceil();
-        let pill_w = (12.0 + 13.0 + 8.0 + tw + 16.0).min(full.right - full.left);
-        let cx = (full.left + full.right) / 2.0;
-        let c = rect(
-            g.snap(lerp(cx - pill_w / 2.0, full.left, k)),
-            full.top,
-            g.snap(lerp(pill_w, full.right - full.left, k)),
-            full.bottom - full.top,
-        );
+        let pill_w = (14.0 + 13.0 + 8.0 + tw + 14.0).min(full.right - full.left);
+        // Bottom left, where the bar starts (and its Motion toggle sits): it opens to the right (Faye, 2026-11-11).
+        let c = rect(full.left, full.top, g.snap(full.left + lerp(pill_w, full.right - full.left, k)) - full.left, full.bottom - full.top);
         let t = theme::t();
         ui::shadow(g, c, radius);
         g.fill_round(c, radius, rgb(t.sidebar));
@@ -248,8 +243,8 @@ impl App {
         let face = (1.0 - k / 0.4).clamp(0.0, 1.0);
         if face > 0.0 {
             g.push_fade(face, 1.0, 0.0, 0.0);
-            let w = 13.0 + 8.0 + tw;
-            let left = (c.left + c.right) / 2.0 - w / 2.0;
+            // Pinned to the left edge, as the box grows to the right (centred, it slid along as it faded).
+            let left = c.left + 14.0;
             let cy = (c.top + c.bottom) / 2.0;
             draw_mark(g, left + 6.5, cy, rgb(t.text));
             g.text(&label, &g.fonts.caption, rect(left + 13.0 + 8.0, c.top, tw + 2.0, c.bottom - c.top), rgb(t.text), Align::Left);
