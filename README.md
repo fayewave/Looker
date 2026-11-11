@@ -33,7 +33,8 @@ it keeps itself up to date.
 ## Viewer
 
 - Opens straight into the file; the next files in the folder are already loaded.
-- Zoom at the pointer up to 3200 %, fullscreen, slideshow, thumbnail strip.
+- Zoom at the pointer up to 25600 %, with crisp pixels from 100 % up; drag to pan, at fit too.
+- Fullscreen, slideshow, thumbnail strip; the mouse's Back and Forward buttons step through the files you've viewed.
 - Info panel with EXIF and a histogram.
 - Rotate, rename, copy, set as wallpaper, show in File Explorer.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
@@ -43,20 +44,29 @@ it keeps itself up to date.
   fonts, WebVTT, MP4 timed text, PGS, VobSub, DVB) or from files beside it, in any encoding.
 - Audio files play with their cover, tags and a waveform (or spectrogram) per channel: click to seek, drag to loop
   a part, Ctrl+wheel to zoom; loudness in LUFS.
+- Rip unprotected DVDs to MKV or MP4.
 - Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
 
 <img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
 
+## Text editor
+
+- Text files open in a tabbed editor with a File/Edit/View menu bar, find and replace, spell check, Markdown and
+  printing; big files scroll smoothly, and open tabs come back next time.
+- Works with screen readers.
+
+<img src="brand/screenshots/readme-light.jpg" alt="The Light theme, with the file explorer beside the photo" width="700">
+
 ## Formats
 
 - **Images:** JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF, AVIF, JPEG XL, SVG/SVGZ,
-  PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, OpenEXR, Radiance HDR
+  PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, OpenEXR, Radiance HDR, Valve VTF
 - **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
   KDC, ERF, MEF
 - **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, TS, MPG/MPEG, M2V, VOB, 3GP, FLV, OGV
 - **Audio:** MP3, M4A/M4B, AAC, FLAC, WAV, AIFF, Ogg/Opus, WMA, MKA, WavPack, APE, CAF
 - **Documents:** PDF
-- **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO
+- **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO, Valve VMT/VMF/VDF/QC
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries
 
 ## Keys
