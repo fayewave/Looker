@@ -102,7 +102,7 @@ fn session_dir() -> Option<PathBuf> {
 }
 
 fn text_ext(p: &Path) -> bool {
-    format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Text
+    format::of_path(p) == format::Format::Text
 }
 
 impl App {

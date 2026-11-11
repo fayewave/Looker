@@ -778,13 +778,14 @@ endif()
 # Audio files (the waveform view): mp3, flac, ogg, wav, w64, aiff, aac (ADTS), caf, wavpack, ape. Subtitles
 # (native/PLAN.md N6e): the text formats a sidecar file comes in (MicroDVD, SubViewer, SAMI, MPL2, VPlayer, RealText,
 # PJS beside SRT, ASS/SSA and WebVTT) and VobSub's .idx/.sub pair.
+# Older web video: FLV (Sorenson H.263 and VP6 beside H.264) and Ogg Theora (.ogv).
 # mpegvideo: the program stream demuxer probes video streams (DVD VOBs, .mpg) through it; without it MPEG-2 video
 # in a program stream came out as an unknown codec.
-set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps mpegvideo srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
+set(LOOKER_DEMUXERS mov matroska avi asf mxf mpegts mpegps mpegvideo flv srt ass webvtt mp3 flac ogg wav w64 aiff aac caf wv ape
     microdvd subviewer subviewer1 sami mpl2 vplayer realtext pjs vobsub)
 set(LOOKER_DECODERS
     h264 hevc vp8 vp9 av1 libdav1d prores dnxhd cfhd mpeg1video mpeg2video mpeg4 h263 msmpeg4v3 mjpeg vc1 wmv1 wmv2 wmv3
-    rawvideo v210 v210x png qtrle
+    rawvideo v210 v210x png qtrle theora flv vp6 vp6f vp6a
     aac aac_latm mp1 mp2 mp3 mp3float opus vorbis flac alac ac3 eac3 dca truehd wmav1 wmav2 wmapro
     pcm_s8 pcm_u8 pcm_s16le pcm_s16be pcm_s24le pcm_s24be pcm_s32le pcm_s32be pcm_f32le pcm_f32be pcm_f64le pcm_mulaw
     pcm_alaw pcm_dvd pcm_bluray adpcm_ms adpcm_ima_wav wavpack ape

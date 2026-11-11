@@ -2172,12 +2172,12 @@ impl App {
                             .into_iter()
                             .map(|(p, stamp)| {
                                 // An audio file: its length.
-                                if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Audio {
+                                if format::of_path(&p) == format::Format::Audio {
                                     let (duration_us, fields) = audio_fields(&p);
                                     return (p, Meta { stamp, dims: None, taken: None, camera: None, lens: None, duration_us, fields });
                                 }
                                 // A video: its size, length and recording date from one probe.
-                                if format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video {
+                                if format::of_path(&p) == format::Format::Video {
                                     let info = crate::imaging::video::probe(&p).ok();
                                     let dims = info.as_ref().filter(|i| i.width > 0 && i.height > 0).map(|i| (i.width as u32, i.height as u32));
                                     let duration_us = info.as_ref().map(|i| i.duration_us).filter(|&d| d > 0);

@@ -416,6 +416,30 @@
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="svgz">
+            <uap:DisplayName>Compressed SVG image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\svgz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.svgz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="exr">
+            <uap:DisplayName>OpenEXR image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\exr.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.exr</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="hdr">
+            <uap:DisplayName>Radiance HDR image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\hdr.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.hdr</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="cr2">
             <uap:DisplayName>CR2 camera RAW</uap:DisplayName>
             <uap:Logo>Assets\FileIcons\cr2.png</uap:Logo>
@@ -744,6 +768,86 @@
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="json">
+            <uap:DisplayName>JSON file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\json.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.json</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="xml">
+            <uap:DisplayName>XML document</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\xml.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.xml</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="csv">
+            <uap:DisplayName>CSV spreadsheet</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\csv.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.csv</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tsv">
+            <uap:DisplayName>TSV spreadsheet</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tsv.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tsv</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="yaml">
+            <uap:DisplayName>YAML file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\yaml.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.yaml</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="yml">
+            <uap:DisplayName>YAML file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\yml.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.yml</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="toml">
+            <uap:DisplayName>TOML file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\toml.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.toml</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="srt">
+            <uap:DisplayName>SRT subtitles</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\srt.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.srt</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vtt">
+            <uap:DisplayName>WebVTT subtitles</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\vtt.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.vtt</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="nfo">
+            <uap:DisplayName>NFO info file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\nfo.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.nfo</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
           <uap:FileTypeAssociation Name="mp4">
             <uap:DisplayName>MP4 video</uap:DisplayName>
             <uap:Logo>Assets\FileIcons\mp4.png</uap:Logo>
@@ -845,6 +949,46 @@
             <uap:Logo>Assets\FileIcons\3gp.png</uap:Logo>
             <uap:InfoTip>Open with Looker</uap:InfoTip>
             <uap:SupportedFileTypes><uap:FileType>.3gp</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="ts">
+            <uap:DisplayName>MPEG-TS video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\ts.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.ts</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="flv">
+            <uap:DisplayName>FLV video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\flv.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.flv</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="ogv">
+            <uap:DisplayName>OGV video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\ogv.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.ogv</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="m2v">
+            <uap:DisplayName>MPEG-2 video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\m2v.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.m2v</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vob">
+            <uap:DisplayName>DVD video</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\vob.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.vob</uap:FileType></uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
         <uap:Extension Category="windows.fileTypeAssociation">

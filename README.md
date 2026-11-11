@@ -49,13 +49,14 @@ it keeps itself up to date.
 
 ## Formats
 
-- **Images:** JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF, AVIF, JPEG XL, SVG,
-  PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI
+- **Images:** JPEG, PNG/APNG, GIF, BMP, TIFF, WebP, ICO/CUR, JPEG XR, JPEG 2000, HEIC/HEIF, AVIF, JPEG XL, SVG/SVGZ,
+  PSD/PSB, TGA, DDS, PCX, PPM/PGM/PBM, XCF, QOI, OpenEXR, Radiance HDR
 - **Camera RAW:** CR2, CR3, CRW, NEF, NRW, ARW, SR2, SRF, DNG, ORF, RAF, RW2, PEF, SRW, 3FR, FFF, RWL, IIQ, MRW, DCR,
   KDC, ERF, MEF
-- **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, MPG/MPEG, 3GP
+- **Video:** MP4, M4V, MOV, MKV, WebM, AVI, WMV, MXF, MTS/M2TS, TS, MPG/MPEG, M2V, VOB, 3GP, FLV, OGV
 - **Audio:** MP3, M4A/M4B, AAC, FLAC, WAV, AIFF, Ogg/Opus, WMA, MKA, WavPack, APE, CAF
 - **Documents:** PDF
+- **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries
 
 ## Keys

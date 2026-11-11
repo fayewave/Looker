@@ -9,23 +9,23 @@ const MARK = "M7348.97,461.776L7348.97,1039.201C7348.97,1080.513 7315.431,1114.0
 
 // Every extension (must equal format::EXTENSIONS; New-FileIcons.ps1 checks), its kind and its Explorer type name.
 const KIND_OF = {
-  photo: "jpg jpeg jpe jfif png bmp dib tif tiff webp jxr wdp hdp heic heif hif avif jxl jp2 j2k jpf jpx j2c tga icb vda vst dds pcx pnm ppm pgm pbm qoi vtf",
+  photo: "jpg jpeg jpe jfif png bmp dib tif tiff webp jxr wdp hdp heic heif hif avif jxl jp2 j2k jpf jpx j2c tga icb vda vst dds pcx pnm ppm pgm pbm qoi vtf exr hdr",
   anim: "gif apng heics avifs",
   icon: "ico cur",
-  vector: "svg",
-  doc: "pdf txt vmt md markdown log ini cfg vdf qc",
+  vector: "svg svgz",
+  doc: "pdf txt vmt md markdown log ini cfg vdf qc json xml csv tsv yaml yml toml srt vtt nfo",
   layers: "psd psb xcf",
   raw: "cr2 cr3 crw nef nrw arw sr2 srf dng orf raf rw2 pef srw 3fr fff rwl iiq mrw dcr kdc erf mef",
   model: "obj stl ply 3mf gltf glb vmf",
   material: "mtl",
-  video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp",
+  video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp ts flv ogv m2v vob",
   audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf",
 };
 const TYPE_NAME = {
-  photo: e => `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
-  vector: () => "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
+  photo: e => ({ EXR: "OpenEXR image", HDR: "Radiance HDR image" })[e] || `${e} image`, anim: e => `${e} animation`, icon: e => e === "CUR" ? "Cursor" : "Icon",
+  vector: e => e === "SVGZ" ? "Compressed SVG image" : "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script", JSON: "JSON file", XML: "XML document", CSV: "CSV spreadsheet", TSV: "TSV spreadsheet", YAML: "YAML file", YML: "YAML file", TOML: "TOML file", SRT: "SRT subtitles", VTT: "WebVTT subtitles", NFO: "NFO info file" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => e === "VMF" ? "VMF Hammer map" : `${e} 3D model`,
-  material: () => "MTL material library", video: e => `${e} video`,
+  material: () => "MTL material library", video: e => ({ TS: "MPEG-TS video", VOB: "DVD video", M2V: "MPEG-2 video" })[e] || `${e} video`,
   audio: e => `${e} audio`,
 };
 

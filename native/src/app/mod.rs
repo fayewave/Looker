@@ -805,7 +805,7 @@ impl App {
         let (w, h) = (v.right - v.left, v.bottom - v.top);
         let video = self.fullscreen.is_none()
             && self.placeholder.is_none()
-            && self.current_path().is_some_and(|p| matches!(format::from_extension(p.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio));
+            && self.current_path().is_some_and(|p| matches!(format::of_path(p), format::Format::Video | format::Format::Audio));
         // A video's bar band replaces the bottom pad (the bar keeps its own margin off the status row).
         let h = if video { h + self.preview_pad() } else { h };
         let room = if video { video::bar_band(w).min(h * 0.4) } else { 0.0 };
@@ -816,7 +816,7 @@ impl App {
     fn reset_view(&mut self, nw: u32, nh: u32) {
         let (vw, vh) = self.view_size();
         self.view.upscale = self.placeholder.is_none()
-            && self.current_path().is_some_and(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Video);
+            && self.current_path().is_some_and(|p| format::of_path(p) == format::Format::Video);
         // A document opens on its first page: the strip is the content, the page the fit reference.
         if let Some(e) = self.viewer.shown.clone().filter(|e| e.layout.is_some()) {
             let l = e.layout.as_ref().unwrap();

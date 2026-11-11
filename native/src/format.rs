@@ -32,6 +32,10 @@ pub enum Format {
     Pnm,
     Xcf,
     Qoi,
+    /// OpenEXR: linear float, HDR (`fallback::float_image`).
+    Exr,
+    /// Radiance RGBE (.hdr): linear, HDR.
+    Radiance,
     Pdf,
     /// Wavefront material library (text; drawn as a sheet of material cards).
     Mtl,
@@ -71,6 +75,8 @@ pub const ALL: &[Format] = &[
     Format::Pnm,
     Format::Xcf,
     Format::Qoi,
+    Format::Exr,
+    Format::Radiance,
     Format::Pdf,
     Format::Mtl,
     Format::Text,
@@ -84,7 +90,7 @@ pub const ALL: &[Format] = &[
 pub const EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "jpe", "jfif", "png", "apng", "bmp", "dib", "gif", "tif", "tiff", "webp", "ico", "cur", "jxr", "wdp",
     "hdp", "heic", "heif", "hif", "heics", "avif", "avifs", "jxl", "jp2", "j2k", "jpf", "jpx", "j2c", "svg", "pdf", "psd",
-    "psb", "tga", "icb", "vda", "vst", "dds", "pcx", "pnm", "ppm", "pgm", "pbm", "xcf", "qoi",
+    "psb", "tga", "icb", "vda", "vst", "dds", "pcx", "pnm", "ppm", "pgm", "pbm", "xcf", "qoi", "svgz", "exr", "hdr",
     // Camera RAW. No Sigma .x3f: libraw dropped Foveon and no WIC codec reads it.
     "cr2", "cr3", "crw", "nef", "nrw", "arw", "sr2", "srf", "dng", "orf", "raf", "rw2", "pef", "srw", "3fr", "fff", "rwl",
     "iiq", "mrw", "dcr", "kdc", "erf", "mef",
@@ -92,16 +98,62 @@ pub const EXTENSIONS: &[&str] = &[
     "obj", "stl", "ply", "3mf", "gltf", "glb", "mtl",
     // Source engine: Hammer maps and materials.
     "vmf", "vmt", "vtf",
-    // Text: plain, Markdown, logs and settings, Source's configs and model scripts.
-    "txt", "md", "markdown", "log", "ini", "cfg", "vdf", "qc",
+    // Text: plain, Markdown, logs and settings, Source's configs and model scripts, data, subtitles, NFOs.
+    "txt", "md", "markdown", "log", "ini", "cfg", "vdf", "qc", "json", "xml", "csv", "tsv", "yaml", "yml", "toml", "srt", "vtt",
+    "nfo",
     // Video.
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp",
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "mxf", "mts", "m2ts", "mpg", "mpeg", "3gp", "ts",
+    "flv", "ogv", "m2v", "vob",
     // Audio.
     "mp3", "m4a", "m4b", "aac", "flac", "wav", "aif", "aiff", "ogg", "oga", "opus", "wma", "mka", "wv", "ape", "caf",
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
     path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
+}
+
+/// What the file is by name, as `from_extension`, except that a `.ts` is looked into once: TypeScript is text, a
+/// transport stream video. An online-only cloud file is never read (it stays a video by name).
+pub fn of_path(path: &Path) -> Format {
+    let ext = ext_of(path);
+    let f = from_extension(ext.as_deref());
+    if ext.as_deref() == Some("ts") && ts_is_text(path) { Format::Text } else { f }
+}
+
+fn ts_is_text(path: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::os::windows::fs::MetadataExt;
+    use std::time::{Duration, Instant};
+    type Seen = HashMap<std::path::PathBuf, (Instant, u64, bool)>;
+    thread_local! {
+        static SEEN: std::cell::RefCell<Seen> = std::cell::RefCell::new(HashMap::new());
+    }
+    // Asked every frame for each row on screen: answer from memory, looking at the file again after a second.
+    let now = Instant::now();
+    let cached = SEEN.with(|m| m.borrow().get(path).copied());
+    if let Some((_, _, t)) = cached.filter(|(at, _, _)| now - *at < Duration::from_secs(1)) {
+        return t;
+    }
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    // FILE_ATTRIBUTE_OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS.
+    let t = if meta.file_attributes() & (0x1000 | 0x40000 | 0x400000) != 0 {
+        false
+    } else {
+        let stamp = meta.last_write_time() ^ meta.len();
+        match cached {
+            Some((_, s, t)) if s == stamp => t,
+            _ => sniff_file(path) == Format::Text,
+        }
+    };
+    let stamp = meta.last_write_time() ^ meta.len();
+    SEEN.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() > 4096 {
+            m.clear();
+        }
+        m.insert(path.to_path_buf(), (now, stamp, t));
+    });
+    t
 }
 
 pub fn is_supported(path: &Path) -> bool {
@@ -123,7 +175,9 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "jp2" | "j2k" | "jpf" | "jpx" | "j2c" => Format::Jpeg2000,
         "heic" | "heif" | "hif" | "heics" => Format::Heif,
         "avif" | "avifs" => Format::Avif,
-        "svg" => Format::Svg,
+        "svg" | "svgz" => Format::Svg,
+        "exr" => Format::Exr,
+        "hdr" => Format::Radiance,
         "pdf" => Format::Pdf,
         "psd" | "psb" => Format::Psd,
         "jxl" => Format::JpegXl,
@@ -135,10 +189,12 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         "qoi" => Format::Qoi,
         "mtl" => Format::Mtl,
         // Source materials are KeyValues text: read and edited as text (Faye, 2026-11-11).
-        "txt" | "vmt" | "md" | "markdown" | "log" | "ini" | "cfg" | "vdf" | "qc" => Format::Text,
+        "txt" | "vmt" | "md" | "markdown" | "log" | "ini" | "cfg" | "vdf" | "qc" | "json" | "xml" | "csv" | "tsv" | "yaml" | "yml"
+        | "toml" | "srt" | "vtt" | "nfo" => Format::Text,
         "vtf" => Format::Vtf,
         "obj" | "stl" | "ply" | "3mf" | "gltf" | "glb" | "vmf" => Format::Model,
-        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" => Format::Video,
+        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "mxf" | "mts" | "m2ts" | "mpg" | "mpeg" | "3gp" | "ts" | "flv" | "ogv"
+        | "m2v" | "vob" => Format::Video,
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "aif" | "aiff" | "ogg" | "oga" | "opus" | "wma" | "mka" | "wv" | "ape"
         | "caf" => Format::Audio,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
@@ -223,7 +279,7 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     if (ascii(h, 0, "RIFF") || ascii(h, 0, "RF64")) && ascii(h, 8, "WAVE")
         || (ascii(h, 0, "FORM") && (ascii(h, 8, "AIFF") || ascii(h, 8, "AIFC")))
         || ascii(h, 0, "fLaC")
-        || ascii(h, 0, "OggS")
+        || (ascii(h, 0, "OggS") && from_extension(ext) != Format::Video)
         || ascii(h, 0, "ID3")
         || ascii(h, 0, "wvpk")
         || ascii(h, 0, "MAC ")
@@ -240,6 +296,9 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
         || starts(h, &[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11])
         || starts(h, &[0x06, 0x0E, 0x2B, 0x34, 0x02, 0x05, 0x01, 0x01])
         || starts(h, &[0, 0, 1, 0xBA])
+        || starts(h, &[0, 0, 1, 0xB3])
+        || ascii(h, 0, "FLV")
+        || ascii(h, 0, "OggS")
         || (["moov", "mdat", "wide", "pnot"].iter().any(|a| ascii(h, 4, a)) && from_extension(ext) == Format::Video)
     {
         return Format::Video;
@@ -279,8 +338,27 @@ pub fn sniff(h: &[u8], ext: Option<&str>) -> Format {
     if ascii(h, 0, "%PDF-") {
         return Format::Pdf;
     }
+    if starts(h, &[0x76, 0x2F, 0x31, 0x01]) {
+        return Format::Exr;
+    }
+    if ascii(h, 0, "#?RADIANCE") || ascii(h, 0, "#?RGBE") {
+        return Format::Radiance;
+    }
+    // Gzip: an SVGZ by name (nothing else Looker opens is a bare gzip).
+    if starts(h, &[0x1F, 0x8B]) && ext.is_some_and(|e| e.trim_start_matches('.').eq_ignore_ascii_case("svgz")) {
+        return Format::Svg;
+    }
+    // A .ts without an MPEG transport stream's sync byte (0x47, at 0 or after a 4-byte timecode) is TypeScript.
+    if !h.is_empty()
+        && h[0] != 0x47
+        && h.get(4) != Some(&0x47)
+        && ext.is_some_and(|e| e.trim_start_matches('.').eq_ignore_ascii_case("ts"))
+    {
+        return Format::Text;
+    }
     let s = if starts(h, &[0xEF, 0xBB, 0xBF]) { &h[3..] } else { h };
-    if ascii(s, 0, "<?xml") || ascii(s, 0, "<svg") || ascii(s, 0, "<!--") {
+    // XML that is named as text (.xml, .nfo...) stays text; SVG's own markup is XML too.
+    if (ascii(s, 0, "<?xml") || ascii(s, 0, "<svg") || ascii(s, 0, "<!--")) && from_extension(ext) != Format::Text {
         return Format::Svg;
     }
     // A bare MPEG audio or ADTS frame (an MP3 or AAC without a tag): 11 sync bits.
@@ -319,7 +397,7 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
             _ => "HEIF",
         },
         Format::Avif => "AVIF",
-        Format::Svg => "SVG",
+        Format::Svg => if ext == "SVGZ" { "SVGZ" } else { "SVG" },
         Format::Psd => if ext == "PSB" { "PSB" } else { "PSD" },
         Format::JpegXl => "JPEG XL",
         Format::Tga => "TGA",
@@ -331,6 +409,8 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         },
         Format::Xcf => "XCF",
         Format::Qoi => "QOI",
+        Format::Exr => "OpenEXR",
+        Format::Radiance => "Radiance HDR",
         Format::Raw => return Some(if ext.is_empty() { "RAW".into() } else { format!("RAW ({ext})") }),
         Format::Pdf => "PDF",
         Format::Text => match ext.as_str() {
@@ -428,6 +508,34 @@ mod tests {
         assert_eq!(sniff(&[0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6], Some("wma")), Format::Audio);
         assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], Some("mkv")), Format::Video);
         assert_eq!(display_name(Format::Audio, Some(Path::new("song.flac"))).as_deref(), Some("FLAC"));
+    }
+
+    #[test]
+    fn batch_one_formats() {
+        assert_eq!(sniff(&[0x76, 0x2F, 0x31, 0x01, 2, 0, 0, 0], None), Format::Exr);
+        assert_eq!(sniff(b"#?RADIANCE
+FORMAT=32-bit_rle_rgbe", None), Format::Radiance);
+        assert_eq!(sniff(b"#?RGBE
+", Some("hdr")), Format::Radiance);
+        assert_eq!(sniff(&[0x1F, 0x8B, 0x08, 0x00], Some("svgz")), Format::Svg);
+        assert_eq!(sniff(&[0x1F, 0x8B, 0x08, 0x00], Some("gz")), Format::Unknown);
+        // Ogg: audio unless named as video.
+        assert_eq!(sniff(b"OggS ", Some("ogv")), Format::Video);
+        assert_eq!(sniff(b"OggS ", Some("ogg")), Format::Audio);
+        assert_eq!(sniff(b"FLV", None), Format::Video);
+        assert_eq!(sniff(&[0, 0, 1, 0xB3, 0x2D], None), Format::Video);
+        // A transport stream (plain, or with M2TS's 4-byte timecode) is video; TypeScript is text.
+        assert_eq!(sniff(&[0x47, 0x40, 0x00, 0x10], Some("ts")), Format::Video);
+        assert_eq!(sniff(&[0, 0, 0, 0, 0x47, 0x40], Some("ts")), Format::Video);
+        assert_eq!(sniff(b"import { x } from './y';", Some("ts")), Format::Text);
+        // XML named as text stays text; SVG stays SVG.
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?><root/>", Some("xml")), Format::Text);
+        assert_eq!(sniff(b"<?xml version=\"1.0\"?><svg/>", Some("svg")), Format::Svg);
+        assert_eq!(sniff(b"{\"a\": 1}", Some("json")), Format::Text);
+        for (e, n) in [("exr", "OpenEXR"), ("hdr", "Radiance HDR"), ("svgz", "SVGZ"), ("json", "JSON"), ("ts", "TS")] {
+            let f = sniff(&[], Some(e));
+            assert_eq!(display_name(f, Some(Path::new(&format!("a.{e}")))).as_deref(), Some(n), "{e}");
+        }
     }
 
     #[test]

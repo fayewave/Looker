@@ -83,7 +83,14 @@ pub fn intrinsic_size(text: &str) -> Option<(f64, f64)> {
 }
 
 pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // SVGZ: the same document gzipped.
+    if bytes.starts_with(&[0x1F, 0x8B]) {
+        use std::io::Read;
+        let mut plain = Vec::new();
+        flate2::read::GzDecoder::new(&bytes[..]).read_to_end(&mut plain).map_err(|e| format!("svgz: {e}"))?;
+        bytes = plain;
+    }
     render(f, &bytes, box_w, box_h)
 }
 
@@ -129,6 +136,29 @@ pub fn render(f: &IWICImagingFactory, bytes: &[u8], box_w: u32, box_h: u32) -> R
 #[cfg(test)]
 mod tests {
     use super::intrinsic_size;
+
+    #[test]
+    fn svgz_decodes() {
+        use std::io::Write;
+        use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFactory};
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(svg).unwrap();
+        let path = std::env::temp_dir().join("looker-test.svgz");
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+        let d = crate::imaging::decode(&f, &path, 0, 0, true).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(d.format, crate::format::Format::Svg);
+        assert_eq!((d.native_width, d.native_height), (40, 20));
+        // Premultiplied BGRA, the middle pixel: red.
+        let i = ((d.height / 2 * d.width + d.width / 2) * 4) as usize;
+        assert_eq!(&d.frames[0].pixels[i..i + 4], &[0, 0, 255, 255]);
+    }
 
     #[test]
     fn reads_width_height_then_viewbox() {

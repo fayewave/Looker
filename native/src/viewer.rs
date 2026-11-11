@@ -399,7 +399,7 @@ impl Viewer {
 
     /// The theme changed: text files are drawn in its colours (`imaging/text.rs`), so theirs are drawn again.
     pub fn theme_changed(&mut self) {
-        let is_text = |p: &Path| crate::format::from_extension(p.extension().and_then(|e| e.to_str())) == Format::Text;
+        let is_text = |p: &Path| crate::format::of_path(p) == Format::Text;
         let keys: Vec<Key> = self.cache.keys().filter(|k| is_text(&k.path)).cloned().collect();
         for k in keys {
             self.cache.remove(&k);

@@ -1356,7 +1356,7 @@ mod tests {
             paths.push(std::path::PathBuf::from(p));
         }
         if let Some(d) = std::env::var_os("LOOKER_VIDEOS") {
-            let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| crate::format::from_extension(p.extension().and_then(|e| e.to_str())) == crate::format::Format::Video).collect();
+            let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| crate::format::of_path(p) == crate::format::Format::Video).collect();
             v.sort();
             paths.extend(v);
         }

@@ -53,6 +53,48 @@ pub fn image(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Res
     finish(f, img.as_raw(), w, h, box_w, box_h)
 }
 
+/// OpenEXR and Radiance HDR: linear light, 1.0 taken as SDR white. On an scRGB display an HDR decode (highlights
+/// kept, tone-mapped to the panel by gfx.rs); elsewhere clipped to SDR and sRGB-encoded.
+pub fn float_image(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
+    let img = image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?
+        .into_rgba32f();
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return Err("empty image".into());
+    }
+    let px = img.into_raw();
+    // NaN and negative values (out-of-gamut EXR) would poison the averages: dark is the honest reading.
+    let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let rgb: Vec<[f32; 3]> = px.chunks_exact(4).map(|p| [clean(p[0]), clean(p[1]), clean(p[2])]).collect();
+    let alpha: Vec<f32> = px.chunks_exact(4).map(|p| if p[3].is_finite() { p[3].clamp(0.0, 1.0) } else { 1.0 }).collect();
+    drop(px);
+    let opaque = alpha.iter().all(|&a| a >= 1.0);
+    if super::target().is_scrgb() {
+        let (dw, dh, rgb, alpha) = super::hdr::fit(rgb, (!opaque).then_some(alpha), w, h, box_w, box_h);
+        let peak = super::hdr::peak(&rgb);
+        crate::trace::mark(format!("float image: peak {peak:.2}x SDR white"));
+        let mut d = Decoded::still(dw, dh, super::hdr::to_half(&rgb, alpha.as_deref()), w, h, None);
+        d.histogram = Some(Box::new(crate::metadata::Histogram::of(&super::hdr::sdr_bgra(&rgb))));
+        d.colour = super::Colour::Linear { absolute: false, peak };
+        return Ok(d);
+    }
+    let enc = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (e * 255.0).round() as u8
+    };
+    let mut rgba = Vec::with_capacity(rgb.len() * 4);
+    for (c, a) in rgb.iter().zip(&alpha) {
+        rgba.extend_from_slice(&[enc(c[0]), enc(c[1]), enc(c[2]), (a * 255.0).round() as u8]);
+    }
+    finish(f, &rgba, w, h, box_w, box_h)
+}
+
 /// HEIC/HEIF/AVIF through the bundled libheif (see `heif.rs`).
 pub fn heif(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -186,5 +228,40 @@ mod tests {
         // CMYK: no ink is white, full black is black.
         assert_eq!(to_rgba(&[0, 0, 0, 0], 1, 1, 4, true), [255, 255, 255, 255]);
         assert_eq!(to_rgba(&[0, 0, 0, 255], 1, 1, 4, true), [0, 0, 0, 255]);
+    }
+
+    /// EXR and Radiance HDR written by the image crate come back through the decoder chain: clipped and
+    /// sRGB-encoded for an SDR screen, kept above 1.0 for an scRGB one.
+    #[test]
+    fn float_images_round_trip() {
+        use crate::imaging::{Colour, decode, decode_for_screen};
+        use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFactory};
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        // Black, 18 % grey, SDR white, four times SDR white.
+        let px: Vec<f32> = [0.0f32, 0.18, 1.0, 4.0].iter().flat_map(|&v| [v, v, v]).collect();
+        let img = image::Rgb32FImage::from_raw(4, 1, px).unwrap();
+        let dir = std::env::temp_dir();
+        for ext in ["exr", "hdr"] {
+            let path = dir.join(format!("looker-float-test.{ext}"));
+            image::DynamicImage::ImageRgb32F(img.clone()).save(&path).unwrap();
+            let d = decode(&f, &path, 0, 0, true).unwrap();
+            assert_eq!((d.width, d.height), (4, 1), "{ext}");
+            // Premultiplied BGRA: blue of each pixel. 18 % linear is ~118 in sRGB.
+            let b: Vec<u8> = d.frames[0].pixels.chunks_exact(4).map(|p| p[0]).collect();
+            assert_eq!(b[0], 0, "{ext}");
+            assert!((b[1] as i32 - 118).abs() <= 2, "{ext}: {b:?}");
+            assert_eq!(&b[2..], &[255, 255], "{ext}");
+            let out = crate::colour::Output { space: crate::colour::Space::Scrgb { white_nits: 200.0, hdr: true }, generation: 0 };
+            let d = decode_for_screen(&f, &path, 0, 0, true, &out).unwrap();
+            match d.colour {
+                Colour::Linear { absolute: false, peak } => assert!((peak - 4.0).abs() < 0.1, "{ext}: {peak}"),
+                c => panic!("{ext}: {c:?}"),
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }

@@ -106,7 +106,7 @@ pub(super) struct Loaded {
 impl App {
     /// After every navigation: a model on screen starts loading its mesh; anything else drops the last one.
     pub(super) fn sync_model(&mut self) {
-        let want = self.current_path().filter(|p| format::from_extension(p.extension().and_then(|e| e.to_str())) == format::Format::Model).map(Path::to_path_buf);
+        let want = self.current_path().filter(|p| format::of_path(p) == format::Format::Model).map(Path::to_path_buf);
         let Some(path) = want else {
             self.model = None;
             return;

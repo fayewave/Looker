@@ -128,6 +128,8 @@ enum Step {
     JpegXl,
     Jpeg2000,
     Pcx,
+    /// OpenEXR and Radiance HDR (image crate), HDR on an scRGB display.
+    Float,
     Xcf,
     Pdf,
     /// A text file's first page (its thumbnail; on screen it's the editor).
@@ -177,6 +179,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Tga | Format::Qoi | Format::Pnm => &[Image],
         Format::Dds => &[Wic, Image],
         Format::Pcx => &[Pcx],
+        Format::Exr | Format::Radiance => &[Float],
         Format::Xcf => &[Xcf],
         // Magick can't read PDF without Ghostscript; the inbox renderer is the only option.
         Format::Pdf => &[Pdf],
@@ -212,6 +215,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::JpegXl => fallback::jpeg_xl(f, path, box_w, box_h).map(Some),
         Step::Jpeg2000 => fallback::jpeg_2000(f, path, box_w, box_h).map(Some),
         Step::Pcx => fallback::pcx(f, path, box_w, box_h).map(Some),
+        Step::Float => fallback::float_image(f, path, box_w, box_h).map(Some),
         Step::Xcf => fallback::xcf(f, path, box_w, box_h).map(Some),
         Step::Pdf => pdf::decode(f, path, box_w, box_h).map(Some),
         Step::Text => text::decode(f, path, box_w, box_h).map(Some),

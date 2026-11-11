@@ -630,15 +630,15 @@ impl App {
             // On the solid accent everything is white.
             let ink = |c: u32| if lit { rgb(t.on_accent) } else { gfx::rgba(c, faded) };
             // A video's length goes on its thumbnail when that's big enough (the meta thread probes it).
-            let is_video = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Audio);
+            let is_video = r.kind == Kind::Image && matches!(format::of_path(&r.path), format::Format::Video | format::Format::Audio);
             let badge = is_video && icon_h >= video::BADGE_MIN_H;
             // Videos and GIFs: a play badge in the thumbnail's middle.
-            let moving_picture = r.kind == Kind::Image && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Video | format::Format::Gif);
+            let moving_picture = r.kind == Kind::Image && matches!(format::of_path(&r.path), format::Format::Video | format::Format::Gif);
             // Audio shows a plain waveform icon, not the file's own waveform (Faye, 2026-11-11).
-            let is_audio = r.kind == Kind::Image && format::from_extension(r.path.extension().and_then(|e| e.to_str())) == format::Format::Audio;
+            let is_audio = r.kind == Kind::Image && format::of_path(&r.path) == format::Format::Audio;
             // Text, PDFs and audio show Looker's red icon for the type, not a picture (Faye, 2026-11-11).
             let is_text = r.kind == Kind::Image
-                && matches!(format::from_extension(r.path.extension().and_then(|e| e.to_str())), format::Format::Text | format::Format::Pdf | format::Format::Audio);
+                && matches!(format::of_path(&r.path), format::Format::Text | format::Format::Pdf | format::Format::Audio);
             if r.kind == Kind::Image && !is_audio {
                 if !is_text {
                     self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);

@@ -5,8 +5,9 @@ edition = "2024"
 description = "Looker, a fast photo viewer for Windows (native rebuild)"
 
 [dependencies]
+flate2 = "1"
 hayro-jpeg2000 = "0.4.0"
-image = { version = "0.25.10", default-features = false, features = ["gif", "png", "webp", "tga", "pnm", "qoi", "ico", "dds"] }
+image = { version = "0.25.10", default-features = false, features = ["gif", "png", "webp", "tga", "pnm", "qoi", "ico", "dds", "exr", "hdr"] }
 jxl-oxide = { version = "0.12.6", features = ["moxcms"] }
 kamadak-exif = "0.6.1"
 serde_json = "1"

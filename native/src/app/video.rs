@@ -377,7 +377,7 @@ fn resume_point(path: &Path) -> Option<i64> {
 impl App {
     /// After every navigation: a video on screen gets a player; anything else drops the last one.
     pub(super) fn sync_video(&mut self) {
-        let kind = |p: &Path| format::from_extension(p.extension().and_then(|e| e.to_str()));
+        let kind = |p: &Path| format::of_path(p);
         let want = self.current_path().filter(|p| matches!(kind(p), format::Format::Video | format::Format::Audio)).map(Path::to_path_buf);
         if self.video.as_ref().is_some_and(|v| Some(&v.path) == want.as_ref()) {
             return;
