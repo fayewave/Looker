@@ -486,6 +486,18 @@ impl App {
                         g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(th.text), Align::Left);
                     }
                 }
+                // A faint hairline between the properties of a group and under the name, halfway down the gap
+                // (Transient's; Faye, 2026-11-11).
+                let next = blocks.get(i + 1);
+                let line = match (b, next) {
+                    (Block::Row { .. }, Some(Block::Row { .. })) => true,
+                    (Block::Heading(_), Some(_)) => true,
+                    _ => false,
+                };
+                if line {
+                    let gap = if matches!(next, Some(Block::Title(_))) { GROUP_GAP } else { ROW_GAP };
+                    g.hline(x, g.snap(y + h + gap / 2.0), w, gfx::rgba(th.divider, 0.6));
+                }
             }
             y += h;
         }
