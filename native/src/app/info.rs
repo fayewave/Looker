@@ -540,12 +540,11 @@ impl App {
                     Block::Row { .. } | Block::Heading(..) => Some(Hit::InfoRow(i)),
                     _ => None,
                 };
-                // An unsaved edit: the accent's tint under the row and a bar down its left, so what Ctrl+S will
-                // write is plain to see (Faye, 2026-11-11).
+                // An unsaved edit: the accent's tint under the row, so what Ctrl+S will write is plain to see (Faye,
+                // 2026-11-11; no bar down its left).
                 if fields[i].is_some_and(|f| changed.contains(&f)) {
                     let rr = D2D_RECT_F { left: x - 6.0, top: y - 3.0, right: x + w + 4.0, bottom: y + h + 3.0 };
                     g.fill_round(rr, 5.0, gfx::rgba(th.accent, 0.12));
-                    g.fill_round(rect(rr.left, rr.top + 3.0, 3.0, rr.bottom - rr.top - 6.0), 1.5, rgb(th.accent));
                 }
                 if let Some(hit) = hit {
                     let rr = D2D_RECT_F { left: x - 6.0, top: y - 3.0, right: x + w + 4.0, bottom: y + h + 3.0 };
