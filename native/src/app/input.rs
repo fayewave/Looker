@@ -1228,6 +1228,11 @@ impl App {
                     self.on_recents(*list);
                     Some(LRESULT(0))
                 }
+                info_many::WM_EXIF_MANY => {
+                    let r = Box::from_raw(lp.0 as *mut info_many::ManyResult);
+                    self.on_exif_many(*r);
+                    Some(LRESULT(0))
+                }
                 info::WM_EXIF => {
                     let r = Box::from_raw(lp.0 as *mut info::ExifResult);
                     self.on_exif(*r);

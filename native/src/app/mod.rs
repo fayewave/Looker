@@ -10,6 +10,7 @@ mod explorer;
 mod explorer_ops;
 mod explorer_view;
 mod info;
+mod info_many;
 mod landing;
 mod strip;
 mod input;

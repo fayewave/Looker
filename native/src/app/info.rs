@@ -46,11 +46,13 @@ pub(super) struct Card {
     pub settle: Option<crate::motion::Settle>,
     /// The file it last showed: another one starts back at the top (Transient's).
     shown: Option<PathBuf>,
+    /// Several files selected in the explorer: their summary (info_many.rs).
+    pub(super) many: super::info_many::ManyState,
 }
 
 impl Card {
     pub fn new() -> Card {
-        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None }
+        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None, many: Default::default() }
     }
 
     /// The scroll offset to draw this frame, and whether it is still moving.
@@ -71,19 +73,22 @@ impl Card {
     }
 }
 
+#[derive(Clone)]
 pub(super) enum Block {
-    /// The file's name, over everything (a click copies it).
-    Heading(String),
+    /// The file's name over everything, or "12 files selected" (a click copies it, or their names: the second).
+    Heading(String, Option<String>),
     Histogram,
     Title(&'static str),
-    Row { label: &'static str, value: String, path: bool },
+    /// A property. `copy`: what a click copies when it isn't the value shown (a selection's mixed values);
+    /// `dim`: the value in the label colour ("Mixed values").
+    Row { label: &'static str, value: String, path: bool, copy: Option<String>, dim: bool },
 }
 
 /// The Location group's rows: right-click offers the map on any of them.
 pub(super) const LOCATION_ROWS: [&str; 7] = ["Place", "City", "State", "Country", "Latitude", "Longitude", "Altitude"];
 
 /// 1,234,567.
-fn grouped(v: u64) -> String {
+pub(super) fn grouped(v: u64) -> String {
     let s = v.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
@@ -96,7 +101,7 @@ fn grouped(v: u64) -> String {
 }
 
 /// A size as Explorer's Properties gives it: "2.4 MB (2,456,789 bytes)".
-fn size_text(b: u64) -> String {
+pub(super) fn size_text(b: u64) -> String {
     if b < 1024 { format_bytes(b) } else { format!("{} ({} bytes)", format_bytes(b), grouped(b)) }
 }
 
@@ -105,7 +110,7 @@ fn ft_set(t: FILETIME) -> bool {
 }
 
 /// An EXIF wall-clock time in the user's short date and time format.
-fn format_exif_time(t: ExifTime) -> String {
+pub(super) fn format_exif_time(t: ExifTime) -> String {
     let st = SYSTEMTIME { wYear: t.year, wMonth: t.month, wDay: t.day, wHour: t.hour, wMinute: t.minute, wSecond: t.second, ..Default::default() };
     format_local(&st)
 }
@@ -255,8 +260,9 @@ impl App {
     /// name is "Name").
     pub(super) fn info_property(&self, i: usize) -> Option<(&'static str, String, bool)> {
         match self.info_blocks().into_iter().nth(i)? {
-            Block::Heading(name) => Some(("Name", name, false)),
-            Block::Row { label, value, path } => Some((label, value, path)),
+            Block::Heading(name, None) => Some(("Name", name, false)),
+            Block::Heading(_, Some(names)) => Some(("File names", names, false)),
+            Block::Row { label, value, path, copy, .. } => Some((label, copy.unwrap_or(value), path)),
             _ => None,
         }
     }
@@ -280,7 +286,7 @@ impl App {
         let mut out = String::new();
         for b in self.info_blocks() {
             match b {
-                Block::Heading(name) => out.push_str(&name),
+                Block::Heading(name, _) => out.push_str(&name),
                 Block::Histogram => {}
                 Block::Title(t) => {
                     out.push_str("\r\n\r\n");
@@ -332,11 +338,14 @@ impl App {
 
     fn info_blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
-        let row = |label, value: String| Block::Row { label, value, path: false };
+        if let Some(blocks) = self.many_blocks() {
+            return blocks;
+        }
+        let row = |label, value: String| Block::Row { label, value, path: false, copy: None, dim: false };
         // A file Looker can't open covers the photo: what Explorer would say about it.
         if let Some(p) = &self.placeholder {
             let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-            out.push(Block::Heading(file_name(&p.path)));
+            out.push(Block::Heading(file_name(&p.path), None));
             out.push(Block::Title("File"));
             out.push(row("Type", if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }));
             if let Some(s) = p.size {
@@ -345,7 +354,7 @@ impl App {
             if let Some(t) = p.modified {
                 out.push(row("Modified", format_time(t)));
             }
-            out.push(Block::Row { label: "File Path", value: p.path.to_string_lossy().into_owned(), path: true });
+            out.push(Block::Row { label: "File Path", value: p.path.to_string_lossy().into_owned(), path: true, copy: None, dim: false });
             return out;
         }
         let Some(path) = self.current_path() else { return out };
@@ -356,7 +365,7 @@ impl App {
         let text = entry.is_some_and(|e| e.format == format::Format::Text);
         // A model's histogram would be of its render, not of anything in the file; a video's of its first picture
         // only (hidden: Faye, 2026-11-10).
-        out.push(Block::Heading(file_name(path)));
+        out.push(Block::Heading(file_name(path), None));
         if entry.is_some_and(|e| e.histogram.is_some()) && !model && !video && !text {
             out.push(Block::Histogram);
         }
@@ -394,7 +403,7 @@ impl App {
                 out.push(row("Accessed", format_time(i.accessed)));
             }
         }
-        out.push(Block::Row { label: "File Path", value: path.to_string_lossy().into_owned(), path: true });
+        out.push(Block::Row { label: "File Path", value: path.to_string_lossy().into_owned(), path: true, copy: None, dim: false });
         let stamp = self.viewer.current.as_ref().map(|(_, s)| *s);
         if let Some((p, s, Some(exif))) = &self.info_card.exif {
             if p == path && Some(*s) == stamp {
@@ -415,8 +424,12 @@ impl App {
             return false;
         }
         self.request_exif();
-        // Another file: back to the top at once, no animation (Transient's).
-        let showing = self.placeholder.as_ref().map(|p| p.path.clone()).or_else(|| self.current_path().map(Path::to_path_buf));
+        self.sync_many();
+        // Another file (or selection): back to the top at once, no animation (Transient's).
+        let showing = match self.info_card.many.key() {
+            Some(k) => Some(PathBuf::from(format!("::selection:{k:x}"))),
+            None => self.placeholder.as_ref().map(|p| p.path.clone()).or_else(|| self.current_path().map(Path::to_path_buf)),
+        };
         if showing != self.info_card.shown {
             self.info_card.shown = showing;
             self.info_card.scroll = 0.0;
@@ -445,7 +458,7 @@ impl App {
         let mut label_hs = Vec::with_capacity(blocks.len());
         for b in &blocks {
             let (h, lh) = match b {
-                Block::Heading(name) => (g.measure_height(&wide(name), &g.fonts.heading_wrap, w).max(19.0).ceil(), 0.0),
+                Block::Heading(name, _) => (g.measure_height(&wide(name), &g.fonts.heading_wrap, w).max(19.0).ceil(), 0.0),
                 Block::Histogram => (hist_h, 0.0),
                 Block::Title(_) => (TITLE_H + 2.0, 0.0),
                 Block::Row { label, value, .. } => {
@@ -484,7 +497,7 @@ impl App {
                 // fading in and out, a touch less while pressed. A click copies it; the path's shows the file.
                 let hit = match b {
                     Block::Row { path: true, .. } => Some(Hit::InfoPath),
-                    Block::Row { .. } | Block::Heading(_) => Some(Hit::InfoRow(i)),
+                    Block::Row { .. } | Block::Heading(..) => Some(Hit::InfoRow(i)),
                     _ => None,
                 };
                 if let Some(hit) = hit {
@@ -497,15 +510,15 @@ impl App {
                     }
                 }
                 match b {
-                    Block::Heading(name) => g.text(&wide(name), &g.fonts.heading_wrap, rect(x, y, w, *h), rgb(th.text), Align::Left),
+                    Block::Heading(name, _) => g.text(&wide(name), &g.fonts.heading_wrap, rect(x, y, w, *h), rgb(th.text), Align::Left),
                     Block::Histogram => self.draw_histogram(g, rect(x, y, w, *h)),
                     Block::Title(t) => {
                         ui::section(g, t, rect(x, y, w, TITLE_H));
                     }
-                    Block::Row { label, value, .. } => {
+                    Block::Row { label, value, dim, .. } => {
                         g.text(&wide(label), &g.fonts.caption_wrap, rect(x, y + 1.0, w, lh), rgb(th.label), Align::Left);
                         let vr = rect(x, y + 1.0 + lh, w, h - 2.0 - lh);
-                        g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(th.text), Align::Left);
+                        g.text_tabular(&wide(value), &g.fonts.caption_wrap, vr, rgb(if *dim { th.label } else { th.text }), Align::Left);
                     }
                 }
                 // A faint hairline between the properties of a group and under the name, halfway down the gap
@@ -513,7 +526,7 @@ impl App {
                 let next = blocks.get(i + 1);
                 let line = match (b, next) {
                     (Block::Row { .. }, Some(Block::Row { .. })) => true,
-                    (Block::Heading(_), Some(_)) => true,
+                    (Block::Heading(..), Some(_)) => true,
                     _ => false,
                 };
                 if line {

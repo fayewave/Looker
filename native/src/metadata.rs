@@ -51,6 +51,8 @@ pub struct Exif {
     pub words: Vec<(&'static str, String)>,
     /// Where it was taken by name (place, city, state, country).
     pub place: Vec<(&'static str, String)>,
+    /// Its size as shown, from WIC (a selection's summary compares these).
+    pub dims: Option<(u32, u32)>,
 }
 
 /// Reads the file's EXIF block; None when it has none or the container isn't one EXIF can live in. A video's
@@ -71,8 +73,8 @@ pub fn read(path: &Path) -> Option<Exif> {
     let words = crate::describe::read(&bytes, exif.as_ref());
     // Formats WIC itself reads (camera RAW's inbox decoder would describe only its embedded preview).
     use crate::format::Format as F;
-    let image = if matches!(format, F::Jpeg | F::Png | F::Bmp | F::Gif | F::Tiff | F::Webp | F::Ico | F::JpegXr | F::Heif | F::Avif) { crate::imaging::wic::facts(path) } else { Vec::new() };
-    let mut e = Exif { image, words: words.rows(), place: words.place_rows(), ..Default::default() };
+    let (image, dims) = if matches!(format, F::Jpeg | F::Png | F::Bmp | F::Gif | F::Tiff | F::Webp | F::Ico | F::JpegXr | F::Heif | F::Avif) { crate::imaging::wic::facts(path) } else { (Vec::new(), None) };
+    let mut e = Exif { image, dims, words: words.rows(), place: words.place_rows(), ..Default::default() };
     let Some(exif) = exif else {
         return (!e.image.is_empty() || !e.words.is_empty() || !e.place.is_empty()).then_some(e);
     };

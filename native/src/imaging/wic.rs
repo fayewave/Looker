@@ -450,16 +450,22 @@ pub fn orientation(f: &IWICImagingFactory, path: &Path) -> u16 {
 }
 
 /// The info card's Image group for a file WIC reads: its pixel format ("8-bit RGB", "16-bit RGB with alpha",
-/// "Indexed, 256 colours"), colour profile by name, resolution and frame count. Its own factory: it runs on
-/// the info card's EXIF thread.
-pub fn facts(path: &Path) -> Vec<(&'static str, String)> {
+/// "Indexed, 256 colours"), colour profile by name, resolution and frame count; and its size as shown (EXIF
+/// orientation applied), for a selection's summary. Its own factory: it runs on the info card's threads.
+pub fn facts(path: &Path) -> (Vec<(&'static str, String)>, Option<(u32, u32)>) {
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
     let mut out = Vec::new();
+    let mut dims = None;
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let Ok(f) = CoCreateInstance::<_, IWICImagingFactory>(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER) else { return out };
-        let Ok(dec) = open(&f, &Source::File(path)) else { return out };
-        let Ok(frame) = dec.GetFrame(0) else { return out };
+        let Ok(f) = CoCreateInstance::<_, IWICImagingFactory>(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER) else { return (out, dims) };
+        let Ok(dec) = open(&f, &Source::File(path)) else { return (out, dims) };
+        let Ok(frame) = dec.GetFrame(0) else { return (out, dims) };
+        let (mut w, mut h) = (0u32, 0u32);
+        if frame.GetSize(&mut w, &mut h).is_ok() && w > 0 && h > 0 {
+            let o = frame.GetMetadataQueryReader().ok().map_or(1, |r| read_orientation(&r));
+            dims = Some(if (5..=8).contains(&o) { (h, w) } else { (w, h) });
+        }
         if let Some(p) = pixel_format(&f, &frame) {
             out.push(("Pixel format", p));
         }
@@ -477,7 +483,7 @@ pub fn facts(path: &Path) -> Vec<(&'static str, String)> {
             }
         }
     }
-    out
+    (out, dims)
 }
 
 /// How the decoder's own pixels are laid out, worded.
