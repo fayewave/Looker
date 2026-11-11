@@ -29,6 +29,7 @@ mod metadata;
 mod metawrite;
 mod model;
 mod motion;
+mod motionphoto;
 mod pages;
 mod player;
 mod settings;

@@ -273,6 +273,9 @@ impl App {
                     if self.video.is_some() {
                         self.video_pointer(x, y);
                     }
+                    if self.pressed == Some(Hit::Viewport) {
+                        self.motion_moved(x, y);
+                    }
                     if matches!(self.pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_pointer(x);
                     }
@@ -512,6 +515,9 @@ impl App {
                     if h == Some(Hit::Viewport) && (self.photo_up() || self.model_active()) || h == Some(Hit::ModelCube) && self.model_active() {
                         self.drag = Some((x, y));
                     }
+                    if h == Some(Hit::Viewport) {
+                        self.motion_press();
+                    }
                     self.invalidate();
                     Some(LRESULT(0))
                 }
@@ -524,6 +530,7 @@ impl App {
                     let (x, y) = self.dip_from_lparam(lp);
                     let pressed = self.pressed.take();
                     let was_drag = self.drag.take().is_some();
+                    self.motion_release();
                     self.text_drag = None;
                     self.info_grip_release();
                     self.strip_grip_release();
@@ -555,6 +562,7 @@ impl App {
                             Some(p @ (Hit::PickerPreset(_) | Hit::PickerDone | Hit::PickerCancel)) => self.picker_click(p),
                             Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
                             Some(Hit::AudioMode(i)) => self.set_audio_mode(i),
+                            Some(Hit::MotionBadge) => self.motion_badge_click(),
                             Some(Hit::AudioClear) => {
                                 self.audio_clear_region();
                             }

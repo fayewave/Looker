@@ -274,6 +274,7 @@ impl App {
             Hit::VideoSettings => "Settings",
             Hit::VideoTime => "Timecode or frames",
             Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
+            Hit::MotionBadge => "Motion photo: play (or hold on the photo)",
             _ => return None,
         })
     }
@@ -448,7 +449,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.audio_animating() || self.model_animating() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -684,6 +685,7 @@ impl App {
         if self.placeholder.is_none() {
             self.draw_subtitles(g, bg);
         }
+        self.draw_motion_badge(g);
     }
 
     /// Gradients behind the bars, so they read on a bright photo (black in the dark themes, the page colour in

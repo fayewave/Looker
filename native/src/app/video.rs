@@ -108,6 +108,37 @@ pub(super) struct VideoView {
     pub(super) subs: super::subtitles::SubView,
     /// The controls bar's top and how far it has faded in, as last drawn (subtitles keep clear of it).
     pub(super) bar_top: Option<(f32, f32)>,
+    /// A motion photo's video (app/motionphoto.rs): it plays over the still, with no bar, keys, loop or resume point.
+    pub(super) motion: bool,
+}
+
+impl VideoView {
+    /// A view of `path` playing a motion photo's video.
+    pub(super) fn for_motion(path: PathBuf) -> VideoView {
+        VideoView {
+            audio: false,
+            path,
+            player: None,
+            conv: None,
+            bitmap: None,
+            failed: false,
+            resume: Some((0, true)),
+            audio_track: None,
+            video_track: None,
+            auto_loop: Some(false),
+            scrub: None,
+            preview: None,
+            still: None,
+            looping: Some(false),
+            sdr: true,
+            flash: None,
+            cursor_hidden: false,
+            stats: Stats::default(),
+            subs: Default::default(),
+            bar_top: None,
+            motion: true,
+        }
+    }
 }
 
 /// How the UI thread kept up while it played, for the trace.
@@ -375,6 +406,10 @@ fn resume_point(path: &Path) -> Option<i64> {
 impl App {
     /// After every navigation: a video on screen gets a player; anything else drops the last one.
     pub(super) fn sync_video(&mut self) {
+        // A motion photo's video comes and goes with its photo (sync_motion).
+        if self.video.as_ref().is_some_and(|v| v.motion) {
+            return;
+        }
         let kind = |p: &Path| format::of_path(p);
         let want = self.current_path().filter(|p| matches!(kind(p), format::Format::Video | format::Format::Audio)).map(Path::to_path_buf);
         if self.video.as_ref().is_some_and(|v| Some(&v.path) == want.as_ref()) {
@@ -412,6 +447,7 @@ impl App {
             stats: Stats::default(),
             subs: Default::default(),
             bar_top: None,
+            motion: false,
         });
     }
 
@@ -436,6 +472,9 @@ impl App {
     /// The video going away (another file, the window closing): a long one remembers where it was left.
     pub(super) fn leave_video(&mut self) {
         let Some(v) = self.video.take() else { return };
+        if v.motion {
+            return;
+        }
         let s = &v.stats;
         if s.pictures > 0 {
             crate::trace::mark(format!(
@@ -471,7 +510,7 @@ impl App {
 
     /// A video is the current file (its keys and wheel apply, even before its first picture).
     pub(super) fn video_shown(&self) -> bool {
-        self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed)
+        self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed && !v.motion)
     }
 
     /// The slideshow's dwell is up but this video is still opening or playing: it waits for the end.
@@ -497,6 +536,7 @@ impl App {
             }
             return;
         }
+        self.sync_motion();
         self.sync_video();
         let slideshow = self.slideshow.running;
         // A slideshow plays every video (to its end, without looping).
@@ -665,7 +705,7 @@ impl App {
     }
 
     pub(super) fn player(&mut self) -> Option<&mut Engine> {
-        self.video.as_mut().filter(|v| !v.failed).and_then(|v| v.player.as_mut()).filter(|p| p.info().is_some())
+        self.video.as_mut().filter(|v| !v.failed && !v.motion).and_then(|v| v.player.as_mut()).filter(|p| p.info().is_some())
     }
 
     /// The status row's facts about the video playing (frame rate, codec...), once it has opened.

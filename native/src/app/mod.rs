@@ -17,6 +17,7 @@ mod strip;
 mod input;
 mod menus;
 mod model;
+mod motionphoto;
 mod page;
 mod rip;
 mod slideshow;
@@ -278,6 +279,8 @@ enum Hit {
     /// The times either side of the seek bar: a click picks Timecode or Frames.
     VideoTime,
     VideoFullscreen,
+    /// The Motion badge on a motion photo: plays its video once.
+    MotionBadge,
     /// An audio file's waveform (and ruler), its scrollbar while zoomed in, the Waveform / Spectrogram toggle, and
     /// the loop region's clear button.
     AudioWave,
@@ -665,6 +668,11 @@ pub struct App {
     /// The 3D model on screen, while the current file is one.
     model: Option<model::ModelView>,
     video: Option<video::VideoView>,
+    /// The current photo's motion part (a motion photo's video), once looked for; when a press began that may be a
+    /// hold that plays it; whether the one playing was started by a hold (and stops when the button comes up).
+    motion: Option<motionphoto::MotionPhoto>,
+    motion_hold: Option<std::time::Instant>,
+    motion_held: bool,
     /// An audio file's view (cover, waveform), while one is up.
     audio_view: Option<audio::AudioView>,
     /// The playing video on the taskbar button and in Windows' media controls (media.rs).
@@ -1429,6 +1437,9 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             placeholder: None,
             model: None,
             video: None,
+            motion: None,
+            motion_hold: None,
+            motion_held: false,
             audio_view: None,
             media: Default::default(),
             accent_picker: None,
