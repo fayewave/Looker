@@ -694,6 +694,17 @@ impl App {
                         }
                     }
                 }
+                if !drew && r.kind == Kind::Image {
+                    // No thumbnail (yet, or ever): Looker's red icon for the type, not a grey photo glyph (Faye,
+                    // 2026-11-11). The thumbnail takes over when it arrives.
+                    if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                        let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
+                        if let Some(icon) = crate::file_icons::icon(&e, (dip * g.dpi / 96.0).round() as u32) {
+                            g.draw_icon(&icon, ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
+                            drew = true;
+                        }
+                    }
+                }
                 if !drew && r.kind == Kind::Other {
                     // A file Looker can't open: Windows' icon for its type.
                     if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {

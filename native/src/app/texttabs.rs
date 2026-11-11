@@ -61,6 +61,8 @@ pub(super) struct TextDocs {
     next_id: u64,
     /// Windows' spell checker, made the first time it's wanted (None inside: no checker for the language).
     pub(super) spell: Option<Option<crate::spell::Spell>>,
+    /// The spell check of the lines on screen, on its own thread (started the first time it's wanted).
+    pub(super) spell_worker: Option<crate::spell::Worker>,
     /// The tab strip's motion, drag and tooltips: the explorer's own (tabstrip.rs).
     pub(super) strip: super::tabstrip::TabStrip,
     /// Tabs still to close after "Close other tabs" (ids), one Save / Don't save / Cancel at a time.
@@ -69,7 +71,7 @@ pub(super) struct TextDocs {
 
 impl TextDocs {
     pub(super) fn new() -> TextDocs {
-        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None, strip: Default::default(), close_queue: Vec::new() }
+        TextDocs { docs: Vec::new(), active: 0, viewer: None, shown: false, restored: false, session_mark: Vec::new(), next_id: 1, spell: None, spell_worker: None, strip: Default::default(), close_queue: Vec::new() }
     }
 
     pub(super) fn cur(&self) -> Option<&TextView> {

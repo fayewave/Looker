@@ -103,6 +103,115 @@ impl Spell {
     }
 }
 
+/// Posted to the window when the worker has results waiting (`Worker::take`).
+pub const WM_SPELLED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 40;
+
+/// A line to check: which document and version it belongs to, its index and its text.
+pub struct Job {
+    pub doc: u64,
+    pub version: u64,
+    pub line: usize,
+    pub text: Vec<u16>,
+}
+
+/// A checked line.
+pub struct Done {
+    pub doc: u64,
+    pub version: u64,
+    pub line: usize,
+    pub misses: Vec<Miss>,
+}
+
+#[derive(Default)]
+struct Shared {
+    /// The lines wanted, first first; replaced whole by each `want` (lines scrolled away are dropped).
+    queue: Vec<Job>,
+    /// The line being checked now (doc, version, line).
+    busy: Option<(u64, u64, usize)>,
+    done: Vec<Done>,
+    posted: bool,
+    quit: bool,
+}
+
+/// Spell check off the UI thread: Windows' checker takes up to a few milliseconds a line, and a screenful of new
+/// lines (a long log scrolled) cost a frame 10-75 ms (2026-11-11). Its own checker, on its own MTA thread.
+pub struct Worker {
+    shared: std::sync::Arc<(std::sync::Mutex<Shared>, std::sync::Condvar)>,
+}
+
+impl Worker {
+    pub fn start(hwnd: windows::Win32::Foundation::HWND) -> Worker {
+        let shared = std::sync::Arc::new((std::sync::Mutex::new(Shared::default()), std::sync::Condvar::new()));
+        let s = shared.clone();
+        let hwnd = hwnd.0 as usize;
+        let _ = std::thread::Builder::new().name("spell".into()).spawn(move || {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+            }
+            let checker = Spell::new();
+            let (lock, cv) = &*s;
+            loop {
+                let job = {
+                    let mut g = lock.lock().unwrap();
+                    loop {
+                        if g.quit {
+                            return;
+                        }
+                        if !g.queue.is_empty() {
+                            let j = g.queue.remove(0);
+                            g.busy = Some((j.doc, j.version, j.line));
+                            break j;
+                        }
+                        g = cv.wait(g).unwrap();
+                    }
+                };
+                let misses = checker.as_ref().map(|c| c.check(&job.text)).unwrap_or_default();
+                let post = {
+                    let mut g = lock.lock().unwrap();
+                    g.busy = None;
+                    g.done.push(Done { doc: job.doc, version: job.version, line: job.line, misses });
+                    !std::mem::replace(&mut g.posted, true)
+                };
+                if post {
+                    unsafe {
+                        let h = windows::Win32::Foundation::HWND(hwnd as _);
+                        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(h), WM_SPELLED, Default::default(), Default::default());
+                    }
+                }
+            }
+        });
+        Worker { shared }
+    }
+
+    /// The lines to check, in order, replacing any not started yet. A line being checked now is left out.
+    pub fn want(&self, mut jobs: Vec<Job>) {
+        let (lock, cv) = &*self.shared;
+        let mut g = lock.lock().unwrap();
+        if let Some(b) = g.busy {
+            jobs.retain(|j| (j.doc, j.version, j.line) != b);
+        }
+        g.queue = jobs;
+        if !g.queue.is_empty() {
+            cv.notify_one();
+        }
+    }
+
+    /// The lines checked since the last call.
+    pub fn take(&self) -> Vec<Done> {
+        let mut g = self.shared.0.lock().unwrap();
+        g.posted = false;
+        std::mem::take(&mut g.done)
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap().quit = true;
+        cv.notify_one();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +227,29 @@ mod tests {
         assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!((m[0].start, m[0].end), (5, 13));
         assert!(s.suggest("sentense", 5).iter().any(|w| w == "sentence"));
+    }
+
+    #[test]
+    fn worker_checks_off_thread() {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+        }
+        let w = Worker::start(windows::Win32::Foundation::HWND::default());
+        let text: Vec<u16> = "This sentense is fine.".encode_utf16().collect();
+        w.want(vec![Job { doc: 1, version: 2, line: 3, text }]);
+        let t = std::time::Instant::now();
+        let done = loop {
+            let d = w.take();
+            if !d.is_empty() || t.elapsed().as_secs() > 10 {
+                break d;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].doc, done[0].version, done[0].line), (1, 2, 3));
+        // No checker for the language on this machine: nothing found, but still answered.
+        if Spell::new().is_some() {
+            assert_eq!(done[0].misses.len(), 1);
+        }
     }
 }

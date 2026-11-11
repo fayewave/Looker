@@ -1196,6 +1196,10 @@ impl App {
                     self.on_model_loaded(*l);
                     Some(LRESULT(0))
                 }
+                crate::spell::WM_SPELLED => {
+                    self.invalidate();
+                    Some(LRESULT(0))
+                }
                 crate::thumbs::WM_THUMBS => {
                     self.on_thumbs();
                     Some(LRESULT(0))

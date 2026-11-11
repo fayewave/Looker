@@ -2466,44 +2466,62 @@ impl App {
         self.text.spell.as_ref().and_then(|s| s.as_ref())
     }
 
-    /// Checks lines `first..last` of the document up (those on screen) when they haven't been since the text
-    /// last changed.
+    /// The lines `first..last` of the document (those on screen) spell-checked: results the worker has come back
+    /// with are filed, and the lines not checked since the text last changed are handed to it, on its own thread.
     fn text_spell_lines(&mut self, first: usize, last: usize) {
         if !self.settings.text_spell || !self.text.cur().is_some_and(|d| d.is_prose()) {
             return;
         }
-        if self.spell_checker().is_none() {
-            return;
-        }
-        let super::texttabs::TextDocs { docs, active, spell, .. } = &mut self.text;
-        let (Some(tv), Some(Some(sp))) = (docs.get_mut(*active), spell.as_ref()) else { return };
-        if tv.spell_version != tv.version {
-            tv.spell.clear();
-            tv.spell_version = tv.version;
-        }
-        let caret = tv.edit.caret();
-        let md = tv.is_markdown();
-        for i in first..last {
-            if tv.spell.contains_key(&i) {
+        let hwnd = self.hwnd;
+        let super::texttabs::TextDocs { docs, active, spell_worker, .. } = &mut self.text;
+        let worker = spell_worker.get_or_insert_with(|| crate::spell::Worker::start(hwnd));
+        for d in worker.take() {
+            let Some(tv) = docs.iter_mut().find(|t| t.id == d.doc) else { continue };
+            if tv.spell_version != tv.version {
+                tv.spell.clear();
+                tv.spell_version = tv.version;
+            }
+            if d.version != tv.version || d.line >= tv.line_count() {
                 continue;
             }
-            // Markdown's code (fenced, or in backticks) isn't prose.
-            if md && tv.fences().get(i).copied().unwrap_or(false) {
-                tv.spell.insert(i, Vec::new());
-                continue;
-            }
-            let (a, b) = tv.line_range(i);
-            let mut misses = sp.check(&tv.edit.units()[a..b]);
-            if md {
+            let mut misses = d.misses;
+            let (a, b) = tv.line_range(d.line);
+            if tv.is_markdown() {
+                // Markdown's code in backticks isn't prose.
                 let u = &tv.edit.units()[a..b];
                 let ticks: Vec<usize> = u.iter().enumerate().filter(|(_, c)| **c == b'`' as u16).map(|(k, _)| k).collect();
                 let spans: Vec<(usize, usize)> = ticks.chunks_exact(2).map(|p| (p[0], p[1])).collect();
                 misses.retain(|m| !spans.iter().any(|&(s, e)| m.start >= s && m.end <= e + 1));
             }
             // Not the word being typed: it isn't finished yet.
+            let caret = tv.edit.caret();
             misses.retain(|m| !(caret >= a + m.start && caret <= a + m.end && tv.focus == Focus::Text));
-            tv.spell.insert(i, misses);
+            tv.spell.insert(d.line, misses);
         }
+        let Some(tv) = docs.get_mut(*active) else { return };
+        if tv.spell_version != tv.version {
+            tv.spell.clear();
+            tv.spell_version = tv.version;
+        }
+        let md = tv.is_markdown();
+        let mut jobs = Vec::new();
+        for i in first..last {
+            if tv.spell.contains_key(&i) {
+                continue;
+            }
+            // Markdown's fenced code isn't prose.
+            if md && tv.fences().get(i).copied().unwrap_or(false) {
+                tv.spell.insert(i, Vec::new());
+                continue;
+            }
+            let (a, b) = tv.line_range(i);
+            if a == b {
+                tv.spell.insert(i, Vec::new());
+                continue;
+            }
+            jobs.push(crate::spell::Job { doc: tv.id, version: tv.version, line: i, text: tv.edit.units()[a..b].to_vec() });
+        }
+        worker.want(jobs);
     }
 
     /// The misspelling at `pos`, its range in the text and the word.
