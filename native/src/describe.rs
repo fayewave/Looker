@@ -95,7 +95,10 @@ impl Description {
 
 /// Reads the words from a file's bytes (its first few MB and its last, see `metadata::read`) and its EXIF.
 pub fn read(bytes: &[u8], exif: Option<&exif::Exif>) -> Description {
-    let x = xmp_packet(bytes).map(|p| from_xmp(&p)).unwrap_or_default();
+    let packet = xmp_packet(bytes);
+    let x = packet.as_deref().map(from_xmp).unwrap_or_default();
+    // Windows writes a PNG's or HEIC's Comments as XMP's exif:UserComment.
+    let user_comment = packet.as_deref().and_then(|p| xmp_values(p, "exif:UserComment").into_iter().find_map(|v| clean(&v)));
     let i = iptc_block(bytes).map(from_iptc).unwrap_or_default();
     let e = exif.map(from_exif).unwrap_or_default();
     // Windows' Properties writes its Title into XMP's description and EXIF's ImageDescription as well: a caption
@@ -104,7 +107,7 @@ pub fn read(bytes: &[u8], exif: Option<&exif::Exif>) -> Description {
         Some(Value::Byte(b)) => xp_text(b),
         _ => None,
     });
-    let others = [i.caption.clone(), e.caption.clone(), comment];
+    let others = [user_comment, i.caption.clone(), e.caption.clone(), comment];
     let mut d = x.or(i).or(e);
     if d.caption.is_some() && d.caption == d.title {
         d.caption = others.into_iter().flatten().find(|c| Some(c) != d.title.as_ref());
@@ -137,7 +140,7 @@ fn from_xmp(x: &str) -> Description {
     let creators = all("dc:creator");
     Description {
         title: one("dc:title"),
-        caption: one("dc:description"),
+        caption: one("dc:description").or_else(|| one("exif:UserComment")),
         keywords: all("dc:subject"),
         rating: one("xmp:Rating").and_then(|r| r.parse::<f32>().ok()).map(|r| r.round() as i32).filter(|r| *r != 0),
         label: one("xmp:Label"),

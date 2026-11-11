@@ -6,6 +6,14 @@
 //! metadata block changes, when it has room. Otherwise the file is transcoded into a sibling temp file with the
 //! new properties and swapped in (`ReplaceFileW`, which keeps its creation time). For JPEG the transcode copies
 //! the compressed pixels as they are: nothing is re-encoded (the `round_trips` test checks the pixels match).
+//!
+//! PNG and HEIC always take the transcode (Windows has no in-place writer for them), probed 2026-11-11 with
+//! `probe_formats`: decoded pixels identical (8- and 16-bit, alpha), EXIF kept, the XMP in a new iTXt chunk.
+//! PNG keeps every chunk (ICC profile included; Windows adds pHYs, sometimes gAMA/cHRM/sRGB) and its pixels are
+//! deflated again (lossless, 5-10 % bigger). HEIC's HEVC data is copied, not re-encoded (+30 KB): every item stays
+//! (grid tiles, depth/gain-map auxiliaries, Apple's HDR tone map), plus a thumbnail and an XMP item; libheif still
+//! reads it. Animated PNGs are refused: the transcode moves the first frame's IDAT after every fdAT, breaking
+//! the animation. AVIF fails ("no suitable transform"), so it isn't offered.
 
 use std::path::Path;
 
@@ -46,10 +54,39 @@ impl Field {
 }
 
 /// Whether the file's format can have these written (JPEG and TIFF: Windows' policy writes their XMP, EXIF and
-/// IPTC).
+/// IPTC; PNG and HEIC: their XMP). By extension only: an animated PNG is refused when it's written.
 pub fn can_write(path: &Path) -> bool {
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "jpg" | "jpeg" | "jpe" | "jfif" | "tif" | "tiff")
+    matches!(ext.as_str(), "jpg" | "jpeg" | "jpe" | "jfif" | "tif" | "tiff" | "png" | "heic" | "heif" | "hif")
+}
+
+/// The eight bytes every PNG starts with.
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// Whether a PNG is animated (an acTL chunk before its first IDAT).
+fn animated_png(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 8];
+    if f.read_exact(&mut head).is_err() || head != PNG_SIGNATURE {
+        return false;
+    }
+    loop {
+        let mut h = [0u8; 8];
+        if f.read_exact(&mut h).is_err() {
+            return false;
+        }
+        let len = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as i64;
+        match &h[4..8] {
+            b"acTL" => return true,
+            b"IDAT" | b"IEND" => return false,
+            _ => {
+                if std::io::Seek::seek(&mut f, std::io::SeekFrom::Current(len + 4)).is_err() {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Keywords as typed ("beach, sunset; dusk") into a list.
@@ -102,7 +139,10 @@ fn properties(edits: &[(Field, Option<String>)]) -> Result<BitmapPropertySet, St
 /// Writes `edits` (None or blank removes the field) into the file at `path`. On a failure the file is as it was.
 pub fn write(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), String> {
     if !can_write(path) {
-        return Err("Looker can write these only into JPEG and TIFF files".into());
+        return Err("Looker can write these only into JPEG, TIFF, PNG and HEIC files".into());
+    }
+    if animated_png(path) {
+        return Err("Looker can't write into an animated PNG without breaking its animation".into());
     }
     let mut edits = edits.to_vec();
     // Windows' policy writes the Title into XMP's dc:description too, where the card reads the description
@@ -113,18 +153,24 @@ pub fn write(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), Strin
         }
     }
     edits.sort_by_key(|(f, _)| *f);
-    // In place, when the metadata block has room.
-    let in_place = (|| -> Result<(), String> {
-        let stream = crate::fileops::open_stream(path, FileAccessMode::ReadWrite)?;
-        let decoder = BitmapDecoder::CreateAsync(&stream).and_then(|op| op.join()).map_err(err)?;
-        let encoder = BitmapEncoder::CreateForInPlacePropertyEncodingAsync(&decoder).and_then(|op| op.join()).map_err(err)?;
-        encoder.BitmapProperties().map_err(err)?.SetPropertiesAsync(&properties(&edits)?).and_then(|op| op.join()).map_err(err)?;
-        encoder.FlushAsync().and_then(|op| op.join()).map_err(err)
-    })();
-    if in_place.is_ok() {
+    // In place, when the metadata block has room; otherwise a transcode with the new properties, swapped in.
+    if write_in_place(path, &edits).is_ok() {
         return Ok(());
     }
-    // Otherwise a transcode with the new properties, swapped in.
+    write_by_transcode(path, &edits)
+}
+
+/// Only the metadata block changes (when it has room).
+fn write_in_place(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), String> {
+    let stream = crate::fileops::open_stream(path, FileAccessMode::ReadWrite)?;
+    let decoder = BitmapDecoder::CreateAsync(&stream).and_then(|op| op.join()).map_err(err)?;
+    let encoder = BitmapEncoder::CreateForInPlacePropertyEncodingAsync(&decoder).and_then(|op| op.join()).map_err(err)?;
+    encoder.BitmapProperties().map_err(err)?.SetPropertiesAsync(&properties(edits)?).and_then(|op| op.join()).map_err(err)?;
+    encoder.FlushAsync().and_then(|op| op.join()).map_err(err)
+}
+
+/// The file transcoded into a sibling temp file with the new properties, then swapped in.
+fn write_by_transcode(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), String> {
     let name = path.file_name().ok_or("no file name")?.to_string_lossy().into_owned();
     let temp = path.with_file_name(format!(".{name}.looker.tmp"));
     let r = (|| -> Result<(), String> {
@@ -134,7 +180,7 @@ pub fn write(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), Strin
             let dst = crate::fileops::open_stream(&temp, FileAccessMode::ReadWrite)?;
             let decoder = BitmapDecoder::CreateAsync(&src).and_then(|op| op.join()).map_err(err)?;
             let encoder = BitmapEncoder::CreateForTranscodingAsync(&dst, &decoder).and_then(|op| op.join()).map_err(err)?;
-            encoder.BitmapProperties().map_err(err)?.SetPropertiesAsync(&properties(&edits)?).and_then(|op| op.join()).map_err(err)?;
+            encoder.BitmapProperties().map_err(err)?.SetPropertiesAsync(&properties(edits)?).and_then(|op| op.join()).map_err(err)?;
             encoder.FlushAsync().and_then(|op| op.join()).map_err(err)?;
         }
         crate::fileops::replace_file(&temp, path)
@@ -146,6 +192,21 @@ pub fn write(path: &Path, edits: &[(Field, Option<String>)]) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animated_pngs_are_found() {
+        let dir = std::env::temp_dir();
+        let chunk = |t: &[u8], data: &[u8]| [&(data.len() as u32).to_be_bytes()[..], t, data, &[0; 4]].concat();
+        let png = |chunks: &[Vec<u8>]| [PNG_SIGNATURE.to_vec(), chunks.concat()].concat();
+        let still = dir.join("looker-still-test.png");
+        let anim = dir.join("looker-anim-test.png");
+        std::fs::write(&still, png(&[chunk(b"IHDR", &[0; 13]), chunk(b"IDAT", &[1, 2]), chunk(b"IEND", &[])])).unwrap();
+        std::fs::write(&anim, png(&[chunk(b"IHDR", &[0; 13]), chunk(b"acTL", &[0; 8]), chunk(b"IDAT", &[1]), chunk(b"IEND", &[])])).unwrap();
+        assert!(!animated_png(&still));
+        assert!(animated_png(&anim));
+        let _ = std::fs::remove_file(still);
+        let _ = std::fs::remove_file(anim);
+    }
 
     #[test]
     fn parses_what_the_card_shows() {
@@ -183,6 +244,9 @@ mod tests {
         ];
         let t = std::time::Instant::now();
         write(&copy, &edits).unwrap();
+        if std::env::var_os("LOOKER_KEEP").is_some() {
+            let _ = std::fs::copy(&copy, std::env::temp_dir().join(format!("looker-kept.{ext}")));
+        }
         println!("wrote in {:.0} ms: {:?}", t.elapsed().as_secs_f64() * 1000.0, words(&copy));
         let w = words(&copy);
         let get = |l: &str| w.iter().find(|(k, _)| *k == l).map(|(_, v)| v.clone());
@@ -207,5 +271,42 @@ mod tests {
         }
         assert!(pixels(&copy) == before, "the pixels changed");
         let _ = std::fs::remove_file(&copy);
+    }
+
+    /// Which way (in place, transcode) each of `LOOKER_PROBE`'s files (`;`-separated) takes the fields, what
+    /// reads back, and whether the pixels survive. `cargo test --release -- --ignored --nocapture probe_formats`
+    #[test]
+    #[ignore]
+    fn probe_formats() {
+        use windows::Win32::Graphics::Imaging::{CLSID_WICImagingFactory2, IWICImagingFactory};
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let pixels = |p: &Path| crate::imaging::wic::decode(&f, crate::imaging::wic::Source::File(p), 0, 0).ok().map(|d| d.frames[0].pixels.clone());
+        let words = |p: &Path| crate::metadata::read(p).map(|e| e.words).unwrap_or_default();
+        let edits = vec![(Field::Title, Some("A title".to_string())), (Field::Keywords, Some("one, two".to_string())), (Field::Rating, Some("3".to_string()))];
+        for src in std::env::var("LOOKER_PROBE").unwrap().split(';') {
+            let src = Path::new(src);
+            let ext = src.extension().unwrap().to_string_lossy().into_owned();
+            for (way, go) in [("in place", write_in_place as fn(&Path, &[(Field, Option<String>)]) -> Result<(), String>), ("transcode", write_by_transcode)] {
+                let copy = std::env::temp_dir().join(format!("looker-probe.{ext}"));
+                std::fs::copy(src, &copy).unwrap();
+                let before = pixels(&copy);
+                let (len0, t) = (std::fs::metadata(&copy).unwrap().len(), std::time::Instant::now());
+                let r = go(&copy, &edits);
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                let len1 = std::fs::metadata(&copy).unwrap().len();
+                let same = before.is_some() && pixels(&copy) == before;
+                println!("{} {way}: {r:?} {ms:.0} ms, {len0} -> {len1} bytes, pixels same: {same}, read back: {:?}", src.display(), words(&copy));
+                let e0 = crate::metadata::read(src);
+                let e1 = crate::metadata::read(&copy);
+                let facts = |e: &Option<crate::metadata::Exif>| e.as_ref().map(|e| format!("taken {:?} make {:?} lat {:?} dims {:?} rows {}", e.taken.map(|t| (t.year, t.month, t.day, t.hour)), e.make, e.latitude, e.dims, crate::metadata::groups(e, |_| String::new()).iter().map(|g| g.rows.len()).sum::<usize>()));
+                println!("    before {:?}
+    after  {:?}", facts(&e0), facts(&e1));
+                let _ = std::fs::remove_file(&copy);
+            }
+        }
     }
 }

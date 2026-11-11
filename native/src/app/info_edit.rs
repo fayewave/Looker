@@ -3,7 +3,7 @@
 //! away leaves it); the rating is picked from five stars; "+ Add a field" offers the ones the file lacks.
 //!
 //! With several files selected the summary edits them all at once (Transient's): a value typed goes to every
-//! selected file Looker can write (JPEG and TIFF), as one undo step. A field whose values differ starts empty;
+//! selected file Looker can write (JPEG, TIFF, PNG, HEIC), as one undo step. A field whose values differ starts empty;
 //! left empty it changes nothing, and keywords typed there are added to each file's own instead of replacing
 //! them.
 //!
@@ -274,7 +274,7 @@ impl App {
         }
         // A selection with files Looker can't write: which ones an edit reaches, first in the group.
         if many && targets.len() < covered.len() {
-            let value = format!("{} of {} files (Looker writes JPEG and TIFF)", grouped(targets.len() as u64), grouped(covered.len() as u64));
+            let value = format!("{} of {} files (Looker writes JPEG, TIFF, PNG and HEIC)", grouped(targets.len() as u64), grouped(covered.len() as u64));
             blocks.insert(start + 1, Block::Row { label: "Edits go to", value, path: false, copy: None, dim: true });
         }
         // (The count of unsaved edits, Save and Discard all are in the card's footer.)
