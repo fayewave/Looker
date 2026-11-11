@@ -736,6 +736,8 @@ pub struct Toast {
     fade_out_ms: f32,
     /// At the top middle of the area, dropping in, instead of bottom-right rising (the video's readouts).
     top: bool,
+    /// A player's readout (volume, speed, loop...): over the seek bar, not at the top of the window.
+    pub seek: bool,
 }
 
 /// How long a video toast takes to fade in.
@@ -755,7 +757,7 @@ impl Toast {
         let from = previous.map_or(0.0, |p| p.opacity());
         let (hold_ms, fade_out_ms) = if quick { (350.0, 190.0) } else { (1200.0, 380.0) };
         // Every toast at the top middle of the preview, as the video's are (Faye, 2026-11-10).
-        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms, top: true }
+        Toast { text, start: Instant::now(), from, hold_ms, fade_out_ms, top: true, seek: false }
     }
 
     /// The same, shown fully for `hold_ms` at the top middle (the video's readouts: Faye, 2026-11-10, a tad
@@ -763,6 +765,7 @@ impl Toast {
     pub fn video(mut self, hold_ms: f32) -> Toast {
         self.hold_ms = hold_ms;
         self.top = true;
+        self.seek = true;
         self
     }
 
@@ -794,23 +797,20 @@ impl Toast {
         }
     }
 
-    /// Bottom-right of `area`, 16 DIPs in, rising in; or (the video's) its top middle, in larger text, fading in
-    /// as it settles from a touch larger: no slide (Faye, 2026-11-10).
-    pub fn draw(&self, g: &Gfx, area: D2D_RECT_F, opacity: f32) {
+    /// How tall it draws.
+    pub const H: f32 = 38.0;
+
+    /// Centred on `cx` with its top at `top`, in larger text, fading in as it settles from a touch larger: no slide
+    /// (Faye, 2026-11-10).
+    pub fn draw(&self, g: &Gfx, cx: f32, top: f32, opacity: f32) {
         let raised = theme::raised();
-        let font = if self.top { &g.fonts.body_large } else { &g.fonts.body };
-        let (w, h) = if self.top { ((g.measure(&wide(&self.text), font) + 36.0).ceil(), 38.0) } else { ((g.measure(&wide(&self.text), font) + 28.0).ceil(), 32.0) };
+        let font = &g.fonts.body_large;
+        let (w, h) = ((g.measure(&wide(&self.text), font) + 36.0).ceil(), Self::H);
         // Moving into place as it comes in, not as it goes.
         let coming = self.start.elapsed().as_secs_f32() * 1000.0 < self.fade_in_ms();
-        let (r, ox, oy, scale) = if self.top {
-            let r = rect(g.snap((area.left + area.right - w) / 2.0), g.snap(area.top + 16.0), w, h);
-            let scale = if coming { 1.0 + 0.08 * (1.0 - opacity) } else { 1.0 };
-            (r, (r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0, scale)
-        } else {
-            let rise = if coming { 16.0 * (1.0 - opacity) } else { 0.0 };
-            let r = rect(g.snap(area.right - 16.0 - w), g.snap(area.bottom - 16.0 - h + rise), w, h);
-            (r, r.right, r.bottom, if coming { 0.97 + 0.03 * opacity } else { 1.0 })
-        };
+        let r = rect(g.snap(cx - w / 2.0), g.snap(top), w, h);
+        let scale = if coming { 1.0 + 0.08 * (1.0 - opacity) } else { 1.0 };
+        let (ox, oy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
         g.push_fade(opacity, scale, ox, oy);
         shadow(g, r, 8.0);
         g.fill_round(r, 8.0, rgb(raised.popup));

@@ -757,17 +757,24 @@ impl App {
         }
         moving |= self.draw_drag_label(g);
         if let Some(t) = &self.toast {
-            let mut area = self.image_area();
-            if self.video_shown() {
-                area.bottom -= video::BAR_ROOM; // above the controls bar
+            // Top middle of the whole window, in the toolbar's row (fullscreen: 16 in from the top); a player's
+            // readout centred just above its seek bar (Faye, 2026-11-11).
+            let (w, _) = self.size_dip();
+            let top = if self.chrome() { TITLE_H + (TOOLBAR_H - ui::Toast::H) / 2.0 } else { 16.0 };
+            let mut at = (w / 2.0, top);
+            if t.seek && self.video_shown() {
+                if let Some(bar) = self.seek_bar_rect(g) {
+                    let floor = self.viewport().top + 4.0;
+                    at = ((bar.left + bar.right) / 2.0, (bar.top - 10.0 - ui::Toast::H).max(floor));
+                }
             }
             match t.phase() {
                 ui::ToastPhase::Fading(a) => {
-                    t.draw(g, area, a);
+                    t.draw(g, at.0, at.1, a);
                     moving = true;
                 }
                 ui::ToastPhase::Holding(ms) => {
-                    t.draw(g, area, 1.0);
+                    t.draw(g, at.0, at.1, 1.0);
                     unsafe {
                         SetTimer(Some(self.hwnd), TIMER_TOAST, ms, None);
                     }

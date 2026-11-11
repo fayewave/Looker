@@ -37,8 +37,6 @@ const BAR_IDLE: Duration = Duration::from_millis(2500);
 pub(super) const SPEEDS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
 const BAR_H: f32 = 44.0;
-/// What the bar takes from the bottom of the photo's area, its margin included (toasts go above it).
-pub(super) const BAR_ROOM: f32 = BAR_H + 16.0;
 const BAR_BTN: f32 = 32.0;
 const VOLUME_W: f32 = 76.0;
 /// The seek bar's and the volume slider's thickness, and how much each grows while the pointer is on it or it's
@@ -950,6 +948,11 @@ impl App {
             Some(Hit::VideoVolume) => self.volume_at(x),
             _ => {}
         }
+    }
+
+    /// Where the player's bar is (or would be, while it's faded out): its readouts sit above it.
+    pub(super) fn seek_bar_rect(&self, g: &Gfx) -> Option<D2D_RECT_F> {
+        self.bar_layout(g).map(|l| l.bar)
     }
 
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
