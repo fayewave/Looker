@@ -25,7 +25,8 @@ pub(super) struct ModelView {
     target: Option<Target>,
     bitmap: Option<ID2D1Bitmap1>,
     /// What `bitmap` shows: re-rendered when any of it changes.
-    drawn: Option<(Camera, Output, u32, u32, Place, Option<Pivot>)>,
+    /// What the last render was of (the theme's darkness too: the floor's lines follow it).
+    drawn: Option<(Camera, Output, u32, u32, Place, Option<Pivot>, bool)>,
     /// The orbit centre is being moved (the cross shows), or when it was let go (the cross fades).
     panning: bool,
     pan_released: Option<Instant>,
@@ -201,7 +202,8 @@ impl App {
             m.pan_released = None;
         }
         let pivot = (alpha > 0.0).then_some(Pivot { alpha: alpha * alpha * (3.0 - 2.0 * alpha), dip });
-        if m.drawn == Some((m.camera, out, w, h, place, pivot)) && m.bitmap.is_some() {
+        let dark = crate::theme::t().dark;
+        if m.drawn == Some((m.camera, out, w, h, place, pivot, dark)) && m.bitmap.is_some() {
             return;
         }
         let r = (|| -> Result<(), String> {
@@ -220,7 +222,7 @@ impl App {
             if m.bitmap.is_none() {
                 m.bitmap = Some(g.texture_bitmap(&t.texture, format).map_err(|e| e.message().to_string())?);
             }
-            m.drawn = Some((m.camera, out, w, h, place, pivot));
+            m.drawn = Some((m.camera, out, w, h, place, pivot, dark));
             Ok(())
         })();
         if let Err(e) = r {

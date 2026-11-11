@@ -3216,15 +3216,11 @@ impl App {
 
     pub(super) fn explorer_tooltip(&mut self, h: Hit) -> Option<String> {
         match h {
-            // The full text of the cut-off cell under the pointer (Faye, 2026-11-10); over the name of a file Looker
-            // can't open, that it can't.
-            Hit::ExplorerRow(i) => {
+            // The full text of the cell under the pointer: a cut-off one's, and always the name (Faye, 2026-11-10),
+            // the same plain tooltip for a file Looker can't open (2026-11-11).
+            Hit::ExplorerRow(_) => {
                 let (mx, my) = self.mouse;
-                if let Some((_, text)) = self.explorer.cell_tips.iter().find(|(r, _)| ui::contains(r, mx, my)) {
-                    return Some(text.clone());
-                }
-                let (n0, n1) = self.explorer.list_geom.map_or((0.0, 0.0), |g| g.2);
-                self.explorer.row(i).filter(|r| r.kind == Kind::Other && mx >= n0 && mx <= n1).map(|r| format!("{}: not an image Looker can open", r.name))
+                self.explorer.cell_tips.iter().find(|(r, _)| ui::contains(r, mx, my)).map(|(_, text)| text.clone())
             }
             Hit::Tab(i) => self.strip_tip(super::tabstrip::StripKind::Explorer, i as usize),
             // A crumb: that folder's own path (a drive's, This PC's name), cut off or not (Faye, 2026-11-11).

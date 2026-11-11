@@ -296,10 +296,22 @@ impl App {
             return;
         }
         // The context menu's track, Loop and subtitle picks leave it open with its ticks moved, the submenu they
-        // were picked in still out (Faye, 2026-11-11). Add subtitle file opens a dialog: that one closes it.
+        // were picked in still out (Faye, 2026-11-11), and so do its toggles at the end (the checkerboard, the
+        // explorer, the strip and the info panel). Add subtitle file opens a dialog: that one closes it.
         let stays = matches!(
             action,
-            Action::AudioTrack(_) | Action::VideoTrack(_) | Action::ToggleVideoLoop | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_)
+            Action::AudioTrack(_)
+                | Action::VideoTrack(_)
+                | Action::ToggleVideoLoop
+                | Action::SubOff
+                | Action::SubStream(_)
+                | Action::SubFile(_)
+                | Action::SubDelay(_)
+                | Action::SubSize(_)
+                | Action::ToggleCheckerboard
+                | Action::ToggleExplorer
+                | Action::ToggleStrip
+                | Action::ToggleInfo
         );
         if stays && matches!(self.menu, Some((MenuKind::Context, _))) {
             self.run_action(action);

@@ -350,6 +350,7 @@ impl App {
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         Some(
                             Hit::Reveal
+                            | Hit::StatusZoom
                             | Hit::InfoPath
                             | Hit::Open
                             | Hit::LandingFolder
@@ -580,6 +581,7 @@ impl App {
                             Some(Hit::MenuSwatch(i, k)) => self.activate_swatch(i, k),
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
+                            Some(Hit::StatusZoom) => self.status_zoom_click(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
                             Some(Hit::ExplorerBack) => self.explorer_back(),

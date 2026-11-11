@@ -290,8 +290,13 @@ pub fn shadow(g: &Gfx, r: D2D_RECT_F, radius: f32) {
     shadow_faded(g, r, radius, 1.0);
 }
 
-/// [`shadow`] at an opacity, for surfaces that fade in and out.
+/// [`shadow`] at an opacity, for surfaces that fade in and out: a real blur of the shape (`Gfx::soft_shadow`;
+/// 2026-11-11, the stepped rings were as dark into the corners as along the edges), or on a surface too small for
+/// its corners, the stepped rings.
 pub fn shadow_faded(g: &Gfx, r: D2D_RECT_F, radius: f32, opacity: f32) {
+    if g.soft_shadow(r, radius, opacity) {
+        return;
+    }
     for (d, a) in [(5.0, 0.02), (4.0, 0.03), (3.0, 0.04), (2.0, 0.05), (1.0, 0.06)] {
         let s = D2D_RECT_F { left: r.left - d, top: r.top - d + 2.0, right: r.right + d, bottom: r.bottom + d + 2.0 };
         g.fill_round(s, radius + d, rgba(0x000000, a * opacity));

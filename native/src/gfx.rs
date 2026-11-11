@@ -270,6 +270,8 @@ pub struct Gfx {
     blur_failed: bool,
     /// Shell icons on the GPU, by icon (its address; the Arc keeps it alive) and tint.
     icons: std::cell::RefCell<std::collections::HashMap<(usize, Option<u32>), (std::sync::Arc<crate::shell_icons::Icon>, ID2D1Bitmap1)>>,
+    /// The soft shadow's blurred rounded square (`soft_shadow`), by corner radius (quarter DIPs) and DPI.
+    shadows: std::cell::RefCell<std::collections::HashMap<(u32, u32), (ID2D1Bitmap1, u32)>>,
 }
 
 /// The UI layer under scRGB and the effects that bring it into scRGB.
@@ -344,6 +346,7 @@ impl Gfx {
                 backdrop: None,
                 blur_failed: false,
                 icons: Default::default(),
+                shadows: Default::default(),
             };
             g.make_target()?;
             Ok(g)
@@ -363,6 +366,7 @@ impl Gfx {
             self.ui = None;
             self.backdrop = None;
             self.icons.borrow_mut().clear();
+            self.shadows.borrow_mut().clear();
             self.swap = swap;
             self.brush = brush;
             self.dev = dev;
@@ -718,6 +722,59 @@ impl Gfx {
         let x = self.snap(r.left + (r.right - r.left - w) / 2.0);
         let y = self.snap(r.top + (r.bottom - r.top - h) / 2.0);
         self.draw_bitmap(bmp, rect(x, y, w, h), opacity);
+    }
+
+    /// The soft drop shadow under a floating surface `r` with corner `radius` (Faye, 2026-11-11): a real Gaussian
+    /// blur of its shape, a touch below it, so it fades out evenly all round and lighter round the corners, as a
+    /// blurred shape does (stacked rounded rings were as dark into the corners as along the edges, which read as
+    /// heavy corners on the light themes). The blurred corner is worked out once per radius and DPI on the CPU and
+    /// drawn in nine pieces, the edges and middle stretched.
+    /// False when the surface is too small for it (the caller draws the plain stepped shadow instead).
+    pub fn soft_shadow(&self, r: D2D_RECT_F, radius: f32, opacity: f32) -> bool {
+        // Blur (standard deviation), drop and darkness, in DIPs and alpha.
+        const SIGMA: f32 = 2.6;
+        const DROP: f32 = 2.0;
+        const DARK: f32 = 0.30;
+        if opacity <= 0.0 {
+            return true;
+        }
+        let s = self.dpi / 96.0;
+        // The radius as drawn (never more than half the surface's shorter side, as Direct2D draws it).
+        let radius = radius.min((r.right - r.left).min(r.bottom - r.top) / 2.0).max(0.0);
+        let key = ((radius * 4.0).round() as u32, self.dpi.round() as u32);
+        let mut cache = self.shadows.borrow_mut();
+        if !cache.contains_key(&key) {
+            let Some(made) = shadow_square(radius * s, SIGMA * s, DARK).and_then(|(px, n, pad)| self.bitmap(n, n, &px).ok().map(|b| (b, pad))) else { return false };
+            cache.insert(key, made);
+        }
+        let Some((bmp, pad)) = cache.get(&key) else { return false };
+        let pad = *pad as f32;
+        let n = unsafe { bmp.GetPixelSize() }.width as f32;
+        // The square: the shape `pad` in from each side; a corner piece reaches `pad` past the end of the curve,
+        // so the 2 pixels in the middle are pure edge, stretched along the sides.
+        let c = (n - 2.0) / 2.0;
+        let grow = pad / s;
+        let out = D2D_RECT_F { left: self.snap(r.left - grow), top: self.snap(r.top - grow + DROP), right: self.snap(r.right + grow), bottom: self.snap(r.bottom + grow + DROP) };
+        let cd = c / s;
+        let (xs, ys) = ([out.left, out.left + cd, out.right - cd, out.right], [out.top, out.top + cd, out.bottom - cd, out.bottom]);
+        // A surface smaller than two corners' reach.
+        if xs[1] > xs[2] || ys[1] > ys[2] {
+            return false;
+        }
+        let src = [0.0, c, c + 2.0, n];
+        unsafe {
+            for row in 0..3 {
+                for col in 0..3 {
+                    let d = D2D_RECT_F { left: xs[col], top: ys[row], right: xs[col + 1], bottom: ys[row + 1] };
+                    if d.right - d.left <= 0.0 || d.bottom - d.top <= 0.0 {
+                        continue;
+                    }
+                    let sr = D2D_RECT_F { left: src[col], top: src[row], right: src[col + 1], bottom: src[row + 1] };
+                    self.dev.dc.DrawBitmap(bmp, Some(&d), opacity, D2D1_INTERPOLATION_MODE_LINEAR, Some(&sr), None);
+                }
+            }
+        }
+        true
     }
 
     pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) {
@@ -1572,6 +1629,68 @@ fn color_matrix(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32, a: f32, clamp
 
 /// Renders `image` (pixel units, at the origin) into a new 16-bit float bitmap of `width x height`. Leaves the
 /// context at 96 dpi: the caller puts its own back.
+/// The soft shadow's source: a rounded square (corner `radius` px) `pad` px in from each side of an `n`-pixel
+/// image, Gaussian-blurred (`sigma` px) to at most `dark` alpha, premultiplied black. A corner piece is `2 pad +
+/// radius` across, so the two middle pixels are a straight edge's profile. Returns (pixels, n, pad).
+fn shadow_square(radius: f32, sigma: f32, dark: f32) -> Option<(Vec<u8>, u32, u32)> {
+    let pad = (3.0 * sigma).ceil().max(1.0) as usize;
+    let r = radius.max(0.0);
+    let c = 2 * pad + r.ceil() as usize;
+    let n = 2 * c + 2;
+    if n > 1024 {
+        return None;
+    }
+    // Coverage of the shape, 4 x 4 samples a pixel.
+    let (lo, hi) = (pad as f32, (n - pad) as f32);
+    let inside = |x: f32, y: f32| -> bool {
+        if x < lo || x >= hi || y < lo || y >= hi {
+            return false;
+        }
+        let cx = x.clamp(lo + r, hi - r);
+        let cy = y.clamp(lo + r, hi - r);
+        let (dx, dy) = (x - cx, y - cy);
+        dx * dx + dy * dy <= r * r
+    };
+    let mut a = vec![0f32; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let mut k = 0;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    if inside(x as f32 + (sx as f32 + 0.5) / 4.0, y as f32 + (sy as f32 + 0.5) / 4.0) {
+                        k += 1;
+                    }
+                }
+            }
+            a[y * n + x] = k as f32 / 16.0;
+        }
+    }
+    // Separable Gaussian, out to `pad` either way.
+    let kernel: Vec<f32> = (0..=2 * pad).map(|i| (-((i as f32 - pad as f32).powi(2)) / (2.0 * sigma * sigma)).exp()).collect();
+    let sum: f32 = kernel.iter().sum();
+    let kernel: Vec<f32> = kernel.iter().map(|k| k / sum).collect();
+    let blur = |src: &[f32], horizontal: bool| -> Vec<f32> {
+        let mut out = vec![0f32; n * n];
+        for y in 0..n {
+            for x in 0..n {
+                let mut v = 0.0;
+                for (i, k) in kernel.iter().enumerate() {
+                    let o = i as isize - pad as isize;
+                    let (sx, sy) = if horizontal { (x as isize + o, y as isize) } else { (x as isize, y as isize + o) };
+                    if sx >= 0 && sy >= 0 && (sx as usize) < n && (sy as usize) < n {
+                        v += k * src[sy as usize * n + sx as usize];
+                    }
+                }
+                out[y * n + x] = v;
+            }
+        }
+        out
+    };
+    let a = blur(&blur(&a, true), false);
+    let px = a.iter().flat_map(|&v| [0, 0, 0, (v * dark * 255.0).round().clamp(0.0, 255.0) as u8]).collect();
+    Some((px, n as u32, pad as u32))
+}
+
 fn bake(dc: &ID2D1DeviceContext, image: &ID2D1Image, width: u32, height: u32) -> Result<ID2D1Bitmap1> {
     unsafe {
         let props = D2D1_BITMAP_PROPERTIES1 {
@@ -1722,6 +1841,74 @@ mod tests {
                 let out = bake(dc, &cm.GetOutput().unwrap(), 2, 1).unwrap();
                 println!("mode {}: {:?}", mode.0, read_f16(dc, &out, 2, 1));
             }
+        }
+    }
+
+    /// A card's shadow, fill and hairline on a light page, at 2x, written to `%TEMP%\looker-card-corner.png` to
+    /// look at the corners. `cargo test --release card_corner -- --ignored`
+    #[test]
+    #[ignore]
+    fn card_corner() {
+        let dev = create_device(true).unwrap();
+        let dc = &dev.dc;
+        let (w, h) = (240u32, 160u32);
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 192.0,
+                dpiY: 192.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let target = dc.CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &props).unwrap();
+            dc.SetTarget(&target);
+            dc.SetDpi(192.0, 192.0);
+            dc.BeginDraw();
+            dc.Clear(Some(&rgb(0xEDE7DC)));
+            let brush = dc.CreateSolidColorBrush(&rgb(0), None).unwrap();
+            let r = D2D_RECT_F { left: 20.0, top: 20.0, right: 100.0, bottom: 60.0 };
+            // `soft_shadow`'s nine pieces, at 2x.
+            let (px, n, pad) = shadow_square(20.0, 2.6 * 2.0, 0.30).unwrap();
+            let bprops = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: props.pixelFormat,
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let bmp = dc.CreateBitmap(D2D_SIZE_U { width: n, height: n }, Some(px.as_ptr() as _), n * 4, &bprops).unwrap();
+            let (nf, c, grow) = (n as f32, (n as f32 - 2.0) / 2.0, pad as f32 / 2.0);
+            let out = D2D_RECT_F { left: r.left - grow, top: r.top - grow + 2.0, right: r.right + grow, bottom: r.bottom + grow + 2.0 };
+            let cd = c / 2.0;
+            let (xs, ys) = ([out.left, out.left + cd, out.right - cd, out.right], [out.top, out.top + cd, out.bottom - cd, out.bottom]);
+            let src = [0.0, c, c + 2.0, nf];
+            for row in 0..3 {
+                for col in 0..3 {
+                    let d = D2D_RECT_F { left: xs[col], top: ys[row], right: xs[col + 1], bottom: ys[row + 1] };
+                    let sr = D2D_RECT_F { left: src[col], top: src[row], right: src[col + 1], bottom: src[row + 1] };
+                    dc.DrawBitmap(&bmp, Some(&d), 1.0, D2D1_INTERPOLATION_MODE_LINEAR, Some(&sr), None);
+                }
+            }
+            brush.SetColor(&rgb(0xF6F1E8));
+            dc.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: 10.0, radiusY: 10.0 }, &brush);
+            brush.SetColor(&rgb(0xD9D1C3));
+            let hp = 0.25;
+            let s = D2D_RECT_F { left: r.left + hp, top: r.top + hp, right: r.right - hp, bottom: r.bottom - hp };
+            dc.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: s, radiusX: 10.0, radiusY: 10.0 }, &brush, 0.5, None);
+            dc.EndDraw(None, None).unwrap();
+            let cpu_props = D2D1_BITMAP_PROPERTIES1 { bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW, ..props };
+            let cpu = dc.CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &cpu_props).unwrap();
+            cpu.CopyFromBitmap(None, &target, None).unwrap();
+            let m = cpu.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut px = Vec::new();
+            for y in 0..h as usize {
+                let row = std::slice::from_raw_parts(m.bits.add(y * m.pitch as usize), w as usize * 4);
+                px.extend(row.chunks_exact(4).flat_map(|c| [c[2], c[1], c[0], 255]));
+            }
+            cpu.Unmap().unwrap();
+            let out = std::env::temp_dir().join("looker-card-corner.png");
+            image::save_buffer(&out, &px, w, h, image::ExtendedColorType::Rgba8).unwrap();
+            println!("{}", out.display());
         }
     }
 

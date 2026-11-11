@@ -242,6 +242,7 @@ impl App {
             Hit::Tool(Tool::Info) => "Info panel (Ctrl+I)",
             Hit::Tool(Tool::Settings) => "Settings (Ctrl+,)",
             Hit::Reveal => "Show this file in File Explorer",
+            Hit::StatusZoom => "Fit or 100 %",
             Hit::InfoPath => "Show in File Explorer",
             Hit::PagePrevious => "Previous page (Page Up)",
             Hit::DefaultHintClose => "Don't show this again",
@@ -529,6 +530,16 @@ impl App {
         }
     }
 
+    /// The status row's zoom percentage clicked: fit or 100 % about the middle of the photo's area.
+    pub(super) fn status_zoom_click(&mut self) {
+        if !self.photo_up() {
+            return;
+        }
+        let (vw, vh) = self.view_size();
+        self.view.toggle_fit_actual(vw / 2.0, vh / 2.0);
+        self.after_zoom();
+    }
+
     pub(super) fn draw_status(&mut self, g: &Gfx) {
         let (w, h) = self.size_dip();
         // A photo's camera and exposure come from its EXIF (read once per file, as the info card does).
@@ -546,6 +557,19 @@ impl App {
         // The title bar's colour (dimmed with it when the window isn't active).
         let label = if self.active { rgb(theme::t().text) } else { rgb(theme::t().placeholder) };
         let counter_w = rank.as_ref().map_or(0.0, |s| g.measure_tabular(&wide(s), &g.fonts.caption) + 24.0);
+        // The zoom percentage (the row's last part) clicks: fit or 100 %, as a double-click on the photo (Faye,
+        // 2026-11-11). Its wash first, the text over it.
+        let zoom = format!("{:.0}%", self.view.zoom_percent());
+        if self.photo_up() && !self.model_active() && text.ends_with(&zoom) {
+            let x = SIDE_PAD + g.measure_tabular(&wide(&text[..text.len() - zoom.len()]), &g.fonts.caption);
+            let zw = g.measure_tabular(&wide(&zoom), &g.fonts.caption);
+            if x + zw <= w - SIDE_PAD - counter_w {
+                let r = rect(x, y, zw, row_h);
+                self.hits.add(Hit::StatusZoom, D2D_RECT_F { left: r.left - 6.0, right: r.right + 6.0, ..r });
+                let st = self.state(Hit::StatusZoom, true);
+                ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 5.0, right: r.right + 6.0, bottom: r.bottom - 5.0 }, st.hover, st.pressed);
+            }
+        }
         g.text_tabular(&wide(&text), &g.fonts.caption, rect(SIDE_PAD, y, (w - SIDE_PAD * 2.0 - counter_w).max(0.0), row_h), label, Align::Left);
         if let Some(r) = link {
             self.hits.add(Hit::Reveal, r);

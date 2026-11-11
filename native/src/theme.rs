@@ -93,7 +93,8 @@ impl Accent {
     /// Looker's red.
     pub const DEFAULT: Accent = Accent::Crimson;
     /// The order the Appearance page shows them in: Looker's red first (Faye, 2026-11-10). `ALL` keeps `HUES`'s.
-    pub const PICKER: [Accent; 6] = [Accent::Crimson, Accent::Orchid, Accent::Lime, Accent::Sky, Accent::White, Accent::Custom];
+    /// White isn't offered any more (Faye, 2026-11-11); a setting of it reads as the default (`parse`).
+    pub const PICKER: [Accent; 5] = [Accent::Crimson, Accent::Orchid, Accent::Lime, Accent::Sky, Accent::Custom];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -107,7 +108,7 @@ impl Accent {
     }
 
     pub fn parse(s: &str) -> Option<Accent> {
-        Accent::ALL.into_iter().find(|a| a.name().eq_ignore_ascii_case(s))
+        Accent::ALL.into_iter().filter(|a| *a != Accent::White).find(|a| a.name().eq_ignore_ascii_case(s))
     }
 
     /// Its accent colour in `theme`, for the picker's swatches.

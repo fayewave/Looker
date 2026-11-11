@@ -101,8 +101,10 @@ const DRAW = {
     const s = `<path d="M50 10 H166 L218 62 V232 Q218 246 204 246 H64 Q50 246 50 232 V24 Q50 10 64 10 Z" fill="${RED}"/>
       <path d="M166 10 V50 Q166 62 178 62 H218 Z" fill="${DARK}"/>`;
     if (small) return s + `<rect x="80" y="104" width="108" height="20" rx="8" fill="${INK}"/><rect x="80" y="146" width="108" height="20" rx="8" fill="${INK}"/><rect x="80" y="188" width="72" height="20" rx="8" fill="${INK}"/>`;
-    return s + `<rect x="78" y="44" width="70" height="10" rx="5" fill="${INK}" opacity=".8"/><rect x="78" y="68" width="54" height="10" rx="5" fill="${INK}" opacity=".8"/>`
-      + fitText(ext, 134, 138, 150, 60, INK) + whiteMark(106, 180, 56);
+    // Lines of text down the page; the extension is the black tag at the bottom right, as on every other kind
+    // (Faye, 2026-11-11: it was the extension in the middle over the Looker mark).
+    const line = (y, w) => `<rect x="78" y="${y}" width="${w}" height="12" rx="6" fill="${INK}" opacity=".85"/>`;
+    return s + line(44, 70) + line(70, 54) + line(100, 112) + line(126, 112) + line(152, 84);
   },
   model: () => `<g stroke-linejoin="round" stroke-width="10">
     <path d="M128 20 L228 74 L128 128 L28 74 Z" fill="${LIGHT}" stroke="${LIGHT}"/>
@@ -138,6 +140,6 @@ function iconSvg(ext, size) {
   const kind = kindOf(ext), E = ext.toUpperCase();
   const small = size <= 32;
   let body = DRAW[kind](E, small);
-  if (size >= 48 && kind !== "doc") body += tag(E);
+  if (size >= 48) body += tag(E);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 256 256">${body}</svg>`;
 }

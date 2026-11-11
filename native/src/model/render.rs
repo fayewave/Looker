@@ -715,10 +715,11 @@ impl Renderer {
         }
         let border = [[cx - half, y, cz - half], [cx + half, y, cz - half], [cx + half, y, cz + half], [cx - half, y, cz + half]];
         let edges: Vec<[f32; 3]> = (0..4).flat_map(|k| [border[k], border[(k + 1) % 4]]).collect();
-        let grey = [0.5, 0.5, 0.5];
-        // Half as opaque as it first was (Faye, 2026-11-11).
-        self.draw_lines(&lines, grey, 0.11 + 0.09 * guides, 0.0);
-        self.draw_lines(&edges, grey, 0.18 + 0.1 * guides, 0.0);
+        // As visible on every theme (Faye, 2026-11-11: mid grey stood out on the dark ones and all but vanished on
+        // the light ones): white lines, faint, on a dark page; black ones, firmer, on a light page.
+        let (ink, grid, edge) = if crate::theme::t().dark { ([1.0; 3], 0.06, 0.11) } else { ([0.0; 3], 0.13, 0.22) };
+        self.draw_lines(&lines, ink, grid * (1.0 + guides), 0.0);
+        self.draw_lines(&edges, ink, edge * (1.0 + 0.6 * guides), 0.0);
     }
 
     /// While the orbit centre moves: the model's bounding box as a wireframe, and a line dropped from the centre to

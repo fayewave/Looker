@@ -72,7 +72,8 @@ const CAPTION_W: f32 = 46.0;
 const BUTTON_W: f32 = 32.0;
 const BUTTON_H: f32 = 32.0;
 const BAR_GAP: f32 = 4.0;
-const BAR_APART: f32 = 12.0;
+/// Between the toolbar's groups: the same small gap as inside them (Faye, 2026-11-11: it was 12).
+const BAR_APART: f32 = BAR_GAP;
 const SIDE_PAD: f32 = 16.0;
 /// The status row's link, worded as the right-click menu's (Faye, 2026-11-11: it was "Open in Explorer").
 const STATUS_LINK: &str = "Reveal in Explorer\u{2026}";
@@ -144,6 +145,8 @@ const RIGHT_TOOLS: &[(Tool, u16)] = &[
 enum Hit {
     Tool(Tool),
     Reveal,
+    /// The status row's zoom percentage: a click toggles fit and 100 %, as a double-click on the photo does.
+    StatusZoom,
     Open,
     Viewport,
     /// The Settings card: the window under it (modal: a press there puts it away), the card, a section in its
