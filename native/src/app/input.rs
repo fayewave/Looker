@@ -356,6 +356,8 @@ impl App {
                             | Hit::InfoEdit(_)
                             | Hit::InfoStar(_)
                             | Hit::InfoAdd
+                            | Hit::InfoSave
+                            | Hit::InfoDiscard
                             | Hit::Open
                             | Hit::LandingFolder
                             | Hit::RecentRow(_)
@@ -600,6 +602,10 @@ impl App {
                             }
                             Some(Hit::InfoStar(k)) => self.info_pick_stars(k as u32 + 1),
                             Some(Hit::InfoAdd) => self.open_info_add_menu(r.unwrap_or_default()),
+                            Some(Hit::InfoSave) => {
+                                self.save_info_edits();
+                            }
+                            Some(Hit::InfoDiscard) => self.ask_info_discard(),
                             Some(Hit::StatusZoom) => self.status_zoom_click(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),

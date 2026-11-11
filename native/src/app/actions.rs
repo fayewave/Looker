@@ -35,6 +35,8 @@ pub(super) enum DialogKind {
     TextClose(u64),
     /// Closing the window with the info card's edits unsaved: Save, Don't save, Cancel.
     InfoClose,
+    /// The info card's Discard all.
+    InfoDiscard,
 }
 
 impl App {
@@ -458,6 +460,7 @@ impl App {
         }
         match kind {
             DialogKind::TextClose(_) | DialogKind::InfoClose => {}
+            DialogKind::InfoDiscard => self.info_discard_all(),
             DialogKind::Notice => {}
             DialogKind::Rip(setup) => {
                 let (title, mp4) = (d.picked(0), d.picked(1) == 1);

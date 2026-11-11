@@ -154,6 +154,18 @@ impl App {
             let end = group_end(blocks, start);
             let row = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if *label == f.label()));
             let change = edits.and_then(|m| m.get(&f));
+            // Removed: the row stays (tinted, dimmed) until the save takes it out.
+            if matches!(change, Some((Some(_), None))) && editing != Some(f) {
+                let gone = Block::Row { label: f.label(), value: "Removed when you save".to_string(), path: false, copy: Some(String::new()), dim: true };
+                match row {
+                    Some(i) => blocks[i] = gone,
+                    None => {
+                        let at = (start + 1..end).find(|&i| matches!(&blocks[i], Block::Row { label, .. } if rank(label) > rank(f.label()))).unwrap_or(end);
+                        blocks.insert(at, gone);
+                    }
+                }
+                continue;
+            }
             let value = match change {
                 Some((_, new)) => new.clone(),
                 None => row.and_then(|i| match &blocks[i] {
@@ -189,18 +201,7 @@ impl App {
         if have < Field::ALL.len() {
             blocks.insert(end, Block::Add);
         }
-        // The note under the name.
-        let note = if self.info_card.edits.saving {
-            Some("Saving\u{2026}".to_string())
-        } else if self.info_unsaved(&path) {
-            Some("Unsaved changes: Ctrl+S saves them into the file".to_string())
-        } else {
-            None
-        };
-        if let Some(n) = note {
-            let at = blocks.iter().position(|b| matches!(b, Block::Heading(..))).map_or(0, |i| i + 1);
-            blocks.insert(at, Block::Note(n));
-        }
+        // (The count of unsaved edits, Save and Discard all are in the card's footer.)
     }
 
     /// Starts typing into field `f` (the rating: its stars).
@@ -430,6 +431,35 @@ impl App {
                 self.show_toast(format!("Couldn't save {}: {e}", file_name(p)), false);
             }
         }
+        self.invalidate();
+    }
+
+    /// The footer's Discard all: asks first.
+    pub(super) fn ask_info_discard(&mut self) {
+        let n: usize = self.info_card.edits.pending.values().map(|m| m.len()).sum();
+        if n == 0 || self.dialog.is_some() {
+            return;
+        }
+        let files = self.info_unsaved_files();
+        let what = match (n, files) {
+            (1, _) => "the unsaved change".to_string(),
+            (_, 1) => format!("all {n} unsaved changes"),
+            _ => format!("all {n} unsaved changes in {files} files"),
+        };
+        let buttons = vec![ui::DialogButton::new("Discard", Choice::Confirm), ui::DialogButton::new("Cancel", Choice::Cancel)];
+        let body = format!("Discard {what}? The files stay as they are.");
+        self.open_dialog_ui(DialogKind::InfoDiscard, ui::Dialog::new("Looker".into(), body, buttons, 0, false));
+    }
+
+    /// Every unsaved edit gone, and their undo steps.
+    pub(super) fn info_discard_all(&mut self) {
+        self.info_end_edit();
+        let e = &mut self.info_card.edits;
+        let n: usize = e.pending.values().map(|m| m.len()).sum();
+        e.pending.clear();
+        e.undo.clear();
+        e.redo.clear();
+        self.show_toast(if n == 1 { "Discarded the change".to_string() } else { format!("Discarded {n} changes") }, false);
         self.invalidate();
     }
 

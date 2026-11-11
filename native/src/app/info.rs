@@ -21,6 +21,8 @@ const GROUP_GAP: f32 = 14.0;
 /// Between one property (its name over its value) and the next.
 const ROW_GAP: f32 = 8.0;
 const TITLE_H: f32 = 16.0;
+/// The footer that holds still under the rows while there are unsaved edits.
+const FOOTER_H: f32 = 46.0;
 const SCROLL_MS: f32 = 150.0;
 /// Pixels scrolled per wheel notch.
 const SCROLL_STEP: f32 = 48.0;
@@ -84,8 +86,6 @@ pub(super) enum Block {
     /// A property. `copy`: what a click copies when it isn't the value shown (a selection's mixed values);
     /// `dim`: the value in the label colour ("Mixed values").
     Row { label: &'static str, value: String, path: bool, copy: Option<String>, dim: bool },
-    /// A line under the name in the warning colour ("Unsaved changes...").
-    Note(String),
     /// "+ Add a field", at the end of the Description group.
     Add,
 }
@@ -300,7 +300,7 @@ impl App {
         for b in self.info_blocks() {
             match b {
                 Block::Heading(name, _) => out.push_str(&name),
-                Block::Histogram | Block::Note(_) | Block::Add => {}
+                Block::Histogram | Block::Add => {}
                 Block::Title(t) => {
                     out.push_str("\r\n\r\n");
                     out.push_str(t);
@@ -463,6 +463,15 @@ impl App {
         let th = theme::t();
 
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
+        // Unsaved edits (on any photo): a footer under the rows that doesn't scroll, with Save and Discard all.
+        let unsaved: usize = self.info_card.edits.pending.values().map(|m| m.len()).sum();
+        let footer = (unsaved > 0 || self.info_card.edits.saving).then(|| D2D_RECT_F { top: inner.bottom - FOOTER_H, ..inner });
+        let inner = match footer {
+            Some(f) => D2D_RECT_F { bottom: f.top, ..inner },
+            None => inner,
+        };
+        // The fields of the shown photo with unsaved edits: their rows are tinted.
+        let changed: Vec<crate::metawrite::Field> = self.info_edit_path().and_then(|p| self.info_card.edits.pending.get(&p)).map(|m| m.keys().copied().collect()).unwrap_or_default();
         let x = inner.left + PAD_X;
         // 2 more on the right: clear of the scrollbar now it's always 8 wide.
         let w = (inner.right - PAD_X - 2.0 - x).max(1.0);
@@ -483,7 +492,6 @@ impl App {
                 Block::Heading(name, _) => (g.measure_height(&wide(name), &g.fonts.heading_wrap, w).max(19.0).ceil(), 0.0),
                 Block::Histogram => (hist_h, 0.0),
                 Block::Title(_) => (TITLE_H + 2.0, 0.0),
-                Block::Note(n) => (g.measure_height(&wide(n), &g.fonts.caption_wrap, w).max(16.0).ceil(), 0.0),
                 Block::Add => (26.0, 0.0),
                 Block::Row { label, value, .. } => {
                     let lh = g.measure_height(&wide(label), &g.fonts.caption_wrap, w).max(16.0).ceil();
@@ -532,6 +540,13 @@ impl App {
                     Block::Row { .. } | Block::Heading(..) => Some(Hit::InfoRow(i)),
                     _ => None,
                 };
+                // An unsaved edit: the accent's tint under the row and a bar down its left, so what Ctrl+S will
+                // write is plain to see (Faye, 2026-11-11).
+                if fields[i].is_some_and(|f| changed.contains(&f)) {
+                    let rr = D2D_RECT_F { left: x - 6.0, top: y - 3.0, right: x + w + 4.0, bottom: y + h + 3.0 };
+                    g.fill_round(rr, 5.0, gfx::rgba(th.accent, 0.12));
+                    g.fill_round(rect(rr.left, rr.top + 3.0, 3.0, rr.bottom - rr.top - 6.0), 1.5, rgb(th.accent));
+                }
                 if let Some(hit) = hit {
                     let rr = D2D_RECT_F { left: x - 6.0, top: y - 3.0, right: x + w + 4.0, bottom: y + h + 3.0 };
                     let st = self.state(hit, true);
@@ -547,7 +562,6 @@ impl App {
                     Block::Title(t) => {
                         ui::section(g, t, rect(x, y, w, TITLE_H));
                     }
-                    Block::Note(n) => g.text(&wide(n), &g.fonts.caption_wrap, rect(x, y, w, *h), rgb(th.warn), Align::Left),
                     Block::Add => {
                         let r = rect(x - 6.0, y, ui::icon_label_width(g, "Add a field") - 8.0, *h);
                         let st = self.state(Hit::InfoAdd, true);
@@ -600,6 +614,9 @@ impl App {
             y += h;
         }
         g.pop_clip();
+        if let Some(f) = footer {
+            self.draw_info_footer(g, f, unsaved);
+        }
 
         // The scroll thumb while the pointer is over an overflowing card, or while it scrolls.
         let over = matches!(self.hover, Some(Hit::InfoCard | Hit::InfoPath | Hit::InfoRow(_) | Hit::InfoEdit(_) | Hit::InfoField | Hit::InfoStar(_) | Hit::InfoAdd));
@@ -617,6 +634,35 @@ impl App {
         let t = self.fades.hover(Hit::InfoGrip, self.hover == Some(Hit::InfoGrip) || dragging);
         ui::grip_line(g, rect(card.left - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
         moving
+    }
+
+    /// The footer: how many edits wait (and in how many files), Discard all and Save.
+    fn draw_info_footer(&mut self, g: &Gfx, f: D2D_RECT_F, unsaved: usize) {
+        let th = theme::t();
+        g.hline(f.left, g.snap(f.top), f.right - f.left, rgb(th.divider));
+        let saving = self.info_card.edits.saving;
+        let files = self.info_unsaved_files();
+        let text = if saving {
+            "Saving\u{2026}".to_string()
+        } else {
+            // Short, beside two buttons in a card that can be 260 wide.
+            if files > 1 { format!("{unsaved} unsaved \u{b7} {files} files") } else { format!("{unsaved} unsaved") }
+        };
+        let bh = 28.0;
+        let by = f.top + (f.bottom - f.top - bh) / 2.0;
+        let save_w = ui::icon_label_width(g, "Save");
+        let save = rect(f.right - PAD_X - save_w, by, save_w, bh);
+        let discard_w = ui::icon_label_width(g, "Discard");
+        let discard = rect(save.left - 8.0 - discard_w, by, discard_w, bh);
+        g.text(&wide(&text), &g.fonts.body, rect(f.left + PAD_X, f.top, (discard.left - 8.0 - f.left - PAD_X).max(0.0), f.bottom - f.top), rgb(th.warn), Align::Left);
+        let st = self.state(Hit::InfoDiscard, !saving);
+        ui::icon_label_button(g, discard, 0xE894, "Discard", ui::Kind::Standard, &st);
+        let st = self.state(Hit::InfoSave, !saving);
+        ui::icon_label_button(g, save, 0xE74E, "Save", ui::Kind::Accent, &st);
+        if !saving {
+            self.hits.add(Hit::InfoDiscard, discard);
+            self.hits.add(Hit::InfoSave, save);
+        }
     }
 
     /// The rating picker: five stars from `x`, filled up to the hovered one (else the rating as it stands).

@@ -258,6 +258,9 @@ enum Hit {
     InfoField,
     InfoStar(u8),
     InfoAdd,
+    /// The footer's Save and Discard all (while edits are unsaved).
+    InfoSave,
+    InfoDiscard,
     /// "Get it from the Microsoft Store" under "Can't display this file", when a Windows extension is missing.
     GetExtension,
     /// The landing page's "Set Looker as your default photo viewer" and its X.

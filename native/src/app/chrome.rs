@@ -247,6 +247,8 @@ impl App {
             Hit::InfoPath => "Show in File Explorer",
             Hit::InfoRow(_) => "Click to copy",
             Hit::InfoEdit(_) => "Edit",
+            Hit::InfoSave => "Save the changes into the files (Ctrl+S)",
+            Hit::InfoDiscard => "Throw away every unsaved change",
             Hit::InfoAdd => "Add a field this photo doesn't have yet",
             Hit::InfoStar(_) => "Set the rating (the same star again clears it)",
             Hit::PagePrevious => "Previous page (Page Up)",
