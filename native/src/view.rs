@@ -225,7 +225,9 @@ impl View {
         self.anim_start = None;
         self.target.x += dx;
         self.target.y += dy;
-        self.clamp_offset();
+        // A drag moves the image even where it fits the view (at fit, or zoomed out): Faye, 2026-11-11. Zoom,
+        // fit and resizes still centre an image smaller than the view.
+        self.clamp_offset_by(true);
     }
 
     pub fn at_fit_position(&self) -> bool {
@@ -290,17 +292,22 @@ impl View {
     }
 
     fn clamp_offset(&mut self) {
+        self.clamp_offset_by(false);
+    }
+
+    /// `free`: content smaller than the view may move too (a drag), else it is centred.
+    fn clamp_offset_by(&mut self, free: bool) {
         let s = self.target.scale;
         // "Keep 20% on screen" is measured against the focus (one page): against a 100-page strip it would be
         // 20 pages, which forbids the very fit-to-page positions a document opens at.
         let f = self.focus_rect();
-        self.target.x = clamp_axis(self.target.x, self.cw * s, self.vw, self.cw.min(f.w) * s);
-        self.target.y = clamp_axis(self.target.y, self.ch * s, self.vh, self.ch.min(f.h) * s);
+        self.target.x = clamp_axis(self.target.x, self.cw * s, self.vw, self.cw.min(f.w) * s, free);
+        self.target.y = clamp_axis(self.target.y, self.ch * s, self.vh, self.ch.min(f.h) * s, free);
     }
 }
 
-fn clamp_axis(offset: f64, content: f64, viewport: f64, keep_extent: f64) -> f64 {
-    if content <= viewport {
+fn clamp_axis(offset: f64, content: f64, viewport: f64, keep_extent: f64, free: bool) -> f64 {
+    if content <= viewport && !free {
         return (viewport - content) / 2.0;
     }
     // At most half the view: zoomed in far, 20 % of the image is wider than the view and kept its edges off
@@ -316,10 +323,24 @@ mod tests {
     #[test]
     fn zoomed_in_far_an_edge_still_reaches_the_middle() {
         // 10 000 wide in a 1 000 view: the left edge may come to the middle (offset 500), no further.
-        assert_eq!(clamp_axis(900.0, 10_000.0, 1_000.0, 10_000.0), 500.0);
-        assert_eq!(clamp_axis(-9_900.0, 10_000.0, 1_000.0, 10_000.0), -9_500.0);
+        assert_eq!(clamp_axis(900.0, 10_000.0, 1_000.0, 10_000.0, false), 500.0);
+        assert_eq!(clamp_axis(-9_900.0, 10_000.0, 1_000.0, 10_000.0, false), -9_500.0);
         // Barely bigger than the view: 20 % of it stays, as before.
-        assert_eq!(clamp_axis(900.0, 1_200.0, 1_000.0, 1_200.0), 760.0);
+        assert_eq!(clamp_axis(900.0, 1_200.0, 1_000.0, 1_200.0, false), 760.0);
+    }
+
+    #[test]
+    fn a_fitted_image_pans_and_zoom_out_recentres() {
+        let mut v = View::new();
+        v.reset(1000.0, 800.0, 4000.0, 2000.0, 1.0, None);
+        v.pan(-300.0, 100.0);
+        let r = v.target_rect();
+        assert_eq!((r.x, r.y), (-300.0, 250.0));
+        // No further than 20 % of the image left on screen.
+        v.pan(-10_000.0, 0.0);
+        assert_eq!(v.target_rect().x, 200.0 - 1000.0);
+        v.fit();
+        assert!(v.at_fit_position());
     }
 
     #[test]
