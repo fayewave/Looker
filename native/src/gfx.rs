@@ -829,7 +829,11 @@ fn pixel_rect_at(dest: D2D_RECT_F, w: u32, h: u32, s: f32) -> Option<D2D_RECT_F>
     if k < PIXELS_FROM {
         return None;
     }
-    let k = if (k - k.round()).abs() < 0.01 { k.round().max(1.0) } else { k };
+    // A whole zoom only when the float hair moves the far edge less than half a device pixel. A wider tolerance
+    // (it was 1 %) snapped a 6000-pixel photo mid-animation from 99.1 % to 100 %, 57 pixels bigger out of its
+    // corner, so zooming to and from 100 % jolted for a few frames (Faye, 2026-11-11).
+    let near = k.round().max(1.0);
+    let k = if (k - near).abs() * (w.max(h) as f32) < 0.5 { near } else { k };
     let left = (dest.left * s).round() / s;
     let top = (dest.top * s).round() / s;
     Some(D2D_RECT_F { left, top, right: left + w as f32 * k / s, bottom: top + h as f32 * k / s })
@@ -1889,6 +1893,18 @@ mod tests {
         assert!((r.left * 1.5 - (r.left * 1.5).round()).abs() < 1e-3);
         assert!(((r.right - r.left) * 1.5 - 1000.0).abs() < 1e-2);
         assert!(pixel_rect_at(D2D_RECT_F { left: 0.0, top: 0.0, right: 500.0, bottom: 281.0 }, 1000, 562, 1.0).is_none());
+    }
+
+    /// Mid-way through a zoom to 100 % (99.05 % of a 6000-pixel photo) the drawn box is the view's own, not
+    /// snapped to 100 % out of its corner (which jolted the picture for a few frames).
+    #[test]
+    fn hard_pixels_follow_a_zoom_near_100() {
+        let dest = D2D_RECT_F { left: -2105.0, top: -1599.0, right: -2105.0 + 5942.76, bottom: -1599.0 + 3961.84 };
+        let r = pixel_rect_at(dest, 6000, 4000, 1.0).unwrap();
+        assert!((r.right - dest.right).abs() < 0.6 && (r.bottom - dest.bottom).abs() < 0.6, "{r:?}");
+        // A hair under 100 % still lands on exactly 6000 pixels.
+        let r = pixel_rect_at(D2D_RECT_F { right: -2105.0 + 5999.95, ..dest }, 6000, 4000, 1.0).unwrap();
+        assert_eq!(r.right - r.left, 6000.0);
     }
 
     /// A card's shadow, fill and hairline on a light page, at 2x, written to `%TEMP%\looker-card-corner.png` to
