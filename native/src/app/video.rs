@@ -502,7 +502,7 @@ impl App {
         self.sync_video();
         let slideshow = self.slideshow.running;
         // A slideshow plays every video (to its end, without looping).
-        let (volume, muted, autoplay) = (self.settings.video_volume, self.video_muted(), self.settings.video_autoplay || slideshow);
+        let (volume, muted, autoplay) = (self.settings.video_volume, self.sound_off(), self.settings.video_autoplay || slideshow);
         let (loop_secs, resume_on) = (self.settings.video_loop_secs, self.settings.video_resume);
         let mut toast = None;
         let Some(v) = self.video.as_mut().filter(|v| !v.failed) else { return };
@@ -686,11 +686,16 @@ impl App {
         self.set_video_volume(self.settings.video_volume + delta, true);
     }
 
-    /// Whether the sound is off. Browse mode doesn't change it (Faye, 2026-11-10).
+    /// Whether the sound is off, as the speaker button shows it. Browse mode doesn't change it (Faye, 2026-11-10).
     pub(super) fn video_muted(&self) -> bool {
-        // LOOKER_MUTE=1: test runs stay silent whatever the volume setting.
+        self.settings.video_muted
+    }
+
+    /// What the players are told: the setting, or always off under LOOKER_MUTE=1, so test runs stay silent
+    /// whatever the volume setting while the controls still look as they would (screenshots).
+    fn sound_off(&self) -> bool {
         static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        self.settings.video_muted || *FORCED.get_or_init(|| std::env::var_os("LOOKER_MUTE").is_some())
+        self.video_muted() || *FORCED.get_or_init(|| std::env::var_os("LOOKER_MUTE").is_some())
     }
 
     fn set_video_volume(&mut self, v: f32, toast: bool) {
@@ -703,7 +708,7 @@ impl App {
     }
 
     fn apply_volume(&mut self) {
-        let (v, m) = (self.settings.video_volume, self.video_muted());
+        let (v, m) = (self.settings.video_volume, self.sound_off());
         if let Some(p) = self.player() {
             p.set_volume(v, m);
         }
