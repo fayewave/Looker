@@ -1,7 +1,9 @@
-//! Motion photos (`crate::motionphoto`): a photo with a short video plays it while the left button is held on the
-//! photo (as a phone plays one while a finger rests on it), or once from the Motion badge in its corner. The video
-//! plays in the video view (`VideoView` with `motion` set: no bar, no keys, no resume point), drawn in the photo's
-//! own box; at its end, or when the button comes up, the still is back.
+//! Motion photos (`crate::motionphoto`): a photo with a short video. In photo mode a Motion pill sits where a video's
+//! bar would, at the bottom in the middle, in the bar's own look; pressing it grows it smoothly into the full video
+//! bar (video mode: the clip plays with every control a video has, its Motion toggle at the bar's left end), and
+//! that toggle shrinks it back into the pill and the still. Holding the left button still on the photo in photo
+//! mode plays the clip while it's held, as a phone does. The clip plays in the video view (`VideoView` with
+//! `motion` set: no resume point; while held, no bar or keys either), drawn in the photo's own box.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -21,14 +23,27 @@ pub(super) struct MotionPhoto {
     pub looked: bool,
 }
 
+/// The Motion mark: a ring around a dot, centred on (cx, cy).
+pub(super) fn draw_mark(g: &Gfx, cx: f32, cy: f32, c: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F) {
+    ui::stroke(g, rect(cx - 6.5, cy - 6.5, 13.0, 13.0), 6.5, c);
+    g.fill_round(rect(cx - 2.5, cy - 2.5, 5.0, 5.0), 2.5, c);
+}
+
+fn lerp(a: f32, b: f32, k: f32) -> f32 {
+    a + (b - a) * k
+}
+
 impl App {
-    /// Each frame, before the video's: a new photo is looked at for a motion part; a motion video playing for a
-    /// photo no longer shown stops; a hold long enough starts one; one played to its end stops.
+    /// Each frame, before the video's: a new photo is looked at for a motion part (and starts in photo mode); a
+    /// motion video playing for a photo no longer shown stops; a hold long enough starts one; a held one played to
+    /// its end stops; video mode, once shrunk back into the pill, lets its video go.
     pub(super) fn sync_motion(&mut self) {
         let current = self.current_path().filter(|_| self.photo_up()).map(Path::to_path_buf);
         if self.motion.as_ref().map(|m| &m.photo) != current.as_ref() {
             self.stop_motion();
             self.motion_hold = None;
+            self.motion_open = false;
+            self.fades.set_now(Hit::MotionMorph, false);
             self.motion = current.map(|photo| {
                 let found = Arc::new(Mutex::new(None));
                 let (f, p) = (found.clone(), photo.clone());
@@ -48,21 +63,25 @@ impl App {
             if let Some(v) = m.found.lock().ok().and_then(|mut f| f.take()) {
                 m.video = v;
                 m.looked = true;
-                self.invalidate(); // the badge
+                self.invalidate(); // the pill
             }
         }
         // Held still long enough on the photo: play.
         if let Some(at) = self.motion_hold {
-            if self.pressed != Some(Hit::Viewport) {
+            if self.pressed != Some(Hit::Viewport) || self.motion_open {
                 self.motion_hold = None;
             } else if at.elapsed() >= HOLD && self.motion_ready() && !self.motion_playing() {
                 self.motion_hold = None;
                 self.start_motion(true);
             }
         }
-        // Played through: the still again.
-        let done = self.video.as_ref().filter(|v| v.motion).and_then(|v| v.player.as_ref()).is_some_and(|p| p.info().is_some() && p.at_end());
+        // A held clip played through: the still again.
+        let done = self.motion_held && self.video.as_ref().filter(|v| v.motion).and_then(|v| v.player.as_ref()).is_some_and(|p| p.info().is_some() && p.at_end());
         if done {
+            self.stop_motion();
+        }
+        // Back in photo mode and the bar all the way back into the pill: the video goes.
+        if !self.motion_open && !self.motion_held && self.motion_playing() && self.fades.get(Hit::MotionMorph, false) <= 0.0 {
             self.stop_motion();
         }
     }
@@ -76,18 +95,19 @@ impl App {
         self.video.as_ref().is_some_and(|v| v.motion)
     }
 
-    /// Still looking for a motion part, waiting out a hold, or a motion video up (its end, which the player itself
-    /// no longer animates, brings the still back): draw again next vsync.
+    /// Still looking for a motion part, waiting out a hold, or a motion video up (a held one's end, which the
+    /// player itself no longer animates, brings the still back): draw again next vsync.
     pub(super) fn motion_animating(&self) -> bool {
-        self.motion.as_ref().is_some_and(|m| !m.looked) || self.motion_hold.is_some() || self.motion_playing()
+        self.motion.as_ref().is_some_and(|m| !m.looked) || self.motion_hold.is_some() || (self.motion_playing() && self.motion_held)
     }
 
-    /// Plays the motion part from its start. `held`: while the button is down (it stops when it comes up).
-    pub(super) fn start_motion(&mut self, held: bool) {
+    /// Plays the motion part from its start. `held`: while the button is down (it stops when it comes up); else
+    /// video mode.
+    fn start_motion(&mut self, held: bool) {
         let Some(video) = self.motion.as_ref().and_then(|m| m.video.clone()) else { return };
         self.stop_motion();
         self.motion_held = held;
-        self.video = Some(video::VideoView::for_motion(video));
+        self.video = Some(video::VideoView::for_motion(video, !held));
         self.invalidate();
     }
 
@@ -100,9 +120,31 @@ impl App {
         self.motion_held = false;
     }
 
-    /// The left button down on the photo: a hold may follow.
+    /// The Motion button: photo mode to video mode (the pill grows into the bar, the clip plays), or back (the
+    /// still at once, the bar shrinking back into the pill, then the video goes).
+    pub(super) fn toggle_motion_open(&mut self) {
+        if !self.motion_open {
+            if !self.motion_ready() {
+                return;
+            }
+            self.motion_hold = None;
+            self.start_motion(false);
+            self.motion_open = true;
+            self.video_moved = Instant::now();
+        } else {
+            self.motion_open = false;
+            if let Some(p) = self.player() {
+                p.set_playing(false);
+            }
+        }
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    /// The left button down on the photo: a hold may follow (photo mode only; in video mode a click plays and
+    /// pauses, as on any video).
     pub(super) fn motion_press(&mut self) {
-        if self.motion_ready() && !self.motion_playing() {
+        if self.motion_ready() && !self.motion_playing() && !self.motion_open {
             self.motion_hold = Some(Instant::now());
         }
     }
@@ -122,42 +164,54 @@ impl App {
         }
     }
 
-    /// The Motion badge in the photo's top-left corner (inside the photo, below the toolbar): a ring and a dot, and
-    /// the word; a click plays the video once (again: stops it).
-    pub(super) fn draw_motion_badge(&mut self, g: &Gfx) {
-        if !self.motion_ready() {
+    /// The pill, in the bar's place and look, and its growing into the bar (and back): the box eases from the
+    /// pill's width to the bar's (the motion curve), the pill's mark and word fading out over the first half and the
+    /// bar's controls fading in over the second, inside the box. All the way open, the video bar draws itself.
+    pub(super) fn draw_motion_bar(&mut self, g: &Gfx) {
+        if !self.motion_ready() && !(self.motion_playing() && !self.motion_held) {
             return;
         }
-        let r = self.view.frame();
-        let a = self.image_area();
-        let top_min = if self.chrome() { Self::toolbar_y() + BUTTON_H + 8.0 } else { a.top + 12.0 };
-        let left = (a.left + r.x as f32 + 12.0).max(a.left + 12.0);
-        let top = (a.top + r.y as f32 + 12.0).max(top_min);
+        let k = self.fades.get(Hit::MotionMorph, self.motion_open);
+        if k >= 1.0 && self.motion_open && self.video_shown() && self.player_ref().is_some() {
+            return;
+        }
+        let Some((full, radius)) = self.video_bar_rect(g) else { return };
         let label = wide("Motion");
         let tw = g.measure(&label, &g.fonts.caption).ceil();
-        let b = rect(g.snap(left), g.snap(top), 12.0 + 14.0 + 6.0 + tw + 12.0, 28.0);
-        if b.right > a.right - 12.0 || b.bottom > a.bottom - 12.0 {
-            return; // a photo too small for it
+        let pill_w = (12.0 + 13.0 + 8.0 + tw + 16.0).min(full.right - full.left);
+        let cx = (full.left + full.right) / 2.0;
+        let c = rect(
+            g.snap(lerp(cx - pill_w / 2.0, full.left, k)),
+            full.top,
+            g.snap(lerp(pill_w, full.right - full.left, k)),
+            full.bottom - full.top,
+        );
+        let t = theme::t();
+        ui::shadow(g, c, radius);
+        g.fill_round(c, radius, rgb(t.sidebar));
+        let over = self.hover == Some(Hit::MotionBadge) && k < 0.5;
+        if over {
+            g.fill_round(c, radius, gfx::rgba(t.text, 0.06));
         }
-        self.hits.add(Hit::MotionBadge, b);
-        let playing = self.motion_playing();
-        let raised = theme::raised();
-        let over = self.hover == Some(Hit::MotionBadge);
-        g.fill_round(b, 14.0, gfx::rgba(raised.popup, if over { 0.95 } else { 0.8 }));
-        let fg = if playing { rgb(theme::t().accent) } else { rgb(raised.text) };
-        // The mark: a ring around a dot.
-        let (cx, cy) = (b.left + 12.0 + 7.0, (b.top + b.bottom) / 2.0);
-        ui::stroke(g, rect(cx - 6.5, cy - 6.5, 13.0, 13.0), 6.5, fg);
-        g.fill_round(rect(cx - 2.5, cy - 2.5, 5.0, 5.0), 2.5, fg);
-        g.text(&label, &g.fonts.caption, rect(cx + 7.0 + 6.0, b.top, tw + 2.0, b.bottom - b.top), fg, Align::Left);
-    }
-
-    /// A click on the badge: plays the video through, or stops it.
-    pub(super) fn motion_badge_click(&mut self) {
-        if self.motion_playing() {
-            self.stop_motion();
-        } else {
-            self.start_motion(false);
+        ui::stroke(g, c, radius, rgb(t.divider));
+        // The pill's face: the mark and the word, centred.
+        let face = (1.0 - k * 2.0).clamp(0.0, 1.0);
+        if face > 0.0 {
+            g.push_fade(face, 1.0, 0.0, 0.0);
+            let w = 13.0 + 8.0 + tw;
+            let left = (c.left + c.right) / 2.0 - w / 2.0;
+            let cy = (c.top + c.bottom) / 2.0;
+            draw_mark(g, left + 6.5, cy, rgb(t.text));
+            g.text(&label, &g.fonts.caption, rect(left + 13.0 + 8.0, c.top, tw + 2.0, c.bottom - c.top), rgb(t.text), Align::Left);
+            g.pop_fade();
+        }
+        if k < 0.5 && !self.motion_open {
+            self.hits.add(Hit::MotionBadge, c);
+        }
+        // The bar's controls, coming in (or going) inside the box.
+        let inside = ((k - 0.5) * 2.0).clamp(0.0, 1.0);
+        if inside > 0.0 && self.video.as_ref().is_some_and(|v| v.motion) && self.player_ref().is_some() {
+            self.draw_video_bar_with(g, Some((c, inside)));
         }
     }
 }

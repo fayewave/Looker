@@ -562,7 +562,7 @@ impl App {
                             Some(p @ (Hit::PickerPreset(_) | Hit::PickerDone | Hit::PickerCancel)) => self.picker_click(p),
                             Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
                             Some(Hit::AudioMode(i)) => self.set_audio_mode(i),
-                            Some(Hit::MotionBadge) => self.motion_badge_click(),
+                            Some(Hit::MotionBadge) => self.toggle_motion_open(),
                             Some(Hit::AudioClear) => {
                                 self.audio_clear_region();
                             }

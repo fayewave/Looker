@@ -274,7 +274,7 @@ impl App {
             Hit::VideoSettings => "Settings",
             Hit::VideoTime => "Timecode or frames",
             Hit::VideoFullscreen => "Fullscreen (F11, double-click)",
-            Hit::MotionBadge => "Motion photo: play (or hold on the photo)",
+            Hit::MotionBadge => "Motion: play it as a video, or back to the photo",
             _ => return None,
         })
     }
@@ -432,6 +432,7 @@ impl App {
             self.draw_view_cube(&g);
             self.draw_video_flash(&g);
             self.draw_video_bar(&g);
+            self.draw_motion_bar(&g);
         }
         self.update_media();
         if self.chrome() {
@@ -685,7 +686,6 @@ impl App {
         if self.placeholder.is_none() {
             self.draw_subtitles(g, bg);
         }
-        self.draw_motion_badge(g);
     }
 
     /// Gradients behind the bars, so they read on a bright photo (black in the dark themes, the page colour in

@@ -113,8 +113,9 @@ pub(super) struct VideoView {
 }
 
 impl VideoView {
-    /// A view of `path` playing a motion photo's video.
-    pub(super) fn for_motion(path: PathBuf) -> VideoView {
+    /// A view of `path` playing a motion photo's video: held (no loop, it ends) or in video mode (`open`: as any
+    /// short video, it loops by the setting).
+    pub(super) fn for_motion(path: PathBuf, open: bool) -> VideoView {
         VideoView {
             audio: false,
             path,
@@ -125,11 +126,11 @@ impl VideoView {
             resume: Some((0, true)),
             audio_track: None,
             video_track: None,
-            auto_loop: Some(false),
+            auto_loop: if open { None } else { Some(false) },
             scrub: None,
             preview: None,
             still: None,
-            looping: Some(false),
+            looping: if open { None } else { Some(false) },
             sdr: true,
             flash: None,
             cursor_hidden: false,
@@ -275,6 +276,8 @@ struct BarLayout {
     full: Option<D2D_RECT_F>,
     /// Stop, after play.
     stop: Option<D2D_RECT_F>,
+    /// A motion photo's Motion toggle, at the far left (back to photo mode).
+    motion: Option<D2D_RECT_F>,
     /// An audio file's bar only (Transient's, at the top): previous and next file, Loop, the title and format
     /// lines on the left, and the time on the right.
     prev: Option<D2D_RECT_F>,
@@ -510,7 +513,7 @@ impl App {
 
     /// A video is the current file (its keys and wheel apply, even before its first picture).
     pub(super) fn video_shown(&self) -> bool {
-        self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed && !v.motion)
+        self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed && (!v.motion || !self.motion_held))
     }
 
     /// The slideshow's dwell is up but this video is still opening or playing: it waits for the end.
@@ -701,11 +704,14 @@ impl App {
 
     /// The current picture, to draw instead of the still, and whether it's SDR (see `VideoView::sdr`).
     pub(super) fn video_bitmap(&self) -> Option<(ID2D1Bitmap1, bool)> {
-        self.video.as_ref().filter(|_| self.placeholder.is_none()).and_then(|v| Some((v.bitmap.clone()?, v.sdr)))
+        // A motion video going back to photo mode: the still, at once.
+        let shows = |v: &&VideoView| !v.motion || self.motion_open || self.motion_held;
+        self.video.as_ref().filter(|_| self.placeholder.is_none()).filter(shows).and_then(|v| Some((v.bitmap.clone()?, v.sdr)))
     }
 
     pub(super) fn player(&mut self) -> Option<&mut Engine> {
-        self.video.as_mut().filter(|v| !v.failed && !v.motion).and_then(|v| v.player.as_mut()).filter(|p| p.info().is_some())
+        let held = self.motion_held;
+        self.video.as_mut().filter(|v| !v.failed && (!v.motion || !held)).and_then(|v| v.player.as_mut()).filter(|p| p.info().is_some())
     }
 
     /// The status row's facts about the video playing (frame rate, codec...), once it has opened.
@@ -717,7 +723,7 @@ impl App {
     }
 
     pub(super) fn player_ref(&self) -> Option<&Engine> {
-        self.video.as_ref().filter(|v| !v.failed).and_then(|v| v.player.as_ref()).filter(|p| p.info().is_some())
+        self.video.as_ref().filter(|v| !v.failed && (!v.motion || !self.motion_held)).and_then(|v| v.player.as_ref()).filter(|p| p.info().is_some())
     }
 
     pub(super) fn video_volume_by(&mut self, delta: f32) {
@@ -998,6 +1004,11 @@ impl App {
         self.bar_layout(g).map(|l| l.bar)
     }
 
+    /// Where the video bar goes, and its corner radius (a motion photo's pill grows into it).
+    pub(super) fn video_bar_rect(&self, g: &Gfx) -> Option<(D2D_RECT_F, f32)> {
+        self.bar_layout(g).map(|l| (l.bar, l.radius))
+    }
+
     fn bar_layout(&self, g: &Gfx) -> Option<BarLayout> {
         if self.audio_shown() {
             return self.audio_bar_layout(g);
@@ -1024,8 +1035,10 @@ impl App {
         let sw = g.measure(&wide("/"), &g.fonts.caption).ceil() + 4.0;
         // As it narrows the volume slider goes first, then Settings (each while the seek bar would stay 160 wide),
         // then the times, the speaker with fullscreen, and play (while it would stay 48): the seek bar stays.
+        let with_motion = self.motion_ready() || self.video.as_ref().is_some_and(|v| v.motion);
+        let motion_w = if with_motion { btn + 4.0 } else { 0.0 };
         let essentials = |play: bool, times: bool, mute: bool| {
-            2.0 * pad + 12.0 + if play { 2.0 * btn + 10.0 } else { 0.0 } + if times { 2.0 * tw + sw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
+            2.0 * pad + 12.0 + motion_w + if play { 2.0 * btn + 10.0 } else { 0.0 } + if times { 2.0 * tw + sw + 12.0 } else { 0.0 } + if mute { 2.0 * btn + 12.0 } else { 0.0 }
         };
         let (with_play, with_times, with_mute) =
             [(true, true, true), (true, false, true), (true, false, false), (false, false, false)].into_iter().find(|&(p, t, m)| essentials(p, t, m) + 48.0 <= w).unwrap_or((false, false, false));
@@ -1033,7 +1046,9 @@ impl App {
         let all = with_play && with_times && with_mute;
         let with_settings = all && base + btn + 4.0 <= w;
         let with_volume = with_settings && base + btn + 4.0 + VOLUME_W <= w;
-        let play = with_play.then(|| rect(bar.left + pad, y, btn, btn));
+        let motion = with_motion.then(|| rect(bar.left + pad, y, btn, btn));
+        let first = bar.left + pad + motion_w;
+        let play = with_play.then(|| rect(first, y, btn, btn));
         let stop = play.map(|p| rect(p.right + 4.0, y, btn, btn));
         let mut right = bar.right - pad;
         let full = with_mute.then(|| {
@@ -1059,7 +1074,7 @@ impl App {
             right -= 8.0;
             r
         });
-        let left = stop.map_or(bar.left + pad, |p| p.right + 6.0);
+        let left = stop.map_or(first, |p| p.right + 6.0);
         // Both times after the seek bar, "00:01:00/00:02:00" (Faye, 2026-11-10): the elapsed time against the
         // slash, the total after it, so the slash stays put.
         let times = with_times.then(|| {
@@ -1075,7 +1090,7 @@ impl App {
         let cy = y + btn / 2.0;
         let track = rect(tl, cy - SLIDER_H / 2.0, (tr - tl).max(1.0), SLIDER_H);
         let seek = rect(tl - 6.0, bar.top, (tr - tl).max(1.0) + 12.0, h);
-        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, settings, full, stop, prev: None, next: None, looping: None, title: None, clock: None })
+        Some(BarLayout { bar, radius: (h / 2.0).min(10.0), play, times, track, seek, mute, volume, settings, full, stop, motion, prev: None, next: None, looping: None, title: None, clock: None })
     }
 
     /// An audio file's bar, as Transient's: across the top of the photo area, the title and format top left and
@@ -1132,6 +1147,7 @@ impl App {
             looping: Some(looping),
             title: Some(title),
             clock: Some(clock),
+            motion: None,
         })
     }
 
@@ -1151,8 +1167,21 @@ impl App {
         if !self.video_shown() || self.player_ref().is_none() {
             return;
         }
+        // A motion photo's bar while it grows out of (or back into) its pill is drawn by draw_motion_bar.
+        if self.video.as_ref().is_some_and(|v| v.motion) && (!self.motion_open || self.fades.get(Hit::MotionMorph, true) < 1.0) {
+            return;
+        }
+        self.draw_video_bar_with(g, None);
+    }
+
+    /// The bar; with `morph` (a motion photo's pill growing into it): its contents only, faded by the alpha given,
+    /// clipped to the rect given (the caller draws that box), and not clickable.
+    pub(super) fn draw_video_bar_with(&mut self, g: &Gfx, morph: Option<(D2D_RECT_F, f32)>) {
         let wanted = self.bar_wanted();
-        let a = self.fades.get(Hit::VideoBar, wanted);
+        let a = match morph {
+            Some((_, alpha)) => alpha,
+            None => self.fades.get(Hit::VideoBar, wanted),
+        };
         // The pointer goes with the bar in fullscreen, as it fades: Windows only asks for the cursor when the mouse
         // moves, so a pointer held still stayed up.
         let hide = a <= 0.0 && self.video_hides_cursor() && self.hover.is_none_or(|h| h == Hit::Viewport || is_bar_hit(h));
@@ -1181,11 +1210,16 @@ impl App {
         // The cards' colours (the explorer's, the info card's), not a popup's lighter greys (Faye, 2026-11-10).
         let raised = t;
         // Hits only while it's (mostly) there: a click on a fading bar is meant for the video.
-        let live = a > 0.5;
+        let live = a > 0.5 && morph.is_none();
+        if let Some((c, _)) = morph {
+            g.push_clip(c);
+        }
         g.push_fade(a, 1.0, 0.0, 0.0);
-        ui::shadow(g, l.bar, l.radius);
-        g.fill_round(l.bar, l.radius, rgb(t.sidebar));
-        ui::stroke(g, l.bar, l.radius, rgb(raised.divider));
+        if morph.is_none() {
+            ui::shadow(g, l.bar, l.radius);
+            g.fill_round(l.bar, l.radius, rgb(t.sidebar));
+            ui::stroke(g, l.bar, l.radius, rgb(raised.divider));
+        }
         if live {
             self.hits.add(Hit::VideoBar, l.bar);
         }
@@ -1196,6 +1230,10 @@ impl App {
             let st = app.state(id, true);
             ui::quiet_frame(g, r, kind, &st)
         };
+        if let Some(r) = l.motion {
+            let fg = button(self, Hit::MotionBadge, r, ui::Kind::Toggle(true));
+            super::motionphoto::draw_mark(g, (r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0, fg);
+        }
         let glyph = if ended { 0xE72C } else if playing { 0xE769 } else { 0xE768 };
         if let Some(r) = l.play {
             // The app's boxed buttons and toggles, as the toolbar's (Faye, 2026-11-10).
@@ -1334,6 +1372,9 @@ impl App {
             g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
         }
         g.pop_fade();
+        if morph.is_some() {
+            g.pop_clip();
+        }
 
         // Over the seek bar: the time there, and a picture of it once the preview decoder has one.
         if live && over && dur > 0 && !audio {

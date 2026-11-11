@@ -55,8 +55,8 @@ it keeps itself up to date.
   undecoded to a receiver (Passthrough, in the bar's Settings).
 - Audio files play with their cover, tags and a waveform (or spectrogram) per channel: click to seek, drag to loop
   a part, Ctrl+wheel to zoom; loudness in LUFS.
-- Motion photos (Google and Samsung motion photos, iPhone Live Photos): hold the mouse on the photo, or click its
-  Motion badge, to play the moment around it.
+- Motion photos (Google and Samsung motion photos, iPhone Live Photos): the Motion button opens the clip with the
+  full video controls, and holding the mouse on the photo plays it.
 - Rip unprotected DVDs to MKV or MP4.
 
 <img src="brand/screenshots/readme-video.jpg" alt="A 4K video playing, with the video bar" width="700">
