@@ -68,11 +68,12 @@ const DRAW = {
     const t = small ? "M95 84 L171 128 L95 172 Z" : "M101 94 L165 128 L101 162 Z";
     return s + `<path d="${t}" fill="${INK}" stroke="${INK}" stroke-width="14" stroke-linejoin="round"/>`;
   },
-  // A waveform: mirrored bars about the middle, as the audio view draws it.
+  // A waveform: mirrored bars about the middle, as the audio view draws it, symmetric and centred in the square
+  // both ways (Faye, 2026-11-11: it was lopsided and sat high).
   audio: (ext, small) => {
-    const hs = small ? [0.42, 0.78, 1, 0.62, 0.34] : [0.3, 0.55, 0.85, 1, 0.7, 0.9, 0.5, 0.32];
+    const hs = small ? [0.4, 0.75, 1, 0.75, 0.4] : [0.3, 0.5, 0.72, 0.9, 1, 0.9, 0.72, 0.5, 0.3];
     const bw = small ? 26 : 16, pitch = small ? 38 : 24;
-    const x0 = 128 - ((hs.length - 1) * pitch + bw) / 2, top = small ? 128 : 112, amp = small ? 82 : 66;
+    const x0 = 128 - ((hs.length - 1) * pitch + bw) / 2, top = 128, amp = small ? 82 : 70;
     let s = `<rect x="12" y="12" width="232" height="232" rx="30" fill="${RED}"/>`;
     hs.forEach((h, i) => {
       const half = Math.max(bw / 2, h * amp);

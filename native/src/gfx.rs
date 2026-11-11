@@ -796,8 +796,17 @@ impl Gfx {
     /// so at 100 % and above each one is drawn as a hard square (nearest neighbour), pin sharp for pixel
     /// peeping, instead of the cubic filter's blur (Faye, 2026-11-11). Nearest neighbour never rings, so it
     /// needs no clamp under scRGB either. Below 100 % it stays the high-quality cubic.
+    /// Where an image `w` x `h` pixels drawn at `dest` (DIPs, no transform) goes when its pixels are drawn as hard
+    /// squares: its corner on a whole device pixel and, at a whole zoom (100 %, 200 %, …, give or take a hair of
+    /// float), exactly that many device pixels per image pixel. Nearest neighbour from half a pixel off, or at a
+    /// scale of 0.9999, drops and doubles rows and columns: lines through the picture that came and went with the
+    /// window's size (Faye, 2026-11-11). None below 100 % (drawn smooth, nothing to line up).
+    pub fn pixel_rect(&self, dest: D2D_RECT_F, w: u32, h: u32) -> Option<D2D_RECT_F> {
+        pixel_rect_at(dest, w, h, self.dpi / 96.0)
+    }
+
     pub fn draw_photo_px(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32, sdr: bool, pixels: bool) {
-        if pixels && self.device_scale(bmp, dest) >= 0.999 {
+        if pixels && self.device_scale(bmp, dest) >= PIXELS_FROM {
             unsafe {
                 self.dev.dc.DrawBitmap(bmp, Some(&dest), opacity, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, None, None);
             }
@@ -807,7 +816,24 @@ impl Gfx {
             self.draw_bitmap(bmp, dest, opacity);
         }
     }
+}
 
+/// `Gfx::pixel_rect` at `s` device pixels per DIP.
+fn pixel_rect_at(dest: D2D_RECT_F, w: u32, h: u32, s: f32) -> Option<D2D_RECT_F> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let k = (dest.right - dest.left) * s / w as f32;
+    if k < PIXELS_FROM {
+        return None;
+    }
+    let k = if (k - k.round()).abs() < 0.01 { k.round().max(1.0) } else { k };
+    let left = (dest.left * s).round() / s;
+    let top = (dest.top * s).round() / s;
+    Some(D2D_RECT_F { left, top, right: left + w as f32 * k / s, bottom: top + h as f32 * k / s })
+}
+
+impl Gfx {
     /// Device pixels per bitmap pixel when `bmp` is drawn into `dest` under the current transform.
     fn device_scale(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F) -> f32 {
         unsafe {
@@ -1629,6 +1655,10 @@ fn color_matrix(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32, a: f32, clamp
 
 /// Renders `image` (pixel units, at the origin) into a new 16-bit float bitmap of `width x height`. Leaves the
 /// context at 96 dpi: the caller puts its own back.
+/// Device pixels per image pixel from which a full-size photo is drawn as hard pixels (`Gfx::pixel_rect` makes
+/// a scale this close to 1 exactly 1).
+const PIXELS_FROM: f32 = 0.99;
+
 /// The soft shadow's source: a rounded square (corner `radius` px) `pad` px in from each side of an `n`-pixel
 /// image, Gaussian-blurred (`sigma` px) to at most `dark` alpha, premultiplied black. A corner piece is `2 pad +
 /// radius` across, so the two middle pixels are a straight edge's profile. Returns (pixels, n, pad).
@@ -1842,6 +1872,17 @@ mod tests {
                 println!("mode {}: {:?}", mode.0, read_f16(dc, &out, 2, 1));
             }
         }
+    }
+
+    /// 100 % from half a pixel off lands on whole pixels, exactly one per image pixel; a scale a hair under 1 is 1.
+    #[test]
+    fn hard_pixels_line_up() {
+        let r = pixel_rect_at(D2D_RECT_F { left: 194.5, top: 192.25, right: 1194.5, bottom: 754.25 }, 1000, 562, 1.0).unwrap();
+        assert_eq!((r.left, r.top, r.right - r.left, r.bottom - r.top), (195.0, 192.0, 1000.0, 562.0));
+        let r = pixel_rect_at(D2D_RECT_F { left: 10.3, top: 0.0, right: 10.3 + 666.6, bottom: 374.0 }, 1000, 562, 1.5).unwrap();
+        assert!((r.left * 1.5 - (r.left * 1.5).round()).abs() < 1e-3);
+        assert!(((r.right - r.left) * 1.5 - 1000.0).abs() < 1e-2);
+        assert!(pixel_rect_at(D2D_RECT_F { left: 0.0, top: 0.0, right: 500.0, bottom: 281.0 }, 1000, 562, 1.0).is_none());
     }
 
     /// A card's shadow, fill and hairline on a light page, at 2x, written to `%TEMP%\looker-card-corner.png` to

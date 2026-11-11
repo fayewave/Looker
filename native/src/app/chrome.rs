@@ -626,6 +626,15 @@ impl App {
                 }
                 let frames = c.frames.borrow();
                 let frame = &frames[self.viewer.anim_frame.min(frames.len() - 1)].0;
+                // A full-size photo at 100 % and up is drawn as hard pixels: lined up with the screen's own, or it
+                // shows lines at some window sizes (`Gfx::pixel_rect`). `dest` is its turned bounds.
+                let dest = if doc.is_none() && c.full_size() {
+                    let px = unsafe { frame.GetPixelSize() };
+                    let (tw, th) = if self.turns & 1 == 1 { (px.height, px.width) } else { (px.width, px.height) };
+                    g.pixel_rect(dest, tw, th).unwrap_or(dest)
+                } else {
+                    dest
+                };
                 if let Some(d) = &doc {
                     self.draw_pages(g, d, dest, bg);
                 } else if let Some((v, sdr)) = self.video_bitmap() {
