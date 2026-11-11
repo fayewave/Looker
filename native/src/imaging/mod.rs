@@ -321,7 +321,8 @@ mod tests {
     fn decodes_the_test_photos() {
         use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2;
         use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
-        let dir = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap()).join("Pictures").join("Looker Test Photos");
+        // LOOKER_PHOTOS=<folder> decodes another folder.
+        let dir = std::env::var_os("LOOKER_PHOTOS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap()).join("Pictures").join("Looker Test Photos"));
         let f: IWICImagingFactory = unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
