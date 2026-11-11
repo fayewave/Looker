@@ -228,6 +228,12 @@ pub(super) struct TextView {
     /// Laid-out lines by index, for `cache_key` (version, width, size, wrap).
     cache: HashMap<usize, Line>,
     cache_key: (u64, u32, u32, bool),
+    /// Every line's height for `cache_key` (laid out, or estimated), and their running tops, kept between frames
+    /// (Faye, 2026-11-11: adding up a long file's lines afresh several times a frame made scrolling lag); the tops
+    /// are made again only when a height changes.
+    heights: Vec<f32>,
+    tops_cache: std::rc::Rc<[f32]>,
+    tops_stale: bool,
     format: Option<(IDWriteTextFormat, f32, bool)>,
     /// A row's height and a character's width at this size.
     metrics: (f32, f32, f32),
@@ -369,6 +375,9 @@ impl TextView {
             lines_version: u64::MAX,
             cache: HashMap::new(),
             cache_key: (u64::MAX, 0, 0, false),
+            heights: Vec::new(),
+            tops_cache: std::rc::Rc::from(Vec::new()),
+            tops_stale: true,
             format: None,
             metrics: (0.0, 0.0, 0.0),
             max_w: 0.0,
@@ -471,13 +480,13 @@ impl TextView {
         self.font = f.clone();
         self.size = (f.px * zoom).clamp(SIZE_MIN, SIZE_MAX);
         self.format = None;
-        self.cache.clear();
+        self.drop_layouts();
         self.max_w = 0.0;
     }
 
     pub(super) fn device_lost(&mut self) {
         self.md_brushes = None;
-        self.cache.clear();
+        self.drop_layouts();
     }
 
     /// Which lines are inside a ``` fence (worked out again when the text changes).
@@ -731,7 +740,7 @@ impl TextView {
             if self.cache_key.0 != key.0 || self.cache_key.3 != key.3 || self.cache_key.2 != key.2 {
                 self.max_w = 0.0;
             }
-            self.cache.clear();
+            self.drop_layouts();
             self.cache_key = key;
         }
     }
@@ -751,6 +760,12 @@ impl TextView {
             }
             let line = Line { layout: l, height: m.height.max(self.row_h()), width: m.widthIncludingTrailingWhitespace };
             self.max_w = self.max_w.max(line.width);
+            if let Some(h) = self.heights.get_mut(i) {
+                if *h != line.height {
+                    *h = line.height;
+                    self.tops_stale = true;
+                }
+            }
             self.cache.insert(i, line);
         }
         self.cache.get(&i)
@@ -772,33 +787,49 @@ impl TextView {
         cols.div_ceil(per_row).max(1) as f32 * row
     }
 
-    /// Every line's top (and the total height last), laying out the lines `view` shows on the way.
-    fn tops(&mut self, g: &Gfx, width: f32, wrap: bool, view: Option<(f32, f32)>) -> Vec<f32> {
+    /// The laid-out lines and the heights kept with them are dropped (made again when next needed).
+    fn drop_layouts(&mut self) {
+        self.cache.clear();
+        self.heights.clear();
+        self.tops_stale = true;
+    }
+
+    /// Every line's top (and the total height last), laying out the lines `view` shows on the way. Kept between
+    /// calls: only the heights that change (a line laid out for the first time) make them again.
+    fn tops(&mut self, g: &Gfx, width: f32, wrap: bool, view: Option<(f32, f32)>) -> std::rc::Rc<[f32]> {
         self.format(g, wrap);
         self.check_cache(width, wrap);
         let n = self.line_count();
+        if self.heights.len() != n {
+            let h: Vec<f32> = (0..n).map(|i| self.height_of(i, width, wrap)).collect();
+            self.heights = h;
+            self.tops_stale = true;
+        }
         let mut pass = 0;
         loop {
-            let mut tops = Vec::with_capacity(n + 1);
-            let mut y = 0.0f32;
-            for i in 0..n {
-                tops.push(y);
-                y += self.height_of(i, width, wrap);
+            if self.tops_stale || self.tops_cache.len() != n + 1 {
+                let mut t = Vec::with_capacity(n + 1);
+                let mut y = 0.0f32;
+                for h in &self.heights {
+                    t.push(y);
+                    y += h;
+                }
+                t.push(y);
+                self.tops_cache = t.into();
+                self.tops_stale = false;
             }
-            tops.push(y);
+            let tops = self.tops_cache.clone();
             let Some((top, bottom)) = view else { return tops };
             let first = tops.partition_point(|&t| t <= top).saturating_sub(1).min(n - 1);
-            let mut fresh = false;
             let mut i = first;
             while i < n && tops[i] <= bottom {
                 if !self.cache.contains_key(&i) {
                     self.line(g, i, width, wrap);
-                    fresh = true;
                 }
                 i += 1;
             }
             pass += 1;
-            if !fresh || pass >= 3 {
+            if !self.tops_stale || pass >= 3 {
                 return tops;
             }
         }
@@ -1010,7 +1041,7 @@ impl App {
         let md_view = md && tv.is_markdown();
         if md_view != tv.md_view {
             tv.md_view = md_view;
-            tv.cache.clear();
+            tv.drop_layouts();
         }
         tv.update_matches();
         let mut tops = tv.tops(g, width, wrap, Some((tv.scroll, tv.scroll + view_h)));

@@ -357,10 +357,10 @@ impl App {
         rank.map(|(r, n)| format!("{} / {}", r + 1, n))
     }
 
-    /// The status row as it fits beside the counter: its text and, when there's room for it too, the "Open in
-    /// Explorer" link's rect. A narrow window drops parts (the date first, the format last), then the link.
+    /// The status row as it fits beside the counter: its text and, when there's room for it too, the "Reveal in
+    /// Explorer…" link's rect. A narrow window drops parts (the date first, the format last), then the link.
     pub(super) fn status_line(&self, g: &Gfx) -> (String, Option<D2D_RECT_F>) {
-        const LINK: &str = "Open in Explorer";
+        const LINK: &str = STATUS_LINK;
         let (w, h) = self.size_dip();
         let parts = self.status_parts();
         let counter = self.status_rank().map_or(0.0, |s| g.measure_tabular(&wide(&s), &g.fonts.caption) + 24.0);
@@ -551,7 +551,7 @@ impl App {
             self.hits.add(Hit::Reveal, r);
             let st = self.state(Hit::Reveal, true);
             ui::link_fill(g, D2D_RECT_F { left: r.left - 6.0, top: r.top + 5.0, right: r.right + 6.0, bottom: r.bottom - 5.0 }, st.hover, st.pressed);
-            g.text_tabular(&wide("Open in Explorer"), &g.fonts.caption, r, ui::link_color(st.hover), Align::Left);
+            g.text_tabular(&wide(STATUS_LINK), &g.fonts.caption, r, ui::link_color(st.hover), Align::Left);
         }
         if let Some(text) = rank {
             g.text_tabular(&wide(&text), &g.fonts.caption, rect(SIDE_PAD, y, (w - SIDE_PAD * 2.0).max(0.0), row_h), label, Align::Right);

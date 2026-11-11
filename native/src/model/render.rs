@@ -716,8 +716,9 @@ impl Renderer {
         let border = [[cx - half, y, cz - half], [cx + half, y, cz - half], [cx + half, y, cz + half], [cx - half, y, cz + half]];
         let edges: Vec<[f32; 3]> = (0..4).flat_map(|k| [border[k], border[(k + 1) % 4]]).collect();
         let grey = [0.5, 0.5, 0.5];
-        self.draw_lines(&lines, grey, 0.22 + 0.18 * guides, 0.0);
-        self.draw_lines(&edges, grey, 0.36 + 0.2 * guides, 0.0);
+        // Half as opaque as it first was (Faye, 2026-11-11).
+        self.draw_lines(&lines, grey, 0.11 + 0.09 * guides, 0.0);
+        self.draw_lines(&edges, grey, 0.18 + 0.1 * guides, 0.0);
     }
 
     /// While the orbit centre moves: the model's bounding box as a wireframe, and a line dropped from the centre to
@@ -833,7 +834,7 @@ pub fn still(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Res
         let gpu = r.upload(&mesh)?;
         let target = r.target(w, h, DXGI_FORMAT_B8G8R8A8_UNORM)?;
         // The viewer's first frame has the live view's floor (no pop when it takes over); thumbnails don't.
-        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb, None, box_w != box_h);
+        r.draw(&mesh, &gpu, &target, &Camera::default(), &Place::whole(w, h), Output::Srgb, None, !(box_w == box_h && box_w > 0));
         read_back(r, &target)
     })?;
     // Native size: the render's own (the view shows it at fit, 1:1 when it was asked at the area's size).

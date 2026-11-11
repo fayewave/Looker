@@ -74,6 +74,8 @@ const BUTTON_H: f32 = 32.0;
 const BAR_GAP: f32 = 4.0;
 const BAR_APART: f32 = 12.0;
 const SIDE_PAD: f32 = 16.0;
+/// The status row's link, worded as the right-click menu's (Faye, 2026-11-11: it was "Open in Explorer").
+const STATUS_LINK: &str = "Reveal in Explorer\u{2026}";
 /// The sort button: its icon and a chevron.
 const SORT_W: f32 = 62.0;
 /// The accent "Save" button that appears while a rotation preview is unsaved.
