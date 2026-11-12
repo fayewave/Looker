@@ -358,7 +358,7 @@ pub const FOCUS_STRENGTH: f32 = 0.5;
 /// The panel with the keyboard (the explorer, the text editor, an archive) isn't outlined (Faye, 2026-11-12): the
 /// others are dimmed, their selection grey and their cursor hidden. `k` is the panel's keyboard fade, 1 with it.
 /// How bright a panel without the keyboard draws what's in its card.
-pub const INACTIVE: f32 = 0.6;
+pub const INACTIVE: f32 = 0.75;
 
 /// The opacity of a panel's content (inside its card): `INACTIVE` without the keyboard, easing to 1 with it.
 pub fn panel_opacity(k: f32) -> f32 {
