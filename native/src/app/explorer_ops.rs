@@ -575,11 +575,7 @@ impl App {
         let ticked = |action, glyph, label: &str, on: bool, enabled: bool| {
             Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled, current: false })
         };
-        let mut e = vec![Entry::Heading("Layout".into())];
-        e.push(ticked(Action::Layout(Layout::List), 0xE8FD, "List", v.layout == Layout::List, true));
-        e.push(ticked(Action::Layout(Layout::Columns), 0xE89A, "Columns", v.layout == Layout::Columns, true));
-        e.push(Entry::Separator);
-        e.push(Entry::Heading("Folders and files".into()));
+        let mut e = vec![Entry::Heading("Folders and files".into())];
         for g in Group::ALL {
             e.push(ticked(Action::Group(g), group_glyph(g), g.label(), v.group == g, true));
         }
@@ -622,6 +618,23 @@ impl App {
     pub(super) fn explorer_group_menu(&mut self, anchor: D2D_RECT_F) {
         let e = self.group_entries();
         self.show_menu_below(MenuKind::Group, e, anchor);
+    }
+
+    /// The Layout button's menu: List or Columns, for this tab (Faye, 2026-11-12: no longer kept per folder).
+    pub(super) fn explorer_layout_menu(&mut self, anchor: D2D_RECT_F) {
+        if matches!(self.menu, Some((MenuKind::Layout, _))) {
+            self.close_menu();
+            return;
+        }
+        let l = self.explorer.look.layout;
+        let ticked = |action, glyph, label: &str, on: bool| {
+            Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled: true, current: false })
+        };
+        let e = vec![
+            ticked(Action::Layout(Layout::List), 0xE8FD, "List", l == Layout::List),
+            ticked(Action::Layout(Layout::Columns), 0xE89A, "Columns", l == Layout::Columns),
+        ];
+        self.show_menu_below(MenuKind::Layout, e, anchor);
     }
 
     /// A tab's menu (right-click), as Transient's: a new tab, close it, close the others.

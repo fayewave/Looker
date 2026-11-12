@@ -340,6 +340,11 @@ impl App {
         rx -= NAV + 2.0;
         let group_open = matches!(self.menu, Some((menus::MenuKind::Group, _)));
         self.folder_settings_button(g, rect(rx, y, NAV, NAV), group_open);
+        // Layout, beside it: its glyph is the layout showing.
+        rx -= NAV + 2.0;
+        let layout_open = matches!(self.menu, Some((menus::MenuKind::Layout, _)));
+        let glyph = if self.explorer.look.layout == explorer::Layout::Columns { 0xE89A } else { 0xE8FD };
+        self.nav_button(g, rect(rx, y, NAV, NAV), Hit::ExplorerLayout, glyph, true, layout_open);
         // The card's Bookmarks and Collections drop-downs, beside it (Faye, 2026-11-10): browse mode has them in its
         // sidebar, so they fade out as that slides in.
         if slide < 1.0 {

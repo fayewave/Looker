@@ -328,6 +328,8 @@ pub(super) struct TabState {
     pub filter: String,
     /// Column view's columns, as the tab left them.
     pub cols: super::explorer_columns::Columns,
+    /// List or Columns: each tab its own (Faye, 2026-11-12).
+    pub layout: explorer::Layout,
 }
 
 /// A sidebar section dragged by its heading, as Transient's: the heading follows the pointer, the others make
@@ -1270,6 +1272,8 @@ impl App {
         if e.look.subfolders != v.subfolders {
             e.watcher = None;
         }
+        // The layout is the tab's, not the place's (Faye, 2026-11-12).
+        v.layout = e.look.layout;
         e.look = v;
     }
 
@@ -1431,7 +1435,8 @@ impl App {
     /// The place showing takes on its view again (after the saved views changed), relisting or resorting as
     /// that needs; the viewer follows.
     fn readopt_view(&mut self, place: &Place) {
-        let nv = self.view_for(place);
+        let mut nv = self.view_for(place);
+        nv.layout = self.explorer.look.layout;
         if nv != self.explorer.look {
             let relist = nv.subfolders != self.explorer.look.subfolders || nv.other_files != self.explorer.look.other_files;
             let resort = nv.group != self.explorer.look.group || nv.sort != self.explorer.look.sort || nv.xsort != self.explorer.look.xsort;
@@ -2584,10 +2589,11 @@ impl App {
             e.tabs = places
                 .into_iter()
                 .enumerate()
-                .map(|(i, place)| TabState { id: i as u64, place, ..TabState::default() })
+                .map(|(i, place)| TabState { id: i as u64, place, layout: self.settings.tab_layouts.get(i).copied().unwrap_or(self.settings.explorer_layout), ..TabState::default() })
                 .collect();
             e.next_tab_id = e.tabs.len() as u64;
             e.active_tab = self.settings.tab_active.min(e.tabs.len() - 1);
+            e.look.layout = e.tabs[e.active_tab].layout;
         }
     }
 
@@ -2598,9 +2604,12 @@ impl App {
 
     pub(super) fn save_tabs(&mut self) {
         let keys: Vec<String> = (0..self.explorer.tabs.len()).map(|i| self.tab_place(i).map_or_else(|| "::pc".into(), |p| explorer::place_key(&p))).collect();
-        if keys != self.settings.tabs || self.settings.tab_active != self.explorer.active_tab {
+        let e = &self.explorer;
+        let layouts: Vec<explorer::Layout> = (0..e.tabs.len()).map(|i| if i == e.active_tab { e.look.layout } else { e.tabs[i].layout }).collect();
+        if keys != self.settings.tabs || self.settings.tab_active != self.explorer.active_tab || layouts != self.settings.tab_layouts {
             self.settings.tabs = keys;
             self.settings.tab_active = self.explorer.active_tab;
+            self.settings.tab_layouts = layouts;
             settings::save(&self.settings);
         }
     }
@@ -2618,6 +2627,7 @@ impl App {
         t.scroll = e.scroll;
         t.filter = e.filter.edit.text();
         t.cols = std::mem::take(&mut e.cols);
+        t.layout = e.look.layout;
     }
 
     /// Brings tab `i` to the front as it was left, listing its place again.
@@ -2631,6 +2641,7 @@ impl App {
         e.anchor = t.anchor.take();
         e.selected = std::mem::take(&mut t.selected);
         let scroll = t.scroll;
+        let layout = t.layout;
         e.cols = std::mem::take(&mut t.cols);
         e.cols.active_listed = false;
         e.filter = TextField::new(TextEdit::new(&std::mem::take(&mut t.filter)));
@@ -2651,9 +2662,10 @@ impl App {
                 if e.history.entries().0.is_empty() {
                     e.history.record(&p);
                 }
-                // Column view shows its first column's view.
-                let vp = e.cols.panes.first().map_or_else(|| p.clone(), |c| c.place.clone());
+                // Column view shows the view of the place gone to.
+                let vp = e.cols.panes.get(e.cols.base).map_or_else(|| p.clone(), |c| c.place.clone());
                 let v = self.view_for(&vp);
+                self.explorer.look.layout = layout;
                 self.adopt_view(v);
                 if self.explorer.look.layout != explorer::Layout::Columns {
                     self.explorer.cols.clear();
@@ -2687,6 +2699,8 @@ impl App {
         let at = (e.active_tab + 1).min(e.tabs.len());
         e.tabs.insert(at, TabState { id, place: Some(place.clone()), ..TabState::default() });
         e.active_tab = at;
+        e.look.layout = self.settings.explorer_layout;
+        e.cols.clear();
         e.strip.animate();
         e.selected.clear();
         e.cursor = None;
@@ -3405,6 +3419,7 @@ impl App {
             Hit::ExplorerBookmarks => Some("Bookmarks".into()),
             Hit::ExplorerCollections => Some("Collections".into()),
             Hit::ExplorerGroup => Some("Folders and files".into()),
+            Hit::ExplorerLayout => Some("Layout".into()),
             Hit::TabNew => Some("New tab  (Ctrl+T)".into()),
             Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
             Hit::ExplorerSidebar => Some("Bookmarks and places".into()),
@@ -3484,6 +3499,7 @@ impl App {
                     | Hit::ExplorerBookmarks
                     | Hit::ExplorerCollections
                     | Hit::ExplorerGroup
+                    | Hit::ExplorerLayout
                     | Hit::ExplorerSidebar
                     | Hit::ExplorerBrowse
                     | Hit::Tab(_)

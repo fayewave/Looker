@@ -216,6 +216,7 @@ impl App {
             | Hit::ExplorerBookmarks
             | Hit::ExplorerCollections
             | Hit::ExplorerGroup
+            | Hit::ExplorerLayout
             | Hit::ExplorerSidebar
             | Hit::ExplorerBrowse
             | Hit::Tab(_)

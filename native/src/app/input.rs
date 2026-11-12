@@ -417,6 +417,7 @@ impl App {
                             | Hit::ExplorerBookmarks
                             | Hit::ExplorerCollections
                             | Hit::ExplorerGroup
+                            | Hit::ExplorerLayout
                             | Hit::ExplorerSidebar
                             | Hit::ExplorerBrowse
                             | Hit::CrumbChevron(_)
@@ -598,6 +599,7 @@ impl App {
                             Some(Hit::ExplorerBookmarks) => self.explorer_jump_menu(false, r.unwrap_or_default()),
                             Some(Hit::ExplorerCollections) => self.explorer_jump_menu(true, r.unwrap_or_default()),
                             Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
+                            Some(Hit::ExplorerLayout) => self.explorer_layout_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerSidebar) => {
                                 self.explorer.sidebar_open = !self.explorer.sidebar_open;
                             }

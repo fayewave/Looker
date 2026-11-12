@@ -407,7 +407,9 @@ impl App {
 
             // Thumbnail, letterboxed in the cell inside its 2 px border.
             let inner = D2D_RECT_F { left: cell.left + 2.0, top: cell.top + 2.0, right: cell.right - 2.0, bottom: cell.bottom - 2.0 };
-            if img.is_none() {
+            // An archive shows as an EXE does, its icon and extension, not the first picture inside (Faye, 2026-11-12).
+            let archive = img.is_some() && format::of_path(&path) == format::Format::Archive;
+            if img.is_none() || archive {
                 // A file Looker can't open: Windows' icon for its type (the explorer's file glyph if it has none)
                 // and its extension.
                 let ext = path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
@@ -440,7 +442,7 @@ impl App {
                 }
             }
             // Looker's red icon for the file's type at the bottom left (Faye, 2026-11-11), on cells tall enough.
-            if img.is_some() && inner.bottom - inner.top >= 40.0 {
+            if img.is_some() && !archive && inner.bottom - inner.top >= 40.0 {
                 if let Some(e) = path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
                     const ICON: f32 = 16.0;
                     if let Some(icon) = crate::file_icons::icon(&e, (ICON * g.dpi / 96.0).round() as u32) {
@@ -468,7 +470,7 @@ impl App {
             }
 
             // Load it (again, sharper) unless one of the right size is here or on its way.
-            if img.is_some() {
+            if img.is_some() && !archive {
                 self.thumbs.want(&path, stamp, want, cloud, sel.is_some_and(|s| s.abs_diff(i) <= NEAR));
             }
         }

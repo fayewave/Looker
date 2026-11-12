@@ -421,7 +421,7 @@ impl App {
         let kind = self.retire_menu();
         self.invalidate();
         match kind {
-            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::ColumnEdge(_) | MenuKind::Tab(_))) => {
+            Some(k @ (MenuKind::Layout | MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::ColumnEdge(_) | MenuKind::Tab(_))) => {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
@@ -539,6 +539,8 @@ impl App {
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum MenuKind {
     Context,
+    /// The explorer's Layout button.
+    Layout,
     /// An archive's rows or list.
     Archive,
     Sort,
@@ -586,7 +588,7 @@ pub(super) enum MenuKind {
 /// text editor's File/Edit/View did; every row of drop-downs should).
 fn menu_bar_of(h: Hit) -> Option<u8> {
     match h {
-        Hit::ExplorerHistory | Hit::ExplorerBookmarks | Hit::ExplorerCollections | Hit::ExplorerGroup => Some(0),
+        Hit::ExplorerHistory | Hit::ExplorerBookmarks | Hit::ExplorerCollections | Hit::ExplorerGroup | Hit::ExplorerLayout => Some(0),
         Hit::CrumbMore | Hit::CrumbChevron(_) => Some(1),
         Hit::VideoSettings | Hit::VideoTime => Some(2),
         Hit::TextMenuBar(_) => Some(3),
@@ -604,6 +606,7 @@ impl App {
                 MenuKind::Jump(false, _) => Some(Hit::ExplorerBookmarks),
                 MenuKind::Jump(true, _) => Some(Hit::ExplorerCollections),
                 MenuKind::Group => Some(Hit::ExplorerGroup),
+                MenuKind::Layout => Some(Hit::ExplorerLayout),
                 MenuKind::Crumbs(_) => Some(Hit::CrumbMore),
                 MenuKind::VideoSettings => Some(Hit::VideoSettings),
                 MenuKind::VideoTime => Some(Hit::VideoTime),
@@ -630,6 +633,7 @@ impl App {
             Hit::ExplorerBookmarks => self.explorer_jump_menu(false, r),
             Hit::ExplorerCollections => self.explorer_jump_menu(true, r),
             Hit::ExplorerGroup => self.explorer_group_menu(r),
+            Hit::ExplorerLayout => self.explorer_layout_menu(r),
             Hit::CrumbMore => {
                 self.close_popup();
                 self.open_crumb_menu();

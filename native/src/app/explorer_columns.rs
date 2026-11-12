@@ -31,7 +31,26 @@ pub(super) struct Pane {
     pub scroll: f32,
     pub max_scroll: f32,
     pub width: Option<f32>,
+    /// The wheel's easing (from, to, start), as the list's.
+    pub anim: Option<(f32, f32, Instant)>,
 }
+
+impl Pane {
+    /// Its scroll this frame, and whether it's still easing.
+    pub fn scroll_now(&mut self) -> (f32, bool) {
+        let Some((from, to, t0)) = self.anim else { return (self.scroll, false) };
+        let t = (t0.elapsed().as_secs_f32() * 1000.0 / PANE_SCROLL_MS).min(1.0);
+        if t >= 1.0 || !crate::motion::enabled() {
+            self.anim = None;
+            self.scroll = to;
+            return (to, false);
+        }
+        (from + (to - from) * crate::motion::ease_out(t), true)
+    }
+}
+
+/// The wheel's easing in a column, the list's (explorer.rs SCROLL_MS).
+const PANE_SCROLL_MS: f32 = 150.0;
 
 #[derive(Default)]
 pub(super) struct Columns {
@@ -49,18 +68,23 @@ pub(super) struct Columns {
     pub resize: Option<(usize, f32, f32)>,
     /// The horizontal scrollbar's thumb being dragged: the pointer's offset from its left.
     pub hthumb: Option<f32>,
+    /// The column of the place gone to (those left of it are its folders up to This PC): its view shows.
+    pub base: usize,
+    /// Show the last column at once on the next frame, without the sideways glide (the columns were just made).
+    pub jump: bool,
     next_id: u64,
 }
 
 impl Columns {
     fn pane(&mut self, place: Place) -> Pane {
         self.next_id += 1;
-        Pane { id: self.next_id, place, rows: Vec::new(), listed: false, scroll: 0.0, max_scroll: 0.0, width: None }
+        Pane { id: self.next_id, place, rows: Vec::new(), listed: false, scroll: 0.0, max_scroll: 0.0, width: None, anim: None }
     }
 
     pub fn clear(&mut self) {
         self.panes.clear();
         self.active = 0;
+        self.base = 0;
         self.hscroll = 0.0;
         self.hanim = None;
         self.resize = None;
@@ -100,22 +124,47 @@ impl App {
         self.explorer.cols.panes.get(i).and_then(|p| p.width).unwrap_or(self.explorer.look.column_w)
     }
 
-    /// The place whose saved view shows: column view's first column, else the place listed.
+    /// The place whose saved view shows: column view's place gone to, else the place listed.
     pub(super) fn view_place(&self) -> Option<Place> {
-        if self.columns_on() { self.explorer.cols.panes.first().map(|p| p.place.clone()) } else { self.explorer.place.clone() }
+        let c = &self.explorer.cols;
+        if self.columns_on() { c.panes.get(c.base.min(c.panes.len().saturating_sub(1))).map(|p| p.place.clone()) } else { self.explorer.place.clone() }
     }
 
-    /// The columns start again at the place listed (it was gone to, or column view was turned on). `listed`: its
-    /// rows are there already.
+    /// The columns start again at the place listed (it was gone to, or column view was turned on), with its
+    /// folders up to This PC (a drive's) or the path's root (a network share's) in columns left of it, so they
+    /// can always be scrolled back to (Faye, 2026-11-12). `listed`: its rows are there already.
     pub(super) fn columns_reset(&mut self, listed: bool) {
         let e = &mut self.explorer;
         e.cols.clear();
-        if e.look.layout == Layout::Columns {
-            if let Some(p) = e.place.clone() {
-                let pane = e.cols.pane(p);
-                e.cols.panes.push(pane);
-                e.cols.active_listed = listed;
+        if e.look.layout != Layout::Columns {
+            return;
+        }
+        let Some(p) = e.place.clone() else { return };
+        let mut chain: Vec<Place> = Vec::new();
+        if let Place::Folder(f) = &p {
+            let mut up: Vec<PathBuf> = f.ancestors().skip(1).map(Path::to_path_buf).collect();
+            up.reverse();
+            let drive = f.to_string_lossy().as_bytes().get(1) == Some(&b':');
+            if drive {
+                chain.push(Place::Computer);
             }
+            chain.extend(up.into_iter().map(Place::Folder));
+        }
+        let mut list = Vec::new();
+        for place in chain {
+            let pane = e.cols.pane(place.clone());
+            list.push((pane.id, place));
+            e.cols.panes.push(pane);
+        }
+        let pane = e.cols.pane(p);
+        e.cols.panes.push(pane);
+        let n = e.cols.panes.len();
+        e.cols.active = n - 1;
+        e.cols.base = n - 1;
+        e.cols.active_listed = listed;
+        e.cols.jump = true;
+        for (id, place) in list {
+            self.column_list(id, place);
         }
     }
 
@@ -141,6 +190,7 @@ impl App {
             Place::Collection(_) => false,
         };
         let Some(i) = panes.iter().rposition(holds) else { return false };
+        self.explorer.cols.base = self.explorer.cols.base.min(i);
         // The folders from under that column's down to `to`.
         let base = panes[i].place.folder().map(Path::to_path_buf);
         let mut chain: Vec<PathBuf> = to.ancestors().take_while(|a| base.as_deref().is_none_or(|b| !explorer::same_path(a, b))).map(Path::to_path_buf).collect();
@@ -181,6 +231,7 @@ impl App {
         if let Some(p) = e.cols.panes.get_mut(a) {
             p.rows = std::mem::take(&mut e.rows);
             p.scroll = scroll;
+            p.anim = None;
             p.max_scroll = e.max_scroll;
             p.listed = listed;
         }
@@ -189,7 +240,8 @@ impl App {
         let p = &mut e.cols.panes[j];
         let place = p.place.clone();
         e.rows = std::mem::take(&mut p.rows);
-        e.scroll = p.scroll;
+        e.scroll = p.scroll_now().0;
+        p.anim = None;
         e.max_scroll = p.max_scroll;
         let listed = p.listed;
         e.cols.active_listed = listed;
@@ -236,6 +288,7 @@ impl App {
             (Some(w), Some(n)) if explorer::same_path(&w, &n) => {}
             (Some(w), _) => {
                 e.cols.panes.truncate(a + 1);
+                e.cols.base = e.cols.base.min(a);
                 let pane = e.cols.pane(Place::Folder(w.clone()));
                 let id = pane.id;
                 e.cols.panes.push(pane);
@@ -244,6 +297,7 @@ impl App {
             }
             (None, Some(_)) => {
                 e.cols.panes.truncate(a + 1);
+                e.cols.base = e.cols.base.min(a);
                 e.cols.reveal = true;
             }
             (None, None) => {}
@@ -336,10 +390,15 @@ impl App {
         });
     }
 
-    /// The wheel over a column that hasn't the keys scrolls it (the active one scrolls as the list does).
+    /// The wheel over a column that hasn't the keys scrolls it, easing as the list does (Faye, 2026-11-12: it
+    /// jumped).
     pub(super) fn scroll_column(&mut self, p: usize, delta: f32) {
         if let Some(pane) = self.explorer.cols.panes.get_mut(p) {
-            pane.scroll = (pane.scroll - delta / 120.0 * super::explorer::SCROLL_STEP).clamp(0.0, pane.max_scroll.max(0.0));
+            let (now, _) = pane.scroll_now();
+            let target = pane.anim.map_or(pane.scroll, |(_, to, _)| to);
+            let to = (target - delta / 120.0 * super::explorer::SCROLL_STEP).clamp(0.0, pane.max_scroll.max(0.0));
+            pane.scroll = now;
+            pane.anim = Some((now, to, Instant::now()));
             self.invalidate();
         }
     }
@@ -449,14 +508,17 @@ impl App {
 
     // --- Layout ----------------------------------------------------------------------------------------
 
-    /// The view menu's List / Columns: kept in the view (column view's first column's place's, as any change).
+    /// The Layout menu's List / Columns: this tab's, and what new tabs open in (Faye, 2026-11-12: no longer kept
+    /// per folder).
     pub(super) fn set_layout(&mut self, layout: Layout) {
+        if self.settings.explorer_layout != layout {
+            self.settings.explorer_layout = layout;
+            settings::save(&self.settings);
+        }
         if self.explorer.look.layout == layout {
             return;
         }
-        // Leaving column view keeps the change in the first column's place's view; the column with the keys
-        // then lists as it was.
-        let place = self.view_place();
+        // Leaving column view: the column with the keys then lists as it was.
         self.explorer.look.layout = layout;
         match layout {
             Layout::Columns => {
@@ -476,14 +538,11 @@ impl App {
                 }
             }
             Layout::List => {
-                if let Some(p) = place {
-                    let v = self.explorer.look.clone();
-                    self.save_view_for(&p, v);
-                }
                 self.explorer.cols.clear();
                 self.sync_viewer_sort();
             }
         }
+        self.save_tabs();
         self.invalidate();
     }
 
@@ -512,7 +571,8 @@ impl App {
         if c.hanim.is_none() {
             c.hscroll = c.hscroll.clamp(0.0, c.max_h);
         }
-        if std::mem::take(&mut c.reveal) {
+        let jump = std::mem::take(&mut c.jump);
+        if std::mem::take(&mut c.reveal) || jump {
             // The last column in view, but never the active one's left edge out of it.
             let active_x: f32 = widths[..c.active.min(n)].iter().sum();
             let (now, _) = c.hscroll_now();
@@ -524,7 +584,12 @@ impl App {
             if to > total - avail {
                 to = (total - avail).max(0.0);
             }
-            c.scroll_to(to);
+            if jump {
+                c.hanim = None;
+                c.hscroll = to;
+            } else {
+                c.scroll_to(to);
+            }
         }
         let (hs, mut moving) = c.hscroll_now();
         let rows_bottom = area.bottom - if c.max_h > 0.0 { HBAR } else { 0.0 };
@@ -633,8 +698,11 @@ impl App {
             let p = &mut self.explorer.cols.panes[i];
             let n = p.rows.len();
             p.max_scroll = (n as f32 * rh - view_h).max(0.0);
-            p.scroll = p.scroll.clamp(0.0, p.max_scroll);
-            (n, p.scroll, false)
+            if p.anim.is_none() {
+                p.scroll = p.scroll.clamp(0.0, p.max_scroll);
+            }
+            let (s, m) = p.scroll_now();
+            (n, s.clamp(0.0, p.max_scroll), m)
         };
         if active {
             self.explorer.cell_tips.clear();

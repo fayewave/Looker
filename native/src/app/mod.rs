@@ -213,6 +213,8 @@ enum Hit {
     ExplorerBookmarks,
     ExplorerCollections,
     ExplorerGroup,
+    /// The Layout button: List or Columns, for the tab in front.
+    ExplorerLayout,
     ExplorerSidebar,
     ExplorerBrowse,
     Crumb(usize),
