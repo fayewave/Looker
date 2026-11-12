@@ -3025,7 +3025,8 @@ impl App {
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
-        let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
+        let raw = (w0 + (x - x0)).round();
+        let w = raw.clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
         // One sticky line, in the middle (browse mode's default width; Faye, 2026-11-12, there used to be a second at
         // the card's widest). Reaching it, or coming within its radius while moving towards it (a magnet), latches
         // the edge: it's held there, stretching on a rubber band towards the pointer, until pulled `STICK` off either
@@ -3088,8 +3089,13 @@ impl App {
                         self.explorer.browse.set([0.0], now);
                     }
                     // No narrower than its default; dragged down to it, it's the default again (a quarter of
-                    // whatever size the window is).
-                    self.settings.explorer_width = if w <= self.card_min() { 0.0 } else { w };
+                    // whatever size the window is). Pulled on past it, it gives a little on the same rubber band
+                    // as the sticky line and bounces back when let go (Faye, 2026-11-12).
+                    let min = self.card_min();
+                    self.settings.explorer_width = if w <= min { 0.0 } else { w };
+                    if raw < min {
+                        self.explorer.stretch = -rubber(min - raw);
+                    }
                 }
             }
         }
