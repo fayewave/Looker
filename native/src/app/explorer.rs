@@ -36,8 +36,6 @@ const SPRING_SECS: f32 = 0.62;
 /// Browse mode coming in or out and the edge gliding to its place: slower than the app's 190 ms, so the explorer
 /// moves with some weight (Faye, 2026-11-10).
 pub(super) const EDGE_SECS: f32 = 0.30;
-/// A jump's pop as far as the pointer is concerned: the glide, and the bounce until its swing is under a DIP.
-const POP_SECS: f32 = 0.45;
 
 /// A pull of `d` DIPs off the sticky line as the edge shows it: it gives less the further it's pulled, about 23 DIPs
 /// at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
@@ -503,13 +501,9 @@ pub(super) struct Explorer {
     /// it springs back with (from how far, since when).
     pub(super) stretch: f32,
     pub(super) spring: Option<(f32, Instant)>,
-    /// The edge is held on the sticky line (the card's widest) until pulled `STICK` off it; and which side of the line
-    /// the pointer was on last (for when it crosses).
-    /// Held on a sticky line: the card's widest (false) or browse mode's default (true).
+    /// Held on the sticky line until pulled `STICK` off it: browse mode's default (true), or the card's widest when
+    /// the window has no room for that (false); and where the pointer was last (for when it crosses).
     pub(super) latched: Option<bool>,
-    /// Popping across to that line after a jump (since when), not following the pointer until it gets there or the
-    /// pop has played out.
-    pub(super) coast: Option<(bool, Instant)>,
     pub(super) last_side: f32,
     /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
@@ -607,7 +601,6 @@ impl Explorer {
             stretch: 0.0,
             spring: None,
             latched: None,
-            coast: None,
             last_side: 0.0,
             width_settle: None,
             side_settle: None,
@@ -3009,129 +3002,67 @@ impl App {
         self.explorer.spring = None;
         self.explorer.stretch = 0.0;
         let w = self.explorer_width();
-        // Resting on a sticky line: it holds there whichever way it's pulled.
-        let (card_line, browse_line) = self.sticky_lines();
-        self.explorer.latched = None;
-        if (w - card_line).abs() < 1.5 {
-            self.explorer.latched = Some(false);
-        } else if self.browsing() && (w - browse_line).abs() < 1.5 {
-            self.explorer.latched = Some(true);
-        }
+        // Resting on the sticky line: it holds there whichever way it's pulled.
+        let (line, on_browse) = self.sticky_target();
+        self.explorer.latched = ((w - line).abs() < 1.5 && (!on_browse || self.browsing())).then_some(on_browse);
         self.explorer.last_side = w;
-        self.explorer.coast = None;
         self.explorer.drag = Some((x, w));
     }
 
-    /// The two sticky lines: the card's widest, and browse mode's default width (half the window, or the card and
-    /// the sidebar side by side when that's wider). None for the second when the window leaves no room between.
-    fn sticky_lines(&self) -> (f32, f32) {
+    /// The one sticky line (Faye, 2026-11-12: only the middle one): browse mode's default width, half the window
+    /// (or the card and the sidebar side by side when that's wider), and true. When the window leaves no room for
+    /// browse mode past the card's widest, that is the line instead (false: the card).
+    fn sticky_target(&self) -> (f32, bool) {
         let (ww, _) = self.size_dip();
         let card = self.sticky_line();
         let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
         let browse = (ww * BROWSE_SHARE).max(card + side + 1.0).min(ww - PREVIEW_DRAGGED_MIN).max(card);
-        (card, browse)
+        if browse - card >= 24.0 { (browse, true) } else { (card, false) }
     }
 
-    /// One drag covers both widths: the card up to its widest, then browse mode from its default width on
-    /// (leaving the photo at least 200 DIPs); dragged back, it's the card again.
+    /// One drag covers both widths: the card up to its widest, then browse mode on from there (leaving the photo
+    /// at least 200 DIPs); dragged back, it's the card again.
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
         let Some((x0, w0)) = self.explorer.drag else { return };
         let (ww, _) = self.size_dip();
         let w = (w0 + (x - x0)).round().clamp(EXPLORER_MIN, (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN));
-        // Two sticky lines (Faye, 2026-11-10): the card's widest and browse mode's default width. Between them the
-        // edge never rests: it's held on one line or the other, stretching on a rubber band towards the pointer, and
-        // jumps across once pulled far enough towards the other. Pulled `STICK` off the outside of either line it
-        // lets go with a bounce, free to size the card short of the first or browse mode past the second. Reaching
-        // a line from outside (or, in browse mode, coming within the radius of the second while narrowing: a magnet)
-        // latches it. On the first line it's the card, on the second browse mode at its default width.
+        // One sticky line, in the middle (browse mode's default width; Faye, 2026-11-12, there used to be a second at
+        // the card's widest). Reaching it, or coming within its radius while moving towards it (a magnet), latches
+        // the edge: it's held there, stretching on a rubber band towards the pointer, until pulled `STICK` off either
+        // side, when it lets go with a bounce. Everywhere else the edge follows the pointer: the card up to its
+        // widest, browse mode past that.
         const STICK: f32 = 96.0;
-        let (card_line, browse_line) = self.sticky_lines();
-        let gap = browse_line - card_line;
-        // Too little room for two lines: the second is the first.
-        let two = gap >= 24.0;
-        // How far towards the other line it's pulled before it jumps: well short of halfway, so the two jumps don't
-        // meet and a pointer held between them doesn't flick back and forth.
-        let jump = STICK.min(gap * 0.4);
+        let card_line = self.sticky_line();
+        let (line, on_line_browse) = self.sticky_target();
         let prev = self.explorer.last_side;
         self.explorer.last_side = w;
         let now = Instant::now();
         let before = self.explorer_width();
         let mut just_latched = false;
-        // After a jump the edge pops to the other line on its own and doesn't follow the pointer until the pointer
-        // has got there too (Faye, 2026-11-10: one long drag still sizes it, without it being tugged back by a
-        // slower hand), or until the pop has played out (2026-11-11: held still or turned back mid-pop, it follows
-        // again once the glide and most of the bounce are done, rather than never); then it's held on that line as
-        // usual, and pulled back far enough it jumps back.
-        if let Some((to_browse, since)) = self.explorer.coast {
-            let popped = !motion_on() || since.elapsed().as_secs_f32() >= POP_SECS;
-            if popped || (to_browse && w >= browse_line) || (!to_browse && w <= card_line) {
-                self.explorer.coast = None;
-                self.explorer.latched = Some(to_browse);
-                just_latched = true;
-            } else {
-                return;
-            }
-        }
         if self.explorer.latched.is_none() {
-            let line = if two { browse_line } else { card_line };
-            if (prev < card_line) != (w < card_line) || w == card_line || (!two && (prev > card_line) != (w > card_line)) {
-                self.explorer.latched = Some(false);
-                just_latched = true;
-            } else if two && (self.browsing() || prev >= line) && (w <= line || (w < prev && w - line <= STICK - 8.0)) {
-                self.explorer.latched = Some(true);
-                just_latched = true;
-            } else if !self.browsing() && w > card_line {
-                // A card resting past the line (a window made smaller): the line takes it.
-                self.explorer.latched = Some(false);
+            let crossed = (prev < line) != (w < line) || w == line;
+            let towards = (w > prev && w < line) || (w < prev && w > line);
+            if crossed || (towards && (w - line).abs() <= STICK - 8.0) {
+                self.explorer.latched = Some(on_line_browse);
                 just_latched = true;
             }
+        } else if (w - line).abs() >= STICK {
+            // Pulled free: still held, gliding to the pointer and following it.
+            self.explorer.latched = None;
+            self.explorer.spring = Some((BOUNCE * (w - line).signum(), now));
+            self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
         }
-        // A jump across from one line to the other lets go of the edge until the pointer reaches the other line
-        // (`coast`): it finishes the pop on its own, gliding there with a bounce. Pulled free outward, it stays
-        // held, so one pull sizes the card or browse mode.
-        let mut let_go = 0.0;
-        if !just_latched {
-            match self.explorer.latched {
-                Some(false) if w <= card_line - STICK => {
-                    // Pulled free outward: still held, gliding to the pointer and following it.
-                    self.explorer.latched = None;
-                    self.explorer.spring = Some((-BOUNCE, now));
-                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
-                }
-                Some(false) if two && w >= card_line + jump => {
-                    self.explorer.latched = Some(true);
-                    let_go = 1.0;
-                }
-                Some(false) if !two && w >= card_line + STICK => {
-                    self.explorer.latched = None;
-                    self.explorer.spring = Some((BOUNCE, now));
-                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
-                }
-                Some(true) if w >= browse_line + STICK => {
-                    self.explorer.latched = None;
-                    self.explorer.spring = Some((BOUNCE, now));
-                    self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
-                }
-                Some(true) if w <= browse_line - jump => {
-                    self.explorer.latched = Some(false);
-                    let_go = -1.0;
-                }
-                _ => {}
-            }
-        }
-        // Grabbed by a line (the magnet reaches out up to 88 DIPs): the edge glides onto it, never jumps
+        // Grabbed by the line (the magnet reaches out up to 88 DIPs): the edge glides onto it, never jumps
         // (Faye, 2026-11-10).
         if just_latched {
             self.explorer.width_settle = Some(crate::motion::Settle::over(before, EDGE_SECS));
         }
-        let from = self.explorer_width();
         let was = self.browsing();
         match self.explorer.latched {
             Some(on_browse) => {
-                let line = if on_browse { browse_line } else { card_line };
                 let d = w - line;
                 let pull = if just_latched { d.clamp(-STICK * 0.5, STICK * 0.5) } else { d };
-                self.explorer.stretch = if let_go != 0.0 { 0.0 } else { pull.signum() * rubber(pull.abs()) };
+                self.explorer.stretch = pull.signum() * rubber(pull.abs());
                 self.settings.explorer_width = card_line;
                 if on_browse {
                     self.settings.browse_share = 0.0; // the default: half of whatever size the window is
@@ -3161,12 +3092,6 @@ impl App {
                     self.settings.explorer_width = if w <= self.card_min() { 0.0 } else { w };
                 }
             }
-        }
-        if let_go != 0.0 {
-            self.explorer.spring = Some((BOUNCE * let_go, now));
-            self.explorer.width_settle = Some(crate::motion::Settle::over(from, EDGE_SECS));
-            self.explorer.coast = self.explorer.latched.map(|l| (l, now));
-            self.explorer.latched = None;
         }
         if self.browsing() != was {
             self.browse_toast(!was);
