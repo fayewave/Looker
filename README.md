@@ -86,6 +86,8 @@ it keeps itself up to date.
   AC-3/E-AC-3, DTS, TrueHD, MLP, Musepack, TTA, TAK, Shorten, AMR, AU, VOC, GSM, xWMA, DSD (DSF/DFF), RealAudio,
   LC3, SBC, aptX, QCELP, DSS, IAMF, QOA; tracker modules (MOD, XM, IT, S3M and more); MIDI (with GeneralUser GS);
   game audio (HCA, ADX, VAG, XVAG, MSF, BRSTM/BFSTM, AST...)
+- **Archives:** ZIP, 7z, RAR, TAR (and .tar.gz, .tgz, .tar.bz2, .tar.xz, .tar.zst), GZ, BZ2, XZ, ZST, LZ4, CAB, ISO,
+  CPIO, LHA, comic book archives (CBZ, CBR, CB7): browse what's inside, open a file, extract all or a selection
 - **Documents:** PDF
 - **Text:** TXT, Markdown, LOG, INI, CFG, JSON, XML, CSV/TSV, YAML, TOML, SRT/VTT subtitles, NFO, Valve VMT/VMF/VDF/QC
 - **3D:** OBJ (with MTL), STL, PLY, 3MF, glTF/GLB; MTL material libraries

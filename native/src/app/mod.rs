@@ -3,6 +3,7 @@
 
 
 mod accent;
+mod archive;
 mod actions;
 mod chrome;
 mod document;
@@ -282,6 +283,14 @@ enum Hit {
     /// A motion photo's Motion button: the pill at the bottom in photo mode, the toggle at the bar's left in
     /// video mode.
     MotionBadge,
+    /// An archive's card (app/archive.rs): the card, a row, `..`, a step of its path, its buttons.
+    ArchiveCard,
+    ArchiveRow(u32),
+    ArchiveUp,
+    ArchiveCrumb(u32),
+    ArchiveExtractAll,
+    ArchiveExtractTo,
+    ArchiveCancel,
     /// An audio file's waveform (and ruler), its scrollbar while zoomed in, the Waveform / Spectrogram toggle, and
     /// the loop region's clear button.
     AudioWave,
@@ -680,6 +689,8 @@ pub struct App {
     motion_morph: (f32, f32, Option<std::time::Instant>),
     /// An audio file's view (cover, waveform), while one is up.
     audio_view: Option<audio::AudioView>,
+    /// An archive's view (what's inside), while one is up.
+    archive: Option<archive::ArchiveView>,
     /// The playing video on the taskbar button and in Windows' media controls (media.rs).
     media: crate::media::Media,
     /// The Custom accent's colour picker, open over the Settings card.
@@ -1240,6 +1251,9 @@ impl App {
         if let Some(a) = &mut self.audio_view {
             a.device_lost();
         }
+        if let Some(a) = &mut self.archive {
+            a.device_lost();
+        }
         self.text.device_lost();
         self.icon = self.icon_pixels.as_ref().and_then(|i| g.bitmap(i.width, i.height, &i.frames[0].pixels).ok());
         self.render();
@@ -1448,6 +1462,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             motion_open: false,
             motion_morph: (0.0, 0.0, None),
             audio_view: None,
+            archive: None,
             media: Default::default(),
             accent_picker: None,
             video_moved: std::time::Instant::now(),

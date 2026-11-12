@@ -17,6 +17,7 @@ pub mod raw;
 pub mod svg;
 mod text;
 pub use text::{ansi as text_ansi, to_ansi};
+pub mod archive;
 pub mod audio;
 pub mod video;
 pub mod wic;
@@ -152,6 +153,8 @@ enum Step {
     Video,
     /// An audio file's cover, or a sketch of its waveform (FFmpeg too).
     Audio,
+    /// An archive's first picture inside (its thumbnail; on screen it's the archive view, app/archive.rs).
+    Archive,
 }
 
 /// Decoders to try, in order. Pure function of the format (unit tested).
@@ -189,6 +192,7 @@ fn plan(f: Format) -> &'static [Step] {
         Format::Model => &[Model],
         Format::Video => &[Video],
         Format::Audio => &[Audio],
+        Format::Archive => &[Archive],
         Format::Unknown => &[],
     }
 }
@@ -228,6 +232,7 @@ fn run(f: &IWICImagingFactory, step: Step, path: &Path, box_w: u32, box_h: u32, 
         Step::GainMap => gainmap::decode(f, path, box_w, box_h),
         Step::Video => video::decode(f, path, box_w, box_h).map(Some),
         Step::Audio => audio::decode(f, path, box_w, box_h).map(Some),
+        Step::Archive => archive::still(f, path, box_w, box_h).map(Some),
     }
 }
 

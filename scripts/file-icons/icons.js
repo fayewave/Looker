@@ -19,6 +19,7 @@ const KIND_OF = {
   model: "obj stl ply 3mf gltf glb vmf",
   material: "mtl",
   video: "mp4 m4v mov mkv webm avi wmv mxf mts m2ts mpg mpeg 3gp ts flv ogv m2v vob asf f4v 3g2 divx xvid ogm m1v mpv mpe m2p mod tod m2t trp tp dvr-ms rm rmvb dv nsv nuv wtv y4m gxf ivf obu 264 h264 265 hevc bik smk 266 vvc roq vqa str 4xm san snm thp cpk film mve vmd mm tgv tgq mad wve xmv hnm rpl dxa fli flc jv rl2 bfi cdxl paf yop mvi",
+  archive: "zip 7z rar tar tgz gz tbz2 tbz bz2 txz xz tzst zst lz4 cab iso cpio lzh lha cbz cbr cb7",
   audio: "mp3 m4a m4b aac flac wav aif aiff ogg oga opus wma mka wv ape caf mp1 mp2 mpa w64 weba ac3 eac3 dts thd mlp mpc tta tak shn amr awb au snd voc gsm xwma dsf dff ra xm it s3m mptm stm 669 mtm med okt far ult umx mo3 dmf amf psm j2b dsm mid midi rmi kar hca adx vag xvag ads ss2 msf brstm bfstm bcstm ast genh xa apm sbc aptx aptxhd qcp dss iamf qoa lc3",
 };
 const TYPE_NAME = {
@@ -26,6 +27,7 @@ const TYPE_NAME = {
   vector: e => e === "SVGZ" ? "Compressed SVG image" : "SVG image", doc: e => ({ PDF: "PDF document", TXT: "Text document", VMT: "VMT Source material", MD: "Markdown document", MARKDOWN: "Markdown document", LOG: "Log file", INI: "Configuration settings", CFG: "Configuration file", VDF: "Valve data file", QC: "QC model script", JSON: "JSON file", XML: "XML document", CSV: "CSV spreadsheet", TSV: "TSV spreadsheet", YAML: "YAML file", YML: "YAML file", TOML: "TOML file", SRT: "SRT subtitles", VTT: "WebVTT subtitles", NFO: "NFO info file", ASS: "ASS subtitles", SSA: "SSA subtitles" })[e] || `${e} file`, layers: e => `${e} layered image`, raw: e => `${e} camera RAW`,
   model: e => e === "VMF" ? "VMF Hammer map" : `${e} 3D model`,
   material: () => "MTL material library", video: e => ({ TS: "MPEG-TS video", VOB: "DVD video", M2V: "MPEG-2 video", M2T: "MPEG-TS video", TRP: "MPEG-TS video", TP: "MPEG-TS video", M1V: "MPEG-1 video", MPV: "MPEG video", MPE: "MPEG video", M2P: "MPEG-PS video", RM: "RealMedia video", RMVB: "RealMedia video", "DVR-MS": "DVR-MS recording", WTV: "Windows recorded TV", Y4M: "YUV4MPEG video", "264": "H.264 video stream", H264: "H.264 video stream", "265": "HEVC video stream", HEVC: "HEVC video stream", OBU: "AV1 video stream", IVF: "IVF video", BIK: "Bink video", SMK: "Smacker video" })[e] || `${e} video`,
+  archive: e => ({ ZIP: "ZIP archive", "7Z": "7-Zip archive", RAR: "RAR archive", TAR: "TAR archive", ISO: "Disc image", CAB: "Cabinet file", CBZ: "Comic book archive", CBR: "Comic book archive", CB7: "Comic book archive", GZ: "Gzip archive", TGZ: "Gzip archive", BZ2: "Bzip2 archive", XZ: "XZ archive", ZST: "Zstandard archive" })[e] || `${e} archive`,
   audio: e => ({ RA: "RealAudio", THD: "Dolby TrueHD audio", MLP: "MLP audio", DSF: "DSD audio", DFF: "DSD audio", SHN: "Shorten audio", MPC: "Musepack audio", AU: "AU audio", SND: "AU audio", VOC: "Creative Voice audio", MID: "MIDI music", MIDI: "MIDI music", RMI: "MIDI music", KAR: "Karaoke MIDI music", XM: "XM module", IT: "Impulse Tracker module", S3M: "S3M module", MPTM: "OpenMPT module", STM: "STM module", "669": "669 module", MTM: "MTM module", MED: "MED module", OKT: "Oktalyzer module", FAR: "Farandole module", ULT: "UltraTracker module", UMX: "Unreal music", MO3: "MO3 module", DMF: "DMF module", AMF: "AMF module", PSM: "PSM module", J2B: "Jazz2 music", DSM: "DSM module" })[e] || `${e} audio`,
 };
 
@@ -119,6 +121,16 @@ const DRAW = {
     ${small ? "" : `<ellipse cx="128" cy="230" rx="84" ry="12" fill="${DEEP}" opacity=".35"/>`}
     <circle cx="128" cy="${small ? 128 : 120}" r="${small ? 116 : 104}" fill="url(#sph)"/>
     ${small ? "" : `<ellipse cx="92" cy="82" rx="22" ry="14" fill="#fff" opacity=".55" transform="rotate(-30 92 82)"/>`}`,
+  // A box with a zipper down the middle and its pull (Faye, 2026-11-12: archives).
+  archive: (ext, small) => {
+    let s = `<rect x="24" y="12" width="208" height="232" rx="28" fill="${RED}"/>`;
+    const tw = small ? 22 : 18, th = small ? 16 : 12, step = small ? 32 : 24, last = small ? 118 : 130;
+    for (let y = 12, i = 0; y < last; y += step / 2, i++) s += `<rect x="${i % 2 ? 128 : 128 - tw}" y="${y}" width="${tw}" height="${th}" fill="${INK}"/>`;
+    const pw = small ? 52 : 44, ph = small ? 72 : 64, py = last + 4;
+    s += `<rect x="${128 - pw / 2}" y="${py}" width="${pw}" height="${ph}" rx="10" fill="${INK}"/>`;
+    s += `<rect x="${128 - pw / 4}" y="${py + ph * 0.45}" width="${pw / 2}" height="${ph * 0.3}" rx="5" fill="${RED}"/>`;
+    return s;
+  },
   icon: (ext, small) => {
     let s = `<rect x="12" y="12" width="232" height="232" rx="26" fill="${RED}"/>`;
     const n = small ? 4 : 6, c = 176 / n;

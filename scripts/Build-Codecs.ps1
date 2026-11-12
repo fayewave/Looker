@@ -62,6 +62,12 @@ if ($LASTEXITCODE -ne 0) { throw "vcpkg install libavif failed ($LASTEXITCODE)" 
     --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
     --x-install-root $installRoot --clean-after-build
 if ($LASTEXITCODE -ne 0) { throw "vcpkg install looker-video failed ($LASTEXITCODE)" }
+# Archives (zip, 7z, RAR, tar, gz/bz2/xz/zst, cab, ISO...): libarchive (BSD) as archive.dll, read by Looker through
+# imaging/archive.rs. Not its lzo feature (liblzo2 is GPL) nor OpenSSL (Windows' own CNG decrypts AES zips).
+& (Join-Path $Vcpkg 'vcpkg.exe') install 'libarchive[core,bzip2,lz4,lzma,zstd]' --triplet $triplet `
+    --overlay-ports (Join-Path $codecs 'ports') --overlay-triplets (Join-Path $codecs 'triplets') `
+    --x-install-root $installRoot --clean-after-build
+if ($LASTEXITCODE -ne 0) { throw "vcpkg install libarchive failed ($LASTEXITCODE)" }
 # LibRaw (camera RAW without the Raw Image Extension) on a triplet of its own: raw_r.dll with jasper, lcms and zlib
 # linked in, and Looker's entry point compiled into it (native/codecs/ports/libraw/looker_raw.cpp).
 $rawTriplet = 'x64-windows-looker-raw'
@@ -112,6 +118,7 @@ function Get-PeImports([string]$Path) {
 }
 $queue = [Collections.Generic.Queue[string]]::new()
 $queue.Enqueue('looker_video.dll')
+$queue.Enqueue('archive.dll')
 $shipped = @{}
 while ($queue.Count -gt 0) {
     $name = $queue.Dequeue()
@@ -124,7 +131,8 @@ while ($queue.Count -gt 0) {
 }
 Write-Host "looker_video.dll ships with: $(($shipped.Keys | Sort-Object) -join ', ')"
 foreach ($port in 'libheif', 'libde265', 'dav1d', 'libavif', 'ffmpeg', 'libass', 'freetype', 'harfbuzz', 'fribidi', 'zlib',
-    'fluidsynth', 'libopenmpt', 'mpg123', 'libogg', 'libvorbis', 'libzvbi', 'liblc3', 'libaribcaption') {
+    'fluidsynth', 'libopenmpt', 'mpg123', 'libogg', 'libvorbis', 'libzvbi', 'liblc3', 'libaribcaption',
+    'libarchive', 'bzip2', 'lz4', 'liblzma', 'zstd') {
     $c = Join-Path $installed "share\$port\copyright"
     if (Test-Path $c) { Copy-Item $c (Join-Path $OutDir "licenses\$port.txt") }
 }

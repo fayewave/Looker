@@ -473,6 +473,8 @@ impl App {
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
                         Some(Hit::SideRow(i)) => self.side_row_press(i, y),
                         Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
+                        Some(Hit::ArchiveRow(i)) => self.archive_press(i as usize),
+                        Some(Hit::ArchiveCard) => self.archive_press_empty(),
                         _ => {}
                     }
                     match h {
@@ -563,6 +565,10 @@ impl App {
                             Some(Hit::AccentChip(i)) => self.pick_accent(i as usize),
                             Some(Hit::AudioMode(i)) => self.set_audio_mode(i),
                             Some(Hit::MotionBadge) => self.toggle_motion_open(),
+                            Some(Hit::ArchiveCrumb(i)) => self.archive_crumb(i as usize),
+                            Some(Hit::ArchiveExtractAll) => self.archive_extract_beside(),
+                            Some(Hit::ArchiveExtractTo) => self.archive_extract_to(),
+                            Some(Hit::ArchiveCancel) => self.archive_cancel(),
                             Some(Hit::AudioClear) => {
                                 self.audio_clear_region();
                             }
@@ -792,6 +798,17 @@ impl App {
                         self.strip_grip_reset();
                         return Some(LRESULT(0));
                     }
+                    match self.hit(x, y) {
+                        Some(Hit::ArchiveRow(i)) => {
+                            self.archive_open(i as usize);
+                            return Some(LRESULT(0));
+                        }
+                        Some(Hit::ArchiveUp) => {
+                            self.archive_up();
+                            return Some(LRESULT(0));
+                        }
+                        _ => {}
+                    }
                     if self.hit(x, y) == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_reset();
                         return Some(LRESULT(0));
@@ -925,6 +942,10 @@ impl App {
                         self.video_volume_by(delta as f32 / 120.0 * 0.05);
                         return Some(LRESULT(0));
                     }
+                    if matches!(self.hit(x, y), Some(Hit::ArchiveCard | Hit::ArchiveRow(_) | Hit::ArchiveUp)) {
+                        self.archive_wheel(delta as f32);
+                        return Some(LRESULT(0));
+                    }
                     if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextScroll | Hit::TextHScroll)) {
                         self.text_wheel(delta as f32, GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0);
                         return Some(LRESULT(0));
@@ -1026,7 +1047,7 @@ impl App {
                         }
                         return Some(LRESULT(0));
                     }
-                    if self.audio_key(vk, ctrl) || self.video_key(vk, shift, ctrl) {
+                    if self.archive_key(vk, ctrl, shift) || self.audio_key(vk, ctrl) || self.video_key(vk, shift, ctrl) {
                         return Some(LRESULT(0));
                     }
                     match vk {

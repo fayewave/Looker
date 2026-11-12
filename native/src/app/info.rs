@@ -399,11 +399,17 @@ impl App {
                     out.push(row("Lines", lines.to_string()));
                     out.push(row("Characters", chars.to_string()));
                 }
+            } else if e.format == format::Format::Archive {
+                // An archive: what's in it (its thumbnail's size is a picture inside, not the archive's).
+                if let Some((files, bytes)) = self.archive_facts() {
+                    out.push(row("Files", files.to_string()));
+                    out.push(row("Unpacked", format_bytes(bytes)));
+                }
             } else if !audio {
                 let (w, h) = self.current_dims().unwrap_or((e.native_w, e.native_h));
                 out.push(row("Dimensions", format!("{w} × {h}")));
             }
-            if e.pages == 0 && !model && !video && !text {
+            if e.pages == 0 && !model && !video && !text && e.format != format::Format::Archive {
                 out.push(row("Megapixels", format!("{:.1} MP", e.native_w as f64 * e.native_h as f64 / 1_000_000.0)));
             }
         }

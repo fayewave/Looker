@@ -319,8 +319,13 @@ impl App {
                 parts.push((4, if c.pages == 1 { "1 page".into() } else { format!("{} pages", c.pages) }));
             }
             let (w, h) = self.current_dims().unwrap_or((c.native_w, c.native_h));
-            // An audio file: its format and length (its cover's size means nothing here).
-            if c.format != format::Format::Audio {
+            // An audio file: its format and length (its cover's size means nothing here); an archive: how many files
+            // (its thumbnail is a picture inside).
+            if c.format == format::Format::Archive {
+                if let Some((files, _)) = self.archive_facts() {
+                    parts.push((1, format!("{files} file{}", if files == 1 { "" } else { "s" })));
+                }
+            } else if c.format != format::Format::Audio {
                 parts.push((1, format!("{w} × {h}")));
             }
             // A video: its frame rate, codec, HDR, length and bit rate instead of megapixels (Faye, 2026-11-10).
@@ -335,7 +340,7 @@ impl App {
                     parts.push((5, s));
                 }
             }
-            if c.pages == 0 && !matches!(c.format, format::Format::Video | format::Format::Audio) {
+            if c.pages == 0 && !matches!(c.format, format::Format::Video | format::Format::Audio | format::Format::Archive) {
                 // a page's 96-dpi size is not a pixel count
                 parts.push((5, format!("{:.1} MP", c.native_w as f64 * c.native_h as f64 / 1_000_000.0)));
             }
@@ -416,6 +421,7 @@ impl App {
         self.prepare_model(&g);
         self.prepare_video(&g);
         self.prepare_audio(&g);
+        self.prepare_archive(&g);
         self.prepare_text();
         self.prepare_subtitles(&g);
         g.begin(self.theme().content);
@@ -450,7 +456,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.model_animating() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -619,7 +625,7 @@ impl App {
         }
         // A file Looker can't open covers the photo: the photo isn't drawn at all (it would show around the
         // cover, behind the floating bars).
-        let model = self.draw_model(g) || self.draw_audio_photo(g) || self.text_shown();
+        let model = self.draw_model(g) || self.draw_audio_photo(g) || self.text_shown() || self.archive_shown();
         if let Some(c) = self.viewer.shown.clone().filter(|_| self.placeholder.is_none() && !model) {
             {
                 let r = self.view.frame();
@@ -678,7 +684,8 @@ impl App {
         g.begin_ui(None);
         self.draw_audio(g);
         self.draw_text_view(g);
-        if self.viewer.shown.is_none() && self.viewer.error.is_some() {
+        self.draw_archive(g);
+        if self.viewer.shown.is_none() && self.viewer.error.is_some() && !self.archive_shown() {
             self.draw_cant_display(g);
         }
         self.draw_placeholder(g);

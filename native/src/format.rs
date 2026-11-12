@@ -49,6 +49,8 @@ pub enum Format {
     Video,
     /// An audio file (FFmpeg too: imaging/audio.rs; played with its waveform, app/audio.rs).
     Audio,
+    /// zip, 7z, RAR, tar... (imaging/archive.rs): opened as a list of what is inside.
+    Archive,
 }
 
 #[cfg(test)]
@@ -84,6 +86,7 @@ pub const ALL: &[Format] = &[
     Format::Model,
     Format::Video,
     Format::Audio,
+    Format::Archive,
 ];
 
 /// Every extension Looker opens (lower case, no dot). Must equal the manifest FTA list.
@@ -125,6 +128,9 @@ pub const EXTENSIONS: &[&str] = &[
     "xm", "it", "s3m", "mptm", "stm", "669", "mtm", "med", "okt", "far", "ult", "umx", "mo3", "dmf", "amf", "psm", "j2b",
     "dsm", "mid", "midi", "rmi", "kar", "hca", "adx", "vag", "xvag", "ads", "ss2", "msf", "brstm", "bfstm", "bcstm", "ast",
     "genh", "xa", "apm", "sbc", "aptx", "aptxhd", "qcp", "dss", "iamf", "qoa", "lc3",
+    // Archives (libarchive): zip, 7z, RAR, tar and its compressed forms, single compressed files, cab, disc images,
+    // cpio, LHA, comic book archives.
+    "zip", "7z", "rar", "tar", "tgz", "gz", "tbz2", "tbz", "bz2", "txz", "xz", "tzst", "zst", "lz4", "cab", "iso", "cpio", "lzh", "lha", "cbz", "cbr", "cb7"
 ];
 
 fn ext_of(path: &Path) -> Option<String> {
@@ -225,6 +231,7 @@ pub fn from_extension(ext: Option<&str>) -> Format {
         | "dsm" | "mid" | "midi" | "rmi" | "kar" | "hca" | "adx" | "vag" | "xvag" | "ads" | "ss2" | "msf" | "brstm"
         | "bfstm" | "bcstm" | "ast" | "genh" | "xa" | "apm" | "sbc" | "aptx" | "aptxhd" | "qcp" | "dss" | "iamf" | "qoa"
         | "lc3" => Format::Audio,
+        "zip" | "7z" | "rar" | "tar" | "tgz" | "gz" | "tbz2" | "tbz" | "bz2" | "txz" | "xz" | "tzst" | "zst" | "lz4" | "cab" | "iso" | "cpio" | "lzh" | "lha" | "cbz" | "cbr" | "cb7" => Format::Archive,
         "cr2" | "cr3" | "crw" | "nef" | "nrw" | "arw" | "sr2" | "srf" | "dng" | "orf" | "raf" | "rw2" | "pef" | "srw"
         | "3fr" | "fff" | "rwl" | "iiq" | "mrw" | "dcr" | "kdc" | "erf" | "mef" => Format::Raw,
         _ => Format::Unknown,
@@ -460,6 +467,7 @@ pub fn display_name(format: Format, path: Option<&Path>) -> Option<String> {
         },
         Format::Video => return Some(if ext.is_empty() { "Video".into() } else { ext }),
         Format::Audio => return Some(if ext.is_empty() { "Audio".into() } else { ext }),
+        Format::Archive => return Some(if ext.is_empty() { "Archive".into() } else { ext }),
     };
     Some(s.to_string())
 }
@@ -575,7 +583,10 @@ FORMAT=32-bit_rle_rgbe", None), Format::Radiance);
         assert_eq!(sniff(b"#?RGBE
 ", Some("hdr")), Format::Radiance);
         assert_eq!(sniff(&[0x1F, 0x8B, 0x08, 0x00], Some("svgz")), Format::Svg);
-        assert_eq!(sniff(&[0x1F, 0x8B, 0x08, 0x00], Some("gz")), Format::Unknown);
+        assert_eq!(sniff(&[0x1F, 0x8B, 0x08, 0x00], Some("gz")), Format::Archive);
+        assert_eq!(sniff(b"PK\x03\x04\x14\0", Some("zip")), Format::Archive);
+        assert_eq!(sniff(b"7z\xbc\xaf\x27\x1c\0", Some("7z")), Format::Archive);
+        assert_eq!(sniff(b"Rar!\x1a\x07\x01\0", Some("cbr")), Format::Archive);
         // Ogg: audio unless named as video.
         assert_eq!(sniff(b"OggS ", Some("ogv")), Format::Video);
         assert_eq!(sniff(b"OggS ", Some("ogg")), Format::Audio);

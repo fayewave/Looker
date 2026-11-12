@@ -2183,6 +2183,182 @@
             <uap:SupportedFileTypes><uap:FileType>.lc3</uap:FileType></uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="zip">
+            <uap:DisplayName>ZIP archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\zip.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.zip</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="7z">
+            <uap:DisplayName>7-Zip archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\7z.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.7z</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="rar">
+            <uap:DisplayName>RAR archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\rar.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.rar</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tar">
+            <uap:DisplayName>TAR archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tar.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tar</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tgz">
+            <uap:DisplayName>Gzip archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tgz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tgz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="gz">
+            <uap:DisplayName>Gzip archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\gz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.gz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tbz2">
+            <uap:DisplayName>TBZ2 archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tbz2.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tbz2</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tbz">
+            <uap:DisplayName>TBZ archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tbz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tbz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="bz2">
+            <uap:DisplayName>Bzip2 archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\bz2.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.bz2</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="txz">
+            <uap:DisplayName>TXZ archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\txz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.txz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="xz">
+            <uap:DisplayName>XZ archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\xz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.xz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="tzst">
+            <uap:DisplayName>TZST archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\tzst.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.tzst</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="zst">
+            <uap:DisplayName>Zstandard archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\zst.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.zst</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="lz4">
+            <uap:DisplayName>LZ4 archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\lz4.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.lz4</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="cab">
+            <uap:DisplayName>Cabinet file</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\cab.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.cab</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="iso">
+            <uap:DisplayName>Disc image</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\iso.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.iso</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="cpio">
+            <uap:DisplayName>CPIO archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\cpio.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.cpio</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="lzh">
+            <uap:DisplayName>LZH archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\lzh.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.lzh</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="lha">
+            <uap:DisplayName>LHA archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\lha.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.lha</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="cbz">
+            <uap:DisplayName>Comic book archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\cbz.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.cbz</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="cbr">
+            <uap:DisplayName>Comic book archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\cbr.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.cbr</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="cb7">
+            <uap:DisplayName>Comic book archive</uap:DisplayName>
+            <uap:Logo>Assets\FileIcons\cb7.png</uap:Logo>
+            <uap:InfoTip>Open with Looker</uap:InfoTip>
+            <uap:SupportedFileTypes><uap:FileType>.cb7</uap:FileType></uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
         <!-- file types: end -->
 
         <!-- `Looker photo.jpg` from any terminal (App Execution Alias). -->
