@@ -276,9 +276,12 @@ pub struct Gfx {
     shadows: std::cell::RefCell<std::collections::HashMap<(u32, u32), (ID2D1Bitmap1, u32)>>,
 }
 
-/// The UI layer under scRGB and the effects that bring it into scRGB.
+/// The UI layer under scRGB, a copy of the photo layer to blend it with and the effects that lay it over the
+/// photo layer (`ui_over`).
+#[derive(Clone)]
 struct Overlay {
     bitmap: ID2D1Bitmap1,
+    photo: (ID3D11Texture2D, ID2D1Bitmap1),
     out: ID2D1Effect,
 }
 
@@ -525,23 +528,57 @@ impl Gfx {
                 bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
                 colorContext: std::mem::ManuallyDrop::new(None),
             };
-            let bitmap = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: self.size.0.max(1), height: self.size.1.max(1) }, None, 0, &props)?;
-            let srgb = self.dev.dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?;
-            // Straight: the layer's premultiplied values are converted as they are, so its translucent parts
-            // (anti-aliased text, hover fills, the button frames) land on the photo layer as they would blend in
-            // sRGB over a dark background. Unpremultiplied first, they blended in linear light: 6 % white over
-            // black came out as a light grey (the landing page's buttons, washed out).
-            let out = to_scrgb(&self.dev.dc, &bitmap, &srgb, self.space.white_scale(), false)?;
-            Ok(Overlay { bitmap, out })
+            let (w, h) = (self.size.0.max(1), self.size.1.max(1));
+            let bitmap = self.dev.dc.CreateBitmap(D2D_SIZE_U { width: w, height: h }, None, 0, &props)?;
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: w,
+                Height: h,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let mut tex = None;
+            self.dev.d3d.CreateTexture2D(&desc, None, Some(&mut tex))?;
+            let tex = tex.ok_or(windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
+            let copy_props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_R16G16B16A16_FLOAT, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                dpiX: self.dpi,
+                dpiY: self.dpi,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let copy = self.dev.dc.CreateBitmapFromDxgiSurface(&tex.cast::<IDXGISurface>()?, Some(&copy_props))?;
+            let out = ui_over(&self.dev.dc, &copy, &bitmap, self.space.white_scale())?;
+            Ok(Overlay { bitmap, photo: (tex, copy), out })
+        }
+    }
+
+    /// Lays the UI layer over the photo layer in the swap chain (scRGB only).
+    unsafe fn flatten_ui(&self, o: &Overlay, target: &ID2D1Bitmap1) -> Result<()> {
+        unsafe {
+            let dc = &self.dev.dc;
+            dc.SetTarget(target);
+            dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+            // `ui_over` reads the photo layer as drawn so far.
+            dc.Flush(None, None)?;
+            let back: ID3D11Texture2D = self.swap.GetBuffer(0)?;
+            self.dev.d3d.GetImmediateContext()?.CopyResource(&o.photo.0, &back);
+            dc.DrawImage(&o.out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            Ok(())
         }
     }
 
     pub fn end(&self) -> Result<()> {
         unsafe {
-            if let (true, Some(o), Some(t)) = (self.space.is_scrgb(), &self.ui, &self.target) {
-                self.dev.dc.SetTarget(t);
-                self.dev.dc.SetTransform(&windows_numerics::Matrix3x2::identity());
-                self.dev.dc.DrawImage(&o.out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            if let (true, Some(o), Some(t)) = (self.space.is_scrgb(), &self.ui, &self.target)
+                && let Err(e) = self.flatten_ui(o, t)
+            {
+                crate::trace::mark(format!("UI layer not laid over: {e}"));
             }
             self.dev.dc.EndDraw(None, None)?;
             self.swap.Present(1, DXGI_PRESENT(0)).ok()
@@ -651,7 +688,7 @@ impl Gfx {
         }
         unsafe {
             let dc = &self.dev.dc;
-            let fx = to_scrgb(dc, &src, &colour_context(dc, colour)?, self.space.white_scale(), true)?;
+            let fx = to_scrgb(dc, &src.cast()?, &colour_context(dc, colour)?, self.space.white_scale(), true)?;
             let out = bake(dc, &fx.GetOutput()?, width, height);
             dc.SetDpi(self.dpi, self.dpi);
             out
@@ -1511,11 +1548,11 @@ impl Gfx {
             let mut prev = windows_numerics::Matrix3x2::identity();
             dc.GetTransform(&mut prev);
             dc.SetTransform(&windows_numerics::Matrix3x2::identity());
-            let overlay = if self.space.is_scrgb() { self.ui.as_ref().map(|o| (o.bitmap.clone(), o.out.clone())) } else { None };
-            if let Some((_, out)) = &overlay {
-                dc.SetTarget(&target);
-                dc.DrawImage(&out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            let overlay = if self.space.is_scrgb() { self.ui.clone() } else { None };
+            if let Some(o) = &overlay {
+                self.flatten_ui(o, &target)?;
             }
+            let overlay = overlay.map(|o| o.bitmap);
             dc.Flush(None, None)?;
             let back: ID3D11Texture2D = self.swap.GetBuffer(0)?;
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -1556,7 +1593,7 @@ impl Gfx {
             // Edges keep their colour rather than fading to nothing.
             set_u32(&blur, D2D1_GAUSSIANBLUR_PROP_BORDER_MODE.0 as u32, D2D1_BORDER_MODE_HARD.0 as u32)?;
             dc.DrawImage(&blur.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
-            if let Some((bitmap, _)) = &overlay {
+            if let Some(bitmap) = &overlay {
                 dc.SetTarget(bitmap);
                 dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
             }
@@ -1652,8 +1689,8 @@ fn colour_context(dc: &ID2D1DeviceContext, colour: &crate::imaging::Colour) -> R
 }
 
 /// `src` (premultiplied, in `ctx`) into scRGB, SDR white at `white_scale` x scRGB 1.0. `premultiplied`: convert the
-/// colour under the alpha (photos); otherwise the premultiplied values as they are (the UI layer, see `make_overlay`).
-fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext, white_scale: f32, premultiplied: bool) -> Result<ID2D1Effect> {
+/// colour under the alpha (photos); otherwise the values as they are (opaque images).
+fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Image, ctx: &ID2D1ColorContext, white_scale: f32, premultiplied: bool) -> Result<ID2D1Effect> {
     unsafe {
         let cm = dc.CreateEffect(&CLSID_D2D1ColorManagement)?;
         cm.SetInput(0, src, true);
@@ -1667,6 +1704,38 @@ fn to_scrgb(dc: &ID2D1DeviceContext, src: &ID2D1Bitmap1, ctx: &ID2D1ColorContext
         // SDR white up to the display's level. (The White Level Adjustment effect came out dividing where it
         // should multiply: everything sat at a quarter of its brightness at 160 nits.)
         scale_rgb(dc, &cm.GetOutput()?, white_scale)
+    }
+}
+
+/// The UI layer `ui` (8-bit, premultiplied sRGB) laid over `photo` (a copy of the photo layer, scRGB with SDR white
+/// at `white_scale`) as an SDR frame would blend it: in sRGB values, the photo layer brought back to them first.
+/// Converting the layer's premultiplied values alone (as until 2026-11-12) is that blend only over black: over
+/// the light themes' page every partly covered pixel came out darker than a whole one (a card's hairline darker
+/// at its rounded corners than along its sides). The result covers only what the UI draws on; elsewhere the
+/// photo layer stays as it is (the round trip through sRGB would clip wide-gamut and HDR colours).
+fn ui_over(dc: &ID2D1DeviceContext, photo: &ID2D1Bitmap1, ui: &ID2D1Bitmap1, white_scale: f32) -> Result<ID2D1Effect> {
+    unsafe {
+        let srgb = dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?;
+        let best = dc.IsBufferPrecisionSupported(D2D1_BUFFER_PRECISION_32BPC_FLOAT).as_bool();
+        let quality = if best { D2D1_COLORMANAGEMENT_QUALITY_BEST } else { D2D1_COLORMANAGEMENT_QUALITY_NORMAL };
+        let down = scale_rgb(dc, &photo.cast()?, 1.0 / white_scale)?;
+        let enc = dc.CreateEffect(&CLSID_D2D1ColorManagement)?;
+        enc.SetInput(0, &down.GetOutput()?, true);
+        set_interface(&enc, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?)?;
+        set_interface(&enc, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0 as u32, &srgb)?;
+        set_u32(&enc, D2D1_COLORMANAGEMENT_PROP_QUALITY.0 as u32, quality.0 as u32)?;
+        let over = dc.CreateEffect(&CLSID_D2D1Composite)?;
+        over.SetInput(0, &enc.GetOutput()?, true);
+        over.SetInput(1, ui, true);
+        // Opaque now: straight and premultiplied are the same.
+        let lin = to_scrgb(dc, &over.GetOutput()?, &srgb, white_scale, false)?;
+        // Where the UI draws anything at all.
+        let mask = color_matrix(dc, &ui.cast()?, 0.0, 255.0, true)?;
+        let cut = dc.CreateEffect(&CLSID_D2D1Composite)?;
+        cut.SetInput(0, &lin.GetOutput()?, true);
+        cut.SetInput(1, &mask.GetOutput()?, true);
+        set_u32(&cut, D2D1_COMPOSITE_PROP_MODE.0 as u32, D2D1_COMPOSITE_MODE_DESTINATION_IN.0 as u32)?;
+        Ok(cut)
     }
 }
 
@@ -1890,6 +1959,61 @@ mod tests {
         }
     }
 
+    fn to_half(v: f32) -> u16 {
+        let s = if v < 0.0 { 0x8000 } else { 0 };
+        let v = v.abs();
+        if v < 2f32.powi(-14) {
+            return s | (v / 2f32.powi(-24)).round() as u16;
+        }
+        let e = v.log2().floor() as i32;
+        let m = ((v / 2f32.powi(e) - 1.0) * 1024.0).round() as u16;
+        s | (((e + 15) as u16) << 10) + m
+    }
+
+    /// Under scRGB the UI layer lands on the photo layer as an SDR frame blends it: a hairline's half-covered
+    /// pixel on a light page comes out between the two (not darker than the hairline, as at the light themes'
+    /// rounded corners until 2026-11-12), an opaque one as the hairline, and where the UI draws nothing the photo
+    /// layer is left alone (a wide-gamut, HDR colour too).
+    #[test]
+    fn ui_blends_as_sdr() {
+        let dev = create_device(true).unwrap();
+        let dc = &dev.dc;
+        let white = 2.25;
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        unsafe {
+            dc.SetRenderingControls(&D2D1_RENDERING_CONTROLS { bufferPrecision: D2D1_BUFFER_PRECISION_16BPC_FLOAT, tileSize: D2D_SIZE_U { width: 0, height: 0 } });
+            let page = lin(0.9) * white;
+            let photo_px: Vec<u16> = [[page, page, page], [page, page, page], [-0.1, 3.0, 0.5]]
+                .iter()
+                .flat_map(|c| [to_half(c[0]), to_half(c[1]), to_half(c[2]), to_half(1.0)])
+                .collect();
+            let fprops = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_R16G16B16A16_FLOAT, alphaMode: D2D1_ALPHA_MODE_IGNORE },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            let photo = dc.CreateBitmap(D2D_SIZE_U { width: 3, height: 1 }, Some(photo_px.as_ptr() as _), 24, &fprops).unwrap();
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                ..fprops
+            };
+            // BGRA premultiplied: 0.8 grey at half coverage, the same grey whole, nothing.
+            let ui_px = [102u8, 102, 102, 128, 204, 204, 204, 255, 0, 0, 0, 0];
+            let ui = dc.CreateBitmap(D2D_SIZE_U { width: 3, height: 1 }, Some(ui_px.as_ptr() as _), 12, &props).unwrap();
+            let fx = ui_over(dc, &photo, &ui, white).unwrap();
+            let out = read_f16(dc, &bake(dc, &fx.GetOutput().unwrap(), 3, 1).unwrap(), 3, 1);
+            println!("{out:?}");
+            let half = lin(102.0 / 255.0 + (1.0 - 128.0 / 255.0) * 0.9) * white;
+            assert!((out[0][1] - half).abs() < 0.01 && (out[0][3] - 1.0).abs() < 0.01, "half covered {:?}, want {half}", out[0]);
+            // Never darker than the hairline itself.
+            assert!(out[0][1] > lin(0.8) * white);
+            assert!((out[1][1] - lin(0.8) * white).abs() < 0.01, "whole {:?}", out[1]);
+            assert!(out[2][3].abs() < 0.001, "untouched {:?}", out[2]);
+        }
+    }
+
     /// What the colour-management effect's alpha modes do with a translucent pixel (6 % white, premultiplied).
     #[test]
     #[ignore]
@@ -2029,7 +2153,7 @@ mod tests {
                 colorContext: std::mem::ManuallyDrop::new(None),
             };
             let src = dc.CreateBitmap(D2D_SIZE_U { width: 2, height: 1 }, Some(px.as_ptr() as _), 8, &props).unwrap();
-            let fx = to_scrgb(dc, &src, &colour_context(dc, colour).unwrap(), 2.0, true).unwrap();
+            let fx = to_scrgb(dc, &src.cast().unwrap(), &colour_context(dc, colour).unwrap(), 2.0, true).unwrap();
             let out = bake(dc, &fx.GetOutput().unwrap(), 2, 1).unwrap();
             read_f16(dc, &out, 2, 1)
         };

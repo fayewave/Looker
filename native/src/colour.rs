@@ -121,13 +121,15 @@ pub fn describe(s: &Space) -> String {
     }
 }
 
-/// `LOOKER_COLOR=srgb`, `scrgb` (HDR with SDR white at 200 nits) or the path of an ICC profile (an SDR monitor
-/// with that profile) overrides the monitor.
+/// `LOOKER_COLOR=srgb`, `scrgb` (HDR with SDR white at 200 nits), `acm` (Auto Color Management: scRGB with SDR
+/// white at 1.0, so PrintWindow captures of the scRGB path aren't clipped) or the path of an ICC profile (an SDR
+/// monitor with that profile) overrides the monitor.
 fn forced() -> Option<Space> {
     let v = std::env::var("LOOKER_COLOR").ok()?;
     match v.to_ascii_lowercase().as_str() {
         "srgb" => Some(Space::Srgb),
         "scrgb" => Some(Space::Scrgb { white_nits: 200.0, hdr: true }),
+        "acm" => Some(Space::Scrgb { white_nits: 80.0, hdr: false }),
         _ => std::fs::read(&v).ok().map(|p| Space::Icc(Arc::new(p))),
     }
 }
