@@ -353,30 +353,38 @@ pub fn decode(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) -> Re
     Ok(Decoded::still(w, h, sketch(w, h, &peaks), w, h, None))
 }
 
-/// Mirrored bars on a dark tile, in Looker's red: the waveform at a glance.
+/// Mirrored bars on a dark tile, in Looker's red: the waveform at a glance. Each bar covers its pixels in part where
+/// its edges fall between them, so every bar weighs the same at any size: rounded to whole pixels, bars under 2 px
+/// came out 1 or 2 px wide and a run of them closed up into a brighter band (Faye, 2026-11-12).
 fn sketch(w: u32, h: u32, peaks: &[f32]) -> Vec<u8> {
-    let mut px = vec![0u8; (w * h * 4) as usize];
+    let (wu, hu) = (w as usize, h as usize);
     let max = peaks.iter().cloned().fold(0.0f32, f32::max).max(1e-4);
-    let (bg, ink) = ([0x1c, 0x1c, 0x1c], [0x4d, 0x48, 0xe5]); // BGR
-    for p in px.chunks_exact_mut(4) {
-        p.copy_from_slice(&[bg[0], bg[1], bg[2], 255]);
-    }
+    let (bg, ink) = ([0x1c as f32, 0x1c as f32, 0x1c as f32], [0x4d as f32, 0x48 as f32, 0xe5 as f32]); // BGR
+    let mut cover = vec![0f32; wu * hu];
     let n = peaks.len() as f32;
     let pad = w as f32 * 0.12;
     let pitch = (w as f32 - pad * 2.0) / n;
-    let bar = (pitch * 0.6).max(1.0);
+    let bar = pitch * 0.6;
     let mid = h as f32 / 2.0;
     for (i, &v) in peaks.iter().enumerate() {
         let half = ((v / max).sqrt() * h as f32 * 0.3).max(1.0);
-        let x0 = (pad + i as f32 * pitch) as u32;
-        let x1 = ((pad + i as f32 * pitch + bar) as u32).min(w);
-        let (y0, y1) = ((mid - half).max(0.0) as u32, ((mid + half) as u32).min(h));
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let o = ((y * w + x) * 4) as usize;
-                px[o..o + 3].copy_from_slice(&ink);
+        let (x0, x1) = (pad + i as f32 * pitch, pad + i as f32 * pitch + bar);
+        let (y0, y1) = ((mid - half).max(0.0) as usize, ((mid + half) as usize).min(hu));
+        for x in (x0.floor() as usize)..(x1.ceil() as usize).min(wu) {
+            // How much of pixel column x the bar spans.
+            let c = (x1.min(x as f32 + 1.0) - x0.max(x as f32)).clamp(0.0, 1.0);
+            for y in y0..y1 {
+                cover[y * wu + x] += c;
             }
         }
+    }
+    let mut px = vec![0u8; wu * hu * 4];
+    for (p, &c) in px.chunks_exact_mut(4).zip(&cover) {
+        let c = c.min(1.0);
+        for k in 0..3 {
+            p[k] = (bg[k] + (ink[k] - bg[k]) * c).round() as u8;
+        }
+        p[3] = 255;
     }
     px
 }
