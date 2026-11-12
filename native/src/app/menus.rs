@@ -84,6 +84,13 @@ pub(super) enum Action {
     ColFit,
     ColClose,
     ColFitAll,
+    /// The explorer's layout (the view menu), and column view's edge menu.
+    Layout(crate::explorer::Layout),
+    ColumnFit,
+    ColumnFitAll,
+    ColumnAllThis,
+    ColumnReset,
+    ColumnResetAll,
     ColRestore,
     ColToggle(crate::explorer::ColKind),
     /// The text editor's right-click menu and foot (textview.rs).
@@ -407,7 +414,7 @@ impl App {
         let kind = self.retire_menu();
         self.invalidate();
         match kind {
-            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::Tab(_))) => {
+            Some(k @ (MenuKind::Rows(_) | MenuKind::ExplorerBg | MenuKind::Side(_) | MenuKind::History | MenuKind::Group | MenuKind::Columns(_) | MenuKind::ColumnEdge(_) | MenuKind::Tab(_))) => {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
@@ -534,6 +541,8 @@ pub(super) enum MenuKind {
     Group,
     /// A column header's menu, for the column at this index.
     Columns(usize),
+    /// Column view's edge menu, for the column at this index.
+    ColumnEdge(usize),
     /// An explorer tab's menu, for the tab at this index.
     Tab(usize),
     /// The breadcrumb overflow, holding these places.

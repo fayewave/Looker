@@ -105,6 +105,12 @@ impl<T: Copy + PartialEq> Hits<T> {
     pub fn rect_of(&self, id: T) -> Option<D2D_RECT_F> {
         self.items.iter().rev().find(|(i, _)| *i == id).map(|(_, r)| *r)
     }
+    /// Renames the hits drawn (what was drawn changed meaning before the next frame: a column took the keys).
+    pub fn remap(&mut self, f: impl Fn(T) -> T) {
+        for (id, _) in &mut self.items {
+            *id = f(*id);
+        }
+    }
 }
 
 // --- Fades -------------------------------------------------------------------------------------------

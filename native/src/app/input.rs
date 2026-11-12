@@ -261,6 +261,12 @@ impl App {
                     if self.explorer.col_resize.is_some() {
                         self.col_edge_drag(x);
                     }
+                    if self.explorer.cols.resize.is_some() {
+                        self.column_edge_drag(x);
+                    }
+                    if self.explorer.cols.hthumb.is_some() {
+                        self.hthumb_move(x);
+                    }
                     if self.explorer.thumb_drag.is_some() {
                         self.thumb_move(y);
                     }
@@ -349,7 +355,7 @@ impl App {
                     }
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
-                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
+                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::ColumnEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
@@ -431,6 +437,9 @@ impl App {
                 WM_LBUTTONDOWN => {
                     let (x, y) = self.dip_from_lparam(lp);
                     self.hide_tooltip();
+                    if self.menu.is_none() && self.dialog.is_none() && !self.page_open() {
+                        self.column_press_focus(x, y);
+                    }
                     let h = self.hit(x, y);
                     // The Custom accent's picker has every press while it's open.
                     if self.picker_live() {
@@ -471,6 +480,8 @@ impl App {
                         Some(Hit::ExplorerList) => self.marquee_press(x, y),
                         Some(Hit::ColHeader(i)) => self.header_press(i as usize, x),
                         Some(Hit::ColEdge(i)) => self.col_edge_press(i as usize, x),
+                        Some(Hit::ColumnEdge(i)) => self.column_edge_press(i as usize, x),
+                        Some(Hit::ColumnHScroll) => self.hthumb_press(x),
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
                         Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
@@ -695,6 +706,11 @@ impl App {
                                 self.new_tab(Some(crate::explorer::Place::Folder(r.path)));
                             }
                         }
+                        Some(Hit::ColumnRow(p, i)) => {
+                            if let Some(r) = self.explorer.cols.panes.get(p as usize).and_then(|c| c.rows.get(i)).filter(|r| r.is_folder()).cloned() {
+                                self.new_tab(Some(crate::explorer::Place::Folder(r.path)));
+                            }
+                        }
                         _ => {}
                     }
                     Some(LRESULT(0))
@@ -712,6 +728,9 @@ impl App {
                         }
                     }
                     let (x, y) = self.dip_from_lparam(lp);
+                    if self.menu.is_none() {
+                        self.column_press_focus(x, y);
+                    }
                     match self.hit(x, y) {
                         // The video bar's times: their Timecode/Frames menu, as a left click opens it (Faye).
                         Some(Hit::VideoTime) => self.video_bar_click(Hit::VideoTime),
@@ -760,6 +779,10 @@ impl App {
                         Some(Hit::ColHeader(i) | Hit::ColEdge(i)) => {
                             self.close_menu();
                             self.column_menu(i as usize, x, y);
+                        }
+                        Some(Hit::ColumnEdge(i)) => {
+                            self.close_menu();
+                            self.column_edge_menu(i as usize, x, y);
                         }
                         Some(Hit::Tab(i) | Hit::TabClose(i)) => {
                             self.close_menu();
@@ -820,6 +843,13 @@ impl App {
                         self.col_fit(i as usize);
                         return Some(LRESULT(0));
                     }
+                    if let Some(Hit::ColumnEdge(i)) = self.hit(x, y) {
+                        self.column_fit(i as usize);
+                        return Some(LRESULT(0));
+                    }
+                    if self.menu.is_none() && self.dialog.is_none() {
+                        self.column_press_focus(x, y);
+                    }
                     if self.hit(x, y) == Some(Hit::SidebarGrip) {
                         self.sidebar_grip_reset();
                         return Some(LRESULT(0));
@@ -875,6 +905,8 @@ impl App {
                     self.explorer.header_drag = None;
                     self.explorer.thumb_drag = None;
                     self.col_edge_release();
+                    self.column_edge_release();
+                    self.explorer.cols.hthumb = None;
                     self.sidebar_grip_release();
                     if self.pan_drag.take().is_some() {
                         self.model_pan_end();
@@ -891,6 +923,9 @@ impl App {
                     let (x, y) = self.screen_to_dip(lp);
                     if matches!(self.hit(x, y), Some(Hit::TextView | Hit::TextHScroll)) {
                         self.text_hwheel(delta);
+                    }
+                    if self.columns_on() && matches!(self.hit(x, y), Some(Hit::ColumnRow(..) | Hit::ColumnPane(_) | Hit::ColumnEdge(_) | Hit::ColumnHScroll | Hit::ExplorerRow(_) | Hit::ExplorerList)) {
+                        self.scroll_columns_sideways(delta);
                     }
                     Some(LRESULT(0))
                 }
@@ -917,6 +952,20 @@ impl App {
                     if matches!(self.hit(x, y), Some(Hit::Sidebar | Hit::SideRow(_) | Hit::SideChevron(_) | Hit::SideHeader(_))) {
                         self.scroll_sidebar(delta as f32);
                         return Some(LRESULT(0));
+                    }
+                    // Column view: Shift (or the scrollbar under them) scrolls the columns sideways; a column
+                    // without the keys scrolls by itself.
+                    if self.columns_on() {
+                        let h = self.hit(x, y);
+                        let over = matches!(h, Some(Hit::ColumnRow(..) | Hit::ColumnPane(_) | Hit::ColumnEdge(_) | Hit::ColumnHScroll | Hit::ExplorerRow(_) | Hit::ExplorerList));
+                        if over && (GetKeyState(VK_SHIFT.0 as i32) < 0 || matches!(h, Some(Hit::ColumnHScroll | Hit::ColumnEdge(_)))) {
+                            self.scroll_columns_sideways(-delta as f32);
+                            return Some(LRESULT(0));
+                        }
+                        if let Some(Hit::ColumnRow(p, _) | Hit::ColumnPane(p)) = h {
+                            self.scroll_column(p as usize, delta as f32);
+                            return Some(LRESULT(0));
+                        }
                     }
                     if matches!(
                         self.hit(x, y),

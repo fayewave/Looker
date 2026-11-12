@@ -13,7 +13,7 @@ use super::*;
 use crate::explorer::{self, ColKind, Kind, Place};
 use crate::shell_icons;
 
-const ROW: f32 = 26.0;
+pub(super) const ROW: f32 = 26.0;
 const NAV: f32 = 28.0;
 /// The tab strip's height (Transient's).
 const STRIP_H: f32 = 32.0;
@@ -23,14 +23,14 @@ pub(super) const SIDEBAR_MAX: f32 = 420.0;
 /// From this inner width the sidebar is a column of its own; narrower, it's behind a toggle.
 pub(super) const SIDEBAR_AT: f32 = 600.0;
 const HEADER: f32 = 26.0;
-const FILTER_H: f32 = 28.0;
-const ICON_W: f32 = 24.0;
+pub(super) const FILTER_H: f32 = 28.0;
+pub(super) const ICON_W: f32 = 24.0;
 /// The crumb popup's rows, and how many show before it scrolls.
 pub(super) const POPUP_ROW: f32 = 25.0;
 pub(super) const POPUP_ROWS: usize = 12;
-const ICON_H: f32 = 18.0;
+pub(super) const ICON_H: f32 = 18.0;
 /// Windows' icons are drawn this many DIPs across (the shell's small icon, as Transient's Browser draws them).
-const SHELL_ICON: f32 = 16.0;
+pub(super) const SHELL_ICON: f32 = 16.0;
 
 /// Windows' own icon for `kind`, centred in `r` (as Transient's Browser tab draws folders, drives and places):
 /// faded by `opacity`, recoloured in `tint`. False when Windows has none (the caller draws its glyph); nothing
@@ -234,6 +234,8 @@ impl App {
         let body = D2D_RECT_F { top, ..main };
         if !column_sidebar && self.explorer.sidebar_open {
             moving |= self.draw_sidebar(g, body);
+        } else if self.columns_on() {
+            moving |= self.draw_columns(g, body);
         } else {
             moving |= self.draw_list(g, body);
         }
@@ -629,16 +631,7 @@ impl App {
             let faded = if r.kind == Kind::Other || self.explorer.is_cut(&r.path) { 0.45 } else { 1.0 };
             // On the solid accent everything is white.
             let ink = |c: u32| if lit { rgb(t.on_accent) } else { gfx::rgba(c, faded) };
-            // A video's length goes on its thumbnail when that's big enough (the meta thread probes it).
-            let is_video = r.kind == Kind::Image && matches!(format::of_path(&r.path), format::Format::Video | format::Format::Audio);
-            let badge = is_video && icon_h >= video::BADGE_MIN_H;
-            // Videos and GIFs: a play badge in the thumbnail's middle.
-            let moving_picture = r.kind == Kind::Image && matches!(format::of_path(&r.path), format::Format::Video | format::Format::Gif);
-            // Audio shows a plain waveform icon, not the file's own waveform (Faye, 2026-11-11).
-            let is_audio = r.kind == Kind::Image && format::of_path(&r.path) == format::Format::Audio;
-            // Text, PDFs and audio show Looker's red icon for the type, not a picture (Faye, 2026-11-11).
-            let is_text = r.kind == Kind::Image
-                && matches!(format::of_path(&r.path), format::Format::Text | format::Format::Pdf | format::Format::Audio);
+            let RowLook { badge, is_audio, is_text, .. } = row_look(&r, icon_h);
             if r.kind == Kind::Image && !is_audio {
                 if !is_text {
                     self.thumbs.want(&r.path, r.stamp, want, r.cloud, selected);
@@ -670,61 +663,7 @@ impl App {
                 }
                 // Name: the thumbnail or glyph, the name, its tags.
                 let ib = rect(x + 6.0, row.top + (rh - icon_h) / 2.0, icon_w, icon_h);
-                let mut drew = false;
-                if is_text {
-                    // Looker's red icon for the type, rather than a picture of the page (Faye, 2026-11-11).
-                    if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
-                        let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
-                        drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
-                    }
-                    if !drew && is_audio {
-                        draw_wave_icon(g, ib, ink(t.icon));
-                        drew = true;
-                    }
-                } else if r.kind == Kind::Image {
-                    if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
-                        g.fill_round(ib, 2.0, rgb(t.field));
-                        th.draw_fit(g, ib);
-                        drew = true;
-                        if moving_picture {
-                            video::draw_play_badge(g, ib);
-                        }
-                        if let Some(d) = meta.as_ref().and_then(|m| m.duration_us).filter(|_| badge) {
-                            video::draw_duration_badge(g, ib, d);
-                        }
-                    }
-                }
-                if !drew && r.kind == Kind::Image {
-                    // No thumbnail (yet, or ever): Looker's red icon for the type, not a grey photo glyph (Faye,
-                    // 2026-11-11). The thumbnail takes over when it arrives.
-                    if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
-                        let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
-                        if let Some(icon) = crate::file_icons::icon(&e, (dip * g.dpi / 96.0).round() as u32) {
-                            g.draw_icon(&icon, ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
-                            drew = true;
-                        }
-                    }
-                }
-                if !drew && r.kind == Kind::Other {
-                    // A file Looker can't open: Windows' icon for its type.
-                    if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
-                        let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
-                        drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
-                    }
-                }
-                if !drew && r.is_folder() {
-                    // Windows' icon; on the solid accent recoloured white, as Transient does a picked folder.
-                    drew = shell_icon(g, &row_icon(&r), ib, if lit { 1.0 } else { faded }, lit.then_some(t.on_accent));
-                }
-                if !drew {
-                    let (glyph, tint) = match r.kind {
-                        Kind::Drive => (0xEDA2u16, t.icon),
-                        Kind::Folder => (0xE8D5, FOLDER_TINT),
-                        Kind::Image => (0xE91B, t.icon),
-                        Kind::Other => (0xE7C3, t.icon),
-                    };
-                    g.text(&[glyph], &g.fonts.body_icons, ib, ink(tint), Align::Center);
-                }
+                self.draw_row_icon(g, &r, ib, lit, faded, meta.as_ref());
                 let tx = x + icon_w + 14.0;
                 let mut name_right = x + w - 6.0;
                 if tag.favourite {
@@ -790,8 +729,73 @@ impl App {
         moving || cols_moving
     }
 
+    /// A row's picture in `ib`: its thumbnail (with a play badge, and a video's length when there's room), else
+    /// Looker's red icon for the type, Windows' icon for a folder, drive or file Looker can't open, else a glyph.
+    /// `lit`: on the solid accent (everything white); `faded`: a cut or unsupported file's opacity.
+    pub(super) fn draw_row_icon(&mut self, g: &Gfx, r: &explorer::Row, ib: D2D_RECT_F, lit: bool, faded: f32, meta: Option<&Meta>) {
+        let t = theme::t();
+        let icon_h = ib.bottom - ib.top;
+        let ink = |c: u32| if lit { rgb(t.on_accent) } else { gfx::rgba(c, faded) };
+        let RowLook { badge, moving_picture, is_audio, is_text } = row_look(r, icon_h);
+        let mut drew = false;
+        if is_text {
+            // Looker's red icon for the type, rather than a picture of the page (Faye, 2026-11-11).
+            if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
+                drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
+            }
+            if !drew && is_audio {
+                draw_wave_icon(g, ib, ink(t.icon));
+                drew = true;
+            }
+        } else if r.kind == Kind::Image {
+            if let Some(th) = self.thumbs.get(&r.path, r.stamp) {
+                g.fill_round(ib, 2.0, rgb(t.field));
+                th.draw_fit(g, ib);
+                drew = true;
+                if moving_picture {
+                    video::draw_play_badge(g, ib);
+                }
+                if let Some(d) = meta.and_then(|m| m.duration_us).filter(|_| badge) {
+                    video::draw_duration_badge(g, ib, d);
+                }
+            }
+        }
+        if !drew && r.kind == Kind::Image {
+            // No thumbnail (yet, or ever): Looker's red icon for the type, not a grey photo glyph (Faye,
+            // 2026-11-11). The thumbnail takes over when it arrives.
+            if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
+                if let Some(icon) = crate::file_icons::icon(&e, (dip * g.dpi / 96.0).round() as u32) {
+                    g.draw_icon(&icon, ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
+                    drew = true;
+                }
+            }
+        }
+        if !drew && r.kind == Kind::Other {
+            // A file Looker can't open: Windows' icon for its type.
+            if let Some(e) = r.path.extension().map(|e| e.to_string_lossy().to_lowercase()) {
+                let dip = if icon_h >= 32.0 { icon_h.min(48.0).floor() } else { SHELL_ICON };
+                drew = shell_icon_at(g, &shell_icons::Kind::Extension(e), ib, dip, if lit { 1.0 } else { faded.max(0.8) }, lit.then_some(t.on_accent));
+            }
+        }
+        if !drew && r.is_folder() {
+            // Windows' icon; on the solid accent recoloured white, as Transient does a picked folder.
+            drew = shell_icon(g, &row_icon(r), ib, if lit { 1.0 } else { faded }, lit.then_some(t.on_accent));
+        }
+        if !drew {
+            let (glyph, tint) = match r.kind {
+                Kind::Drive => (0xEDA2u16, t.icon),
+                Kind::Folder => (0xE8D5, FOLDER_TINT),
+                Kind::Image => (0xE91B, t.icon),
+                Kind::Other => (0xE7C3, t.icon),
+            };
+            g.text(&[glyph], &g.fonts.body_icons, ib, ink(tint), Align::Center);
+        }
+    }
+
     /// The filter box (a search glyph, the text, a clear button) and the count.
-    fn draw_footer(&mut self, g: &Gfx, body: D2D_RECT_F, top: f32, wide_footer: bool) {
+    pub(super) fn draw_footer(&mut self, g: &Gfx, body: D2D_RECT_F, top: f32, wide_footer: bool) {
         let t = theme::t();
         g.hline(body.left, g.snap(top), body.right - body.left, rgb(t.divider));
         let _ = wide_footer;
@@ -1472,4 +1476,27 @@ fn middle_fit(g: &Gfx, s: &str, max_w: f32) -> String {
         if g.measure(&wide(&cut(mid)), &g.fonts.body) <= max_w { lo = mid } else { hi = mid - 1 }
     }
     cut(lo)
+}
+
+/// What kind of picture a row has.
+pub(super) struct RowLook {
+    /// A video or sound whose length goes on its thumbnail (there's room at this height; the meta thread probes it).
+    pub badge: bool,
+    /// Videos and GIFs: a play badge in the thumbnail's middle.
+    pub moving_picture: bool,
+    /// Audio shows a plain waveform icon, not the file's own waveform (Faye, 2026-11-11).
+    pub is_audio: bool,
+    /// Text, PDFs and audio show Looker's red icon for the type, not a picture (Faye, 2026-11-11).
+    pub is_text: bool,
+}
+
+pub(super) fn row_look(r: &explorer::Row, icon_h: f32) -> RowLook {
+    let f = (r.kind == Kind::Image).then(|| format::of_path(&r.path));
+    let is_video = matches!(f, Some(format::Format::Video | format::Format::Audio));
+    RowLook {
+        badge: is_video && icon_h >= video::BADGE_MIN_H,
+        moving_picture: matches!(f, Some(format::Format::Video | format::Format::Gif)),
+        is_audio: f == Some(format::Format::Audio),
+        is_text: matches!(f, Some(format::Format::Text | format::Format::Pdf | format::Format::Audio)),
+    }
 }

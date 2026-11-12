@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use super::explorer::{EField, SideTarget};
 use super::menus::{Action, MenuKind};
 use super::*;
-use crate::explorer::{self, ColKind, Group, Kind, Place, Scope};
+use crate::explorer::{self, ColKind, Group, Kind, Layout, Place, Scope};
 use crate::fileops::{self, Done, Origin, Transfer};
 use crate::textedit::TextEdit;
 use crate::ui::{Entry, Menu, MenuItem, TextField};
@@ -50,7 +50,7 @@ pub(super) fn group_glyph(g: Group) -> u16 {
     }
 }
 
-fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
+pub(super) fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
     Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
@@ -376,7 +376,7 @@ impl App {
 
     // --- Menus --------------------------------------------------------------------------------------
 
-    fn show_menu(&mut self, kind: MenuKind, entries: Vec<Entry<Action>>, x: f32, y: f32) {
+    pub(super) fn show_menu(&mut self, kind: MenuKind, entries: Vec<Entry<Action>>, x: f32, y: f32) {
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
         self.menu = Some((kind, Menu::open(g, entries, x, y, rect(0.0, 0.0, w, h))));
@@ -575,12 +575,17 @@ impl App {
         let ticked = |action, glyph, label: &str, on: bool, enabled: bool| {
             Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel: None, check: Some(on), enabled, current: false })
         };
-        let mut e = vec![Entry::Heading("Folders and files".into())];
+        let mut e = vec![Entry::Heading("Layout".into())];
+        e.push(ticked(Action::Layout(Layout::List), 0xE8FD, "List", v.layout == Layout::List, true));
+        e.push(ticked(Action::Layout(Layout::Columns), 0xE89A, "Columns", v.layout == Layout::Columns, true));
+        e.push(Entry::Separator);
+        e.push(Entry::Heading("Folders and files".into()));
         for g in Group::ALL {
             e.push(ticked(Action::Group(g), group_glyph(g), g.label(), v.group == g, true));
         }
         e.push(Entry::Separator);
-        e.push(ticked(Action::ToggleSubfolders, 0xE8B7, "Include subfolders", v.subfolders, folder));
+        // Column view lists each folder alone.
+        e.push(ticked(Action::ToggleSubfolders, 0xE8B7, "Include subfolders", v.subfolders, folder && v.layout == Layout::List));
         let h = v.height;
         e.push(Entry::Stepper(crate::ui::Stepper {
             label: "Height".into(),
@@ -592,7 +597,8 @@ impl App {
         // Any change above is kept for this place alone ("This folder"); Save as default is the only way to change
         // what every folder shows (Faye, 2026-11-11).
         e.push(Entry::Heading("Saved view".into()));
-        let place = self.explorer.place.as_ref();
+        let view_place = self.view_place();
+        let place = view_place.as_ref();
         let key = place.map(crate::explorer::view_key);
         let entry = self.view_entry().map(|i| &self.settings.views[i]);
         // A parent's "and subfolders" covering this folder: said so, nothing of this folder's own ticked.
@@ -770,6 +776,12 @@ impl App {
             (Action::ColFit, MenuKind::Columns(i)) => self.col_fit(i),
             (Action::ColClose, MenuKind::Columns(i)) => self.col_close(i),
             (Action::ColFitAll, _) => self.col_fit_all(),
+            (Action::Layout(l), _) => self.set_layout(l),
+            (Action::ColumnFit, MenuKind::ColumnEdge(i)) => self.column_fit(i),
+            (Action::ColumnFitAll, _) => self.column_fit_all(),
+            (Action::ColumnAllThis, MenuKind::ColumnEdge(i)) => self.column_all_this(i),
+            (Action::ColumnReset, MenuKind::ColumnEdge(i)) => self.column_reset(i),
+            (Action::ColumnResetAll, _) => self.column_reset_all(),
             (Action::ColRestore, _) => self.col_restore(),
             (Action::ColToggle(k), _) => self.col_toggle(k),
             (Action::Undo, _) => self.explorer_undo(),

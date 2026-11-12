@@ -663,13 +663,48 @@ pub struct View {
     pub sort: Sort,
     /// A column the list alone is sorted by instead (Camera, Dimensions, …), and descending.
     pub xsort: Option<(ColKind, bool)>,
+    /// A list with columns of details, or Finder's column view (a column per folder down the path).
+    pub layout: Layout,
+    /// Column view's columns' width (each can be dragged wider or narrower on its own for a while; "Make all
+    /// columns this width" sets this).
+    pub column_w: f32,
 }
 
 pub const HEIGHT_MAX: u8 = 4;
 
+/// How the explorer lays a folder out: the list (details, Transient's), or columns (Finder's column view: every
+/// folder down from where you started in a column of its own, Faye 2026-11-12).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    #[default]
+    List,
+    Columns,
+}
+
+/// Column view's default column width, and how narrow and wide a column can be dragged.
+pub const COLUMN_W: f32 = 240.0;
+pub const COLUMN_MIN: f32 = 120.0;
+pub const COLUMN_MAX: f32 = 900.0;
+
+impl Layout {
+    /// "list", or "columns 240" (with the column width).
+    pub fn format(self, column_w: f32) -> String {
+        match self {
+            Layout::List => format!("list {}", column_w.round()),
+            Layout::Columns => format!("columns {}", column_w.round()),
+        }
+    }
+
+    pub fn parse(s: &str) -> (Layout, f32) {
+        let (k, w) = s.split_once(' ').unwrap_or((s, ""));
+        let layout = if k == "columns" { Layout::Columns } else { Layout::List };
+        (layout, w.parse::<f32>().map_or(COLUMN_W, |w| w.clamp(COLUMN_MIN, COLUMN_MAX)))
+    }
+}
+
 impl Default for View {
     fn default() -> Self {
-        View { group: Group::default(), subfolders: false, other_files: true, height: 1, columns: ColKind::defaults(), sort: Sort::default(), xsort: None }
+        View { group: Group::default(), subfolders: false, other_files: true, height: 1, columns: ColKind::defaults(), sort: Sort::default(), xsort: None, layout: Layout::List, column_w: COLUMN_W }
     }
 }
 
@@ -722,13 +757,13 @@ pub struct SavedView {
 }
 
 impl SavedView {
-    /// `scope;group;subfolders;other;height;columns;sort;xsort;path` (a `view2=` line; the path last: it may hold
-    /// anything). `xsort` is `-` or "column asc|desc".
+    /// `scope;group;subfolders;other;height;columns;sort;xsort;layout;path` (a `view3=` line; the path last: it
+    /// may hold anything). `xsort` is `-` or "column asc|desc"; `layout` is `Layout::format`'s.
     pub fn format(&self) -> String {
         let v = &self.view;
         let xsort = format_xsort(v.xsort);
         format!(
-            "{};{};{};{};{};{};{};{};{}",
+            "{};{};{};{};{};{};{};{};{};{}",
             self.scope.key(),
             v.group.key(),
             v.subfolders as i32,
@@ -737,11 +772,23 @@ impl SavedView {
             ColKind::format(&v.columns),
             v.sort.to_setting(),
             xsort,
+            v.layout.format(v.column_w),
             self.path.display()
         )
     }
 
-    /// A `view2=` line (`format`).
+    /// A `view3=` line (`format`).
+    pub fn parse3(s: &str) -> Option<SavedView> {
+        let f: Vec<&str> = s.splitn(10, ';').collect();
+        if f.len() != 10 || f[9].is_empty() {
+            return None;
+        }
+        let mut sv = SavedView::parse(&format!("{};{}", f[..8].join(";"), f[9]))?;
+        (sv.view.layout, sv.view.column_w) = Layout::parse(f[8]);
+        Some(sv)
+    }
+
+    /// A `view2=` line (before views had a layout: `scope;group;subfolders;other;height;columns;sort;xsort;path`).
     pub fn parse(s: &str) -> Option<SavedView> {
         let f: Vec<&str> = s.splitn(9, ';').collect();
         if f.len() != 9 || f[8].is_empty() {
@@ -770,6 +817,8 @@ impl SavedView {
             columns: ColKind::parse_list(f[5]),
             sort,
             xsort: None,
+            layout: Layout::List,
+            column_w: COLUMN_W,
         };
         Some(SavedView { path: PathBuf::from(f[6]), scope, view })
     }
@@ -1632,12 +1681,17 @@ mod tests {
         let mut one = views[3].clone();
         one.view.sort = Sort { field: SortField::Size, descending: true };
         one.view.xsort = Some((ColKind::Camera, true));
-        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        one.view.layout = Layout::Columns;
+        one.view.column_w = 310.0;
+        assert_eq!(SavedView::parse3(&one.format()).as_ref(), Some(&one));
         // A path with semicolons in it, and a place that isn't a folder.
         one.path = PathBuf::from(r"C:\a;b\c");
-        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        assert_eq!(SavedView::parse3(&one.format()).as_ref(), Some(&one));
         one.path = view_key(&Place::Collection(Collection::Colour(3)));
-        assert_eq!(SavedView::parse(&one.format()).as_ref(), Some(&one));
+        assert_eq!(SavedView::parse3(&one.format()).as_ref(), Some(&one));
+        // A `view2=` line (no layout) reads as the list.
+        let v2 = SavedView::parse(r"tree;mixed;0;1;2;name:0;name asc;-;C:\a;b").unwrap();
+        assert_eq!((v2.view.layout, v2.path.clone()), (Layout::List, PathBuf::from(r"C:\a;b")));
         // An old line keeps the sort it's given (the default's when it was written).
         let old = SavedView::parse_v1(r"folder;mixed;0;1;2;name:0;C:\x", Sort { field: SortField::Date, descending: true }).unwrap();
         assert_eq!(old.view.sort, Sort { field: SortField::Date, descending: true });

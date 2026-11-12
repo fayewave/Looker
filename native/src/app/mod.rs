@@ -8,6 +8,7 @@ mod actions;
 mod chrome;
 mod document;
 mod explorer;
+mod explorer_columns;
 mod explorer_ops;
 mod explorer_view;
 mod info;
@@ -228,6 +229,13 @@ enum Hit {
     /// A column's header and its right edge, by index in `Settings::explorer_columns`; the list's scrollbar.
     ColHeader(u8),
     ColEdge(u8),
+    /// Column view (explorer_columns.rs): a row of a column that hasn't the keys (column, row), such a column's
+    /// surface, a column's right edge (drag to resize it), and the sideways scrollbar. The column with the keys
+    /// uses the list's hits.
+    ColumnRow(u16, usize),
+    ColumnPane(u16),
+    ColumnEdge(u16),
+    ColumnHScroll,
     ExplorerThumb,
     ExplorerFilter,
     ExplorerFilterClear,

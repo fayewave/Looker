@@ -27,7 +27,7 @@ use crate::ui::TextField;
 
 pub(super) const MARGIN: f32 = 12.0;
 const SCROLL_MS: f32 = 150.0;
-const SCROLL_STEP: f32 = 52.0;
+pub(super) const SCROLL_STEP: f32 = 52.0;
 const MIN_IMAGE_W: f32 = 480.0;
 /// The explorer edge's sticky change between the card and browse mode: how far a snap overshoots, and how long a
 /// bounce swings.
@@ -66,6 +66,8 @@ pub(super) struct Listed {
     pub rows: Vec<Row>,
     /// A re-list of the same place (the folder changed on disk): keep the scroll.
     pub refresh: bool,
+    /// Column view: the column (by `Pane::id`) this is for, when it isn't the one with the keys.
+    pub pane: Option<u64>,
 }
 
 /// What a folder's subfolders were listed for.
@@ -324,6 +326,8 @@ pub(super) struct TabState {
     pub selected: HashSet<String>,
     pub scroll: f32,
     pub filter: String,
+    /// Column view's columns, as the tab left them.
+    pub cols: super::explorer_columns::Columns,
 }
 
 /// A sidebar section dragged by its heading, as Transient's: the heading follows the pointer, the others make
@@ -391,7 +395,7 @@ pub(super) struct Explorer {
     pub(super) rows: Vec<Row>,
     /// The rows the filter lets through, as indices into `rows`. Hits and the cursor work in these.
     pub(super) view: Vec<usize>,
-    serial: usize,
+    pub(super) serial: usize,
     pub(super) history: History,
     /// The open photo's folder the card last followed.
     photo_folder: Option<PathBuf>,
@@ -401,13 +405,13 @@ pub(super) struct Explorer {
     /// The selection, by `explorer::norm` keys.
     pub(super) selected: HashSet<String>,
     /// After going up, the cursor lands on the folder we came from.
-    came_from: Option<PathBuf>,
+    pub(super) came_from: Option<PathBuf>,
     /// Bring this view row into view on the next frame.
     pub(super) reveal: Option<usize>,
     pub(super) scroll: f32,
     pub(super) anim: Option<(f32, f32, Instant)>,
     pub(super) max_scroll: f32,
-    watcher: Option<Watcher>,
+    pub(super) watcher: Option<Watcher>,
     /// The resize grip's drag.
     pub drag: Option<(f32, f32)>,
     /// The crumbs collapsed into "…" on the last frame.
@@ -524,6 +528,8 @@ pub(super) struct Explorer {
     /// Undo and redo for file operations (explorer_ops.rs).
     pub(super) undo: Vec<super::explorer_ops::Step>,
     pub(super) redo: Vec<super::explorer_ops::Step>,
+    /// Column view's columns (explorer_columns.rs); empty while the list shows.
+    pub(super) cols: super::explorer_columns::Columns,
 }
 
 impl Explorer {
@@ -612,6 +618,7 @@ impl Explorer {
             net_searching: 0,
             undo: Vec::new(),
             redo: Vec::new(),
+            cols: Default::default(),
         }
     }
 
@@ -985,6 +992,10 @@ impl App {
     /// Lists a place (a new one goes into the history unless Back/Forward are walking it).
     pub(super) fn explorer_go(&mut self, place: Place, record: bool) {
         self.load_tabs();
+        // Column view: a column showing it, or one above it, takes the keys.
+        if self.columns_go(&place, record) {
+            return;
+        }
         let e = &mut self.explorer;
         // Going up: the cursor will land on the folder we came out of.
         e.came_from = match (&e.place, &place) {
@@ -1016,6 +1027,7 @@ impl App {
         }
         let v = self.view_for(&place);
         self.adopt_view(v);
+        self.columns_reset(false);
         self.explorer_list(place, false);
         self.save_tabs();
         self.invalidate();
@@ -1026,7 +1038,7 @@ impl App {
         let serial = self.explorer.serial;
         let sort = self.explorer.look.sort;
         let group = self.explorer.look.group;
-        let deep = self.explorer.look.subfolders && matches!(place, Place::Folder(_));
+        let deep = self.explorer.look.subfolders && self.explorer.look.layout == explorer::Layout::List && matches!(place, Place::Folder(_));
         let tagged = match &place {
             Place::Collection(c) => self.explorer.tags.in_collection(*c),
             _ => Vec::new(),
@@ -1037,7 +1049,7 @@ impl App {
             .name("explorer".into())
             .spawn(move || {
                 let rows = explorer::list(&place, sort, group, &tagged, deep);
-                let ptr = Box::into_raw(Box::new(Listed { serial, place, rows, refresh }));
+                let ptr = Box::into_raw(Box::new(Listed { serial, place, rows, refresh, pane: None }));
                 unsafe {
                     if PostMessageW(Some(HWND(hwnd as _)), explorer::WM_EXPLORER_LISTED, WPARAM(0), LPARAM(ptr as isize)).is_err() {
                         drop(Box::from_raw(ptr));
@@ -1048,9 +1060,14 @@ impl App {
     }
 
     pub(super) fn on_explorer_listed(&mut self, l: Listed) {
+        if let Some(id) = l.pane {
+            self.on_column_listed(id, l.rows);
+            return;
+        }
         if l.serial != self.explorer.serial {
             return; // superseded
         }
+        self.explorer.cols.active_listed = true;
         // The covering file was renamed or deleted: the photo underneath comes back.
         if self.placeholder.as_ref().is_some_and(|p| !p.path.exists()) {
             self.placeholder = None;
@@ -1119,6 +1136,7 @@ impl App {
         if let Some(p) = self.explorer.place.clone() {
             self.explorer_list(p, true);
         }
+        self.columns_refresh();
         // The open trees list their folders again too, and the drives are read again.
         self.explorer.places = None;
         self.explorer.children.remove(NET_KEY);
@@ -1227,8 +1245,8 @@ impl App {
     /// The saved view covering the place showing (its own, or a parent folder's "and subfolders"), by index in
     /// `Settings::views`.
     pub(super) fn view_entry(&self) -> Option<usize> {
-        let place = self.explorer.place.as_ref()?;
-        explorer::saved_for(&self.settings.views, &explorer::view_key(place))
+        let place = self.view_place()?;
+        explorer::saved_for(&self.settings.views, &explorer::view_key(&place))
     }
 
     /// The view a place shows: its saved one (or a parent folder's "and subfolders"), else the default.
@@ -1257,7 +1275,7 @@ impl App {
     /// `v` becomes `place`'s view (Faye, 2026-11-11: any change to how a place looks is kept for it alone): into
     /// its own saved view, else one made for it, "This folder". Inside a parent's "and subfolders" the change
     /// is this folder's own; the parent's stays as it was. The default only changes through Save as default.
-    fn save_view_for(&mut self, place: &Place, v: explorer::View) {
+    pub(super) fn save_view_for(&mut self, place: &Place, v: explorer::View) {
         let key = explorer::view_key(place);
         let k = explorer::norm(&key);
         let views = &mut self.settings.views;
@@ -1271,7 +1289,7 @@ impl App {
 
     /// The view changed: kept for the place showing, and the viewer re-sorts if it's showing that folder.
     pub(super) fn store_view(&mut self) {
-        let Some(place) = self.explorer.place.clone() else { return };
+        let Some(place) = self.view_place() else { return };
         let v = self.explorer.look.clone();
         self.save_view_for(&place, v);
         self.sync_viewer_sort();
@@ -1309,6 +1327,7 @@ impl App {
             self.explorer.look.xsort = None;
             self.store_view();
             self.explorer.resort(sort, self.explorer.look.group);
+            self.columns_refresh();
         } else {
             let mut v = self.view_for(&place);
             v.sort = sort;
@@ -1348,6 +1367,7 @@ impl App {
             self.explorer.look.group = g;
             self.store_view();
             self.explorer.resort(self.explorer.look.sort, g);
+            self.columns_refresh();
             self.invalidate();
         }
     }
@@ -1369,7 +1389,7 @@ impl App {
     /// Saved view: Use default, This folder, or This folder and subfolders. Saving keeps the view as it is; Use
     /// default drops the place's own (and turns away a parent's "and subfolders" with an `Off` entry).
     pub(super) fn set_saved_view(&mut self, scope: Option<explorer::Scope>) {
-        let Some(place) = self.explorer.place.clone() else { return };
+        let Some(place) = self.view_place() else { return };
         let path = explorer::view_key(&place);
         let key = explorer::norm(&path);
         // Only a folder has subfolders.
@@ -1414,7 +1434,13 @@ impl App {
         if nv != self.explorer.look {
             let relist = nv.subfolders != self.explorer.look.subfolders || nv.other_files != self.explorer.look.other_files;
             let resort = nv.group != self.explorer.look.group || nv.sort != self.explorer.look.sort || nv.xsort != self.explorer.look.xsort;
+            let layout = nv.layout != self.explorer.look.layout;
             self.adopt_view(nv);
+            if layout {
+                self.columns_reset(true);
+            } else if resort {
+                self.columns_refresh();
+            }
             self.animate_columns();
             if relist {
                 self.relist();
@@ -1446,7 +1472,7 @@ impl App {
         self.settings.set_default_view(&v);
         self.settings.views.clear();
         settings::save(&self.settings);
-        if let Some(place) = self.explorer.place.clone() {
+        if let Some(place) = self.view_place() {
             self.readopt_view(&place);
         }
         self.show_toast("Saved as the default view", false);
@@ -1469,7 +1495,7 @@ impl App {
     // --- Selection and opening ----------------------------------------------------------------------
 
     /// The cursor onto view row `vi`, selecting it alone; images open, other files cover the photo.
-    fn explorer_pick(&mut self, vi: usize) {
+    pub(super) fn explorer_pick(&mut self, vi: usize) {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
         let e = &mut self.explorer;
         e.cursor = Some(r.path.clone());
@@ -1534,7 +1560,10 @@ impl App {
     /// Double-click (or Enter): a folder lists; an image opens and, from browse mode, the viewer comes back.
     pub(super) fn explorer_double_click(&mut self, vi: usize) {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
-        if r.is_folder() {
+        if r.is_folder() && self.columns_on() {
+            self.explorer_pick(vi);
+            self.column_right();
+        } else if r.is_folder() {
             self.explorer_go(Place::Folder(r.path), true);
         } else {
             // Browse mode stays as it is (Faye, 2026-11-09: it used to drop back to the card).
@@ -2586,6 +2615,7 @@ impl App {
         t.selected = std::mem::take(&mut e.selected);
         t.scroll = e.scroll;
         t.filter = e.filter.edit.text();
+        t.cols = std::mem::take(&mut e.cols);
     }
 
     /// Brings tab `i` to the front as it was left, listing its place again.
@@ -2599,6 +2629,8 @@ impl App {
         e.anchor = t.anchor.take();
         e.selected = std::mem::take(&mut t.selected);
         let scroll = t.scroll;
+        e.cols = std::mem::take(&mut t.cols);
+        e.cols.active_listed = false;
         e.filter = TextField::new(TextEdit::new(&std::mem::take(&mut t.filter)));
         e.watcher = None;
         e.rows.clear();
@@ -2617,8 +2649,15 @@ impl App {
                 if e.history.entries().0.is_empty() {
                     e.history.record(&p);
                 }
-                let v = self.view_for(&p);
+                // Column view shows its first column's view.
+                let vp = e.cols.panes.first().map_or_else(|| p.clone(), |c| c.place.clone());
+                let v = self.view_for(&vp);
                 self.adopt_view(v);
+                if self.explorer.look.layout != explorer::Layout::Columns {
+                    self.explorer.cols.clear();
+                } else if self.explorer.cols.panes.is_empty() {
+                    self.columns_reset(false);
+                }
                 self.explorer_list(p, true);
             }
             None => self.explorer_go(Place::Computer, true),
@@ -3278,6 +3317,7 @@ impl App {
         let hit = if let Hit::TabClose(i) = hit { Hit::Tab(i) } else { hit };
         let folder = match hit {
             Hit::ExplorerRow(vi) => self.explorer.row(vi).filter(|r| r.is_folder()).map(|r| r.path.clone())?,
+            Hit::ColumnRow(p, i) => self.explorer.cols.panes.get(p as usize)?.rows.get(i).filter(|r| r.is_folder()).map(|r| r.path.clone())?,
             Hit::Crumb(i) => explorer::crumbs(self.explorer.place.as_ref()?).get(i)?.folder()?.to_path_buf(),
             Hit::SideRow(i) => match &self.sidebar_items().get(i)?.target {
                 SideTarget::Place(Place::Folder(p)) => p.clone(),
@@ -3459,6 +3499,10 @@ impl App {
                     | Hit::PathClear
                     | Hit::ColHeader(_)
                     | Hit::ColEdge(_)
+                    | Hit::ColumnRow(..)
+                    | Hit::ColumnPane(_)
+                    | Hit::ColumnEdge(_)
+                    | Hit::ColumnHScroll
                     | Hit::ExplorerThumb
                     | Hit::SidebarGrip
                     | Hit::ExplorerFilter
@@ -3535,6 +3579,9 @@ impl App {
             VK_F2 => self.explorer_rename_cursor(),
             VK_F5 => self.explorer_refresh(),
             VK_BACK => self.explorer_up(),
+            // Column view: Left and Right go between the columns, as Finder's.
+            VK_LEFT if self.columns_on() => self.column_left(),
+            VK_RIGHT if self.columns_on() => self.column_right(),
             VK_HOME => self.explorer_jump(false),
             VK_END => self.explorer_jump(true),
             VK_ESCAPE => {
