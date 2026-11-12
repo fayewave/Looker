@@ -325,6 +325,16 @@ pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
     g.fill_round(r, (r.right - r.left).min(r.bottom - r.top) / 2.0, c);
 }
 
+/// How wide every resize edge is to grab (Faye, 2026-11-12: was 8 to 12, too fiddly). A card's edge keeps 4 of it
+/// inside the card (clear of its scrollbar) and the rest out in the gap beside it; an edge between two panes is
+/// centred on it.
+pub const GRIP: f32 = 16.0;
+/// A card's edge grip: `GRIP` wide, 4 DIPs inside the card at `x` and the rest outside, `out` = +1 to the right.
+pub fn card_grip(x: f32, top: f32, bottom: f32, out: f32) -> D2D_RECT_F {
+    let left = if out > 0.0 { x - 4.0 } else { x + 4.0 - GRIP };
+    D2D_RECT_F { left, top, right: left + GRIP, bottom }
+}
+
 /// A card's resize edge: an ink line on hover, the accent while it's dragged.
 pub fn grip_line(g: &Gfx, r: D2D_RECT_F, hover: f32, dragging: bool) {
     let t = theme::t();

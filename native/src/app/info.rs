@@ -635,8 +635,7 @@ impl App {
         }
 
         // The resize grip straddles the left border; its line shows on hover and turns accent while dragging.
-        let grip = rect(card.left - 4.0, card.top, 8.0, card.bottom - card.top);
-        self.hits.add(Hit::InfoGrip, grip);
+        self.hits.add(Hit::InfoGrip, ui::card_grip(card.left, card.top, card.bottom, -1.0));
         let dragging = self.info_card.drag.is_some();
         let t = self.fades.hover(Hit::InfoGrip, self.hover == Some(Hit::InfoGrip) || dragging);
         ui::grip_line(g, rect(card.left - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);

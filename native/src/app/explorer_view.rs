@@ -206,6 +206,7 @@ impl App {
         let column_sidebar = slide > 0.0;
         g.push_clip(inner);
         let mut moving = slide > 0.0 && slide < 1.0;
+        let mut side_grip = None;
         let main = if column_sidebar {
             let side_w = self.sidebar_w().clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(w - 360.0).max(SIDEBAR_MIN));
             moving |= self.explorer.side_settle.is_some_and(|s| s.moving());
@@ -218,8 +219,8 @@ impl App {
             moving |= self.draw_sidebar(g, side);
             g.fill(rect(side.right, inner.top, g.px(), inner.bottom - inner.top), rgb(theme::t().divider));
             // Its edge resizes it: a line in the accent while held, the ink on hover.
-            let grip = rect(side.right - 4.0, inner.top, 8.0, inner.bottom - inner.top);
-            self.hits.add(Hit::SidebarGrip, grip);
+            // (Its hit goes in after the list's, which would otherwise take the half over it.)
+            side_grip = Some(rect(side.right - ui::GRIP / 2.0, inner.top, ui::GRIP, inner.bottom - inner.top));
             let dragging = self.explorer.side_drag.is_some();
             let k = self.fades.hover(Hit::SidebarGrip, self.hover == Some(Hit::SidebarGrip) || dragging);
             ui::grip_line(g, rect(side.right - 1.0, inner.top + 10.0, 2.0, inner.bottom - inner.top - 20.0), k, dragging);
@@ -240,14 +241,16 @@ impl App {
         } else {
             moving |= self.draw_list(g, body);
         }
+        if let Some(grip) = side_grip {
+            self.hits.add(Hit::SidebarGrip, grip);
+        }
         g.pop_clip();
         // With the keyboard: the card outlined in the accent below its tabs.
         let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
         ui::focus_outline(g, card, 10.0, Some(D2D_RECT_F { left: tabs_left, top: card.top, right: card.right, bottom: strip_bottom - g.px() }), lit);
 
         // The grip straddles the right border, in browse mode too.
-        let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);
-        self.hits.add(Hit::ExplorerGrip, grip);
+        self.hits.add(Hit::ExplorerGrip, ui::card_grip(card.right, card.top, card.bottom, 1.0));
         let dragging = self.explorer.drag.is_some();
         let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
         ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
@@ -540,7 +543,7 @@ impl App {
         // column's, Name's too.
         if slot.is_none() {
             for c in cols.iter().filter(|c| Some(c.idx) != last_idx) {
-                let edge = rect(c.x + c.w - 6.0, hy, 12.0, HEADER);
+                let edge = rect(c.x + c.w - ui::GRIP / 2.0, hy, ui::GRIP, HEADER);
                 self.hits.add(Hit::ColEdge(c.idx as u8), edge);
                 let hot = self.hover == Some(Hit::ColEdge(c.idx as u8)) || resizing == Some(c.idx);
                 let line = if hot { rgb(t.accent) } else { gfx::rgba(t.divider, 1.0) };

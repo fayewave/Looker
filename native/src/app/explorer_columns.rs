@@ -613,7 +613,7 @@ impl App {
                 continue;
             }
             let id = Hit::ColumnEdge(i as u16);
-            self.hits.add(id, rect(ex - 5.0, area.top, 10.0, rows_bottom - area.top));
+            self.hits.add(id, rect(ex - ui::GRIP / 2.0, area.top, ui::GRIP, rows_bottom - area.top));
             let hot = self.hover == Some(id) || resizing == Some(i);
             let k = self.fades.hover(id, hot);
             g.fill(rect(g.snap(ex) - g.px(), area.top, g.px(), rows_bottom - area.top), rgb(t.divider));

@@ -486,7 +486,8 @@ impl App {
         g.pop_clip();
 
         // The grip: the top band, a line that shows on hover and turns accent while dragging.
-        let grip = rect(r.left, r.top, r.right - r.left, TOP_PAD);
+        // Reaching up past the band into the gap above, `ui::GRIP` tall in all.
+        let grip = rect(r.left, r.top - (ui::GRIP - TOP_PAD), r.right - r.left, ui::GRIP);
         self.hits.add(Hit::StripGrip, grip);
         let dragging = self.strip.drag.is_some();
         let t = self.fades.hover(Hit::StripGrip, self.hover == Some(Hit::StripGrip) || dragging);
