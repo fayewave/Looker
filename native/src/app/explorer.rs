@@ -782,7 +782,7 @@ impl App {
         self.settings.explorer_width.max(self.card_min())
     }
 
-    /// The card's default width is also its narrowest (Faye, 2026-11-10): a fixed 300 DIPs whatever the window's
+    /// The card's default width is also its narrowest (Faye, 2026-11-10): a fixed `EXPLORER_MIN` (400) whatever the window's
     /// size (Faye, 2026-11-12; it was a quarter of the window).
     pub(super) fn card_min(&self) -> f32 {
         EXPLORER_MIN
