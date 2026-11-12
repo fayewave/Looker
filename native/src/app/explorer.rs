@@ -780,11 +780,10 @@ impl App {
         self.settings.explorer_width.max(self.card_min())
     }
 
-    /// The card's default width, a quarter of the window, is also its narrowest (Faye, 2026-11-10); never past the
-    /// sticky line, so a small window still has room for the photo.
+    /// The card's default width is also its narrowest (Faye, 2026-11-10): a fixed 300 DIPs whatever the window's
+    /// size (Faye, 2026-11-12; it was a quarter of the window).
     pub(super) fn card_min(&self) -> f32 {
-        let (w, _) = self.size_dip();
-        (w * 0.25).round().clamp(EXPLORER_MIN, INFO_MAX).min(self.sticky_line())
+        EXPLORER_MIN
     }
 
     /// The sticky line: the card's widest, where browse mode begins.
