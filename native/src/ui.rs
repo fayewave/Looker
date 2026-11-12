@@ -352,35 +352,25 @@ pub fn card(g: &Gfx, r: D2D_RECT_F) {
     stroke(g, r, 10.0, rgb(t.divider));
 }
 
-/// How strong the accent of a card with the keyboard is: its outline, its tab strip's line and the tab in front's
-/// outline (Faye, 2026-11-12: half the full accent).
+/// How strong the accent on the tab in front of a card with the keyboard is (Faye, 2026-11-12: half the full accent).
 pub const FOCUS_STRENGTH: f32 = 0.5;
 
-/// The accent outline of a card with the keyboard, faded in by `k` (Faye, 2026-11-12). `cut`, a card with tabs: the
-/// strip the tabs sit in (its bottom the strip's accent line), which keeps its own outline (the tab in front's) and
-/// isn't outlined, so the card's outline runs from where that line meets its edges. A strip that starts right of
-/// the card's left edge (the explorer's sidebar column beside it) has the outline come round the sidebar's top and
-/// down its edge to the line.
-pub fn focus_outline(g: &Gfx, card: D2D_RECT_F, radius: f32, cut: Option<D2D_RECT_F>, k: f32) {
-    if k <= 0.0 {
-        return;
-    }
-    let c = rgba(theme::t().accent, k * FOCUS_STRENGTH);
-    let Some(cut) = cut else {
-        stroke(g, card, radius, c);
-        return;
-    };
-    let bottom = g.snap(cut.bottom);
-    g.push_clip(D2D_RECT_F { left: card.left - 2.0, top: bottom, right: card.right + 2.0, bottom: card.bottom + 2.0 });
-    stroke(g, card, radius, c);
-    g.pop_clip();
-    if cut.left > card.left + 1.5 {
-        let edge = g.snap(cut.left) - g.px();
-        g.push_clip(D2D_RECT_F { left: card.left - 2.0, top: card.top - 2.0, right: edge, bottom });
-        stroke(g, card, radius, c);
-        g.pop_clip();
-        g.fill(rect(edge, card.top, g.px(), bottom - card.top), c);
-    }
+/// The panel with the keyboard (the explorer, the text editor, an archive) isn't outlined (Faye, 2026-11-12): the
+/// others are dimmed, their selection grey and their cursor hidden. `k` is the panel's keyboard fade, 1 with it.
+/// How bright a panel without the keyboard draws what's in its card.
+pub const INACTIVE: f32 = 0.6;
+
+/// The opacity of a panel's content (inside its card): `INACTIVE` without the keyboard, easing to 1 with it.
+pub fn panel_opacity(k: f32) -> f32 {
+    INACTIVE + (1.0 - INACTIVE) * k.clamp(0.0, 1.0)
+}
+
+/// A selected row's fill: the accent tint while its panel has the keyboard, a neutral grey without.
+pub fn selected_fill(k: f32) -> D2D1_COLOR_F {
+    let t = theme::t();
+    let (a, b) = (theme::mix(t.sidebar, t.ink, 0.14), rgb(t.selected));
+    let k = k.clamp(0.0, 1.0);
+    D2D1_COLOR_F { r: a.r + (b.r - a.r) * k, g: a.g + (b.g - a.g) * k, b: a.b + (b.b - a.b) * k, a: 1.0 }
 }
 
 // --- Dialogs -----------------------------------------------------------------------------------------

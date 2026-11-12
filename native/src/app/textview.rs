@@ -1085,12 +1085,18 @@ impl App {
         g.fill_round(r.card, 9.0, rgb(t.sidebar));
         ui::stroke(g, r.card, 9.0, rgb(t.divider));
         self.hits.add(Hit::TextView, D2D_RECT_F { left: r.card.left, right: r.track.left - 2.0, top: r.gutter.top - PAD / 2.0, bottom: r.foot.top });
+        // Without the keyboard, dimmed (Faye, 2026-11-12); the selection goes grey on its own (below).
+        let keys = self.fades.get(Hit::TextTab(u16::MAX), focused_any);
+        g.push_fade(ui::panel_opacity(keys), 1.0, 0.0, 0.0);
         if self.draw_text_rows(g, r.card) {
             self.invalidate();
         }
         let spell_on = self.settings.text_spell;
 
-        let Some(tv) = self.text.cur_mut() else { return };
+        let Some(tv) = self.text.cur_mut() else {
+            g.pop_fade();
+            return;
+        };
         let ox = r.text.left - scroll_x;
         let oy = r.text.top - scroll;
         let (sa, sb) = tv.edit.selection();
@@ -1227,6 +1233,7 @@ impl App {
         if self.settings.text_status {
             self.draw_text_foot(g, &r);
         }
+        g.pop_fade();
         self.caret_rect = caret_rect.or(self.caret_rect.filter(|_| !focused_text));
         if focused_text {
             self.place_ime();

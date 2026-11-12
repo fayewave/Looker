@@ -716,10 +716,11 @@ impl App {
         let first = (scroll / rh).floor() as usize;
         let last = (((scroll + view_h) / rh).ceil() as usize + 1).min(n);
         let want = ((icon_w * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
-        let focused = self.explorer.focused;
+        // As the list: the accent and the cursor only while the explorer has the keyboard.
+        let keys = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
-        let many = self.explorer.selected.len() > 1;
+        let many = self.explorer.selected.len() > 1 && keys > 0.5;
         let mut wanted_meta = Vec::new();
         for k in first..last {
             let r = if active { self.explorer.row(k).cloned() } else { self.explorer.cols.panes[i].rows.get(k).cloned() };
@@ -745,14 +746,16 @@ impl App {
             if lit || solid {
                 g.fill_round(row, 4.0, gfx::rgba(t.accent, SOLID));
             } else if selected || is_target {
-                g.fill_round(row, 4.0, rgb(t.selected));
+                g.fill_round(row, 4.0, if is_target { rgb(t.selected) } else { ui::selected_fill(keys) });
             } else if hover > 0.0 {
                 g.fill_round(row, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
             }
             let lit = lit || solid;
             if !lit {
-                if is_target || (cursor && (selected || focused)) {
+                if is_target {
                     ui::stroke(g, row, 4.0, rgb(t.accent));
+                } else if cursor && keys > hover {
+                    ui::stroke(g, row, 4.0, gfx::rgba(t.accent, keys));
                 } else if hover > 0.0 {
                     ui::stroke(g, row, 4.0, gfx::rgba(t.accent, hover));
                 }

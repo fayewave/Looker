@@ -407,14 +407,24 @@ impl App {
         if !self.archive_shown() {
             return;
         }
-        let geo = self.archive_geom();
-        let (card, list, rh) = (geo.card, geo.list, geo.rh);
+        let card = self.archive_geom().card;
         if card.right - card.left < 240.0 || card.bottom - card.top < 160.0 {
             return;
         }
-        let t = theme::t();
         ui::card(g, card);
         self.hits.add(Hit::ArchiveCard, card);
+        // Without the keyboard, what's in it dimmed, its selection grey and its cursor hidden (Faye, 2026-11-12).
+        let focused = self.archive.as_ref().is_some_and(|a| a.focused) && !self.explorer.focused && !self.text_focused();
+        let keys = self.fades.get(Hit::ArchiveCard, focused);
+        g.push_fade(ui::panel_opacity(keys), 1.0, 0.0, 0.0);
+        self.draw_archive_content(g, keys);
+        g.pop_fade();
+    }
+
+    fn draw_archive_content(&mut self, g: &Gfx, keys: f32) {
+        let geo = self.archive_geom();
+        let (card, list, rh) = (geo.card, geo.list, geo.rh);
+        let t = theme::t();
         let Some(a) = self.archive.as_ref() else { return };
         let name = a.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let dir = a.dir.clone();
@@ -519,7 +529,7 @@ impl App {
             let hovered = self.hover == Some(Hit::ArchiveRow(vi as u32)) && !dragging;
             let hover = self.fades.hover(Hit::ArchiveRow(vi as u32), hovered);
             let lit = hovered && self.pressed == Some(Hit::ArchiveRow(vi as u32)) && self.archive.as_ref().is_some_and(|a| a.rubber.is_none());
-            let solid = self.fades.get(Hit::ArchiveSolid(vi as u32), selected && many);
+            let solid = self.fades.get(Hit::ArchiveSolid(vi as u32), selected && many) * keys;
             let fr = D2D_RECT_F { bottom: row_r.bottom - g.px(), ..row_r };
             if vi % 2 == 1 {
                 g.fill_round(row_r, 4.0, rgb(t.stripe));
@@ -529,18 +539,20 @@ impl App {
                 g.fill_round(row_r, 4.0, gfx::rgba(t.accent, SOLID));
             } else if solid > 0.01 {
                 if solid < 0.99 && selected {
-                    g.fill_round(fr, 4.0, rgb(t.selected));
+                    g.fill_round(fr, 4.0, ui::selected_fill(keys));
                 }
                 g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid * SOLID));
             } else if selected || is_target {
-                g.fill_round(row_r, 4.0, rgb(t.selected));
+                g.fill_round(row_r, 4.0, if is_target { rgb(t.selected) } else { ui::selected_fill(keys) });
             } else if hover > 0.0 {
                 g.fill_round(row_r, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
             }
             let lit = lit || solid > 0.5;
             if !lit {
-                if is_target || (cursor && selected) {
+                if is_target {
                     ui::stroke(g, row_r, 4.0, rgb(t.accent));
+                } else if cursor && selected && keys > hover {
+                    ui::stroke(g, row_r, 4.0, gfx::rgba(t.accent, keys));
                 } else if hover > 0.0 {
                     ui::stroke(g, row_r, 4.0, gfx::rgba(t.accent, hover));
                 }
@@ -643,10 +655,6 @@ impl App {
             }
             g.text(&wide(&s), &g.fonts.body, text_r, rgb(t.label), Align::Left);
         }
-        // With the keyboard: outlined in the accent (no tabs, so all round).
-        let focused = self.archive.as_ref().is_some_and(|a| a.focused) && !self.explorer.focused && !self.text_focused();
-        let lit = self.fades.get(Hit::ArchiveCard, focused);
-        ui::focus_outline(g, card, 10.0, None, lit);
     }
 
     // --- Pointer -----------------------------------------------------------------------------------------------

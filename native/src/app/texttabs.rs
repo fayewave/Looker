@@ -513,9 +513,6 @@ impl App {
             .collect();
         let focused = self.text_focused();
         let (_, moving) = self.draw_tab_strip(g, StripKind::Text, tabs, card, 9.0, &specs, self.text.active, focused, true);
-        // With the keyboard: the card outlined in the accent below its tabs.
-        let lit = self.fades.get(Hit::TextTab(u16::MAX), focused);
-        ui::focus_outline(g, card, 9.0, Some(D2D_RECT_F { bottom: tabs.bottom - g.px(), ..tabs }), lit);
 
         // The menu bar.
         let mut x = bar.left + 8.0;

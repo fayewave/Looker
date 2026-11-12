@@ -135,11 +135,6 @@ impl App {
         g.fill_round(inner, radius, rgb(t.pane));
         g.pop_clip();
         g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, rgb(t.divider));
-        // The explorer's outline goes all the way round its card, so only the editor's strip lights its line (its
-        // outline starts there).
-        if lit > 0.0 && kind == StripKind::Text {
-            g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH));
-        }
         let plus_w = 34.0;
         st.tips.clear();
         let fit = ((strip.right - strip.left - 12.0 - plus_w) / (TAB_W * n.max(1) as f32)).min(1.0);

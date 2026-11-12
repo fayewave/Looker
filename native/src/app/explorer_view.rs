@@ -205,6 +205,9 @@ impl App {
         let slide = self.fades.get_over(Hit::SidebarColumn, self.browsing() && w >= side_room.min(SIDEBAR_AT), super::explorer::EDGE_SECS);
         let column_sidebar = slide > 0.0;
         g.push_clip(inner);
+        // Without the keyboard, everything in it dimmed (Faye, 2026-11-12: instead of an outline round it with).
+        let keys = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
+        g.push_fade(ui::panel_opacity(keys), 1.0, 0.0, 0.0);
         let mut moving = slide > 0.0 && slide < 1.0;
         let mut side_grip = None;
         let main = if column_sidebar {
@@ -243,11 +246,8 @@ impl App {
         if let Some(grip) = side_grip {
             self.hits.add(Hit::SidebarGrip, grip);
         }
+        g.pop_fade();
         g.pop_clip();
-        // With the keyboard: the card outlined in the accent all the way round, over the tabs' strip too (Faye,
-        // 2026-11-12: it used to stop at the strip's line).
-        let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
-        ui::focus_outline(g, card, 10.0, None, lit);
 
         // The grip straddles the right border, in browse mode too.
         self.hits.add(Hit::ExplorerGrip, ui::card_grip(card.right, card.top, card.bottom, 1.0));
@@ -578,7 +578,8 @@ impl App {
         let first = (scroll / rh).floor() as usize;
         let last = (((scroll + view_h) / rh).ceil() as usize + 1).min(n);
         let want = ((icon_w * self.scale() / 64.0).ceil() as u32 * 64).clamp(64, 256);
-        let focused = self.explorer.focused;
+        // The keyboard's fade: the selection in the accent and the cursor shown only with it (grey and hidden without).
+        let keys = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let lazy_shown = cols.iter().any(|c| c.kind.lazy());
         let mut lazy_wanted = Vec::new();
@@ -613,7 +614,8 @@ impl App {
             let lit = hovered && self.pressed == Some(Hit::ExplorerRow(vi)) && !self.explorer.row_drag.as_ref().is_some_and(|d| d.active);
             // Several selected (Transient's): each of them solid accent with white text (icons kept: Faye,
             // 2026-11-09), easing in and out, a pixel apart so a run of them still reads as rows.
-            let solid = self.fades.get(Hit::RowSolid(vi), selected && self.explorer.selected.len() > 1);
+            // (Solid only with the keyboard: without, each just grey.)
+            let solid = self.fades.get(Hit::RowSolid(vi), selected && self.explorer.selected.len() > 1) * keys;
             let fr = D2D_RECT_F { bottom: row.bottom - g.px(), ..row };
             if vi % 2 == 1 {
                 g.fill_round(row, 4.0, rgb(t.stripe));
@@ -624,18 +626,20 @@ impl App {
                 g.fill_round(row, 4.0, gfx::rgba(t.accent, SOLID));
             } else if solid > 0.01 {
                 if solid < 0.99 && selected {
-                    g.fill_round(fr, 4.0, rgb(t.selected));
+                    g.fill_round(fr, 4.0, ui::selected_fill(keys));
                 }
                 g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid * SOLID));
             } else if selected || is_target {
-                g.fill_round(row, 4.0, rgb(t.selected));
+                g.fill_round(row, 4.0, if is_target { rgb(t.selected) } else { ui::selected_fill(keys) });
             } else if hover > 0.0 {
                 g.fill_round(row, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
             }
             let lit = lit || solid > 0.5;
             if !lit {
-                if is_target || (cursor && (selected || focused)) {
+                if is_target {
                     ui::stroke(g, row, 4.0, rgb(t.accent));
+                } else if cursor && keys > hover {
+                    ui::stroke(g, row, 4.0, gfx::rgba(t.accent, keys));
                 } else if hover > 0.0 {
                     ui::stroke(g, row, 4.0, gfx::rgba(t.accent, hover));
                 }
