@@ -772,6 +772,10 @@ impl App {
                             self.close_menu();
                             self.explorer_bg_menu(x, y);
                         }
+                        Some(h @ (Hit::ArchiveRow(_) | Hit::ArchiveList | Hit::ArchiveCard)) => {
+                            self.close_menu();
+                            self.archive_menu(x, y, h);
+                        }
                         Some(Hit::SideRow(i)) => {
                             self.close_menu();
                             self.sidebar_menu(i, x, y);

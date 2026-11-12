@@ -362,8 +362,8 @@ impl App {
         if let Some(p) = &self.placeholder {
             let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
             out.push(Block::Heading(file_name(&p.path), None));
-            out.push(Block::Title("File"));
-            out.push(row("Type", if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }));
+            out.push(Block::Title(if p.folder { "Folder" } else { "File" }));
+            out.push(row("Type", if p.folder { "Folder".to_string() } else if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }));
             if let Some(s) = p.size {
                 out.push(row("Size", size_text(s)));
             }

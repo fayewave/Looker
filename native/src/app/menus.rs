@@ -107,9 +107,16 @@ pub(super) enum Action {
     InfoEditField(crate::metawrite::Field),
     /// A field's menu: remove it (from every selected file).
     InfoRemoveField(crate::metawrite::Field),
+    /// An archive's rows (app/archive.rs): go into the folder, extract beside the archive or to a folder picked,
+    /// copy as files, select all.
+    ArchiveOpen,
+    ArchiveExtractHere,
+    ArchiveExtractTo,
+    ArchiveCopy,
+    ArchiveSelectAll,
 }
 
-fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
+pub(super) fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
     Entry::Item(MenuItem { icon: None, tint: None, action, glyph: Some(glyph), label: label.into(), accel, check: None, enabled, current: false })
 }
 
@@ -418,6 +425,7 @@ impl App {
                 self.run_explorer_action(action, k)
             }
             Some(MenuKind::Recent(path)) => self.remove_recent(&path),
+            Some(MenuKind::Archive) => self.archive_action(action),
             Some(MenuKind::Info(i)) => self.info_action(action, i),
             Some(MenuKind::InfoAdd) => {
                 if let Action::InfoAddField(f) = action {
@@ -531,6 +539,8 @@ impl App {
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum MenuKind {
     Context,
+    /// An archive's rows or list.
+    Archive,
     Sort,
     /// The explorer's: a row's menu (on these paths), the list's, a sidebar row's, a crumb's folders, History,
     /// and the folders/files grouping.

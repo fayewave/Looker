@@ -1188,7 +1188,7 @@ impl App {
     /// The cover for a file Looker can't open: Windows' own thumbnail of it when there is one (a video's frame,
     /// a document's first page), else the file glyph, with its name under it, centred between the cards.
     pub(super) fn draw_placeholder(&mut self, g: &Gfx) {
-        let Some((path, stamp, cloud)) = self.placeholder.as_ref().map(|p| (p.path.clone(), p.stamp, p.cloud)) else { return };
+        let Some((path, stamp, cloud, folder)) = self.placeholder.as_ref().map(|p| (p.path.clone(), p.stamp, p.cloud, p.folder)) else { return };
         let a = self.image_area();
         let name = wide(&file_name(&path));
         let w = (a.right - a.left - 32.0).clamp(1.0, 520.0);
@@ -1197,13 +1197,18 @@ impl App {
         // The preview box: up to 640 x 400, leaving room for the name.
         let (bw, bh) = ((a.right - a.left - 64.0).clamp(1.0, 640.0), (a.bottom - a.top - name_h - 84.0).clamp(1.0, 400.0));
         let px = ((bw.max(bh) * self.scale() / 64.0).ceil() as u32 * 64).clamp(128, 1024);
-        self.thumbs.want(&path, stamp, px, cloud, true);
-        let thumb = self.thumbs.get(&path, stamp);
+        // A folder: its glyph (a folder's shell thumbnail would read the files inside, cloud ones included).
+        let thumb = if folder {
+            None
+        } else {
+            self.thumbs.want(&path, stamp, px, cloud, true);
+            self.thumbs.get(&path, stamp)
+        };
         let icon_h = if thumb.is_some() { bh } else { 120.0 };
         let top = ((a.top + a.bottom) - (icon_h + 20.0 + name_h)) / 2.0;
         match thumb {
             Some(t) => t.draw_fit(g, rect(cx - bw / 2.0, top, bw, bh)),
-            None => g.text(&[0xE7C3], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), rgb(theme::t().icon), Align::Center),
+            None => g.text(&[if folder { 0xE8B7 } else { 0xE7C3 }], &g.fonts.hero_icons, rect(cx - 80.0, top, 160.0, icon_h), rgb(theme::t().icon), Align::Center),
         }
         g.text(&name, &g.fonts.subtitle_wrap, rect(cx - w / 2.0, top + icon_h + 20.0, w, name_h + 4.0), rgb(theme::t().text), Align::Center);
     }

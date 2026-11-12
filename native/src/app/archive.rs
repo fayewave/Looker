@@ -83,6 +83,9 @@ pub(super) struct ArchiveView {
     work: Option<Work>,
     /// Whether files can be added (asked once, when something is first dragged over it).
     writable: Option<Result<(), String>>,
+    /// Whether it has the arrows (clicked into, or nothing else to have them): arrowing through the explorer onto
+    /// an archive mustn't stop there (Faye, 2026-11-12).
+    focused: bool,
 }
 
 impl ArchiveView {
@@ -287,6 +290,7 @@ impl App {
     pub(super) fn prepare_archive(&mut self, g: &Gfx) {
         let want = self.current_path().filter(|p| format::of_path(p) == format::Format::Archive && self.placeholder.is_none()).map(Path::to_path_buf);
         if self.archive.as_ref().map(|a| &a.path) != want.as_ref() {
+            let focused = !self.explorer_shown();
             self.archive = want.map(|path| {
                 let mut a = ArchiveView {
                     path,
@@ -306,6 +310,7 @@ impl App {
                     thumb_gen: Arc::new(AtomicU64::new(0)),
                     work: None,
                     writable: None,
+                    focused,
                 };
                 a.relist(String::new());
                 a
@@ -638,7 +643,10 @@ impl App {
         let geo = self.archive_geom();
         let row = self.archive_row_at(y);
         let on_name = x >= geo.name.0 && x <= geo.name.1;
+        // A click inside takes the keys from the explorer.
+        self.explorer.focused = false;
         let Some(a) = self.archive.as_mut() else { return };
+        a.focused = true;
         let scroll = a.scroll;
         match row {
             Some(r) if on_name => {
@@ -977,6 +985,97 @@ impl App {
         self.invalidate();
     }
 
+    // --- The right-click menu --------------------------------------------------------------------------------
+
+    /// Right-click: on a row, its menu (the selection's, when it's in it, else it alone); elsewhere on the card,
+    /// the whole archive's.
+    pub(super) fn archive_menu(&mut self, x: f32, y: f32, hit: Hit) {
+        self.explorer.focused = false;
+        let row = if matches!(hit, Hit::ArchiveRow(_)) { self.archive_row_at(y) } else { None };
+        let Some(a) = self.archive.as_mut() else { return };
+        if a.list().is_none() {
+            return;
+        }
+        a.focused = true;
+        a.rubber = None;
+        a.pending = None;
+        match row {
+            Some(r) if !a.selected.contains(&r) => {
+                a.selected = [r].into();
+                a.anchor = Some(r);
+            }
+            Some(r) => a.anchor = Some(r),
+            None => {
+                a.selected.clear();
+                a.anchor = None;
+            }
+        }
+        let n = a.selected.len();
+        let folder = (n == 1).then(|| a.selected.first().and_then(|&r| a.entry(r))).flatten().is_some_and(|e| e.dir);
+        let busy = a.work.is_some();
+        let here = base_name(&a.path);
+        let all = n == 0;
+        let mut e = Vec::new();
+        if folder {
+            e.push(menus::item(menus::Action::ArchiveOpen, 0xE8B7, "Open", Some("Enter"), true));
+            e.push(ui::Entry::Separator);
+        }
+        let to_here = if all { format!("Extract all to \u{201c}{here}\u{201d}") } else { format!("Extract to \u{201c}{here}\u{201d}") };
+        e.push(menus::item(menus::Action::ArchiveExtractHere, 0xE8B7, &to_here, None, !busy));
+        e.push(menus::item(menus::Action::ArchiveExtractTo, 0xE8DE, if all { "Extract all to\u{2026}" } else { "Extract to\u{2026}" }, None, !busy));
+        e.push(ui::Entry::Separator);
+        let copy = if n > 1 { format!("Copy {n} items") } else { "Copy".to_string() };
+        e.push(menus::item(menus::Action::ArchiveCopy, 0xE8C8, &copy, Some("Ctrl+C"), !all));
+        e.push(menus::item(menus::Action::ArchiveSelectAll, 0xE8B3, "Select all", Some("Ctrl+A"), true));
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((menus::MenuKind::Archive, ui::Menu::open(g, e, x, y, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
+    pub(super) fn archive_action(&mut self, action: menus::Action) {
+        match action {
+            menus::Action::ArchiveOpen => {
+                if let Some(a) = self.archive.as_mut() {
+                    if let Some(e) = a.selected.first().and_then(|&r| a.entry(r)).filter(|e| e.dir).cloned() {
+                        a.go(e.path);
+                    }
+                }
+            }
+            menus::Action::ArchiveExtractHere => self.archive_extract_beside(),
+            menus::Action::ArchiveExtractTo => self.archive_extract_to(),
+            menus::Action::ArchiveCopy => self.archive_copy(),
+            menus::Action::ArchiveSelectAll => {
+                if let Some(a) = self.archive.as_mut() {
+                    a.selected = (0..a.rows.len()).collect();
+                }
+            }
+            _ => {}
+        }
+        self.invalidate();
+    }
+
+    /// Copy (Ctrl+C): the rows selected, extracted to a temporary folder, on the clipboard as files (Explorer's
+    /// Paste takes them, and so does the explorer's).
+    fn archive_copy(&mut self) {
+        let Some(a) = self.archive.as_ref() else { return };
+        let entries: Vec<String> = a.selected.iter().filter_map(|&r| a.entry(r)).map(|e| e.path.clone()).collect();
+        if entries.is_empty() {
+            return;
+        }
+        let src = super::explorer::ArchiveSource { archive: a.path.clone(), entries, strip: a.dir.clone() };
+        let paths = self.archive_drag_files(&src);
+        if paths.is_empty() {
+            self.show_toast("Couldn't extract them to copy", false);
+            return;
+        }
+        match crate::clipboard::set_files(self.hwnd, &paths, false) {
+            Some(_) => self.show_toast(if paths.len() == 1 { "Copied 1 item".to_string() } else { format!("Copied {} items", paths.len()) }, false),
+            None => self.show_toast("Couldn't use the clipboard", false),
+        }
+    }
+
     pub(super) fn archive_cancel(&mut self) {
         if let Some(w) = self.archive.as_ref().and_then(|a| a.work.as_ref()) {
             w.cancel.store(true, Ordering::Relaxed);
@@ -995,7 +1094,7 @@ impl App {
     /// Keys while an archive shows: ↑/↓ move (Shift extends), Enter goes into a folder, Backspace goes up,
     /// Alt+←/→ back and forward, Ctrl+A selects all.
     pub(super) fn archive_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
-        if !self.archive_shown() || self.page_open() || self.menu.is_some() {
+        if !self.archive_shown() || self.page_open() || self.menu.is_some() || self.explorer.focused || !self.archive.as_ref().is_some_and(|a| a.focused) {
             return false;
         }
         let geo = self.archive_geom();
@@ -1028,6 +1127,10 @@ impl App {
             }
             VK_BACK => {
                 self.archive_up();
+                return true;
+            }
+            VK_C if ctrl => {
+                self.archive_copy();
                 return true;
             }
             _ => return false,

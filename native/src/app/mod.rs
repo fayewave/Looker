@@ -370,6 +370,8 @@ pub(super) struct Placeholder {
     /// Write time (the thumbnail cache's key) and whether it is an online-only cloud file.
     stamp: u64,
     cloud: bool,
+    /// A folder the explorer picked: the folder glyph, never a thumbnail.
+    folder: bool,
 }
 
 struct FileInfo {

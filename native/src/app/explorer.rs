@@ -1222,7 +1222,8 @@ impl App {
             self.explorer.cursor = Some(path.clone());
             self.explorer.reveal = Some(i);
         }
-        self.placeholder = Some(Placeholder { size: md.map(|m| m.len()), modified, path, stamp, cloud });
+        let folder = md.as_ref().is_some_and(|m| m.is_dir());
+        self.placeholder = Some(Placeholder { size: md.filter(|m| !m.is_dir()).map(|m| m.len()), modified, path, stamp, cloud, folder });
         self.invalidate();
     }
 
@@ -1230,7 +1231,7 @@ impl App {
     pub(super) fn placeholder_status(&self) -> Option<String> {
         let p = self.placeholder.as_ref()?;
         let ext = p.path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-        let mut parts = vec![if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }];
+        let mut parts = vec![if p.folder { "Folder".to_string() } else if ext.is_empty() { "File".to_string() } else { format!("{ext} file") }];
         if let Some(s) = p.size {
             parts.push(format_bytes(s));
         }
@@ -1504,8 +1505,9 @@ impl App {
         e.reveal = Some(vi);
         match r.kind {
             Kind::Image => self.open_file(r.path),
-            Kind::Other => self.show_placeholder(r.path),
-            Kind::Drive | Kind::Folder => {}
+            // A folder covers the photo too: its glyph and name (Faye, 2026-11-12).
+            Kind::Other | Kind::Folder => self.show_placeholder(r.path),
+            Kind::Drive => {}
         }
         self.invalidate();
     }
