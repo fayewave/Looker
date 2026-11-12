@@ -3084,6 +3084,11 @@ impl App {
                         self.explorer.focused = true;
                     }
                     self.settings.browse_share = w / ww;
+                    // Pulled on past its widest, the same give and bounce as at the narrowest (Faye, 2026-11-12).
+                    let max = (ww - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN);
+                    if raw > max {
+                        self.explorer.stretch = rubber(raw - max);
+                    }
                 } else {
                     if was {
                         self.explorer.browse.set([0.0], now);
