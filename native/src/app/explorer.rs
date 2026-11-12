@@ -32,16 +32,27 @@ const MIN_IMAGE_W: f32 = 480.0;
 /// The explorer edge's sticky change between the card and browse mode: how far a snap overshoots, and how long a
 /// bounce swings.
 const BOUNCE: f32 = 14.0;
-const SPRING_SECS: f32 = 0.62;
+pub(super) const SPRING_SECS: f32 = 0.62;
 /// Browse mode coming in or out and the edge gliding to its place: slower than the app's 190 ms, so the explorer
 /// moves with some weight (Faye, 2026-11-10).
 pub(super) const EDGE_SECS: f32 = 0.30;
 
 /// A pull of `d` DIPs off the sticky line as the edge shows it: it gives less the further it's pulled, about 23 DIPs
 /// at the zone's end (iOS's rubber band: (1 - 1 / (d c / k + 1)) k).
-fn rubber(d: f32) -> f32 {
+pub(super) fn rubber(d: f32) -> f32 {
     let (c, k) = (0.55, 40.0);
     (1.0 - 1.0 / (d.max(0.0) * c / k + 1.0)) * k
+}
+
+/// A bounce let go `from` DIPs off where it rests at `at`, as it swings now: two small damped swings, gone in
+/// `SPRING_SECS` (none with motion off). The explorer's edge and the info card's share it.
+pub(super) fn bounce(from: f32, at: Instant) -> f32 {
+    let t = at.elapsed().as_secs_f32();
+    if !motion_on() || t >= SPRING_SECS {
+        0.0
+    } else {
+        from * (-t / 0.15).exp() * (std::f32::consts::TAU * t / 0.34).cos()
+    }
 }
 
 /// Motion is on (Windows' "Animation effects").
@@ -812,17 +823,7 @@ impl App {
         if e.stretch != 0.0 {
             return e.stretch;
         }
-        match e.spring {
-            Some((from, at)) if motion_on() => {
-                let t = at.elapsed().as_secs_f32();
-                if t >= SPRING_SECS {
-                    0.0
-                } else {
-                    from * (-t / 0.15).exp() * (std::f32::consts::TAU * t / 0.34).cos()
-                }
-            }
-            _ => 0.0,
-        }
+        e.spring.map_or(0.0, |(from, at)| bounce(from, at))
     }
 
     /// The bounce is still swinging.
@@ -934,13 +935,7 @@ impl App {
         }
         self.explorer.browse.set([on as u8 as f32], Instant::now());
         self.explorer.focused = on;
-        self.browse_toast(on);
         self.layout_changed();
-    }
-
-    /// Says browse mode came on or went off (Faye, 2026-11-10): the button, Ctrl+B, or the edge dragged past the line.
-    fn browse_toast(&mut self, on: bool) {
-        self.show_toast(if on { "Browse mode on" } else { "Browse mode off" }, false);
     }
 
     pub(super) fn leave_browse(&mut self) {
@@ -3103,9 +3098,6 @@ impl App {
                     }
                 }
             }
-        }
-        if self.browsing() != was {
-            self.browse_toast(!was);
         }
         self.layout_changed();
     }

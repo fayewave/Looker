@@ -1,6 +1,6 @@
 //! The info card (Controls/InfoPanel + MetadataService): a floating card on the right of the viewport with
 //! the histogram and the File / Camera / Exposure / Date / Location groups. The image fits in the space to
-//! its left (`right_inset`), the checkerboard runs underneath it, and an 8 px grip on its left border resizes
+//! its left (`right_inset`), the checkerboard runs underneath it, and a grip on its left border resizes
 //! it (260–640 DIPs, never leaving less than 480 for the image; double-click resets to 320).
 //!
 //! The histogram comes with every decode (the pool computes it), so it is there with the first frame. EXIF is
@@ -46,6 +46,10 @@ pub(super) struct Card {
     pub drag: Option<(f32, f32)>,
     /// Its width easing back to the default (its edge double-clicked).
     pub settle: Option<crate::motion::Settle>,
+    /// Pulled past its narrowest or widest: how far it gives (the explorer edge's rubber band, + wider), and the
+    /// bounce back once let go (from how far, since when).
+    stretch: f32,
+    spring: Option<(f32, Instant)>,
     /// The file it last showed: another one starts back at the top (Transient's).
     shown: Option<PathBuf>,
     /// Several files selected in the explorer: their summary (info_many.rs).
@@ -56,7 +60,7 @@ pub(super) struct Card {
 
 impl Card {
     pub fn new() -> Card {
-        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, shown: None, many: Default::default(), edits: Default::default() }
+        Card { exif: None, loading: None, scroll: 0.0, anim: None, max_scroll: 0.0, drag: None, settle: None, stretch: 0.0, spring: None, shown: None, many: Default::default(), edits: Default::default() }
     }
 
     /// The scroll offset to draw this frame, and whether it is still moving.
@@ -131,22 +135,33 @@ impl App {
         self.info_w() * self.slides.info.value()
     }
 
-    /// The card's width, easing back to its default after a double-click on its edge.
+    /// The card's width, easing back to its default after a double-click on its edge, stretched or bouncing
+    /// past its narrowest or widest.
     pub(super) fn info_w(&self) -> f32 {
-        let w = self.settings.info_width;
+        let w = self.settings.info_width + self.info_stretch();
         match self.info_card.settle {
             Some(s) if s.moving() => s.value(w),
             _ => w,
         }
     }
 
-    /// Still easing back to its default (the layout follows each frame); once more as it lands.
+    fn info_stretch(&self) -> f32 {
+        let c = &self.info_card;
+        if c.stretch != 0.0 {
+            return c.stretch;
+        }
+        c.spring.map_or(0.0, |(from, at)| super::explorer::bounce(from, at))
+    }
+
+    /// Still easing back to its default or bouncing (the layout follows each frame); once more as it lands.
     pub(super) fn info_settling(&mut self) -> bool {
+        let springing = self.info_card.spring.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < super::explorer::SPRING_SECS);
+        let sprung = !springing && self.info_card.spring.take().is_some();
         let moving = self.info_card.settle.is_some_and(|s| s.moving());
         if !moving && self.info_card.settle.take().is_some() {
             return true;
         }
-        moving
+        moving || springing || sprung
     }
 
     /// Slid out to the right by however much of it is hidden.
@@ -154,7 +169,9 @@ impl App {
         let v = self.viewport();
         let w = self.info_w();
         let dx = w * (1.0 - self.slides.info.value());
-        D2D_RECT_F { left: v.right - w + MARGIN + dx, top: v.top + MARGIN, right: v.right - MARGIN + dx, bottom: v.bottom - MARGIN }
+        // Stretched or bouncing at a limit, its far side goes with it a third as much, as the explorer's does.
+        let pull = self.info_stretch() * 0.33;
+        D2D_RECT_F { left: v.right - w + MARGIN + dx, top: v.top + MARGIN, right: v.right - MARGIN + dx - pull, bottom: v.bottom - MARGIN }
     }
 
     pub(super) fn toggle_info(&mut self) {
@@ -236,6 +253,8 @@ impl App {
     // --- Resize grip --------------------------------------------------------------------------------
 
     pub(super) fn info_grip_press(&mut self, x: f32) {
+        self.info_card.spring = None;
+        self.info_card.stretch = 0.0;
         self.info_card.drag = Some((x, self.settings.info_width));
     }
 
@@ -244,14 +263,30 @@ impl App {
         let (ww, _) = self.size_dip();
         let cap = INFO_MAX.min((ww - MIN_IMAGE_W).max(INFO_MIN));
         // Dragging left makes the card wider.
-        let w = (w0 + (x0 - x)).clamp(INFO_MIN, cap).round();
-        if w != self.settings.info_width {
+        let raw = (w0 + (x0 - x)).round();
+        let w = raw.clamp(INFO_MIN, cap);
+        // Pulled on past either end, it gives a little on the explorer edge's rubber band (Faye, 2026-11-12).
+        let stretch = if raw > cap {
+            super::explorer::rubber(raw - cap)
+        } else if raw < INFO_MIN {
+            -super::explorer::rubber(INFO_MIN - raw)
+        } else {
+            0.0
+        };
+        if w != self.settings.info_width || stretch != self.info_card.stretch {
             self.settings.info_width = w;
+            self.info_card.stretch = stretch;
             self.layout_changed();
         }
     }
 
     pub(super) fn info_grip_release(&mut self) {
+        // Let go stretched: it bounces back.
+        if self.info_card.stretch != 0.0 {
+            self.info_card.spring = Some((self.info_card.stretch, Instant::now()));
+            self.info_card.stretch = 0.0;
+            self.layout_changed();
+        }
         if self.info_card.drag.take().is_some() {
             settings::save(&self.settings);
             self.invalidate();
