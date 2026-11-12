@@ -136,7 +136,7 @@ impl App {
         g.pop_clip();
         g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, rgb(t.divider));
         if lit > 0.0 {
-            g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit));
+            g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH));
         }
         let plus_w = 34.0;
         st.tips.clear();
@@ -220,7 +220,7 @@ impl App {
                 g.fill_tab(body, 7.0, 4.0, rgb(t.sidebar));
                 g.stroke_tab(body, 7.0, 4.0, rgb(t.divider));
                 if lit > 0.0 {
-                    g.stroke_tab(body, 7.0, 4.0, gfx::rgba(t.accent, lit));
+                    g.stroke_tab(body, 7.0, 4.0, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH));
                 }
             } else if hot || is_dragged {
                 if is_dragged {

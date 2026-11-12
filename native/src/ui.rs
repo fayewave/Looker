@@ -342,6 +342,10 @@ pub fn card(g: &Gfx, r: D2D_RECT_F) {
     stroke(g, r, 10.0, rgb(t.divider));
 }
 
+/// How strong the accent of a card with the keyboard is: its outline, its tab strip's line and the tab in front's
+/// outline (Faye, 2026-11-12: half the full accent).
+pub const FOCUS_STRENGTH: f32 = 0.5;
+
 /// The accent outline of a card with the keyboard, faded in by `k` (Faye, 2026-11-12). `cut`, a card with tabs: the
 /// strip the tabs sit in (its bottom the strip's accent line), which keeps its own outline (the tab in front's) and
 /// isn't outlined, so the card's outline runs from where that line meets its edges. A strip that starts right of
@@ -351,7 +355,7 @@ pub fn focus_outline(g: &Gfx, card: D2D_RECT_F, radius: f32, cut: Option<D2D_REC
     if k <= 0.0 {
         return;
     }
-    let c = rgba(theme::t().accent, k);
+    let c = rgba(theme::t().accent, k * FOCUS_STRENGTH);
     let Some(cut) = cut else {
         stroke(g, card, radius, c);
         return;
