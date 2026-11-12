@@ -342,6 +342,33 @@ pub fn card(g: &Gfx, r: D2D_RECT_F) {
     stroke(g, r, 10.0, rgb(t.divider));
 }
 
+/// The accent outline of a card with the keyboard, faded in by `k` (Faye, 2026-11-12). `cut`, a card with tabs: the
+/// strip the tabs sit in (its bottom the strip's accent line), which keeps its own outline (the tab in front's) and
+/// isn't outlined, so the card's outline runs from where that line meets its edges. A strip that starts right of
+/// the card's left edge (the explorer's sidebar column beside it) has the outline come round the sidebar's top and
+/// down its edge to the line.
+pub fn focus_outline(g: &Gfx, card: D2D_RECT_F, radius: f32, cut: Option<D2D_RECT_F>, k: f32) {
+    if k <= 0.0 {
+        return;
+    }
+    let c = rgba(theme::t().accent, k);
+    let Some(cut) = cut else {
+        stroke(g, card, radius, c);
+        return;
+    };
+    let bottom = g.snap(cut.bottom);
+    g.push_clip(D2D_RECT_F { left: card.left - 2.0, top: bottom, right: card.right + 2.0, bottom: card.bottom + 2.0 });
+    stroke(g, card, radius, c);
+    g.pop_clip();
+    if cut.left > card.left + 1.5 {
+        let edge = g.snap(cut.left) - g.px();
+        g.push_clip(D2D_RECT_F { left: card.left - 2.0, top: card.top - 2.0, right: edge, bottom });
+        stroke(g, card, radius, c);
+        g.pop_clip();
+        g.fill(rect(edge, card.top, g.px(), bottom - card.top), c);
+    }
+}
+
 // --- Dialogs -----------------------------------------------------------------------------------------
 
 const DIALOG_PAD: f32 = 20.0;

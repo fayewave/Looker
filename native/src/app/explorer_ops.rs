@@ -434,6 +434,14 @@ impl App {
             }
             e.push(Entry::Separator);
         }
+        // Archives: unpacked beside themselves in one click, or into a folder picked.
+        if super::extract::all_archives(&paths) {
+            let free = self.extracting.is_none();
+            let here = if single { format!("Extract to \u{201c}{}\u{201d}", super::archive::base_name(&r.path)) } else { format!("Extract {n} archives, each to its own folder") };
+            e.push(item(Action::ArchiveExtractHere, 0xE8B7, &here, None, free));
+            e.push(item(Action::ArchiveExtractTo, 0xE8DE, "Extract to\u{2026}", None, free));
+            e.push(Entry::Separator);
+        }
         let drive = r.kind == Kind::Drive;
         e.push(item(Action::Cut, 0xE8C6, "Cut", Some("Ctrl+X"), !drive));
         e.push(item(Action::CopyFiles, 0xE8C8, "Copy", Some("Ctrl+C"), !drive));
@@ -754,6 +762,8 @@ impl App {
                     self.open_dvd(p);
                 }
             }
+            (Action::ArchiveExtractHere, MenuKind::Rows(_)) => self.extract_archives(paths, false),
+            (Action::ArchiveExtractTo, MenuKind::Rows(_)) => self.extract_archives(paths, true),
             (Action::Cut, _) => self.explorer_clip(true),
             (Action::CopyFiles, _) => self.explorer_clip(false),
             (Action::Paste, _) => self.explorer_paste(None),

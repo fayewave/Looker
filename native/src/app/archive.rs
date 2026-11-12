@@ -6,7 +6,7 @@
 //! out onto the explorer's folders (extracted there) or out of the window (extracted to a temporary folder first);
 //! files dragged in from the explorer are added (the archive written anew, for the formats libarchive writes).
 //! Extract all unpacks beside the archive into a folder named after it, Extract to… into a folder picked; with rows
-//! selected, both take only those.
+//! selected, both take only those. (The explorer's row menu extracts an archive without opening it: app/extract.rs.)
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -249,7 +249,7 @@ fn date_text(secs: i64) -> String {
 
 /// The folder an archive extracts into beside it: its name without the archive's extensions ("photos.tar.gz" ->
 /// "photos").
-fn base_name(path: &Path) -> String {
+pub(super) fn base_name(path: &Path) -> String {
     let mut name = path.file_name().and_then(|n| n.to_str()).unwrap_or("archive").to_string();
     for _ in 0..2 {
         if let Some((stem, ext)) = name.rsplit_once('.') {
@@ -262,6 +262,17 @@ fn base_name(path: &Path) -> String {
         break;
     }
     if name.is_empty() { "archive".into() } else { name }
+}
+
+/// A new folder in `parent` named `name`, " (2)" and so on after it when that's taken.
+pub(super) fn unique_folder(parent: &Path, name: &str) -> PathBuf {
+    let mut dest = parent.join(name);
+    let mut n = 2;
+    while dest.exists() {
+        dest = parent.join(format!("{name} ({n})"));
+        n += 1;
+    }
+    dest
 }
 
 /// Where the list's pieces are: the card, the list's rect, the row height, the Name column's span (a press beside
@@ -632,6 +643,10 @@ impl App {
             }
             g.text(&wide(&s), &g.fonts.body, text_r, rgb(t.label), Align::Left);
         }
+        // With the keyboard: outlined in the accent (no tabs, so all round).
+        let focused = self.archive.as_ref().is_some_and(|a| a.focused) && !self.explorer.focused && !self.text_focused();
+        let lit = self.fades.get(Hit::ArchiveCard, focused);
+        ui::focus_outline(g, card, 10.0, None, lit);
     }
 
     // --- Pointer -----------------------------------------------------------------------------------------------
@@ -917,12 +932,7 @@ impl App {
     pub(super) fn archive_extract_beside(&mut self) {
         let Some(a) = self.archive.as_ref() else { return };
         let Some(parent) = a.path.parent() else { return };
-        let mut dest = parent.join(base_name(&a.path));
-        let mut n = 2;
-        while dest.exists() {
-            dest = parent.join(format!("{} ({n})", base_name(&a.path)));
-            n += 1;
-        }
+        let dest = unique_folder(parent, &base_name(&a.path));
         let Some((pick, strip, total)) = self.archive_pick() else { return };
         self.archive_run(pick, strip, dest, total);
     }
@@ -936,7 +946,7 @@ impl App {
     }
 
     /// A folder picker opening at `start`.
-    unsafe fn pick_folder(&self, start: &Path) -> Option<PathBuf> {
+    pub(super) unsafe fn pick_folder(&self, start: &Path) -> Option<PathBuf> {
         unsafe {
             let dlg = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
             if let Ok(o) = dlg.GetOptions() {

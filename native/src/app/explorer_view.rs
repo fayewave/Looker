@@ -227,6 +227,7 @@ impl App {
         } else {
             inner
         };
+        let tabs_left = main.left;
         let (strip_bottom, strip_moving) = self.draw_tabs(g, main, inner);
         moving |= strip_moving;
         let main = D2D_RECT_F { top: strip_bottom, ..main };
@@ -240,6 +241,9 @@ impl App {
             moving |= self.draw_list(g, body);
         }
         g.pop_clip();
+        // With the keyboard: the card outlined in the accent below its tabs.
+        let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
+        ui::focus_outline(g, card, 10.0, Some(D2D_RECT_F { left: tabs_left, top: card.top, right: card.right, bottom: strip_bottom - g.px() }), lit);
 
         // The grip straddles the right border, in browse mode too.
         let grip = rect(card.right - 4.0, card.top, 8.0, card.bottom - card.top);

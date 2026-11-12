@@ -667,6 +667,7 @@ impl App {
                             Some(Hit::DialogButton(i)) => self.dialog_click(i),
                             Some(Hit::DialogChoice(i, j)) => self.dialog_pick(i, j),
                             Some(Hit::RipCancel) => self.cancel_rip(),
+                            Some(Hit::ExtractCancel) => self.cancel_extract(),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
@@ -1196,7 +1197,7 @@ impl App {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
                             self.invalidate();
                         }
-                        rip::TIMER_RIP => self.invalidate(),
+                        rip::TIMER_RIP | extract::TIMER_EXTRACT => self.invalidate(),
                         TIMER_TOOLTIP => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
                             if self.menu.is_none() && self.pressed.is_none() {
@@ -1479,6 +1480,7 @@ impl App {
                     }
                     self.close_text(); // unsaved edits are saved, as when moving to another file
                     self.stop_rip_for_close();
+                    self.stop_extract_for_close();
                     self.save_placement();
                     None
                 }

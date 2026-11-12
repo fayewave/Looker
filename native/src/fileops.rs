@@ -59,6 +59,8 @@ pub enum Done {
     /// Rip DVD: the disc read (or why it can't be ripped), and a finished rip.
     DvdOpened(Result<Box<crate::dvd::Disc>, String>),
     Ripped { out: PathBuf, result: Result<(), String> },
+    /// Archives extracted from the explorer's menu (app/extract.rs).
+    Extracted(crate::app::ExtractResult),
     /// The info card's Ctrl+S: each file, the edits written into it, and how it went.
     MetaWritten { results: Vec<(PathBuf, Vec<(crate::metawrite::Field, Option<String>)>, Result<(), String>)> },
 }

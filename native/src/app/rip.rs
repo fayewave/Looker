@@ -190,26 +190,37 @@ impl App {
             format!("Ripping {} \u{00B7} {}%{eta}", r.name, (frac * 100.0).floor() as u32)
         };
         let (_, h) = self.size_dip();
+        self.draw_progress_pill(g, h - STATUS_H - 12.0, &text, frac, Hit::RipPill, Hit::RipCancel, stopping);
+    }
+
+    /// A pill at the bottom left whose bottom is at `bottom` (a rip's, an extraction's): the text, a bar along its
+    /// foot and Cancel.
+    pub(super) fn draw_progress_pill(&mut self, g: &Gfx, bottom: f32, text: &str, frac: f64, pill_hit: Hit, cancel: Hit, stopping: bool) {
         let raised = theme::raised();
-        let tw = g.measure(&wide(&text), &g.fonts.body).ceil().min(420.0);
+        let tw = g.measure(&wide(text), &g.fonts.body).ceil().min(420.0);
         let bw = 72.0;
         let w = 16.0 + tw + 12.0 + bw + 8.0;
-        // Above the status row.
-        let pill = rect(16.0, g.snap(h - STATUS_H - 12.0 - PILL_H), w, PILL_H);
-        self.hits.add(Hit::RipPill, pill);
+        let pill = rect(16.0, g.snap(bottom - PILL_H), w, PILL_H);
+        self.hits.add(pill_hit, pill);
         ui::shadow(g, pill, 8.0);
         g.fill_round(pill, 8.0, rgb(raised.popup));
         ui::stroke(g, pill, 8.0, rgb(raised.divider));
-        ui::label(g, &text, &g.fonts.body, rect(pill.left + 16.0, pill.top, tw, PILL_H - 2.0), rgb(raised.text), Align::Left);
+        ui::label(g, text, &g.fonts.body, rect(pill.left + 16.0, pill.top, tw, PILL_H - 2.0), rgb(raised.text), Align::Left);
         // The bar along the bottom edge, inside the corners.
         let track = rect(pill.left + 12.0, pill.bottom - 7.0, w - 24.0, 3.0);
         g.fill_round(track, 1.5, rgb(raised.divider));
         g.fill_round(rect(track.left, track.top, ((track.right - track.left) as f64 * frac) as f32, 3.0), 1.5, rgb(theme::t().accent));
         let b = rect(pill.right - 8.0 - bw, pill.top + 8.0, bw, PILL_H - 18.0);
-        self.hits.add(Hit::RipCancel, b);
-        let st = self.state(Hit::RipCancel, !stopping);
+        self.hits.add(cancel, b);
+        let st = self.state(cancel, !stopping);
         let fg = ui::button_frame(g, b, ui::Kind::Standard, &st);
         ui::label(g, "Cancel", &g.fonts.body, b, fg, Align::Center);
+    }
+
+    /// Where a pill above a rip's sits (an extraction's): above the rip's, or in its place (above the status row).
+    pub(super) fn pill_stack_bottom(&self) -> f32 {
+        let (_, h) = self.size_dip();
+        h - STATUS_H - 12.0 - if self.ripping.is_some() { PILL_H + 8.0 } else { 0.0 }
     }
 }
 

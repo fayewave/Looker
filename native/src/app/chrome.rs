@@ -799,6 +799,7 @@ impl App {
             }
         }
         self.draw_rip(g);
+        self.draw_extract(g);
         // A submenu row under the pointer opens its menu beside it; another row of the menu closes it.
         let hovered = match self.hover {
             Some(Hit::MenuItem(i)) => Some(i),

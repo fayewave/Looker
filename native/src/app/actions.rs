@@ -585,6 +585,7 @@ impl App {
             }
             Done::DvdOpened(r) => self.on_dvd_opened(r),
             Done::Ripped { out, result } => self.on_ripped(out, result),
+            Done::Extracted(r) => self.on_extracted(r),
             other => self.on_explorer_file_op(other),
         }
     }

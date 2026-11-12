@@ -8,6 +8,8 @@ mod actions;
 mod chrome;
 mod document;
 mod explorer;
+mod extract;
+pub(crate) use extract::ExtractResult;
 mod explorer_columns;
 mod explorer_ops;
 mod explorer_view;
@@ -349,6 +351,9 @@ enum Hit {
     /// A DVD rip's progress pill, and its Cancel.
     RipPill,
     RipCancel,
+    /// An extraction's (app/extract.rs).
+    ExtractPill,
+    ExtractCancel,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -657,6 +662,8 @@ pub struct App {
     toast: Option<ui::Toast>,
     /// The DVD being ripped (app/rip.rs).
     ripping: Option<rip::Ripping>,
+    /// Archives being extracted from the explorer's menu (app/extract.rs).
+    extracting: Option<extract::Extracting>,
     /// Clockwise quarter turns of the unsaved rotation preview.
     turns: u8,
     saving_rotation: bool,
@@ -1450,6 +1457,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             dialog: None,
             toast: None,
             ripping: None,
+            extracting: None,
             turns: 0,
             saving_rotation: false,
             rotation_saved: false,
