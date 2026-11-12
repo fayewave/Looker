@@ -135,7 +135,9 @@ impl App {
         g.fill_round(inner, radius, rgb(t.pane));
         g.pop_clip();
         g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, rgb(t.divider));
-        if lit > 0.0 {
+        // The explorer's outline goes all the way round its card, so only the editor's strip lights its line (its
+        // outline starts there).
+        if lit > 0.0 && kind == StripKind::Text {
             g.hline(strip.left, strip.bottom - g.px(), strip.right - strip.left, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH));
         }
         let plus_w = 34.0;
@@ -219,8 +221,9 @@ impl App {
             if on {
                 g.fill_tab(body, 7.0, 4.0, rgb(t.sidebar));
                 g.stroke_tab(body, 7.0, 4.0, rgb(t.divider));
+                // Lit, the accent on its top half only, fading down its sides before the flares (Faye, 2026-11-12).
                 if lit > 0.0 {
-                    g.stroke_tab(body, 7.0, 4.0, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH));
+                    g.stroke_tab_fade(body, 7.0, 4.0, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH), 0.4, 0.75);
                 }
             } else if hot || is_dragged {
                 if is_dragged {
