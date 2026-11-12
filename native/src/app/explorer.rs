@@ -59,10 +59,8 @@ fn motion_on() -> bool {
     crate::motion::enabled()
 }
 
-/// The explorer's widths are fixed sizes, not shares of the window (Faye, 2026-11-12): browse mode's default (the
-/// middle sticky line) and its widest. A window too small for one gives what it has, leaving the photo
-/// `PREVIEW_DRAGGED_MIN`.
-const BROWSE_DEFAULT: f32 = 960.0;
+/// The explorer's widest is a fixed size, not a share of the window (Faye, 2026-11-12), though never short of the
+/// middle sticky line; a window too small for it gives what it has, leaving the photo `PREVIEW_DRAGGED_MIN`.
 const BROWSE_MAX: f32 = 1600.0;
 /// Dragging browse mode's edge leaves the photo at least this much.
 const PREVIEW_DRAGGED_MIN: f32 = 200.0;
@@ -792,7 +790,13 @@ impl App {
     /// the photo `PREVIEW_DRAGGED_MIN`.
     pub(super) fn explorer_max(&self) -> f32 {
         let (w, _) = self.size_dip();
-        BROWSE_MAX.min(w - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN)
+        BROWSE_MAX.max(self.browse_middle()).min(w - PREVIEW_DRAGGED_MIN).max(EXPLORER_MIN)
+    }
+
+    /// Browse mode's default width, the sticky line: always the middle of the window (Faye, 2026-11-12).
+    fn browse_middle(&self) -> f32 {
+        let (w, _) = self.size_dip();
+        (w * 0.5).round()
     }
 
     /// The sticky line: the card's widest (a fixed 640), where browse mode begins.
@@ -838,14 +842,11 @@ impl App {
         self.explorer.spring.is_some_and(|(_, at)| motion_on() && at.elapsed().as_secs_f32() < SPRING_SECS)
     }
 
-    /// Browse mode's width: `BROWSE_DEFAULT` (Faye, 2026-11-12; was half the window), and never less than the card and the sidebar side
-    /// by side, so the list keeps at least its width beside the sidebar; while its edge is dragged in browse mode,
-    /// where it's dragged. The photo keeps at least 200 DIPs.
+    /// Browse mode's width: the middle of the window (Faye, 2026-11-12), or where its edge was dragged; never past
+    /// its widest, never narrower than the card.
     fn browse_width(&self) -> f32 {
         let (w, _) = self.size_dip();
-        let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
-        let least = self.card_width() + side + 1.0;
-        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { BROWSE_DEFAULT.max(least) };
+        let wide = if self.settings.browse_share > 0.0 { w * self.settings.browse_share } else { self.browse_middle() };
         wide.min(self.explorer_max()).max(self.card_width())
     }
 
@@ -3011,13 +3012,12 @@ impl App {
         self.explorer.drag = Some((x, w));
     }
 
-    /// The one sticky line (Faye, 2026-11-12: only the middle one): browse mode's default width, `BROWSE_DEFAULT`
-    /// (or the card and the sidebar side by side when that's wider), and true. When the window leaves no room for
-    /// browse mode past the card's widest, that is the line instead (false: the card).
+    /// The one sticky line (Faye, 2026-11-12: only the middle one): browse mode's default width, the middle of the
+    /// window, and true. When the window leaves no room for browse mode past the card's widest, that is the line
+    /// instead (false: the card).
     fn sticky_target(&self) -> (f32, bool) {
         let card = self.sticky_line();
-        let side = self.settings.sidebar_width.clamp(super::explorer_view::SIDEBAR_MIN, super::explorer_view::SIDEBAR_MAX);
-        let browse = BROWSE_DEFAULT.max(card + side + 1.0).min(self.explorer_max()).max(card);
+        let browse = self.browse_middle().min(self.explorer_max()).max(card);
         if browse - card >= 24.0 { (browse, true) } else { (card, false) }
     }
 
