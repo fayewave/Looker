@@ -218,7 +218,7 @@ impl App {
                 g.stroke_tab(body, 7.0, 4.0, rgb(t.divider));
                 // Lit, the accent on its top half only, fading down its sides before the flares (Faye, 2026-11-12).
                 if lit > 0.0 {
-                    g.stroke_tab_fade(body, 7.0, 4.0, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH), 0.4, 0.75);
+                    g.stroke_tab_fade(body, 7.0, 4.0, gfx::rgba(t.accent, lit * ui::FOCUS_STRENGTH), 0.2, 0.85);
                 }
             } else if hot || is_dragged {
                 if is_dragged {

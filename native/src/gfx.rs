@@ -1300,8 +1300,14 @@ impl Gfx {
         let r = self.snap_rect(r);
         let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
         let Some(geo) = self.tab_path(r, top, flare, false, h) else { return };
-        let clear = D2D1_COLOR_F { a: 0.0, ..color };
-        let stops = [D2D1_GRADIENT_STOP { position: solid, color }, D2D1_GRADIENT_STOP { position: gone, color: clear }];
+        // Eased (smoothstep), not straight: a straight ramp on a hairline looked like it stopped suddenly.
+        let stops: Vec<D2D1_GRADIENT_STOP> = (0..=12)
+            .map(|i| {
+                let u = i as f32 / 12.0;
+                let k = 1.0 - u * u * (3.0 - 2.0 * u);
+                D2D1_GRADIENT_STOP { position: solid + (gone - solid) * u, color: D2D1_COLOR_F { a: color.a * k, ..color } }
+            })
+            .collect();
         unsafe {
             let rt: &ID2D1RenderTarget = &self.dev.dc;
             let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
