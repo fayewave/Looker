@@ -228,7 +228,6 @@ impl App {
         } else {
             inner
         };
-        let tabs_left = main.left;
         let (strip_bottom, strip_moving) = self.draw_tabs(g, main, inner);
         moving |= strip_moving;
         let main = D2D_RECT_F { top: strip_bottom, ..main };
@@ -245,9 +244,10 @@ impl App {
             self.hits.add(Hit::SidebarGrip, grip);
         }
         g.pop_clip();
-        // With the keyboard: the card outlined in the accent below its tabs.
+        // With the keyboard: the card outlined in the accent all the way round, over the tabs' strip too (Faye,
+        // 2026-11-12: it used to stop at the strip's line).
         let lit = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
-        ui::focus_outline(g, card, 10.0, Some(D2D_RECT_F { left: tabs_left, top: card.top, right: card.right, bottom: strip_bottom - g.px() }), lit);
+        ui::focus_outline(g, card, 10.0, None, lit);
 
         // The grip straddles the right border, in browse mode too.
         self.hits.add(Hit::ExplorerGrip, ui::card_grip(card.right, card.top, card.bottom, 1.0));
