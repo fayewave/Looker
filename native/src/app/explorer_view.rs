@@ -1371,7 +1371,15 @@ impl App {
         let n = paths.len();
         let one_dir = n == 1 && paths[0].is_dir();
         let what = if n == 1 { explorer::folder_name(&paths[0]) } else { format!("{n} items") };
-        let action = target.as_ref().map(|dest| format!("{} to {}", if self.drop_copies(&paths, dest) { "Copy" } else { "Move" }, explorer::folder_name(dest)));
+        let (from_archive, into) = self.explorer.row_drag.as_ref().map_or((false, None), |d| (d.archive.is_some(), d.into.clone()));
+        let action = target.as_ref().map(|dest| match (&into, from_archive) {
+            // Into an archive: "Add to photos.zip" (or its folder); out of one: "Extract to …".
+            (Some(dir), _) => format!("Add to {}{}", explorer::folder_name(dest), if dir.is_empty() { String::new() } else { format!(" \u{203A} {}", dir.replace('/', " \u{203A} ")) }),
+            (None, true) => format!("Extract to {}", explorer::folder_name(dest)),
+            (None, false) => format!("{} to {}", if self.drop_copies(&paths, dest) { "Copy" } else { "Move" }, explorer::folder_name(dest)),
+        });
+        // Over an archive that can't take files: why not.
+        let action = action.or_else(|| self.archive_drop_refused().filter(|_| !from_archive && self.hover.is_some_and(|h| matches!(h, Hit::ArchiveCard | Hit::ArchiveList | Hit::ArchiveRow(_)))).map(|why| format!("Can't add: {why}")));
         let tw = g.measure(&wide(&what), &g.fonts.body).max(action.as_ref().map_or(0.0, |a| g.measure(&wide(a), &g.fonts.body)));
         let w = (tw + 46.0).clamp(120.0, 340.0).ceil();
         let e = &mut self.explorer;

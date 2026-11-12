@@ -234,8 +234,11 @@ impl App {
                     if self.explorer.drag.is_some() {
                         self.explorer_grip_drag(x);
                     }
-                    if self.explorer.row_drag.is_some() && matches!(self.pressed, Some(Hit::ExplorerRow(_))) {
+                    if self.explorer.row_drag.is_some() && matches!(self.pressed, Some(Hit::ExplorerRow(_) | Hit::ArchiveRow(_))) {
                         self.explorer_row_drag(x, y);
+                    }
+                    if matches!(self.pressed, Some(Hit::ArchiveRow(_) | Hit::ArchiveList)) {
+                        self.archive_pointer(x, y);
                     }
                     if self.explorer.header_drag.is_some() {
                         self.header_drag_move(x);
@@ -473,8 +476,7 @@ impl App {
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
                         Some(Hit::SideRow(i)) => self.side_row_press(i, y),
                         Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
-                        Some(Hit::ArchiveRow(i)) => self.archive_press(i as usize),
-                        Some(Hit::ArchiveCard) => self.archive_press_empty(),
+                        Some(Hit::ArchiveRow(_) | Hit::ArchiveList) => self.archive_press(x, y),
                         _ => {}
                     }
                     match h {
@@ -525,6 +527,7 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.marquee_release() | self.tab_release() | self.text_tab_release();
+                    self.archive_release(dropped);
                     self.col_edge_release();
                     self.sidebar_grip_release();
                     self.explorer.thumb_drag = None;
@@ -566,6 +569,13 @@ impl App {
                             Some(Hit::AudioMode(i)) => self.set_audio_mode(i),
                             Some(Hit::MotionBadge) => self.toggle_motion_open(),
                             Some(Hit::ArchiveCrumb(i)) => self.archive_crumb(i as usize),
+                            Some(Hit::ArchiveUp) => self.archive_up(),
+                            Some(Hit::ArchiveBack) => {
+                                self.archive_history(true);
+                            }
+                            Some(Hit::ArchiveForward) => {
+                                self.archive_history(false);
+                            }
                             Some(Hit::ArchiveExtractAll) => self.archive_extract_beside(),
                             Some(Hit::ArchiveExtractTo) => self.archive_extract_to(),
                             Some(Hit::ArchiveCancel) => self.archive_cancel(),
@@ -798,16 +808,9 @@ impl App {
                         self.strip_grip_reset();
                         return Some(LRESULT(0));
                     }
-                    match self.hit(x, y) {
-                        Some(Hit::ArchiveRow(i)) => {
-                            self.archive_open(i as usize);
-                            return Some(LRESULT(0));
-                        }
-                        Some(Hit::ArchiveUp) => {
-                            self.archive_up();
-                            return Some(LRESULT(0));
-                        }
-                        _ => {}
+                    if matches!(self.hit(x, y), Some(Hit::ArchiveRow(_))) {
+                        self.archive_double(y);
+                        return Some(LRESULT(0));
                     }
                     if self.hit(x, y) == Some(Hit::ExplorerGrip) {
                         self.explorer_grip_reset();
@@ -942,7 +945,7 @@ impl App {
                         self.video_volume_by(delta as f32 / 120.0 * 0.05);
                         return Some(LRESULT(0));
                     }
-                    if matches!(self.hit(x, y), Some(Hit::ArchiveCard | Hit::ArchiveRow(_) | Hit::ArchiveUp)) {
+                    if matches!(self.hit(x, y), Some(Hit::ArchiveCard | Hit::ArchiveList | Hit::ArchiveRow(_))) {
                         self.archive_wheel(delta as f32);
                         return Some(LRESULT(0));
                     }
@@ -1247,7 +1250,11 @@ impl App {
                     let viewing = self.viewer.current.is_some() && !self.browsing();
                     let explorer = self.explorer_shown() && (!viewing || x < self.explorer_rect().right);
                     let back = (wp.0 >> 16) & 0xFFFF == 1;
-                    if explorer {
+                    // Over an archive: its folders first, then (with nowhere left to go) the files viewed.
+                    let (_, y) = self.dip_from_lparam(lp);
+                    let over_archive = self.archive_shown() && matches!(self.hit(x, y), Some(Hit::ArchiveCard | Hit::ArchiveList | Hit::ArchiveRow(_)));
+                    if over_archive && self.archive_history(back) {
+                    } else if explorer {
                         if back { self.explorer_back() } else { self.explorer_forward() }
                     } else if viewing {
                         self.trail_step(if back { -1 } else { 1 });

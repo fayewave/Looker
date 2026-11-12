@@ -36,6 +36,25 @@ struct Lib {
     entry_mtime: unsafe extern "C" fn(*mut c_void) -> i64,
     entry_filetype: unsafe extern "C" fn(*mut c_void) -> u32,
     entry_is_encrypted: unsafe extern "C" fn(*mut c_void) -> c_int,
+    // Writing (adding files: the archive is written anew).
+    format: unsafe extern "C" fn(*mut c_void) -> c_int,
+    filter_count: unsafe extern "C" fn(*mut c_void) -> c_int,
+    filter_code: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+    write_new: unsafe extern "C" fn() -> *mut c_void,
+    write_set_format: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+    write_add_filter: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+    write_open_filename_w: unsafe extern "C" fn(*mut c_void, *const u16) -> c_int,
+    write_header: unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int,
+    write_data: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> isize,
+    write_close: unsafe extern "C" fn(*mut c_void) -> c_int,
+    write_free: unsafe extern "C" fn(*mut c_void) -> c_int,
+    entry_new: unsafe extern "C" fn() -> *mut c_void,
+    entry_free: unsafe extern "C" fn(*mut c_void),
+    entry_copy_pathname_w: unsafe extern "C" fn(*mut c_void, *const u16),
+    entry_set_size: unsafe extern "C" fn(*mut c_void, i64),
+    entry_set_filetype: unsafe extern "C" fn(*mut c_void, u32),
+    entry_set_perm: unsafe extern "C" fn(*mut c_void, u32),
+    entry_set_mtime: unsafe extern "C" fn(*mut c_void, i64, std::ffi::c_long),
 }
 
 static LIB: OnceLock<Result<Lib, String>> = OnceLock::new();
@@ -68,6 +87,24 @@ fn lib() -> Result<&'static Lib, String> {
             entry_mtime: sym!("archive_entry_mtime"),
             entry_filetype: sym!("archive_entry_filetype"),
             entry_is_encrypted: sym!("archive_entry_is_encrypted"),
+            format: sym!("archive_format"),
+            filter_count: sym!("archive_filter_count"),
+            filter_code: sym!("archive_filter_code"),
+            write_new: sym!("archive_write_new"),
+            write_set_format: sym!("archive_write_set_format"),
+            write_add_filter: sym!("archive_write_add_filter"),
+            write_open_filename_w: sym!("archive_write_open_filename_w"),
+            write_header: sym!("archive_write_header"),
+            write_data: sym!("archive_write_data"),
+            write_close: sym!("archive_write_close"),
+            write_free: sym!("archive_write_free"),
+            entry_new: sym!("archive_entry_new"),
+            entry_free: sym!("archive_entry_free"),
+            entry_copy_pathname_w: sym!("archive_entry_copy_pathname_w"),
+            entry_set_size: sym!("archive_entry_set_size"),
+            entry_set_filetype: sym!("archive_entry_set_filetype"),
+            entry_set_perm: sym!("archive_entry_set_perm"),
+            entry_set_mtime: sym!("archive_entry_set_mtime"),
         })
     })
     .as_ref()
@@ -376,6 +413,220 @@ pub fn still(f: &windows::Win32::Graphics::Imaging::IWICImagingFactory, path: &P
     Ok(d)
 }
 
+/// The format a rewrite writes, for an archive read as `code` (libarchive's ARCHIVE_FORMAT_*): zip, 7z, tar (any
+/// kind, written as POSIX pax) and cpio. None for what libarchive reads but can't write (RAR, CAB, LHA, ISO...).
+fn writable(code: c_int) -> Option<c_int> {
+    match code & 0xFF0000 {
+        0x50000 => Some(0x50000),        // zip
+        0xE0000 => Some(0xE0000),        // 7z
+        0x30000 => Some(0x30003),        // tar -> pax restricted
+        0x10000 => Some(0x10001),        // cpio -> POSIX odc
+        _ => None,
+    }
+}
+
+/// Whether files can be added to the archive at `path` (its format is one libarchive writes, and nothing in it is
+/// encrypted).
+pub fn can_add(path: &Path) -> Result<(), String> {
+    let r = Reader::open(path)?;
+    let mut e: *mut c_void = std::ptr::null_mut();
+    let first = unsafe { (r.l.next_header)(r.a, &mut e) };
+    if first != ARCHIVE_OK && first != ARCHIVE_WARN && first != ARCHIVE_EOF {
+        return Err(r.error());
+    }
+    let code = unsafe { (r.l.format)(r.a) };
+    let raw = cstr(unsafe { (r.l.format_name)(r.a) }) == "raw";
+    if raw || writable(code).is_none() {
+        let name = cstr(unsafe { (r.l.format_name)(r.a) });
+        return Err(format!("files can't be added to a {} archive", if name.is_empty() { "this kind of".into() } else { name }));
+    }
+    Ok(())
+}
+
+/// Adds `files` (folders with all inside) to the archive at `path`, in its folder `dir` ("" its top): the archive is
+/// written anew beside it in the same format and compression, every entry copied across except those the new files
+/// replace, then put in its place. Returns how many files went in.
+pub fn add(path: &Path, files: &[PathBuf], dir: &str, progress: &mut dyn FnMut(u64, &str) -> bool) -> Result<usize, String> {
+    // What goes in, and where: each file at dir/name, a folder's files under dir/folder/...
+    let mut items: Vec<(String, PathBuf)> = Vec::new();
+    fn walk(base: &str, p: &Path, out: &mut Vec<(String, PathBuf)>) {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        let at = if base.is_empty() { name.to_string() } else { format!("{base}/{name}") };
+        if p.is_dir() {
+            out.push((at.clone(), p.to_path_buf()));
+            if let Ok(rd) = std::fs::read_dir(p) {
+                let mut kids: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+                kids.sort();
+                for k in kids {
+                    walk(&at, &k, out);
+                }
+            }
+        } else {
+            out.push((at, p.to_path_buf()));
+        }
+    }
+    for f in files {
+        walk(dir.trim_matches('/'), f, &mut items);
+    }
+    let replaced: std::collections::HashSet<&str> = items.iter().map(|(a, _)| a.as_str()).collect();
+
+    let l = lib()?;
+    let r = Reader::open(path)?;
+    let tmp = path.with_extension(format!("{}.looker-new", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
+    let w = unsafe { (l.write_new)() };
+    if w.is_null() {
+        return Err("archive_write_new failed".into());
+    }
+    struct W(&'static Lib, *mut c_void);
+    impl Drop for W {
+        fn drop(&mut self) {
+            unsafe { (self.0.write_free)(self.1) };
+        }
+    }
+    let w = W(l, w);
+    let werr = |w: &W| {
+        let e = cstr(unsafe { (l.error_string)(w.1) });
+        if e.is_empty() { "the archive couldn't be written".to_string() } else { e }
+    };
+    let mut opened = false;
+    let mut written = 0u64;
+    let mut buf = vec![0u8; 1 << 18];
+    loop {
+        let mut e: *mut c_void = std::ptr::null_mut();
+        let rc = unsafe { (l.next_header)(r.a, &mut e) };
+        if rc == ARCHIVE_EOF && opened {
+            break;
+        }
+        if !opened {
+            // The format and compression are known once the first header is read (an empty archive: none).
+            let code = unsafe { (l.format)(r.a) };
+            let raw = cstr(unsafe { (l.format_name)(r.a) }) == "raw";
+            let Some(fmt) = writable(code).filter(|_| !raw) else {
+                return Err(format!("files can't be added to a {} archive", cstr(unsafe { (l.format_name)(r.a) })));
+            };
+            if unsafe { (l.write_set_format)(w.1, fmt) } != ARCHIVE_OK {
+                return Err(werr(&w));
+            }
+            let n = unsafe { (l.filter_count)(r.a) };
+            for i in 0..n {
+                let f = unsafe { (l.filter_code)(r.a, i) };
+                if f != 0 {
+                    unsafe { (l.write_add_filter)(w.1, f) };
+                }
+            }
+            let t: Vec<u16> = tmp.as_os_str().encode_wide_nul();
+            if unsafe { (l.write_open_filename_w)(w.1, t.as_ptr()) } != ARCHIVE_OK {
+                return Err(werr(&w));
+            }
+            opened = true;
+            if rc == ARCHIVE_EOF {
+                break;
+            }
+        }
+        if (rc != ARCHIVE_OK && rc != ARCHIVE_WARN) || e.is_null() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(r.error());
+        }
+        if unsafe { (l.entry_is_encrypted)(e) } > 0 {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("it has encrypted files, which Looker can't copy across".into());
+        }
+        // Its path as the listing names it: replaced ones are left out.
+        let w16 = unsafe { (l.entry_pathname_w)(e) };
+        let p = if w16.is_null() {
+            cstr(unsafe { (l.entry_pathname_utf8)(e) })
+        } else {
+            let n = (0..).take_while(|&i| unsafe { *w16.add(i) } != 0).count();
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(w16, n) })
+        };
+        let key = p.replace('\\', "/");
+        let key = key.trim_start_matches("./").trim_matches('/');
+        if replaced.contains(key) {
+            unsafe { (l.data_skip)(r.a) };
+            continue;
+        }
+        if unsafe { (l.write_header)(w.1, e) } < ARCHIVE_WARN {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(werr(&w));
+        }
+        loop {
+            let n = unsafe { (l.read_data)(r.a, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+            if n < 0 {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(r.error());
+            }
+            if n == 0 {
+                break;
+            }
+            if unsafe { (l.write_data)(w.1, buf.as_ptr() as *const c_void, n as usize) } < 0 {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(werr(&w));
+            }
+        }
+    }
+    drop(r);
+    // The new files.
+    let mut added = 0;
+    for (at, src) in &items {
+        let e = unsafe { (l.entry_new)() };
+        let pw: Vec<u16> = std::ffi::OsStr::new(at).encode_wide_nul();
+        let meta = std::fs::metadata(src).map_err(|err| format!("{}: {err}", src.display()))?;
+        let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+        unsafe {
+            (l.entry_copy_pathname_w)(e, pw.as_ptr());
+            (l.entry_set_mtime)(e, mtime, 0);
+            if meta.is_dir() {
+                (l.entry_set_filetype)(e, AE_IFDIR);
+                (l.entry_set_perm)(e, 0o755);
+                (l.entry_set_size)(e, 0);
+            } else {
+                (l.entry_set_filetype)(e, AE_IFREG);
+                (l.entry_set_perm)(e, 0o644);
+                (l.entry_set_size)(e, meta.len() as i64);
+            }
+        }
+        let ok = unsafe { (l.write_header)(w.1, e) } >= ARCHIVE_WARN;
+        unsafe { (l.entry_free)(e) };
+        if !ok {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(werr(&w));
+        }
+        if meta.is_dir() {
+            continue;
+        }
+        use std::io::Read;
+        let mut f = std::fs::File::open(src).map_err(|err| format!("{}: {err}", src.display()))?;
+        let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        loop {
+            let n = f.read(&mut buf).map_err(|err| err.to_string())?;
+            if n == 0 {
+                break;
+            }
+            if unsafe { (l.write_data)(w.1, buf.as_ptr() as *const c_void, n) } < 0 {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(werr(&w));
+            }
+            written += n as u64;
+            if !progress(written, &name) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err("cancelled".into());
+            }
+        }
+        added += 1;
+    }
+    if unsafe { (l.write_close)(w.1) } != ARCHIVE_OK {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(werr(&w));
+    }
+    drop(w);
+    // In its place (MoveFileEx replaces): the old one is gone only once the new one is whole.
+    std::fs::rename(&tmp, path).map_err(|err| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {err}", path.display())
+    })?;
+    Ok(added)
+}
+
 /// `p`, or "name (2).ext", "name (3).ext"... when it's taken.
 fn unique(p: &Path) -> PathBuf {
     if !p.exists() {
@@ -400,6 +651,39 @@ mod tests {
         assert_eq!(safe_target(d, "con.txt", ""), Some(PathBuf::from(r"C:\out\_con.txt")));
         assert_eq!(safe_target(d, "a/b/c.jpg", "a/b"), Some(PathBuf::from(r"C:\out\c.jpg")));
         assert_eq!(safe_target(d, "..", ""), None);
+    }
+
+    /// Adds a file to a zip, a 7z and a tar.gz written by Windows' tar, and reads it back out.
+    #[test]
+    #[ignore]
+    fn adds_files() {
+        let dir = std::env::temp_dir().join(format!("looker-archive-add-{}", std::process::id()));
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("inner")).unwrap();
+        std::fs::write(src.join("a.txt"), b"first").unwrap();
+        std::fs::write(src.join("inner").join("b.txt"), b"second").unwrap();
+        let extra = dir.join("added.txt");
+        std::fs::write(&extra, b"added later").unwrap();
+        for (name, flags) in [("t.zip", "-acf"), ("t.7z", "-acf"), ("t.tar.gz", "-czf")] {
+            let ar = dir.join(name);
+            let ok = std::process::Command::new("tar").current_dir(&src).args([flags, ar.to_str().unwrap(), "a.txt", "inner"]).status().unwrap();
+            assert!(ok.success(), "tar made {name}");
+            can_add(&ar).unwrap();
+            assert_eq!(add(&ar, &[extra.clone()], "inner", &mut |_, _| true).unwrap(), 1, "{name}");
+            let names: Vec<String> = list(&ar).unwrap().into_iter().map(|e| e.path).collect();
+            assert!(names.contains(&"inner/added.txt".to_string()) && names.contains(&"a.txt".to_string()) && names.contains(&"inner/b.txt".to_string()), "{name}: {names:?}");
+            let mut got = None;
+            read_files(&ar, 1 << 20, &|e| e.path == "inner/added.txt", &mut |_, b| {
+                got = Some(b);
+                false
+            })
+            .unwrap();
+            assert_eq!(got.as_deref(), Some(&b"added later"[..]), "{name}");
+            // Again: it replaces, not doubles.
+            add(&ar, &[extra.clone()], "inner", &mut |_, _| true).unwrap();
+            assert_eq!(list(&ar).unwrap().iter().filter(|e| e.path == "inner/added.txt").count(), 1, "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// LOOKER_ARCHIVE=<file>: lists it, reads its first image, and extracts it all into %TEMP%.

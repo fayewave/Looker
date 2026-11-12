@@ -285,7 +285,12 @@ enum Hit {
     MotionBadge,
     /// An archive's card (app/archive.rs): the card, a row, `..`, a step of its path, its buttons.
     ArchiveCard,
+    ArchiveList,
     ArchiveRow(u32),
+    /// Not a place: the key of a selected row's solid fill (a fade), as `RowSolid` is the explorer's.
+    ArchiveSolid(u32),
+    ArchiveBack,
+    ArchiveForward,
     ArchiveUp,
     ArchiveCrumb(u32),
     ArchiveExtractAll,

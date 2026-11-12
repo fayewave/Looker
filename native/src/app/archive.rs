@@ -1,8 +1,12 @@
-//! An archive on screen (zip, 7z, RAR, tar..., imaging/archive.rs): a card over the photo area listing what's inside,
-//! one folder of it at a time (the path in the header, `..` to go up), with thumbnails for its pictures. A file opens
-//! in Looker (its folder of the archive is unpacked into a cache folder first, so ←/→ go through its neighbours);
-//! Extract all unpacks beside the archive into a folder named after it, Extract to… into a folder picked; with
-//! rows selected, both take only those.
+//! An archive on screen (zip, 7z, RAR, tar..., imaging/archive.rs): a card in the photo area, the explorer card's
+//! height and look, listing what's inside one folder at a time: Back, Forward and Up (and the mouse's Back and
+//! Forward buttons) with the folder's path beside them, the explorer's rows (its row height, stripes, hover, selection
+//! and cursor), thumbnails for its pictures. Rows are selected as in the explorer (click, Ctrl, Shift, the selection
+//! rectangle from beside the names, Ctrl+A, the arrows); double-clicking a folder goes in (a file: nothing). Rows drag
+//! out onto the explorer's folders (extracted there) or out of the window (extracted to a temporary folder first);
+//! files dragged in from the explorer are added (the archive written anew, for the formats libarchive writes).
+//! Extract all unpacks beside the archive into a folder named after it, Extract to… into a folder picked; with rows
+//! selected, both take only those.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -10,32 +14,50 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::imaging::archive::{self as arc, Entry, Extracted};
+use crate::imaging::archive::{self as arc, Entry};
 
-const HEADER_H: f32 = 52.0;
-const COLS_H: f32 = 28.0;
-const ROW_H: f32 = 34.0;
-const FOOT_H: f32 = 34.0;
-const THUMB: f32 = 26.0;
+/// The explorer's own row and header heights (explorer_view.rs: ROW, HEADER), and the footer's.
+const ROW: f32 = 26.0;
+const COLS_H: f32 = 26.0;
+const HEADER_H: f32 = 46.0;
+const FOOT_H: f32 = 44.0;
+/// A press moved this far is a drag or a rectangle, not a click (the explorer's DRAG_START).
+const DRAG_START: f32 = 5.0;
 
-/// An extraction under way: for the footer, and what to do once it's done.
+/// What an extraction or an add is doing, for the footer, and what to say once it's done.
 struct Work {
     state: Arc<Mutex<WorkState>>,
     cancel: Arc<AtomicBool>,
     total: u64,
-    /// Open this file when it's done (a row opened), else say where it went.
-    open: Option<PathBuf>,
-    dest: PathBuf,
+    kind: WorkKind,
+}
+
+enum WorkKind {
+    /// Extracting into this folder.
+    Extract(PathBuf),
+    /// Adding files into this folder of the archive (it's listed again after).
+    Add(String),
 }
 
 #[derive(Default)]
 struct WorkState {
     written: u64,
     name: String,
-    result: Option<Result<Extracted, String>>,
+    /// Files done, or what went wrong.
+    result: Option<Result<(usize, usize, usize), String>>,
 }
 
 type Thumbs = Arc<Mutex<Vec<(String, u32, u32, Vec<u8>)>>>;
+
+/// The selection rectangle: where it was pressed (x, and y in the list's own scrolled space), the pointer, whether
+/// it has moved far enough to be one, whether it adds to the selection (Ctrl), and what was selected before.
+struct Rubber {
+    start: (f32, f32),
+    pointer: (f32, f32),
+    active: bool,
+    add: bool,
+    before: BTreeSet<usize>,
+}
 
 pub(super) struct ArchiveView {
     pub path: PathBuf,
@@ -45,13 +67,22 @@ pub(super) struct ArchiveView {
     dir: String,
     rows: Vec<usize>,
     selected: BTreeSet<usize>,
+    /// The cursor (the last row clicked or stepped to) and where a Shift-click reaches from.
     anchor: Option<usize>,
     scroll: f32,
+    /// Folders visited, for Back and Forward.
+    back: Vec<String>,
+    forward: Vec<String>,
+    rubber: Option<Rubber>,
+    /// A press on a selected row: a click (no drag) picks it alone when the button comes up.
+    pending: Option<usize>,
     thumbs: HashMap<String, ID2D1Bitmap1>,
     thumb_px: Thumbs,
     /// Bumped when the folder changes: the thumbnail thread for an older one stops.
     thumb_gen: Arc<AtomicU64>,
     work: Option<Work>,
+    /// Whether files can be added (asked once, when something is first dragged over it).
+    writable: Option<Result<(), String>>,
 }
 
 impl ArchiveView {
@@ -61,19 +92,23 @@ impl ArchiveView {
         self.start_thumbs();
     }
 
-    fn entry(&self, row: usize) -> Option<&Entry> {
-        let i = *self.rows.get(row)?;
-        self.entries.as_ref()?.as_ref().ok()?.get(i)
+    fn list(&self) -> Option<&Vec<Entry>> {
+        self.entries.as_ref()?.as_ref().ok()
     }
 
-    /// The rows of folder `dir`: its direct children, folders first, then by name (as Explorer sorts: case
-    /// ignored).
+    fn entry(&self, row: usize) -> Option<&Entry> {
+        self.list()?.get(*self.rows.get(row)?)
+    }
+
+    /// The rows of folder `dir`: its direct children, folders first, then by name (as Explorer sorts).
     fn show_dir(&mut self, dir: String) {
         self.dir = dir;
         self.selected.clear();
         self.anchor = None;
+        self.pending = None;
+        self.rubber = None;
         self.scroll = 0.0;
-        let Some(Ok(list)) = &self.entries else { return };
+        let Some(list) = self.list() else { return };
         let prefix = if self.dir.is_empty() { String::new() } else { format!("{}/", self.dir) };
         let mut rows: Vec<usize> = list
             .iter()
@@ -90,11 +125,22 @@ impl ArchiveView {
         self.start_thumbs();
     }
 
+    /// Goes to folder `dir`, remembered for Back.
+    fn go(&mut self, dir: String) {
+        if dir == self.dir {
+            return;
+        }
+        self.back.push(std::mem::take(&mut self.dir));
+        self.forward.clear();
+        self.show_dir(dir);
+    }
+
     /// Thumbnails of this folder's pictures, read in the archive's order on a thread of its own (a solid 7z or RAR
     /// can only be read through), each handed over as it's decoded.
     fn start_thumbs(&mut self) {
-        let Some(Ok(list)) = &self.entries else { return };
-        let want: std::collections::HashSet<String> = self.rows.iter().map(|&i| &list[i]).filter(|e| !e.dir && arc::is_picture(&e.path) && e.size <= 40 << 20).map(|e| e.path.clone()).collect();
+        let Some(list) = self.list() else { return };
+        let want: std::collections::HashSet<String> =
+            self.rows.iter().map(|&i| &list[i]).filter(|e| !e.dir && arc::is_picture(&e.path) && e.size <= 40 << 20).map(|e| e.path.clone()).collect();
         if want.is_empty() {
             return;
         }
@@ -115,12 +161,11 @@ impl ArchiveView {
                 }) else {
                     return;
                 };
-                let px = (THUMB * 2.0) as u32; // up to 200 % displays
                 let _ = arc::read_files(&path, 40 << 20, &|e| want.contains(&e.path), &mut |e, bytes| {
                     if generation.load(Ordering::Relaxed) != mine {
                         return false;
                     }
-                    if let Ok(d) = crate::imaging::wic::decode(&f, crate::imaging::wic::Source::Memory(&bytes), px, px) {
+                    if let Ok(d) = crate::imaging::wic::decode(&f, crate::imaging::wic::Source::Memory(&bytes), 256, 256) {
                         if let Some(fr) = d.frames.into_iter().next() {
                             if let Ok(mut o) = out.lock() {
                                 o.push((e.path.clone(), d.width, d.height, fr.pixels));
@@ -131,6 +176,26 @@ impl ArchiveView {
                 });
             })
             .ok();
+    }
+
+    /// Reads the listing again (after files were added), staying in folder `dir`.
+    fn relist(&mut self, dir: String) {
+        let listing = Arc::new(Mutex::new(None));
+        let (l, p) = (listing.clone(), self.path.clone());
+        std::thread::Builder::new()
+            .name("archive-list".into())
+            .spawn(move || {
+                let r = arc::list(&p);
+                if let Ok(mut l) = l.lock() {
+                    *l = Some(r);
+                }
+            })
+            .ok();
+        self.listing = listing;
+        self.entries = None;
+        self.dir = dir;
+        self.thumbs.clear();
+        self.writable = None;
     }
 }
 
@@ -196,10 +261,20 @@ fn base_name(path: &Path) -> String {
     if name.is_empty() { "archive".into() } else { name }
 }
 
+/// Where the list's pieces are: the card, the list's rect, the row height, the Name column's span (a press beside
+/// it starts a rectangle), the thumbnail's size.
+struct Geom {
+    card: D2D_RECT_F,
+    list: D2D_RECT_F,
+    rh: f32,
+    name: (f32, f32),
+    icon: (f32, f32),
+}
+
 impl App {
     /// The archive's file count and unpacked size, once listed.
     pub(super) fn archive_facts(&self) -> Option<(usize, u64)> {
-        let list = self.archive.as_ref()?.entries.as_ref()?.as_ref().ok()?;
+        let list = self.archive.as_ref()?.list()?;
         Some((list.iter().filter(|e| !e.dir).count(), list.iter().map(|e| e.size.max(0) as u64).sum()))
     }
 
@@ -213,38 +288,37 @@ impl App {
         let want = self.current_path().filter(|p| format::of_path(p) == format::Format::Archive && self.placeholder.is_none()).map(Path::to_path_buf);
         if self.archive.as_ref().map(|a| &a.path) != want.as_ref() {
             self.archive = want.map(|path| {
-                let listing = Arc::new(Mutex::new(None));
-                let (l, p) = (listing.clone(), path.clone());
-                std::thread::Builder::new()
-                    .name("archive-list".into())
-                    .spawn(move || {
-                        let r = arc::list(&p);
-                        if let Ok(mut l) = l.lock() {
-                            *l = Some(r);
-                        }
-                    })
-                    .ok();
-                ArchiveView {
+                let mut a = ArchiveView {
                     path,
-                    listing,
+                    listing: Arc::new(Mutex::new(None)),
                     entries: None,
                     dir: String::new(),
                     rows: Vec::new(),
                     selected: BTreeSet::new(),
                     anchor: None,
                     scroll: 0.0,
+                    back: Vec::new(),
+                    forward: Vec::new(),
+                    rubber: None,
+                    pending: None,
                     thumbs: HashMap::new(),
                     thumb_px: Arc::new(Mutex::new(Vec::new())),
                     thumb_gen: Arc::new(AtomicU64::new(0)),
                     work: None,
-                }
+                    writable: None,
+                };
+                a.relist(String::new());
+                a
             });
         }
         let Some(a) = self.archive.as_mut() else { return };
         if a.entries.is_none() {
             if let Some(r) = a.listing.lock().ok().and_then(|mut l| l.take()) {
                 a.entries = Some(r);
-                a.show_dir(String::new());
+                let dir = std::mem::take(&mut a.dir);
+                // Still there after a relist? Else its top.
+                let keep = dir.is_empty() || a.list().is_some_and(|l| l.iter().any(|e| e.dir && e.path == dir));
+                a.show_dir(if keep { dir } else { String::new() });
             }
         }
         let made: Vec<_> = a.thumb_px.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default();
@@ -253,89 +327,118 @@ impl App {
                 a.thumbs.insert(p, b);
             }
         }
-        // An extraction finished.
+        // An extraction or an add finished.
         let finished = a.work.as_ref().and_then(|w| w.state.lock().ok().and_then(|mut s| s.result.take()));
         if let Some(result) = finished {
             let w = a.work.take().unwrap();
-            match (result, w.open) {
-                (Ok(_), Some(file)) => self.open(file),
-                (Ok(d), None) => {
-                    let name = w.dest.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                    let mut msg = format!("Extracted {} file{} to \u{201c}{name}\u{201d}", d.files, if d.files == 1 { "" } else { "s" });
-                    if d.skipped_encrypted > 0 {
-                        msg.push_str(&format!(", {} encrypted left out", d.skipped_encrypted));
+            match (result, w.kind) {
+                (Ok((files, enc, failed)), WorkKind::Extract(dest)) => {
+                    let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    let mut msg = format!("Extracted {files} file{} to \u{201c}{name}\u{201d}", if files == 1 { "" } else { "s" });
+                    if enc > 0 {
+                        msg.push_str(&format!(", {enc} encrypted left out"));
                     }
-                    if d.failed > 0 {
-                        msg.push_str(&format!(", {} couldn't be written", d.failed));
+                    if failed > 0 {
+                        msg.push_str(&format!(", {failed} couldn't be written"));
                     }
                     self.show_toast(msg, false);
                 }
-                (Err(e), _) => self.show_toast(format!("Couldn't extract: {e}"), false),
+                (Ok((files, _, _)), WorkKind::Add(dir)) => {
+                    a.relist(dir);
+                    self.show_toast(format!("Added {files} file{}", if files == 1 { "" } else { "s" }), false);
+                }
+                (Err(e), WorkKind::Add(dir)) => {
+                    a.relist(dir);
+                    self.show_toast(format!("Couldn't add: {e}"), false);
+                }
+                (Err(e), WorkKind::Extract(_)) => self.show_toast(format!("Couldn't extract: {e}"), false),
             }
             self.invalidate();
         }
     }
 
-    /// Still reading the listing or thumbnails, or extracting: draw again next vsync.
+    /// Still reading the listing or thumbnails, or working: draw again next vsync.
     pub(super) fn archive_animating(&self) -> bool {
-        self.archive.as_ref().is_some_and(|a| a.entries.is_none() || a.work.is_some() || a.thumb_px.lock().is_ok_and(|v| !v.is_empty()) || (Arc::strong_count(&a.thumb_px) > 1))
+        self.archive.as_ref().is_some_and(|a| a.entries.is_none() || a.work.is_some() || a.thumb_px.lock().is_ok_and(|v| !v.is_empty()) || Arc::strong_count(&a.thumb_px) > 1)
     }
 
-    /// The card's rect, and the list's (under the header and column titles, over the footer).
-    fn archive_rects(&self) -> (D2D_RECT_F, D2D_RECT_F) {
+    /// The card: the photo area's width, the explorer card's top and bottom.
+    fn archive_geom(&self) -> Geom {
         let a = self.image_area();
-        let (ml, mr) = ((12.0 - self.left_inset()).max(0.0), (12.0 - self.right_inset()).max(0.0));
-        let card = D2D_RECT_F { left: a.left + ml, top: a.top + 12.0, right: a.right - mr, bottom: a.bottom - 12.0 };
-        let list = D2D_RECT_F { top: card.top + HEADER_H + COLS_H, bottom: card.bottom - FOOT_H, ..card };
-        (card, list)
+        let v = self.viewport();
+        let m = super::explorer::MARGIN;
+        let (ml, mr) = ((m - self.left_inset()).max(0.0), (m - self.right_inset()).max(0.0));
+        let card = D2D_RECT_F { left: a.left + ml, top: v.top + m, right: a.right - mr, bottom: v.bottom - m };
+        let list = D2D_RECT_F { left: card.left + 6.0, top: card.top + HEADER_H + COLS_H + 2.0, right: card.right - 16.0, bottom: card.bottom - FOOT_H };
+        let height = self.explorer.look.height.max(1) as f32;
+        let rh = ROW * height;
+        let icon = if height <= 1.0 { (24.0, 18.0) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0) };
+        let size_w = 100.0;
+        let date_w = if card.right - card.left > 560.0 { 150.0 } else { 0.0 };
+        let name_end = list.right - date_w - size_w - 8.0;
+        Geom { card, list, rh, name: (list.left, name_end.max(list.left + 80.0)), icon }
     }
 
-    /// The rows above the first: `..` when inside a folder.
-    fn archive_up_row(&self) -> usize {
-        self.archive.as_ref().is_some_and(|a| !a.dir.is_empty()) as usize
+    /// The row at y on the list (None past the last).
+    fn archive_row_at(&self, y: f32) -> Option<usize> {
+        let g = self.archive_geom();
+        let a = self.archive.as_ref()?;
+        let i = ((y - g.list.top + a.scroll) / g.rh).floor();
+        (i >= 0.0 && (i as usize) < a.rows.len()).then_some(i as usize)
     }
 
     pub(super) fn draw_archive(&mut self, g: &Gfx) {
         if !self.archive_shown() {
             return;
         }
-        let (card, list) = self.archive_rects();
-        if card.right - card.left < 200.0 || card.bottom - card.top < 160.0 {
+        let geo = self.archive_geom();
+        let (card, list, rh) = (geo.card, geo.list, geo.rh);
+        if card.right - card.left < 240.0 || card.bottom - card.top < 160.0 {
             return;
         }
         let t = theme::t();
-        ui::shadow(g, card, 12.0);
-        g.fill_round(card, 12.0, rgb(t.sidebar));
-        ui::stroke(g, card, 12.0, rgb(t.divider));
+        ui::card(g, card);
         self.hits.add(Hit::ArchiveCard, card);
         let Some(a) = self.archive.as_ref() else { return };
         let name = a.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let dir = a.dir.clone();
         let nsel = a.selected.len();
         let working = a.work.is_some();
+        let (can_back, can_fwd, can_up) = (!a.back.is_empty(), !a.forward.is_empty(), !a.dir.is_empty());
+        let ready = matches!(a.entries, Some(Ok(_))) && !working;
 
-        // The header: where in the archive (each part a step back up), and the actions.
-        let pad = 16.0;
-        let btn_h = 30.0;
-        let by = card.top + (HEADER_H - btn_h) / 2.0;
+        // The header: Back, Forward, Up; where in the archive (each part a step up); the actions.
+        let pad = 12.0;
+        let btn = 28.0;
+        let by = card.top + (HEADER_H - btn) / 2.0;
+        let mut x = card.left + pad;
+        for (id, glyph, on) in [(Hit::ArchiveBack, 0xE72Bu16, can_back), (Hit::ArchiveForward, 0xE72A, can_fwd), (Hit::ArchiveUp, 0xE74A, can_up)] {
+            let r = rect(x, by, btn, btn);
+            if on {
+                self.hits.add(id, r);
+            }
+            let st = self.state(id, on);
+            let fg = ui::quiet_frame(g, r, ui::Kind::Standard, &st);
+            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+            x += btn + 2.0;
+        }
+        x += 6.0;
         let all_label = if nsel > 0 { format!("Extract {nsel} item{}", if nsel == 1 { "" } else { "s" }) } else { "Extract all".to_string() };
         let to_label = "Extract to\u{2026}";
-        let w_all = g.measure(&wide(&all_label), &g.fonts.caption).ceil() + 28.0;
-        let w_to = g.measure(&wide(to_label), &g.fonts.caption).ceil() + 28.0;
-        let r_all = rect(card.right - pad - w_all, by, w_all, btn_h);
-        let r_to = rect(r_all.left - 8.0 - w_to, by, w_to, btn_h);
-        let ready = matches!(a.entries, Some(Ok(_))) && !working;
+        let w_all = g.measure(&wide(&all_label), &g.fonts.body).ceil() + 28.0;
+        let w_to = g.measure(&wide(to_label), &g.fonts.body).ceil() + 28.0;
+        let r_all = rect(card.right - pad - w_all, by, w_all, btn);
+        let r_to = rect(r_all.left - 8.0 - w_to, by, w_to, btn);
         for (id, r, label, kind) in [(Hit::ArchiveExtractTo, r_to, to_label.to_string(), ui::Kind::Standard), (Hit::ArchiveExtractAll, r_all, all_label, ui::Kind::Accent)] {
             if ready {
                 self.hits.add(id, r);
             }
             let st = self.state(id, ready);
             let fg = ui::button_frame(g, r, kind, &st);
-            g.text(&wide(&label), &g.fonts.caption, r, fg, Align::Center);
+            g.text(&wide(&label), &g.fonts.body, r, fg, Align::Center);
         }
         let mut parts = vec![name.clone()];
         parts.extend(dir.split('/').filter(|s| !s.is_empty()).map(str::to_string));
-        let mut x = card.left + pad;
         let crumb_right = r_to.left - 12.0;
         let n = parts.len();
         for (i, p) in parts.iter().enumerate() {
@@ -343,136 +446,178 @@ impl App {
                 break;
             }
             let last = i + 1 == n;
-            let font = if i == 0 { &g.fonts.title } else { &g.fonts.caption };
-            let w = (g.measure(&wide(p), font).ceil() + 12.0).min(crumb_right - x);
-            let r = rect(x, by, w, btn_h);
+            let w = (g.measure(&wide(p), &g.fonts.body).ceil() + 14.0).min(crumb_right - x);
+            let r = rect(x, by, w, btn);
             if !last {
                 self.hits.add(Hit::ArchiveCrumb(i as u32), r);
                 let st = self.state(Hit::ArchiveCrumb(i as u32), true);
                 ui::quiet_frame(g, r, ui::Kind::Standard, &st);
             }
-            g.text(&wide(p), font, rect(x + 6.0, by, w - 12.0, btn_h), rgb(if last { t.text } else { t.label }), Align::Left);
+            g.text(&wide(p), &g.fonts.body, rect(x + 7.0, by, w - 14.0, btn), rgb(if last { t.text } else { t.label }), Align::Left);
             x += w;
             if !last {
-                g.text(&wide("\u{203a}"), &g.fonts.caption, rect(x, by, 14.0, btn_h), rgb(t.label), Align::Center);
+                g.text(&[0xE76C], &g.fonts.small_icons, rect(x, by, 14.0, btn), rgb(t.placeholder), Align::Center);
                 x += 14.0;
             }
         }
 
-        // Column titles.
-        let cols_top = card.top + HEADER_H;
-        g.fill(rect(card.left + 1.0, cols_top - 0.5, card.right - card.left - 2.0, 1.0), rgb(t.divider));
-        let size_w = 96.0;
+        // Column titles, the explorer's (its font and placeholder ink).
+        let hy = card.top + HEADER_H;
+        g.fill(rect(card.left + 1.0, hy - 0.5, card.right - card.left - 2.0, g.px()), rgb(t.divider));
         let date_w = if card.right - card.left > 560.0 { 150.0 } else { 0.0 };
-        let name_x = card.left + pad + THUMB + 10.0;
-        let size_r = card.right - pad - date_w - 12.0;
-        let col_y = rect(0.0, cols_top, 0.0, COLS_H);
-        g.text(&wide("Name"), &g.fonts.caption, D2D_RECT_F { left: name_x, right: size_r - size_w, ..col_y }, rgb(t.label), Align::Left);
-        g.text(&wide("Size"), &g.fonts.caption, D2D_RECT_F { left: size_r - size_w, right: size_r, ..col_y }, rgb(t.label), Align::Right);
+        let size_r = list.right - date_w - 4.0;
+        let size_w = 100.0;
+        let name_x = list.left + 6.0 + geo.icon.0 + 8.0;
+        let col_y = rect(0.0, hy + 2.0, 0.0, COLS_H);
+        g.text(&wide("Name"), &g.fonts.body, D2D_RECT_F { left: list.left + 8.0, right: size_r - size_w, ..col_y }, rgb(t.placeholder), Align::Left);
+        g.text(&wide("Size"), &g.fonts.body, D2D_RECT_F { left: size_r - size_w, right: size_r - 10.0, ..col_y }, rgb(t.placeholder), Align::Right);
         if date_w > 0.0 {
-            g.text(&wide("Modified"), &g.fonts.caption, D2D_RECT_F { left: card.right - pad - date_w, right: card.right - pad, ..col_y }, rgb(t.label), Align::Left);
+            g.text(&wide("Date modified"), &g.fonts.body, D2D_RECT_F { left: size_r + 8.0, right: list.right, ..col_y }, rgb(t.placeholder), Align::Left);
         }
 
-        // The rows.
+        // The rows, as the explorer draws them.
         let Some(a) = self.archive.as_ref() else { return };
-        let up = !a.dir.is_empty() as usize;
-        let total_rows = a.rows.len() + up;
-        let view_h = list.bottom - list.top;
-        let max_scroll = (total_rows as f32 * ROW_H - view_h).max(0.0);
+        let total = a.rows.len();
+        let view_h = (list.bottom - list.top).max(1.0);
+        let max_scroll = (total as f32 * rh - view_h).max(0.0);
         let scroll = a.scroll.clamp(0.0, max_scroll);
-        g.push_clip(list);
-        let first = (scroll / ROW_H) as usize;
-        let last = ((scroll + view_h) / ROW_H).ceil() as usize;
-        let mut draws = Vec::new();
-        for i in first..last.min(total_rows) {
-            let y = list.top + i as f32 * ROW_H - scroll;
-            let r = D2D_RECT_F { left: card.left + 6.0, top: y + 1.0, right: card.right - 6.0, bottom: y + ROW_H - 1.0 };
-            draws.push((i, r));
-        }
-        for (i, r) in draws {
-            let (hit, entry, selected) = if i < up {
-                (Hit::ArchiveUp, None, false)
-            } else {
-                let row = i - up;
-                let a = self.archive.as_ref().unwrap();
-                (Hit::ArchiveRow(row as u32), a.entry(row).cloned(), a.selected.contains(&row))
-            };
-            let clipped = D2D_RECT_F { top: r.top.max(list.top), bottom: r.bottom.min(list.bottom), ..r };
-            if clipped.bottom > clipped.top {
-                self.hits.add(hit, clipped);
+        self.hits.add(Hit::ArchiveList, D2D_RECT_F { left: card.left, right: card.right, ..list });
+        g.push_clip(D2D_RECT_F { left: card.left, right: card.right, ..list });
+        let first = (scroll / rh).floor() as usize;
+        let last = (((scroll + view_h) / rh).ceil() as usize + 1).min(total);
+        let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
+        let dragging = self.explorer.row_drag.as_ref().is_some_and(|d| d.active);
+        let drop_dir = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.into.clone());
+        let many = a.selected.len() > 1;
+        for vi in first..last {
+            let row_r = rect(list.left, g.snap(list.top + vi as f32 * rh - scroll), list.right - list.left, rh);
+            let visible = D2D_RECT_F { top: row_r.top.max(list.top), bottom: row_r.bottom.min(list.bottom), ..row_r };
+            if visible.bottom > visible.top {
+                self.hits.add(Hit::ArchiveRow(vi as u32), visible);
             }
-            let hover = self.hover == Some(hit);
-            if selected {
-                g.fill_round(r, 6.0, rgb(t.row_select));
-            } else if hover {
-                g.fill_round(r, 6.0, rgb(t.hover_fill));
+            let a = self.archive.as_ref().unwrap();
+            let Some(e) = a.entry(vi).cloned() else { break };
+            let selected = a.selected.contains(&vi);
+            let cursor = a.anchor == Some(vi);
+            let is_target = drop_dir.as_deref().is_some_and(|d| e.dir && d == e.path);
+            let hovered = self.hover == Some(Hit::ArchiveRow(vi as u32)) && !dragging;
+            let hover = self.fades.hover(Hit::ArchiveRow(vi as u32), hovered);
+            let lit = hovered && self.pressed == Some(Hit::ArchiveRow(vi as u32)) && self.archive.as_ref().is_some_and(|a| a.rubber.is_none());
+            let solid = self.fades.get(Hit::ArchiveSolid(vi as u32), selected && many);
+            let fr = D2D_RECT_F { bottom: row_r.bottom - g.px(), ..row_r };
+            if vi % 2 == 1 {
+                g.fill_round(row_r, 4.0, rgb(t.stripe));
             }
-            let icon_r = rect(card.left + pad, r.top + (r.bottom - r.top - THUMB) / 2.0, THUMB, THUMB);
-            let (name, size, date, dir) = match &entry {
-                None => ("..".to_string(), String::new(), String::new(), true),
-                Some(e) => (
-                    e.name().to_string() + if e.encrypted { "  \u{1f512}" } else { "" },
-                    if e.dir { String::new() } else { format_bytes(e.size as u64) },
-                    date_text(e.mtime),
-                    e.dir,
-                ),
-            };
-            let thumb = entry.as_ref().and_then(|e| self.archive.as_ref().unwrap().thumbs.get(&e.path).cloned());
-            if let Some(b) = thumb {
-                let s = unsafe { b.GetSize() };
-                let k = (THUMB / s.width.max(1.0)).min(THUMB / s.height.max(1.0));
-                let (w, h) = (s.width * k, s.height * k);
-                g.draw_bitmap(&b, rect(icon_r.left + (THUMB - w) / 2.0, icon_r.top + (THUMB - h) / 2.0, w, h), 1.0);
-            } else if dir {
-                super::explorer_view::shell_icon_at(g, &crate::shell_icons::Kind::Folder, icon_r, 20.0, 1.0, None);
-            } else {
-                let ext = entry.as_ref().and_then(|e| Path::new(e.name()).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase)).unwrap_or_default();
-                if !super::explorer_view::shell_icon_at(g, &crate::shell_icons::Kind::Extension(ext), icon_r, 20.0, 1.0, None) {
-                    g.text(&[0xE7C3], &g.fonts.icons, icon_r, rgb(t.label), Align::Center);
+            const SOLID: f32 = 0.6;
+            if lit {
+                g.fill_round(row_r, 4.0, gfx::rgba(t.accent, SOLID));
+            } else if solid > 0.01 {
+                if solid < 0.99 && selected {
+                    g.fill_round(fr, 4.0, rgb(t.selected));
+                }
+                g.fill_round(fr, 4.0, gfx::rgba(t.accent, solid * SOLID));
+            } else if selected || is_target {
+                g.fill_round(row_r, 4.0, rgb(t.selected));
+            } else if hover > 0.0 {
+                g.fill_round(row_r, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
+            }
+            let lit = lit || solid > 0.5;
+            if !lit {
+                if is_target || (cursor && selected) {
+                    ui::stroke(g, row_r, 4.0, rgb(t.accent));
+                } else if hover > 0.0 {
+                    ui::stroke(g, row_r, 4.0, gfx::rgba(t.accent, hover));
                 }
             }
-            let row_y = D2D_RECT_F { top: r.top, bottom: r.bottom, left: 0.0, right: 0.0 };
-            g.text(&wide(&name), &g.fonts.caption, D2D_RECT_F { left: name_x, right: size_r - size_w - 8.0, ..row_y }, rgb(t.text), Align::Left);
-            g.text_tabular(&wide(&size), &g.fonts.caption, D2D_RECT_F { left: size_r - size_w, right: size_r, ..row_y }, rgb(t.label), Align::Right);
+            let ink = |c: u32| if lit { rgb(t.on_accent) } else { rgb(c) };
+            let fade: f32 = if e.encrypted { 0.45 } else { 1.0 };
+            // The picture: its thumbnail, else Looker's (or Windows') icon for the type, a folder's.
+            let ib = rect(list.left + 6.0, row_r.top + (rh - geo.icon.1) / 2.0, geo.icon.0, geo.icon.1);
+            let thumb = self.archive.as_ref().unwrap().thumbs.get(&e.path).cloned();
+            let dip = if geo.icon.1 >= 32.0 { geo.icon.1.min(48.0).floor() } else { 16.0 };
+            if let Some(b) = thumb {
+                let s = unsafe { b.GetSize() };
+                let k = (geo.icon.0 / s.width.max(1.0)).min(geo.icon.1 / s.height.max(1.0));
+                let (w, h) = (s.width * k, s.height * k);
+                g.fill_round(ib, 2.0, rgb(t.field));
+                g.draw_bitmap(&b, rect(ib.left + (geo.icon.0 - w) / 2.0, ib.top + (geo.icon.1 - h) / 2.0, w, h), 1.0);
+            } else if e.dir {
+                super::explorer_view::shell_icon(g, &crate::shell_icons::Kind::Folder, ib, 1.0, lit.then_some(t.on_accent));
+            } else {
+                let ext = Path::new(e.name()).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+                let mine = crate::file_icons::icon(&ext, (dip * g.dpi / 96.0).round() as u32);
+                if let Some(icon) = mine {
+                    g.draw_icon(&icon, ib, dip, fade.max(0.8), lit.then_some(t.on_accent));
+                } else if !super::explorer_view::shell_icon_at(g, &crate::shell_icons::Kind::Extension(ext), ib, dip, fade.max(0.8), lit.then_some(t.on_accent)) {
+                    g.text(&[0xE7C3], &g.fonts.body_icons, ib, ink(t.icon), Align::Center);
+                }
+            }
+            let row_y = D2D_RECT_F { top: row_r.top, bottom: row_r.bottom, left: 0.0, right: 0.0 };
+            let label = if e.encrypted { format!("{}  \u{1f512}", e.name()) } else { e.name().to_string() };
+            g.text(&wide(&label), &g.fonts.body, D2D_RECT_F { left: name_x, right: size_r - size_w - 8.0, ..row_y }, ink(t.text), Align::Left);
+            if !e.dir {
+                g.text_tabular(&wide(&format_bytes(e.size as u64)), &g.fonts.body, D2D_RECT_F { left: size_r - size_w, right: size_r - 10.0, ..row_y }, ink(t.placeholder), Align::Right);
+            }
             if date_w > 0.0 {
-                g.text_tabular(&wide(&date), &g.fonts.caption, D2D_RECT_F { left: card.right - pad - date_w, right: card.right - pad, ..row_y }, rgb(t.label), Align::Left);
+                g.text_tabular(&wide(&date_text(e.mtime)), &g.fonts.body, D2D_RECT_F { left: size_r + 8.0, right: list.right, ..row_y }, ink(t.placeholder), Align::Left);
             }
         }
-        // Reading, or nothing to read.
+        // The selection rectangle, inside the list.
         let a = self.archive.as_ref().unwrap();
+        if let Some(m) = a.rubber.as_ref().filter(|m| m.active) {
+            let (x0, y0) = (m.start.0, m.start.1 - scroll + list.top);
+            let (x1, y1) = m.pointer;
+            let r = D2D_RECT_F { left: x0.min(x1).max(list.left), top: y0.min(y1).max(list.top), right: x0.max(x1).min(list.right), bottom: y0.max(y1).min(list.bottom) };
+            if r.right > r.left && r.bottom > r.top {
+                g.fill(r, gfx::rgba(t.accent, 0.14));
+                g.outline_round(r, 0.0, rgb(t.accent), g.px());
+            }
+        }
+        // A drop into this folder (the list itself, not a folder row): the list outlined.
+        if drop_dir.as_deref().is_some_and(|d| d == a.dir) {
+            ui::stroke(g, D2D_RECT_F { top: list.top + 1.0, bottom: list.bottom - 1.0, ..list }, 6.0, rgb(t.accent));
+        }
         let note = match &a.entries {
             None => Some("Reading\u{2026}".to_string()),
             Some(Err(e)) => Some(format!("Can't read this archive: {e}")),
-            Some(Ok(_)) if a.rows.is_empty() && a.dir.is_empty() => Some("This archive is empty".to_string()),
+            Some(Ok(_)) if a.rows.is_empty() => Some(if a.dir.is_empty() { "This archive is empty" } else { "This folder is empty" }.to_string()),
             _ => None,
         };
         g.pop_clip();
         if let Some(n) = note {
-            g.text(&wide(&n), &g.fonts.caption, list, rgb(t.label), Align::Center);
+            g.text(&wide(&n), &g.fonts.body, rect(list.left, list.top + 12.0, list.right - list.left, 24.0), rgb(t.placeholder), Align::Center);
+        }
+        // The scrollbar, when the list overflows (the explorer's thumb).
+        if max_scroll > 0.0 {
+            let thumb_h = (view_h * view_h / (total as f32 * rh)).max(28.0);
+            let ty = list.top + (view_h - thumb_h) * scroll / max_scroll;
+            ui::scroll_thumb(g, rect(card.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), false);
         }
 
-        // The footer: what's here, or the extraction's progress.
+        // The footer: what's here, or the work's progress.
         let foot = D2D_RECT_F { top: card.bottom - FOOT_H, ..card };
-        g.fill(rect(card.left + 1.0, foot.top, card.right - card.left - 2.0, 1.0), rgb(t.divider));
-        let text_r = D2D_RECT_F { left: card.left + pad, right: card.right - pad, ..foot };
+        let text_r = D2D_RECT_F { left: card.left + 16.0, right: card.right - 16.0, ..foot };
         if let Some(w) = &a.work {
             let (written, file) = w.state.lock().map(|s| (s.written, s.name.clone())).unwrap_or_default();
             let k = if w.total > 0 { (written as f64 / w.total as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            let what = if w.open.is_some() { "Opening" } else { "Extracting" };
-            let cancel_w = 70.0;
-            let r_cancel = rect(card.right - pad - cancel_w, foot.top + 4.0, cancel_w, FOOT_H - 8.0);
-            let bar = rect(text_r.left, foot.bottom - 6.0, r_cancel.left - 12.0 - text_r.left, 2.0);
+            let what = match w.kind {
+                WorkKind::Extract(_) => "Extracting",
+                WorkKind::Add(_) => "Adding",
+            };
+            let cancel_w = 76.0;
+            let r_cancel = rect(card.right - 12.0 - cancel_w, foot.top + 8.0, cancel_w, FOOT_H - 16.0);
+            let bar = rect(text_r.left, foot.bottom - 9.0, r_cancel.left - 12.0 - text_r.left, 2.0);
             g.fill_round(bar, 1.0, rgb(t.track));
             g.fill_round(D2D_RECT_F { right: bar.left + (bar.right - bar.left) * k, ..bar }, 1.0, rgb(t.accent));
-            g.text(&wide(&format!("{what} {file}\u{2026} {:.0} %", k * 100.0)), &g.fonts.caption, D2D_RECT_F { right: r_cancel.left - 12.0, bottom: foot.bottom - 6.0, ..text_r }, rgb(t.text), Align::Left);
+            g.text(&wide(&format!("{what} {file}\u{2026} {:.0} %", k * 100.0)), &g.fonts.body, D2D_RECT_F { right: r_cancel.left - 12.0, bottom: foot.bottom - 10.0, ..text_r }, rgb(t.label), Align::Left);
             self.hits.add(Hit::ArchiveCancel, r_cancel);
             let st = self.state(Hit::ArchiveCancel, true);
             let fg = ui::quiet_frame(g, r_cancel, ui::Kind::Standard, &st);
-            g.text(&wide("Cancel"), &g.fonts.caption, r_cancel, fg, Align::Center);
-        } else if let Some(Ok(list)) = &a.entries {
-            let files = list.iter().filter(|e| !e.dir).count();
-            let bytes: i64 = list.iter().map(|e| e.size).sum();
-            let enc = list.iter().filter(|e| e.encrypted).count();
+            g.text(&wide("Cancel"), &g.fonts.body, r_cancel, fg, Align::Center);
+        } else if let Some(all) = a.list() {
+            let files = all.iter().filter(|e| !e.dir).count();
+            let bytes: i64 = all.iter().map(|e| e.size).sum();
+            let enc = all.iter().filter(|e| e.encrypted).count();
             let mut s = format!("{files} file{} \u{b7} {} unpacked", if files == 1 { "" } else { "s" }, format_bytes(bytes as u64));
             if enc > 0 {
                 s.push_str(&format!(" \u{b7} {enc} encrypted (can't be opened)"));
@@ -480,104 +625,275 @@ impl App {
             if nsel > 0 {
                 s = format!("{nsel} selected \u{b7} {s}");
             }
-            g.text(&wide(&s), &g.fonts.caption, text_r, rgb(t.label), Align::Left);
+            g.text(&wide(&s), &g.fonts.body, text_r, rgb(t.label), Align::Left);
         }
     }
 
-    /// A press on row `row`: selects it (Ctrl adds or takes it away, Shift reaches from the last one).
-    pub(super) fn archive_press(&mut self, row: usize) {
+    // --- Pointer -----------------------------------------------------------------------------------------------
+
+    /// A press on the list at (x, y): on a row's name, it selects (Ctrl adds or takes away, Shift reaches from the
+    /// cursor) and may become a drag; beside the names or under the rows, the selection rectangle.
+    pub(super) fn archive_press(&mut self, x: f32, y: f32) {
         let (ctrl, shift) = unsafe { (GetKeyState(VK_CONTROL.0 as i32) < 0, GetKeyState(VK_SHIFT.0 as i32) < 0) };
+        let geo = self.archive_geom();
+        let row = self.archive_row_at(y);
+        let on_name = x >= geo.name.0 && x <= geo.name.1;
         let Some(a) = self.archive.as_mut() else { return };
-        if shift {
-            let from = a.anchor.unwrap_or(row);
-            if !ctrl {
+        let scroll = a.scroll;
+        match row {
+            Some(r) if on_name => {
+                if shift {
+                    let from = a.anchor.unwrap_or(r);
+                    if !ctrl {
+                        a.selected.clear();
+                    }
+                    a.selected.extend(from.min(r)..=from.max(r));
+                } else if ctrl {
+                    if !a.selected.remove(&r) {
+                        a.selected.insert(r);
+                    }
+                    a.anchor = Some(r);
+                } else if a.selected.contains(&r) {
+                    // Maybe a drag of all of them: a plain click picks it alone on release.
+                    a.pending = Some(r);
+                    a.anchor = Some(r);
+                } else {
+                    a.selected.clear();
+                    a.selected.insert(r);
+                    a.anchor = Some(r);
+                }
+                if a.selected.contains(&r) {
+                    self.archive_drag_start(x, y);
+                }
+            }
+            _ => {
+                let before = if ctrl { a.selected.clone() } else { BTreeSet::new() };
+                a.rubber = Some(Rubber { start: (x, y - geo.list.top + scroll), pointer: (x, y), active: false, add: ctrl, before });
+            }
+        }
+        self.invalidate();
+    }
+
+    /// The pointer moved with the button down: the rectangle selects what it crosses (scrolling past the list's
+    /// top or bottom).
+    pub(super) fn archive_pointer(&mut self, x: f32, y: f32) {
+        let geo = self.archive_geom();
+        let Some(a) = self.archive.as_mut() else { return };
+        let Some(m) = a.rubber.as_mut() else { return };
+        m.pointer = (x, y);
+        if !m.active {
+            let py = y - geo.list.top + a.scroll;
+            if (x - m.start.0).abs() + (py - m.start.1).abs() <= DRAG_START {
+                return;
+            }
+            m.active = true;
+        }
+        let out = if y < geo.list.top { y - geo.list.top } else if y > geo.list.bottom { y - geo.list.bottom } else { 0.0 };
+        let max = (a.rows.len() as f32 * geo.rh - (geo.list.bottom - geo.list.top)).max(0.0);
+        if out != 0.0 {
+            a.scroll = (a.scroll + out * 0.5).clamp(0.0, max);
+        }
+        let m = a.rubber.as_ref().unwrap();
+        let py = y.clamp(geo.list.top, geo.list.bottom) - geo.list.top + a.scroll;
+        let (top, bottom) = (m.start.1.min(py), m.start.1.max(py));
+        let n = a.rows.len();
+        let mut picked = if m.add { m.before.clone() } else { BTreeSet::new() };
+        if n > 0 && bottom >= 0.0 {
+            let first = (top / geo.rh).floor().max(0.0) as usize;
+            let last = ((bottom / geo.rh).floor().max(0.0) as usize).min(n - 1);
+            if first < n {
+                picked.extend(first..=last);
+                a.anchor = Some(if py >= m.start.1 { last } else { first });
+            }
+        }
+        a.selected = picked;
+        self.invalidate();
+    }
+
+    /// The button came up: a rectangle ends; a press on a selected row that didn't drag picks it alone; a click
+    /// on empty space (no rectangle) clears the selection.
+    pub(super) fn archive_release(&mut self, dragged: bool) {
+        let Some(a) = self.archive.as_mut() else { return };
+        if let Some(m) = a.rubber.take() {
+            if !m.active && !m.add {
                 a.selected.clear();
+                a.anchor = None;
             }
-            a.selected.extend(from.min(row)..=from.max(row));
-        } else if ctrl {
-            if !a.selected.remove(&row) {
-                a.selected.insert(row);
-            }
-            a.anchor = Some(row);
-        } else {
+        }
+        if let Some(r) = a.pending.take().filter(|_| !dragged) {
             a.selected.clear();
-            a.selected.insert(row);
-            a.anchor = Some(row);
+            a.selected.insert(r);
         }
         self.invalidate();
     }
 
-    /// A press on the list away from the rows: nothing selected.
-    pub(super) fn archive_press_empty(&mut self) {
-        if let Some(a) = self.archive.as_mut() {
-            a.selected.clear();
-            a.anchor = None;
-        }
-        self.invalidate();
-    }
-
-    /// Opens row `row`: a folder goes in; a file is unpacked with its folder's other files (into the cache) and
-    /// opened in Looker.
-    pub(super) fn archive_open(&mut self, row: usize) {
+    /// A double-click: a folder goes in. A file does nothing (Faye, 2026-11-12).
+    pub(super) fn archive_double(&mut self, y: f32) {
+        let Some(r) = self.archive_row_at(y) else { return };
         let Some(a) = self.archive.as_mut() else { return };
-        let Some(e) = a.entry(row).cloned() else { return };
-        if e.dir {
-            a.show_dir(e.path);
+        if let Some(e) = a.entry(r).filter(|e| e.dir).cloned() {
+            a.go(e.path);
             self.invalidate();
-            return;
         }
-        if e.encrypted {
-            self.show_toast("That file is encrypted: Looker can't open it", false);
-            return;
-        }
-        if a.work.is_some() {
-            return;
-        }
-        // The cache folder: one per archive (by its path, size and time), the folder's files unpacked there once.
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        a.path.hash(&mut h);
-        if let Ok(m) = std::fs::metadata(&a.path) {
-            m.len().hash(&mut h);
-            m.modified().ok().hash(&mut h);
-        }
-        let cache = std::env::temp_dir().join("looker-archive").join(format!("{:016x}", h.finish()));
-        let dest = if a.dir.is_empty() { cache.clone() } else { arc::safe_target(&cache, &a.dir, "").unwrap_or(cache.clone()) };
-        let Some(target) = arc::safe_target(&dest, e.name(), "") else { return };
-        if target.metadata().is_ok_and(|m| m.len() as i64 == e.size) {
-            self.open(target);
-            return;
-        }
-        let prefix = if a.dir.is_empty() { String::new() } else { format!("{}/", a.dir) };
-        let siblings: std::collections::HashSet<String> = a.rows.iter().filter_map(|&i| a.entries.as_ref()?.as_ref().ok()?.get(i)).filter(|s| !s.dir).map(|s| s.path.clone()).collect();
-        let total = a.rows.iter().filter_map(|&i| a.entries.as_ref()?.as_ref().ok()?.get(i)).filter(|s| !s.dir).map(|s| s.size.max(0) as u64).sum();
-        let strip = prefix.trim_end_matches('/').to_string();
-        self.archive_run(Box::new(move |en: &Entry| siblings.contains(&en.path)), strip, dest, total, Some(target));
     }
 
-    /// Up a folder (`..`, Backspace).
+    /// Up a folder (Up, Backspace).
     pub(super) fn archive_up(&mut self) {
         let Some(a) = self.archive.as_mut() else { return };
         if a.dir.is_empty() {
             return;
         }
         let up = a.dir.rsplit_once('/').map_or(String::new(), |(p, _)| p.to_string());
-        a.show_dir(up);
+        a.go(up);
         self.invalidate();
+    }
+
+    /// Back (and the mouse's Back button) / Forward: the folders visited. False when there's nowhere to go, so the
+    /// button falls through to the files viewed.
+    pub(super) fn archive_history(&mut self, back: bool) -> bool {
+        let Some(a) = self.archive.as_mut() else { return false };
+        let to = if back { a.back.pop() } else { a.forward.pop() };
+        let Some(to) = to else { return false };
+        let cur = std::mem::take(&mut a.dir);
+        if back {
+            a.forward.push(cur);
+        } else {
+            a.back.push(cur);
+        }
+        a.show_dir(to);
+        self.invalidate();
+        true
     }
 
     /// The header's path: part `i` (0, the archive's top).
     pub(super) fn archive_crumb(&mut self, i: usize) {
         let Some(a) = self.archive.as_mut() else { return };
         let to: Vec<&str> = a.dir.split('/').filter(|s| !s.is_empty()).take(i).collect();
-        a.show_dir(to.join("/"));
+        let to = to.join("/");
+        a.go(to);
         self.invalidate();
+    }
+
+    // --- Dragging ----------------------------------------------------------------------------------------------
+
+    /// What's selected, as the explorer's row drag carries it: stand-in paths under the archive (for its card's
+    /// name and count) and the entries themselves.
+    fn archive_drag_start(&mut self, x: f32, y: f32) {
+        let Some(a) = self.archive.as_ref() else { return };
+        let entries: Vec<String> = a.selected.iter().filter_map(|&r| a.entry(r)).map(|e| e.path.clone()).collect();
+        if entries.is_empty() {
+            return;
+        }
+        let paths = entries.iter().map(|p| a.path.join(p.replace('/', "\\"))).collect();
+        let src = super::explorer::ArchiveSource { archive: a.path.clone(), entries, strip: a.dir.clone() };
+        self.explorer.row_drag = Some(super::explorer::RowDrag {
+            start: (x, y),
+            paths,
+            active: false,
+            target: None,
+            target_rect: None,
+            opened: std::time::Instant::now(),
+            archive: Some(src),
+            into: None,
+        });
+    }
+
+    /// While the explorer's rows are dragged over the card: the folder of the archive a drop would add them to (a
+    /// folder row's, else the one showing) and what stands for it. None over anything else, for archive rows
+    /// themselves, or when the archive can't take files (RAR, CAB, ISO, encrypted...).
+    /// The rect is None for the folder showing (the list outlines itself; a filled drop box over the whole list was a
+    /// wall of red).
+    pub(super) fn archive_drop_at(&mut self, x: f32, y: f32) -> Option<(String, Option<D2D_RECT_F>)> {
+        if !self.archive_shown() || self.explorer.row_drag.as_ref().is_some_and(|d| d.archive.is_some()) {
+            return None;
+        }
+        let hit = self.hit(x, y)?;
+        if !matches!(hit, Hit::ArchiveCard | Hit::ArchiveList | Hit::ArchiveRow(_)) {
+            return None;
+        }
+        let geo = self.archive_geom();
+        let a = self.archive.as_mut()?;
+        a.list()?;
+        if a.writable.is_none() {
+            a.writable = Some(arc::can_add(&a.path));
+        }
+        if a.writable.as_ref().is_some_and(|w| w.is_err()) {
+            return None;
+        }
+        if let Hit::ArchiveRow(i) = hit {
+            if let Some(e) = a.entry(i as usize).filter(|e| e.dir) {
+                return Some((e.path.clone(), Some(self.hits.rect_of(hit)?)));
+            }
+        }
+        let _ = geo;
+        Some((a.dir.clone(), None))
+    }
+
+    /// Why files can't be dropped in, when that's known (for the drag card).
+    pub(super) fn archive_drop_refused(&self) -> Option<String> {
+        self.archive.as_ref()?.writable.as_ref()?.as_ref().err().cloned()
+    }
+
+    /// Archive rows dropped onto a folder: extracted there.
+    pub(super) fn archive_drop_out(&mut self, src: super::explorer::ArchiveSource, dest: PathBuf) {
+        let chosen = src.entries.clone();
+        let pick = move |en: &Entry| chosen.iter().any(|c| en.path == *c || en.path.starts_with(&format!("{c}/")));
+        let total = self.archive.as_ref().and_then(|a| a.list()).map_or(0, |l| l.iter().filter(|e| !e.dir && pick(e)).map(|e| e.size.max(0) as u64).sum());
+        self.archive_run(Box::new(pick), src.strip, dest, total);
+    }
+
+    /// Files dropped onto the card: added to the archive, in folder `dir`.
+    pub(super) fn archive_drop_in(&mut self, paths: Vec<PathBuf>, dir: String) {
+        let Some(a) = self.archive.as_mut() else { return };
+        if a.work.is_some() || paths.is_empty() {
+            return;
+        }
+        let total = paths.iter().map(|p| dir_size(p)).sum();
+        let state = Arc::new(Mutex::new(WorkState::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (s, c, path, d) = (state.clone(), cancel.clone(), a.path.clone(), dir.clone());
+        // The thumbnail thread may still be reading it: stop that first.
+        a.thumb_gen.fetch_add(1, Ordering::Relaxed);
+        std::thread::Builder::new()
+            .name("archive-add".into())
+            .spawn(move || {
+                let r = arc::add(&path, &paths, &d, &mut |written, name| {
+                    if let Ok(mut st) = s.lock() {
+                        st.written = written;
+                        st.name = name.to_string();
+                    }
+                    !c.load(Ordering::Relaxed)
+                });
+                if let Ok(mut st) = s.lock() {
+                    st.result = Some(r.map(|n| (n, 0, 0)));
+                }
+            })
+            .ok();
+        a.work = Some(Work { state, cancel, total, kind: WorkKind::Add(dir) });
+        self.invalidate();
+    }
+
+    /// Archive rows dragged out of the window: extracted to a temporary folder (they're small, or the wait is the
+    /// price), then handed to Windows' drag as those files.
+    pub(super) fn archive_drag_files(&mut self, src: &super::explorer::ArchiveSource) -> Vec<PathBuf> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        src.archive.hash(&mut h);
+        src.entries.hash(&mut h);
+        let dest = std::env::temp_dir().join("looker-archive-drag").join(format!("{:016x}", h.finish()));
+        let _ = std::fs::remove_dir_all(&dest);
+        let chosen = src.entries.clone();
+        let pick = |en: &Entry| chosen.iter().any(|c| en.path == *c || en.path.starts_with(&format!("{c}/")));
+        if arc::extract(&src.archive, &dest, &src.strip, &pick, &mut |_, _| true).is_err() {
+            return Vec::new();
+        }
+        src.entries.iter().filter_map(|e| arc::safe_target(&dest, e, &src.strip)).filter(|p| p.exists()).collect()
     }
 
     /// What Extract takes: the rows selected (folders with all inside), from the folder showing; else all of it.
     fn archive_pick(&self) -> Option<(Box<dyn Fn(&Entry) -> bool + Send>, String, u64)> {
         let a = self.archive.as_ref()?;
-        let list = a.entries.as_ref()?.as_ref().ok()?;
+        let list = a.list()?;
         if a.selected.is_empty() {
             let total = list.iter().filter(|e| !e.dir).map(|e| e.size.max(0) as u64).sum();
             return Some((Box::new(|_: &Entry| true), String::new(), total));
@@ -600,7 +916,7 @@ impl App {
             n += 1;
         }
         let Some((pick, strip, total)) = self.archive_pick() else { return };
-        self.archive_run(pick, strip, dest, total, None);
+        self.archive_run(pick, strip, dest, total);
     }
 
     /// Extract to…: into a folder picked.
@@ -608,7 +924,7 @@ impl App {
         let Some(start) = self.archive.as_ref().and_then(|a| a.path.parent().map(Path::to_path_buf)) else { return };
         let Some(dest) = (unsafe { self.pick_folder(&start) }) else { return };
         let Some((pick, strip, total)) = self.archive_pick() else { return };
-        self.archive_run(pick, strip, dest, total, None);
+        self.archive_run(pick, strip, dest, total);
     }
 
     /// A folder picker opening at `start`.
@@ -631,8 +947,11 @@ impl App {
     }
 
     /// Runs an extraction on a thread of its own: the footer shows it, Cancel stops it.
-    fn archive_run(&mut self, pick: Box<dyn Fn(&Entry) -> bool + Send>, strip: String, dest: PathBuf, total: u64, open: Option<PathBuf>) {
+    fn archive_run(&mut self, pick: Box<dyn Fn(&Entry) -> bool + Send>, strip: String, dest: PathBuf, total: u64) {
         let Some(a) = self.archive.as_mut() else { return };
+        if a.work.is_some() {
+            return;
+        }
         let state = Arc::new(Mutex::new(WorkState::default()));
         let cancel = Arc::new(AtomicBool::new(false));
         let (s, c, path, d) = (state.clone(), cancel.clone(), a.path.clone(), dest.clone());
@@ -650,11 +969,11 @@ impl App {
                 });
                 let r = if c.load(Ordering::Relaxed) { Err("cancelled".to_string()) } else { r };
                 if let Ok(mut st) = s.lock() {
-                    st.result = Some(r);
+                    st.result = Some(r.map(|x| (x.files, x.skipped_encrypted, x.failed)));
                 }
             })
             .ok();
-        a.work = Some(Work { state, cancel, total, open, dest });
+        a.work = Some(Work { state, cancel, total, kind: WorkKind::Extract(dest) });
         self.invalidate();
     }
 
@@ -664,23 +983,22 @@ impl App {
         }
     }
 
-    /// The wheel over the card: three rows a notch.
+    /// The wheel over the card: the explorer's step (52 DIPs a notch).
     pub(super) fn archive_wheel(&mut self, delta: f32) {
-        let (_, list) = self.archive_rects();
-        let up = self.archive_up_row();
+        let geo = self.archive_geom();
         let Some(a) = self.archive.as_mut() else { return };
-        let max = ((a.rows.len() + up) as f32 * ROW_H - (list.bottom - list.top)).max(0.0);
-        a.scroll = (a.scroll - delta / 120.0 * ROW_H * 3.0).clamp(0.0, max);
+        let max = (a.rows.len() as f32 * geo.rh - (geo.list.bottom - geo.list.top)).max(0.0);
+        a.scroll = (a.scroll - delta / 120.0 * 52.0).clamp(0.0, max);
         self.invalidate();
     }
 
-    /// Keys while an archive shows: ↑/↓ move (Shift extends), Enter opens, Backspace goes up, Ctrl+A selects all.
+    /// Keys while an archive shows: ↑/↓ move (Shift extends), Enter goes into a folder, Backspace goes up,
+    /// Alt+←/→ back and forward, Ctrl+A selects all.
     pub(super) fn archive_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
         if !self.archive_shown() || self.page_open() || self.menu.is_some() {
             return false;
         }
-        let (_, list) = self.archive_rects();
-        let up = self.archive_up_row();
+        let geo = self.archive_geom();
         let Some(a) = self.archive.as_mut() else { return false };
         let n = a.rows.len();
         match vk {
@@ -690,27 +1008,23 @@ impl App {
             VK_UP | VK_DOWN if n > 0 => {
                 let cur = a.anchor.unwrap_or(if vk == VK_DOWN { usize::MAX } else { n });
                 let next = if vk == VK_DOWN { cur.wrapping_add(1).min(n - 1) } else { cur.saturating_sub(1) };
-                if shift {
-                    a.selected.insert(next);
-                } else {
+                if !shift {
                     a.selected.clear();
-                    a.selected.insert(next);
                 }
+                a.selected.insert(next);
                 a.anchor = Some(next);
-                // Keep it in view.
-                let y = (next + up) as f32 * ROW_H;
-                let h = list.bottom - list.top;
+                let y = next as f32 * geo.rh;
+                let h = geo.list.bottom - geo.list.top;
                 if y < a.scroll {
                     a.scroll = y;
-                } else if y + ROW_H > a.scroll + h {
-                    a.scroll = y + ROW_H - h;
+                } else if y + geo.rh > a.scroll + h {
+                    a.scroll = y + geo.rh - h;
                 }
             }
             VK_RETURN => {
-                if let Some(r) = a.anchor.filter(|r| a.selected.contains(r)) {
-                    self.archive_open(r);
+                if let Some(e) = a.anchor.filter(|r| a.selected.contains(r)).and_then(|r| a.entry(r)).filter(|e| e.dir).cloned() {
+                    a.go(e.path);
                 }
-                return true;
             }
             VK_BACK => {
                 self.archive_up();
@@ -720,5 +1034,14 @@ impl App {
         }
         self.invalidate();
         true
+    }
+}
+
+/// A file's size, or everything in a folder.
+fn dir_size(p: &Path) -> u64 {
+    if p.is_dir() {
+        std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| dir_size(&e.path())).sum()).unwrap_or(0)
+    } else {
+        std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
     }
 }

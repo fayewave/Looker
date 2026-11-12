@@ -127,6 +127,19 @@ pub(super) struct RowDrag {
     pub target_rect: Option<D2D_RECT_F>,
     /// When it became a drag: the card fades in from then.
     pub opened: Instant,
+    /// Rows of an archive (app/archive.rs), not files: a drop extracts them.
+    pub archive: Option<ArchiveSource>,
+    /// Over an archive's card: the folder of it a drop adds the files to (`target` is the archive).
+    pub into: Option<String>,
+}
+
+/// What an archive row drag carries: the archive, its entries' paths, and the folder of it they're shown in (taken
+/// off their paths when they're extracted).
+#[derive(Clone)]
+pub(super) struct ArchiveSource {
+    pub archive: PathBuf,
+    pub entries: Vec<String>,
+    pub strip: String,
 }
 
 /// The key the sidebar's Network computers are kept under in `Explorer::children`.
@@ -2709,7 +2722,14 @@ impl App {
             let _ = ReleaseCapture();
         }
         self.invalidate();
-        crate::clipboard::drag_files(self.hwnd, &d.paths);
+        // Archive rows: extracted to a temporary folder first, then dragged as those files.
+        let paths = match &d.archive {
+            Some(src) => self.archive_drag_files(src),
+            None => d.paths,
+        };
+        if !paths.is_empty() {
+            crate::clipboard::drag_files(self.hwnd, &paths);
+        }
         self.invalidate();
     }
 
@@ -3134,7 +3154,7 @@ impl App {
     pub(super) fn explorer_row_press(&mut self, vi: usize, x: f32, y: f32) {
         let Some(r) = self.explorer.row(vi).cloned() else { return };
         let paths = if self.explorer.is_selected(&r.path) { self.explorer.targets() } else { vec![r.path] };
-        self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None, target_rect: None, opened: Instant::now() });
+        self.explorer.row_drag = Some(RowDrag { start: (x, y), paths, active: false, target: None, target_rect: None, opened: Instant::now(), archive: None, into: None });
     }
 
     /// Whether a press at (x, y) on the list starts a selection rectangle rather than a drag of rows: on empty
@@ -3224,14 +3244,24 @@ impl App {
             return;
         }
         let target = self.drop_target_at(x, y);
+        // Over an archive's card: into the archive (files only; its own rows aren't dropped back in).
+        let into = if target.is_none() { self.archive_drop_at(x, y) } else { None };
+        let archive = self.archive.as_ref().map(|a| a.path.clone());
         let started = self.explorer.row_drag.as_ref().is_some_and(|d| !d.active);
         if let Some(d) = &mut self.explorer.row_drag {
             if !d.active {
                 d.opened = Instant::now();
             }
             d.active = true;
-            d.target_rect = target.as_ref().map(|t| t.1);
-            d.target = target.map(|t| t.0);
+            if let (Some((dir, r)), Some(ar)) = (into, archive) {
+                d.target_rect = r;
+                d.target = Some(ar);
+                d.into = Some(dir);
+            } else {
+                d.target_rect = target.as_ref().map(|t| t.1);
+                d.target = target.map(|t| t.0);
+                d.into = None;
+            }
         }
         if started {
             self.hide_tooltip();
@@ -3278,8 +3308,16 @@ impl App {
             return false;
         }
         if let Some(dest) = d.target {
-            let copy = self.drop_copies(&d.paths, &dest);
-            self.explorer_transfer(d.paths, dest, copy);
+            if let Some(src) = d.archive {
+                // Archive rows onto a folder: extracted there.
+                self.archive_drop_out(src, dest);
+            } else if let Some(dir) = d.into {
+                // Files onto an archive: added to it.
+                self.archive_drop_in(d.paths, dir);
+            } else {
+                let copy = self.drop_copies(&d.paths, &dest);
+                self.explorer_transfer(d.paths, dest, copy);
+            }
         }
         self.invalidate();
         true
