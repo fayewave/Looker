@@ -964,20 +964,52 @@ impl Gfx {
         }
     }
 
-    pub fn fill_round(&self, r: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
-        unsafe {
-            self.brush.SetColor(&color);
-            self.dev.dc.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, &self.brush);
+    /// The colour to draw an antialiased shape in `color` a second time over itself, so its edges look as if they
+    /// were blended in linear light (Faye, 2026-11-12: corners and curves looked slightly jagged everywhere).
+    /// Direct2D blends a partly covered edge pixel in sRGB values: a light line half over a dark ground comes out
+    /// at a quarter of its light, so on a curve, where the line is split across pixels, it thins and brightens
+    /// in steps, while straight edges on whole pixels stay crisp. Drawn twice, coverage k becomes 1 - (1 - k)^2,
+    /// close to linear light's k^(1/2.2) through the middle of the ramp (0.75 for 0.73 at a half, 0.44 for 0.53
+    /// at a quarter); whole pixels don't change. Only for opaque colours lighter than a dark theme's page (a second
+    /// pass of a translucent colour would thicken its inside; a dark shape on a light ground needs the opposite,
+    /// which drawing again can't give), fading in over the last few per cent of opacity so a hover's fade doesn't
+    /// pop at the end.
+    fn edge_pass(&self, color: D2D1_COLOR_F) -> Option<D2D1_COLOR_F> {
+        if color.a <= 0.95 {
+            return None;
+        }
+        let t = crate::theme::t();
+        let luma = |c: D2D1_COLOR_F| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+        if !t.dark || luma(color) < luma(rgb(t.content)) + 0.04 {
+            return None;
+        }
+        Some(D2D1_COLOR_F { a: color.a * ((color.a - 0.95) / 0.05).min(1.0), ..color })
+    }
+
+    /// Paints with the shared brush in `color`, then again for [`Gfx::edge_pass`] when it applies.
+    fn paint(&self, color: D2D1_COLOR_F, draw: impl Fn(&ID2D1SolidColorBrush)) {
+        unsafe { self.brush.SetColor(&color) };
+        draw(&self.brush);
+        if let Some(c) = self.edge_pass(color) {
+            unsafe { self.brush.SetColor(&c) };
+            draw(&self.brush);
         }
     }
 
+    pub fn fill_round(&self, r: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
+        let rr = D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius };
+        self.paint(color, |b| unsafe { self.dev.dc.FillRoundedRectangle(&rr, b) });
+    }
+
+    /// A line `width` wide just inside `r`'s rounded edge. Its corners are concentric with the fill's
+    /// (`radius` less half the width along the inset centre line): at the full radius the line's corners came out
+    /// squarer than the fill's, which showed past them in a faint rim on each diagonal.
     pub fn outline_round(&self, r: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F, width: f32) {
-        unsafe {
-            self.brush.SetColor(&color);
-            let h = width / 2.0;
-            let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
-            self.dev.dc.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }, &self.brush, width, None);
-        }
+        let h = width / 2.0;
+        let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
+        let rad = (radius - h).max(0.0);
+        let rr = D2D1_ROUNDED_RECT { rect: r, radiusX: rad, radiusY: rad };
+        self.paint(color, |b| unsafe { self.dev.dc.DrawRoundedRectangle(&rr, b, width, None) });
     }
 
     /// One device pixel, in DIPs: for hairlines that stay crisp at any scale.
@@ -1167,7 +1199,9 @@ impl Gfx {
 
     /// Transient's (File Pilot's) tab: rounded top corners, the bottom corners flaring out in concave curves
     /// into the line it sits on (`r`'s bottom), so the tab flows into the panel below.
-    fn tab_path(&self, r: D2D_RECT_F, top: f32, flare: f32, closed: bool) -> Option<ID2D1PathGeometry> {
+    /// `inset` is the outline's half width: its top corners are then concentric with the fill's.
+    fn tab_path(&self, r: D2D_RECT_F, top: f32, flare: f32, closed: bool, inset: f32) -> Option<ID2D1PathGeometry> {
+        let top = (top - inset).max(0.0);
         unsafe {
             let geo = self.dev.dc.GetFactory().ok()?.CreatePathGeometry().ok()?;
             let sink = geo.Open().ok()?;
@@ -1198,23 +1232,28 @@ impl Gfx {
         }
     }
 
-    pub fn fill_tab(&self, r: D2D_RECT_F, top: f32, flare: f32, color: D2D1_COLOR_F) {
-        let Some(geo) = self.tab_path(r, top, flare, true) else { return };
-        unsafe {
-            self.brush.SetColor(&color);
-            self.dev.dc.FillGeometry(&geo, &self.brush, None);
-        }
+    /// `r` with its edges on whole device pixels.
+    fn snap_rect(&self, r: D2D_RECT_F) -> D2D_RECT_F {
+        D2D_RECT_F { left: self.snap(r.left), top: self.snap(r.top), right: self.snap(r.right), bottom: self.snap(r.bottom) }
     }
 
-    /// The tab's outline (sides, top and flares; open along the bottom), a hairline.
+    /// A tab's shape (see `tab_path`), its edges snapped to device pixels as `stroke_tab`'s are.
+    pub fn fill_tab(&self, r: D2D_RECT_F, top: f32, flare: f32, color: D2D1_COLOR_F) {
+        let Some(geo) = self.tab_path(self.snap_rect(r), top, flare, true, 0.0) else { return };
+        self.paint(color, |b| unsafe { self.dev.dc.FillGeometry(&geo, b, None) });
+    }
+
+    /// The tab's outline (sides, top and flares; open along the bottom), a hairline. The tab's edges are snapped
+    /// to device pixels first: tabs sit at half pixels and slide by fractions, and a hairline on a pixel edge
+    /// spreads over two columns at half strength, so the sides came out a dim two pixels under a crisp one-pixel
+    /// top, and the shoulder between them looked jagged.
     pub fn stroke_tab(&self, r: D2D_RECT_F, top: f32, flare: f32, color: D2D1_COLOR_F) {
         let h = self.px() / 2.0;
+        let r = self.snap_rect(r);
         let r = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
-        let Some(geo) = self.tab_path(r, top, flare, false) else { return };
-        unsafe {
-            self.brush.SetColor(&color);
-            self.dev.dc.DrawGeometry(&geo, &self.brush, self.px(), None);
-        }
+        let Some(geo) = self.tab_path(r, top, flare, false, h) else { return };
+        let w = self.px();
+        self.paint(color, |b| unsafe { self.dev.dc.DrawGeometry(&geo, b, w, None) });
     }
 
     fn path(&self, points: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry> {
@@ -1305,13 +1344,12 @@ impl Gfx {
             })()
         };
         if let Some(geo) = geo {
-            unsafe {
-                self.brush.SetColor(&color);
-                self.dev.dc.FillGeometry(&geo, &self.brush, None);
-            }
+            self.paint(color, |b| unsafe { self.dev.dc.FillGeometry(&geo, b, None) });
         }
     }
 
+    /// One pass only (no [`Gfx::edge_pass`]): the waveform's envelopes are thousands of points, tessellated per
+    /// draw, and their look was tuned as they are.
     pub fn fill_polygon(&self, points: &[(f32, f32)], color: D2D1_COLOR_F) {
         if let Some(geo) = self.path(points, true) {
             unsafe {
@@ -1323,10 +1361,7 @@ impl Gfx {
 
     pub fn polyline(&self, points: &[(f32, f32)], color: D2D1_COLOR_F, width: f32) {
         if let Some(geo) = self.path(points, false) {
-            unsafe {
-                self.brush.SetColor(&color);
-                self.dev.dc.DrawGeometry(&geo, &self.brush, width, None);
-            }
+            self.paint(color, |b| unsafe { self.dev.dc.DrawGeometry(&geo, b, width, None) });
         }
     }
 
