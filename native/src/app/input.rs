@@ -136,6 +136,10 @@ impl App {
                             HTTOP
                         } as isize));
                     }
+                    // Clean view: the title bar and toolbar aren't there; a click anywhere is on the photo.
+                    if self.clean() {
+                        return Some(LRESULT(HTCLIENT as isize));
+                    }
                     for (c, ht) in [(Caption::Close, HTCLOSE), (Caption::Max, HTMAXBUTTON), (Caption::Min, HTMINBUTTON)] {
                         if contains(&self.caption_rect(c), x, y) {
                             return Some(LRESULT(ht as isize));
@@ -547,6 +551,7 @@ impl App {
                     let (x, y) = self.dip_from_lparam(lp);
                     let pressed = self.pressed.take();
                     let was_drag = self.drag.take().is_some();
+                    let held = self.motion_held;
                     self.motion_release();
                     self.text_drag = None;
                     self.info_grip_release();
@@ -572,6 +577,9 @@ impl App {
                     // A click on the video (not a pan) plays or pauses it.
                     if pressed == Some(Hit::Viewport) && h == pressed && self.video_shown() && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= self.click_slop() {
                         self.video_click();
+                    } else if pressed == Some(Hit::Viewport) && h == pressed && !held && (x - self.press_at.0).abs() + (y - self.press_at.1).abs() <= self.click_slop() {
+                        // A click on the photo (not a pan, nor a Live Photo held): clean view on or off.
+                        self.clean_click();
                     }
                     if pressed.is_some() && pressed == h && !dropped {
                         let r = h.and_then(|h| self.hits.rect_of(h));
@@ -812,6 +820,7 @@ impl App {
                     Some(LRESULT(0))
                 }
                 WM_LBUTTONDBLCLK => {
+                    self.clean_cancel();
                     let (x, y) = self.dip_from_lparam(lp);
                     if self.hit(x, y) == Some(Hit::InfoGrip) {
                         self.info_grip_reset();
@@ -1125,6 +1134,7 @@ impl App {
                         VK_F11 => self.toggle_fullscreen(),
                         // Escape steps out: the slideshow, then fullscreen, then the window.
                         VK_ESCAPE if self.slideshow.running => self.stop_slideshow(),
+                        VK_ESCAPE if self.clean() => self.set_clean(false),
                         VK_ESCAPE if self.fullscreen.is_some() => self.toggle_fullscreen(),
                         VK_ESCAPE => {
                             let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
@@ -1180,6 +1190,7 @@ impl App {
                 WM_TIMER => {
                     match wp.0 {
                         TIMER_UPGRADE => self.upgrade(),
+                        clean::TIMER_CLEAN => self.on_clean_timer(),
                         TIMER_CARET => self.blink_caret(),
                         textview::TIMER_TEXT => self.text_poll(),
                         TIMER_EXPLORER => self.explorer_refresh(),

@@ -6,6 +6,7 @@ mod accent;
 mod archive;
 mod actions;
 mod chrome;
+mod clean;
 mod document;
 mod explorer;
 mod extract;
@@ -693,6 +694,11 @@ pub struct App {
     slideshow: slideshow::Slideshow,
     /// The info card, the explorer card and the strip sliding in and out.
     slides: Slides,
+    /// Clean view (`clean.rs`): a click on the photo put the UI away; and the UI's opacity easing to match.
+    clean_view: bool,
+    clean_fade: crate::motion::Ease<1>,
+    /// This frame's value of `clean_fade`: 1 the UI shown, 0 gone.
+    clean_k: f32,
     /// For the file that failed to display: the Windows extension it needs, if that is why (worked out once).
     missing_extension: Option<(PathBuf, Option<crate::store::Extension>)>,
     /// What the Store last said about updates (the Settings page's Updates block, the toolbar dot).
@@ -1476,6 +1482,9 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             wheel_acc: 0.0,
             slideshow: Default::default(),
             slides: Slides { info: ui::Slide::new(false), explorer: ui::Slide::new(false), strip: ui::Slide::new(false) },
+            clean_view: false,
+            clean_fade: crate::motion::Ease::at([1.0]),
+            clean_k: 1.0,
             update: Default::default(),
             missing_extension: None,
             placeholder: None,

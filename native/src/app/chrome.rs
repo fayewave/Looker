@@ -12,7 +12,9 @@ impl App {
     pub(super) fn viewport(&self) -> D2D_RECT_F {
         let (w, h) = self.size_dip();
         if self.chrome() {
-            D2D_RECT_F { left: 0.0, top: TITLE_H + TOOLBAR_H, right: w, bottom: (h - STATUS_H - self.bottom_inset()).max(TITLE_H + TOOLBAR_H) }
+            // Clean view gives the bars' room to the photo as they fade (`clean_k`).
+            let (top, status) = ((TITLE_H + TOOLBAR_H) * self.clean_k, STATUS_H * self.clean_k);
+            D2D_RECT_F { left: 0.0, top, right: w, bottom: (h - status - self.bottom_inset()).max(top) }
         } else {
             D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: (h - self.bottom_inset()).max(1.0) }
         }
@@ -21,18 +23,25 @@ impl App {
     /// Where the content ends at the bottom: above the status row, or the window's edge in fullscreen.
     pub(super) fn content_bottom(&self) -> f32 {
         let (_, h) = self.size_dip();
-        if self.chrome() { h - STATUS_H } else { h }
+        if self.chrome() { h - STATUS_H * self.clean_k } else { h }
     }
 
     /// The cards and the strip follow their toggles while a photo is up, in fullscreen too, but not behind
     /// a page, during a slideshow (that is the photos alone), or for a video in fullscreen (the video alone, like a
     /// cinema: Faye, 2026-11-10).
     pub(super) fn panels_allowed(&self) -> bool {
-        self.viewer.current.is_some() && !self.slideshow.running && !(self.fullscreen.is_some() && self.video_shown())
+        self.viewer.current.is_some() && !self.slideshow.running && !(self.fullscreen.is_some() && self.video_shown()) && !self.clean()
     }
 
-    /// The panels slide to where their toggles say (a toggle, a slideshow starting or ending).
+    /// The panels slide to where their toggles say (a toggle, a slideshow starting or ending). A panel toggled
+    /// brings the UI back from clean view.
     pub(super) fn slide_panels(&mut self) {
+        self.clean_view = false;
+        self.animate_panels();
+    }
+
+    /// The panels slide to where `*_shown` says now.
+    pub(super) fn animate_panels(&mut self) {
         let (i, e, s) = (self.info_shown(), self.explorer_shown(), self.strip_shown());
         self.slides.info.animate(i);
         self.slides.explorer.animate(e);
@@ -78,7 +87,7 @@ impl App {
 
     /// The photo's room off the toolbar and the status row: `PREVIEW_PAD`, none in fullscreen.
     pub(super) fn preview_pad(&self) -> f32 {
-        if self.chrome() { PREVIEW_PAD } else { 0.0 }
+        if self.chrome() { PREVIEW_PAD * self.clean_k } else { 0.0 }
     }
 
     pub(super) fn image_area(&self) -> D2D_RECT_F {
@@ -418,6 +427,9 @@ impl App {
         crate::motion::refresh();
         self.hits.clear();
         self.fades.begin();
+        // Clean view's opacity: what floats over the photo is drawn at it, and not at all (nor hit) once gone.
+        let ui_k = self.step_clean();
+        let ui_on = ui_k > 0.0;
         let sliding = self.step_slides();
         self.prepare_model(&g);
         self.prepare_video(&g);
@@ -427,7 +439,8 @@ impl App {
         self.prepare_subtitles(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
-        self.draw_viewport(&mut g);
+        self.draw_viewport(&mut g, ui_k);
+        g.push_fade(ui_k, 1.0, 0.0, 0.0);
         let info_moving = self.draw_info(&g);
         // The explorer's hover highlights end at once, no fade out (Faye, 2026-11-10).
         self.fades.instant_out = true;
@@ -435,21 +448,28 @@ impl App {
         self.fades.instant_out = false;
         let strip_moving = self.draw_strip(&g);
         if self.viewer.current.is_some() && self.placeholder.is_none() {
-            self.draw_page_bar(&g);
+            if ui_on {
+                self.draw_page_bar(&g);
+            }
             self.draw_view_cube(&g);
             self.draw_video_flash(&g);
             self.draw_video_bar(&g);
-            self.draw_motion_bar(&g);
+            if ui_on {
+                self.draw_motion_bar(&g);
+            }
         }
         self.update_media();
-        if self.chrome() {
+        if self.chrome() && ui_on {
             self.draw_toolbar(&g);
             self.draw_status(&g);
         }
+        g.pop_fade();
         // The Settings card blurs and dims all of that; the title bar stays over it, as Snapper's does.
         let page_moving = self.draw_page(&mut g);
-        if self.chrome() {
+        if self.chrome() && ui_on {
+            g.push_fade(ui_k, 1.0, 0.0, 0.0);
             self.draw_title(&g);
+            g.pop_fade();
         }
         let overlays_moving = self.draw_overlays(&g);
         if let Err(e) = g.end() {
@@ -457,7 +477,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
+        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || self.clean_moving() || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -598,7 +618,7 @@ impl App {
         }
     }
 
-    pub(super) fn draw_viewport(&mut self, g: &mut Gfx) {
+    pub(super) fn draw_viewport(&mut self, g: &mut Gfx, ui_k: f32) {
         let v = self.viewport();
         self.hits.add(Hit::Viewport, v);
         if self.viewer.current.is_none() {
@@ -690,7 +710,11 @@ impl App {
             self.draw_cant_display(g);
         }
         self.draw_placeholder(g);
-        self.draw_scrims(g, bg);
+        if ui_k > 0.0 {
+            g.push_fade(ui_k, 1.0, 0.0, 0.0);
+            self.draw_scrims(g, bg);
+            g.pop_fade();
+        }
         if self.placeholder.is_none() {
             self.draw_subtitles(g, bg);
         }
