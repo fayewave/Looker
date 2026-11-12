@@ -3457,6 +3457,8 @@ impl App {
                     | Hit::ColumnHScroll
                     | Hit::ExplorerThumb
                     | Hit::SidebarGrip
+                    // Its resize edge too (Faye, 2026-11-13).
+                    | Hit::ExplorerGrip
                     | Hit::ExplorerFilter
                     | Hit::ExplorerFilterClear
                     | Hit::ExplorerRename
