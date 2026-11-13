@@ -1,7 +1,7 @@
 //! The Settings card, as Snapper has it: a card in the middle of the window over the viewer, which blurs and
-//! dims behind it as the card fades in and grows from 96 %. A sidebar of sections at the left (Viewing,
-//! Appearance, General, Updates, About); the picked section's rows at the right, each a label with a hint under
-//! it and its control at the right, divided by hairlines. A new section fades in with its rows rising 10 px;
+//! dims behind it as the card fades in and grows from 96 %. A sidebar of sections at the left (General, Photos,
+//! Video and audio, Appearance, Advanced, About; Faye, 2026-11-13); the picked section's rows at the right, each a
+//! label with a hint under it (wrapped, never cut short) and its control at the right, divided by hairlines. A new section fades in with its rows rising 10 px;
 //! the rows scroll on a spring when they don't fit. Every control applies the moment it changes; there is no
 //! Save. Escape, the close button, Ctrl+, or a press outside the card puts it away.
 //!
@@ -32,6 +32,10 @@ const CHIPS_LIGHT: u8 = 0x20;
 const PANE_LEFT: f32 = 28.0;
 const PANE_RIGHT: f32 = 24.0;
 const PANE_HEAD: f32 = 64.0;
+/// A row's label and hint stop this far short of the right edge: the room for its control (a drop-down is 200).
+const CONTROL_ROOM: f32 = 224.0;
+/// The slideshow's choices, in seconds (a value set otherwise shows among them too).
+const SLIDESHOW_CHOICES: [u32; 7] = [2, 3, 5, 10, 15, 30, 60];
 /// The backdrop's blur, fully in (DIPs).
 const BACKDROP_BLUR: f32 = 6.0;
 const WHEEL_STEP: f32 = 110.0;
@@ -54,36 +58,44 @@ pub(super) enum Setting {
     VideoLoop,
     VideoMuted,
     VideoResume,
+    Slideshow,
+    StripOther,
+    SubtitleSize,
+    Passthrough,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum Section {
-    Viewing,
-    Appearance,
     General,
-    Updates,
+    Photos,
+    Video,
+    Appearance,
+    Advanced,
+    /// The version, updates, links and licences.
     About,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [Section::Viewing, Section::Appearance, Section::General, Section::Updates, Section::About];
+    pub const ALL: [Section; 6] = [Section::General, Section::Photos, Section::Video, Section::Appearance, Section::Advanced, Section::About];
 
     fn label(self) -> &'static str {
         match self {
-            Section::Viewing => "Viewing",
-            Section::Appearance => "Appearance",
             Section::General => "General",
-            Section::Updates => "Updates",
+            Section::Photos => "Photos",
+            Section::Video => "Video and audio",
+            Section::Appearance => "Appearance",
+            Section::Advanced => "Advanced",
             Section::About => "About",
         }
     }
 
     fn icon(self) -> u16 {
         match self {
-            Section::Viewing => 0xE91B,
-            Section::Appearance => 0xE790,
             Section::General => 0xE713,
-            Section::Updates => 0xE895,
+            Section::Photos => 0xE91B,
+            Section::Video => 0xE714,
+            Section::Appearance => 0xE790,
+            Section::Advanced => 0xE9E9,
             Section::About => 0xE946,
         }
     }
@@ -97,6 +109,8 @@ pub(super) mod link {
     pub const UPDATE_NOW: u8 = 3;
     pub const CHECK: u8 = 4;
     pub const DEFAULT_APP: u8 = 5;
+    pub const LOGS: u8 = 6;
+    pub const LICENCES: u8 = 7;
 }
 
 pub(super) struct Page {
@@ -156,18 +170,39 @@ impl Page {
     }
 }
 
+/// The slideshow's choices: `SLIDESHOW_CHOICES`, and the value in use if it's another.
+fn slideshow_choices(s: &Settings) -> Vec<u32> {
+    let mut v = SLIDESHOW_CHOICES.to_vec();
+    let now = s.slideshow_seconds.clamp(1, 120);
+    if !v.contains(&now) {
+        v.push(now);
+        v.sort_unstable();
+    }
+    v
+}
+
 /// The choices of a drop-down setting, and which is picked.
-fn choices(s: &Settings, which: Setting) -> (Vec<&'static str>, usize) {
+fn choices(s: &Settings, which: Setting) -> (Vec<String>, usize) {
+    let owned = |v: &[&str]| v.iter().map(|l| l.to_string()).collect::<Vec<_>>();
     match which {
-        Setting::Wheel => (vec!["Zoom in and out", "Next and previous image"], s.wheel_navigates as usize),
-        Setting::Zoom => (vec!["The mouse pointer", "The middle of the view"], s.zoom_center as usize),
+        Setting::Wheel => (owned(&["Zoom in and out", "Next and previous file"]), s.wheel_navigates as usize),
+        Setting::Zoom => (owned(&["The mouse pointer", "The middle of the view"]), s.zoom_center as usize),
         Setting::Cache => (
-            vec!["128 MB", "256 MB", "512 MB", "1 GB", "2 GB"],
+            owned(&["128 MB", "256 MB", "512 MB", "1 GB", "2 GB"]),
             CACHE_CHOICES.iter().position(|&m| m >= s.cache_mb).unwrap_or(2),
         ),
         Setting::VideoLoop => (
-            vec!["Never", "5 seconds", "10 seconds", "30 seconds", "1 minute", "Always"],
+            owned(&["Never", "5 seconds", "10 seconds", "30 seconds", "1 minute", "Always"]),
             settings::LOOP_CHOICES.iter().position(|&c| c == s.video_loop_secs).unwrap_or(2),
+        ),
+        Setting::Slideshow => {
+            let v = slideshow_choices(s);
+            let now = s.slideshow_seconds.clamp(1, 120);
+            (v.iter().map(|&n| if n == 1 { "1 second".into() } else { format!("{n} seconds") }).collect(), v.iter().position(|&n| n == now).unwrap_or(0))
+        }
+        Setting::SubtitleSize => (
+            settings::SUBTITLE_SIZES.iter().map(|&p| if p == 100 { "Normal".into() } else { format!("{p}%") }).collect(),
+            settings::SUBTITLE_SIZES.iter().position(|&p| p == s.subtitle_size).unwrap_or(1),
         ),
         _ => (Vec::new(), 0),
     }
@@ -183,20 +218,38 @@ struct Rows {
 impl Rows {
     /// A row with `label` (and a hint under it, if any), its divider below; returns the row rect.
     fn row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
-        self.row_with(g, label, hint, 0.0)
+        self.row_room(g, label, hint, CONTROL_ROOM, 0.0)
+    }
+
+    /// A row whose control is a switch: its text runs nearly to the edge.
+    fn switch_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
+        self.row_room(g, label, hint, ui::SWITCH_W + 32.0, 0.0)
+    }
+
+    /// A row whose control is a text button.
+    fn button_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
+        self.row_room(g, label, hint, 168.0, 0.0)
     }
 
     /// A row with `extra` room under its label for more controls (the divider goes below that). Returns the
     /// label part, as `row` does.
     fn row_with(&mut self, g: &Gfx, label: &str, hint: &str, extra: f32) -> D2D_RECT_F {
+        self.row_room(g, label, hint, CONTROL_ROOM, extra)
+    }
+
+    fn row_room(&mut self, g: &Gfx, label: &str, hint: &str, room: f32, extra: f32) -> D2D_RECT_F {
         let t = theme::raised();
-        let h = if hint.is_empty() { ROW_H } else { ROW_H + 10.0 };
+        // The label and hint run up to the control's room; a long hint wraps and the row grows (they were cut
+        // short with an ellipsis at half the width: Faye, 2026-11-13).
+        let tw = (self.w - room).max(160.0);
+        let hint_h = if hint.is_empty() { 0.0 } else { g.measure_height(&wide(hint), &g.fonts.caption_wrap, tw).ceil() };
+        let h = if hint.is_empty() { ROW_H } else { (ROW_H + 10.0).max(25.0 + hint_h + 13.0) };
         let r = rect(self.x, self.y, self.w, h);
         if hint.is_empty() {
-            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top, self.w * 0.5, h), rgb(t.text), Align::Left);
+            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top, tw, h), rgb(t.text), Align::Left);
         } else {
-            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top + 6.0, self.w * 0.5, 20.0), rgb(t.text), Align::Left);
-            g.text(&wide(hint), &g.fonts.caption, rect(r.left, r.top + 25.0, self.w * 0.55, 16.0), rgb(t.label), Align::Left);
+            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top + 6.0, tw, 20.0), rgb(t.text), Align::Left);
+            g.text(&wide(hint), &g.fonts.caption_wrap, rect(r.left, r.top + 25.0, tw, hint_h), rgb(t.label), Align::Left);
         }
         g.hline(r.left, g.snap((r.bottom + extra - g.px()).floor()), self.w, rgb(t.divider));
         self.y += h + extra;
@@ -234,7 +287,7 @@ impl App {
 
     pub(super) fn open_page(&mut self) {
         // An update waiting is what the toolbar's dot points at: open on it.
-        let section = if matches!(self.update, UpdateStatus::Available) { Section::Updates } else { Section::Viewing };
+        let section = if matches!(self.update, UpdateStatus::Available) { Section::About } else { Section::General };
         self.open_page_at(section);
     }
 
@@ -334,7 +387,7 @@ impl App {
         let Some(r) = self.hits.rect_of(Hit::Combo(which)) else { return };
         let Some(g) = &self.gfx else { return };
         let (items, sel) = choices(&self.settings, which);
-        let entries = items.iter().enumerate().map(|(i, l)| menus::check(menus::Action::Choose(i), l, i == sel)).collect();
+        let entries = items.iter().enumerate().map(|(i, l)| menus::check(menus::Action::Choose(i), l.as_str(), i == sel)).collect();
         let (w, h) = self.size_dip();
         self.menu = Some((menus::MenuKind::Combo(which), ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
         self.hide_tooltip();
@@ -343,6 +396,11 @@ impl App {
 
     /// A drop-down choice was picked: applied at once and saved.
     pub(super) fn choose(&mut self, which: Setting, i: usize) {
+        if which == Setting::SubtitleSize {
+            self.subtitle_size(settings::SUBTITLE_SIZES[i.min(settings::SUBTITLE_SIZES.len() - 1)]);
+            return;
+        }
+        let slideshow = slideshow_choices(&self.settings);
         let s = &mut self.settings;
         match which {
             Setting::Wheel => s.wheel_navigates = i == 1,
@@ -352,6 +410,7 @@ impl App {
                 self.viewer.set_budget((s.cache_mb as usize) << 20);
             }
             Setting::VideoLoop => s.video_loop_secs = settings::LOOP_CHOICES[i.min(settings::LOOP_CHOICES.len() - 1)],
+            Setting::Slideshow => s.slideshow_seconds = slideshow[i.min(slideshow.len() - 1)],
             _ => {}
         }
         settings::save(&self.settings);
@@ -390,6 +449,11 @@ impl App {
                 }
                 settings::save(&self.settings);
                 self.apply_theme();
+                return;
+            }
+            Setting::StripOther => s.strip_other_files = !s.strip_other_files,
+            Setting::Passthrough => {
+                self.toggle_passthrough();
                 return;
             }
             Setting::VideoAutoplay => s.video_autoplay = !s.video_autoplay,
@@ -449,6 +513,16 @@ impl App {
                 }
             }
             link::CHECK => self.check_updates(),
+            link::LOGS => {
+                shell_open(&std::env::temp_dir().to_string_lossy());
+            }
+            link::LICENCES => {
+                // Beside Looker.exe; the exe's own folder if a dev build has no codecs.
+                if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+                    let lic = dir.join("codecs").join("licenses");
+                    shell_open(&if lic.is_dir() { lic } else { dir }.to_string_lossy());
+                }
+            }
             link::DEFAULT_APP => {
                 let uri = crate::store::default_apps_uri();
                 if !shell_open(&uri) {
@@ -568,7 +642,7 @@ impl App {
             g.text(&[sec.icon()], &g.fonts.small_icons, rect(r.left + 6.0, r.top, 24.0, ITEM_H), fg, Align::Center);
             g.text(&wide(sec.label()), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, ITEM_H), fg, Align::Left);
             // The update waiting, marked where it is.
-            if sec == Section::Updates && self.update == UpdateStatus::Available {
+            if sec == Section::About && self.update == UpdateStatus::Available {
                 g.fill_round(rect(r.right - 16.0, r.top + (ITEM_H - 7.0) / 2.0, 7.0, 7.0), 3.5, rgb(t.accent));
             }
             y += ITEM_H;
@@ -599,10 +673,11 @@ impl App {
         g.push_fade(e, 1.0, 0.0, 0.0);
         let mut rows = Rows { x, w, y: view.top - off + (1.0 - e) * 10.0 };
         match section {
-            Section::Viewing => self.page_viewing(g, &mut rows, open),
-            Section::Appearance => self.page_appearance(g, &mut rows, open),
             Section::General => self.page_general(g, &mut rows, open),
-            Section::Updates => self.page_updates(g, &mut rows, open),
+            Section::Photos => self.page_photos(g, &mut rows, open),
+            Section::Video => self.page_video(g, &mut rows, open),
+            Section::Appearance => self.page_appearance(g, &mut rows, open),
+            Section::Advanced => self.page_advanced(g, &mut rows, open),
             Section::About => self.page_about(g, &mut rows, open),
         }
         g.pop_fade();
@@ -626,27 +701,49 @@ impl App {
         e < 1.0
     }
 
-    fn page_viewing(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
-        let r = rows.row(g, "Mouse wheel over the image", "Ctrl + wheel always zooms");
+    fn page_general(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        let r = rows.button_row(g, "Default photo viewer", "Open photos in Looker when you double-click them in File Explorer");
+        self.text_button(g, r, "Set as default", Hit::PageLink(link::DEFAULT_APP), ui::Kind::Standard, open);
+        let r = rows.switch_row(g, "Remember window size and position", "Off: Looker opens a standard-size window in the middle of the screen");
+        self.switch(g, r, Setting::Window, self.settings.remember_window, open);
+        let r = rows.switch_row(g, "Show recent files on Home", "Turning this off also clears the list");
+        self.switch(g, r, Setting::Recents, self.settings.recents_enabled, open);
+    }
+
+    fn page_photos(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        let r = rows.row(g, "Mouse wheel", "Hold Ctrl and the wheel always zooms");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Wheel, open);
-        let r = rows.row(g, "Zoom towards", "Where the wheel and a double-click zoom into");
+        let r = rows.row(g, "Zoom towards", "Where the wheel and a double-click zoom in. Ctrl + and Ctrl − always zoom into the middle");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Zoom, open);
-        rows.note(g, "Ctrl + and Ctrl - always zoom into the middle of the view.");
-        rows.heading(g, "Video");
-        let r = rows.row(g, "Play videos when opened", "Off: a video waits on its first picture");
+        let r = rows.switch_row(g, "Checkerboard behind transparency", "Shows which parts of a picture are see-through. Off: a plain background");
+        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
+        let r = rows.row(g, "Slideshow speed", "How long each photo stays on screen");
+        self.combo(g, right_part(r, 200.0, 30.0), Setting::Slideshow, open);
+        let r = rows.switch_row(g, "Show other files in the thumbnail strip", "Files Looker can't open appear greyed out, and the arrow keys stop on them too");
+        self.switch(g, r, Setting::StripOther, self.settings.strip_other_files, open);
+    }
+
+    fn page_video(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        let r = rows.switch_row(g, "Play videos when opened", "Off: a video opens paused on its first frame");
         self.switch(g, r, Setting::VideoAutoplay, self.settings.video_autoplay, open);
-        let r = rows.row(g, "Loop videos shorter than", "Like an animated image; the loop button overrides it");
+        let r = rows.row(g, "Loop videos shorter than", "Short clips repeat like an animated GIF. The loop button changes it for one video");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::VideoLoop, open);
-        let r = rows.row(g, "Start videos muted", "M or the speaker button turns the sound on");
+        let r = rows.switch_row(g, "Start videos muted", "Press M or the speaker button to turn the sound on");
         self.switch(g, r, Setting::VideoMuted, self.settings.video_start_muted, open);
-        let r = rows.row(g, "Resume long videos", "Videos over 5 minutes open where you left them");
+        let r = rows.switch_row(g, "Resume long videos", "Videos over 5 minutes open where you stopped watching");
         self.switch(g, r, Setting::VideoResume, self.settings.video_resume, open);
-        rows.note(g, "Over a video the mouse wheel changes the volume; Ctrl + wheel zooms.");
+        let r = rows.switch_row(g, "Checkerboard behind videos", "Off: a plain background");
+        self.switch(g, r, Setting::CheckerboardVideo, self.settings.checkerboard_video, open);
+        let r = rows.row(g, "Subtitle size", "");
+        self.combo(g, right_part(r, 200.0, 30.0), Setting::SubtitleSize, open);
+        let r = rows.switch_row(g, "Send surround sound to a receiver", "Dolby and DTS sound goes untouched to an AV receiver, when the sound output accepts it");
+        self.switch(g, r, Setting::Passthrough, self.settings.video_passthrough, open);
+        rows.note(g, "Over a video the mouse wheel changes the volume; hold Ctrl to zoom.");
     }
 
     fn page_appearance(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
         // Snapper's: one theme, or (matching Windows) one for when Windows is dark and one for when it's light.
-        let r = rows.row(g, "Match Windows", "Dark or light as Windows' app mode is, in the themes picked below");
+        let r = rows.switch_row(g, "Match Windows", "Switch between a dark and a light theme when Windows does");
         self.switch(g, r, Setting::ThemeFollow, self.settings.theme_follow, open);
         if self.settings.theme_follow {
             self.theme_chips(g, rows, "When Windows is dark", CHIPS_DARK, open);
@@ -655,12 +752,17 @@ impl App {
             self.theme_chips(g, rows, "Theme", CHIPS_ANY, open);
         }
         self.accent_chips(g, rows, open);
-        let r = rows.row(g, "Solid status row", "Filled with the theme's colour. Off: see-through over the photo");
+        let r = rows.switch_row(g, "Solid status bar", "A solid bar behind the file details at the bottom. Off: they sit on the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
-        let r = rows.row(g, "Checkerboard background", "Behind photos and every other file: shows where one is transparent. Off: plain");
-        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
-        let r = rows.row(g, "Checkerboard behind videos", "Off: plain");
-        self.switch(g, r, Setting::CheckerboardVideo, self.settings.checkerboard_video, open);
+    }
+
+    fn page_advanced(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
+        let r = rows.row(g, "Memory for photos", "Photos you've opened stay in memory so going back is instant. Raise it for big RAW or HEIC files, lower it if the PC is short on memory");
+        self.combo(g, right_part(r, 200.0, 30.0), Setting::Cache, open);
+        let r = rows.button_row(g, "Logs", "Helpful when reporting a problem");
+        self.text_button(g, r, "Open folder", Hit::PageLink(link::LOGS), ui::Kind::Standard, open);
+        let r = rows.button_row(g, "Reset Looker", "Every setting back to its default. Your files aren't touched");
+        self.text_button(g, r, "Reset\u{2026}", Hit::PageLink(link::RESET), ui::Kind::Standard, open);
     }
 
     /// A row of theme chips under `label`: the dark themes (`CHIPS_DARK`), the light ones, or all (`CHIPS_ANY`),
@@ -715,18 +817,7 @@ impl App {
         }
     }
 
-    fn page_general(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
-        let r = rows.row(g, "Recent photos", "On the landing page. Off also forgets the list");
-        self.switch(g, r, Setting::Recents, self.settings.recents_enabled, open);
-        let r = rows.row(g, "Remember window size and position", "Off: a default window in the middle each launch");
-        self.switch(g, r, Setting::Window, self.settings.remember_window, open);
-        let r = rows.row(g, "Decode cache", "Memory for decoded photos, so going back is instant");
-        self.combo(g, right_part(r, 200.0, 30.0), Setting::Cache, open);
-        let r = rows.row(g, "Default photo viewer", "Open photos in Looker from File Explorer");
-        self.text_button(g, r, "Set as default", Hit::PageLink(link::DEFAULT_APP), ui::Kind::Standard, open);
-        rows.note(g, "Raise the decode cache for large RAW or HEIC files; lower it on a machine short on memory.");
-    }
-
+    /// The version and its update, under the logo.
     fn page_updates(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
         let github = crate::store::appinstaller_uri().is_some();
         let status = match self.update {
@@ -737,12 +828,12 @@ impl App {
             UpdateStatus::Failed => "Couldn't install the update",
             UpdateStatus::Unknown => "Couldn't check for updates",
         };
-        let r = rows.row(g, &format!("Looker {}", env!("LOOKER_VERSION")), status);
+        let r = rows.row(g, &format!("Version {} \u{00B7} {}", env!("LOOKER_VERSION"), std::env::consts::ARCH), status);
         let idle = !matches!(self.update, UpdateStatus::Checking | UpdateStatus::Installing);
         self.text_button(g, r, "Check now", Hit::PageLink(link::CHECK), ui::Kind::Standard, open && idle);
         if matches!(self.update, UpdateStatus::Available | UpdateStatus::Failed) {
             let (label, hint) = if github { ("Update now", "Looker closes and opens again") } else { ("Open the Store", "Get it from the Microsoft Store now") };
-            let r = rows.row(g, "Install the update", hint);
+            let r = rows.button_row(g, "Install the update", hint);
             self.text_button(g, r, label, Hit::PageLink(link::UPDATE_NOW), ui::Kind::Accent, open);
         }
         let note = match (self.update, github) {
@@ -763,18 +854,17 @@ impl App {
             let lw = LOGO_H * size.width as f32 / size.height.max(1) as f32;
             g.draw_bitmap(&bmp, rect(rows.x, g.snap(rows.y + 6.0), lw, LOGO_H), 1.0);
         }
-        rows.y += LOGO_H + 18.0;
-        rows.row(g, &format!("Version {} \u{00B7} {}", env!("LOOKER_VERSION"), std::env::consts::ARCH), "A fast, native photo viewer for Windows 11");
+        rows.y += LOGO_H + 12.0;
+        self.page_updates(g, rows, open);
         rows.heading(g, "More");
-        let r = rows.row(g, "Source code", "github.com/fayewave/Looker");
+        let r = rows.button_row(g, "Source code", "github.com/fayewave/Looker");
         self.text_button(g, r, "Open GitHub", Hit::PageLink(link::GITHUB), ui::Kind::Standard, open);
-        let r = rows.row(g, "Microsoft Store", "Rate Looker, or get it on another PC");
+        let r = rows.button_row(g, "Microsoft Store", "Rate Looker, or install it on another PC");
         self.text_button(g, r, "Open Store", Hit::PageLink(link::STORE), ui::Kind::Standard, open);
-        let r = rows.row(g, "Reset Looker", "Every setting to its default; photos aren't touched");
-        self.text_button(g, r, "Reset\u{2026}", Hit::PageLink(link::RESET), ui::Kind::Standard, open);
-        rows.note(g, "Uses the Inter typeface (SIL Open Font License), and, where Windows can't decode HEIC or AVIF itself, libheif and libde265 (LGPL-3.0) and dav1d (BSD-2-Clause), for animated AVIF libavif (BSD-2-Clause), and, where Windows lacks the Raw Image Extension, LibRaw (LGPL-2.1 or CDDL-1.0) with Little CMS (MIT), JasPer and zlib, and for video FFmpeg (LGPL-2.1 or later), with libass (ISC), FreeType (FreeType License), HarfBuzz (MIT) and FriBidi (LGPL-2.1 or later) for subtitles. Portions of this software are copyright © The FreeType Project (www.freetype.org). The licences are in the codecs\\licenses folder beside Looker.exe.");
-        let logs = format!("Logs: {}\\looker-native*.log", std::env::temp_dir().display().to_string().trim_end_matches('\\'));
-        rows.note(g, &logs);
+        let r = rows.button_row(g, "Open-source licences", "The components Looker is built with, and their licences");
+        self.text_button(g, r, "View licences", Hit::PageLink(link::LICENCES), ui::Kind::Standard, open);
+        // Every component Build-Codecs ships (its codecs\licenses folder), with the font (2026-11-13).
+        rows.note(g, "Inter (SIL Open Font License); libheif, libde265, dav1d and libavif for HEIC and AVIF; LibRaw, Little CMS and JasPer for camera RAW; FFmpeg, mpg123, libogg, libvorbis and liblc3 for video and sound; libass, FreeType, HarfBuzz, FriBidi, libaribcaption and libzvbi for subtitles; libopenmpt, FluidSynth and the GeneralUser GS sound bank for music files; libarchive, zlib, bzip2, liblzma, LZ4 and Zstandard for archives. Portions of this software are copyright \u{00A9} The FreeType Project (www.freetype.org).");
     }
 
     /// A drop-down at `r` for a setting.
@@ -786,7 +876,7 @@ impl App {
         let st = self.state(id, open);
         let menu_open = matches!(&self.menu, Some((menus::MenuKind::Combo(c), _)) if *c == which);
         let (items, sel) = choices(&self.settings, which);
-        ui::dropdown(g, r, items.get(sel).copied().unwrap_or(""), &st, menu_open);
+        ui::dropdown(g, r, items.get(sel).map_or("", String::as_str), &st, menu_open);
     }
 
     /// A switch at the right of row `r`; the whole row toggles it.
