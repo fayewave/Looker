@@ -11,7 +11,8 @@ use std::path::Path;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, IsIconic, SMTO_ABORTIFHUNG, SW_RESTORE, SendMessageTimeoutW, SetForegroundWindow, ShowWindow, WM_COPYDATA,
 };
@@ -26,47 +27,73 @@ pub fn claim_or_forward(path: Option<&Path>) -> bool {
     if std::env::var_os("LOOKER_NEW_INSTANCE").is_some() {
         return true;
     }
-    unsafe {
-        let Ok(mutex) = CreateMutexW(None, false, w!("Local\\Looker.Native.Instance")) else { return true };
+    // The instance owns the mutex (on the main thread, which lives as long as the process), so a later
+    // launch can wait on it: it is released, abandoned, the moment that process is gone.
+    let mutex = unsafe {
+        let Ok(mutex) = CreateMutexW(None, true, w!("Local\\Looker.Native.Instance")) else { return true };
         if GetLastError() != ERROR_ALREADY_EXISTS {
-            let _ = mutex; // never closed: held for the life of the process
-            return true;
+            return true; // never closed: held for the life of the process
         }
-    }
+        mutex
+    };
     let mut payload: Vec<u16> = path
         .and_then(|p| std::path::absolute(p).ok())
         .map(|p| p.as_os_str().encode_wide().collect())
         .unwrap_or_default();
     payload.push(0);
     // The first instance may still be starting: give its window a few seconds to appear and take messages.
-    for _ in 0..60 {
-        if forward(&payload) {
-            return false;
+    // Or it may be on its way out (window gone, process not yet): then the wait on the mutex ends as soon as
+    // it has exited and this launch is the app at once. (Sleeping instead cost 3 s whenever a photo was
+    // opened just as Looker was closing: the mutex was looked at once, the window never came.)
+    let start = std::time::Instant::now();
+    let (mut no_window, mut refused) = (0, 0);
+    // A deadline, not a count: the wait's 50 ms rounds up to the system timer's 15.6 ms ticks.
+    while start.elapsed() < std::time::Duration::from_secs(3) {
+        match forward(&payload) {
+            Forward::Taken => return false,
+            Forward::NoWindow => no_window += 1,
+            Forward::Refused => refused += 1,
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let waited = unsafe { WaitForSingleObject(mutex, 50) };
+        if waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED {
+            crate::trace::mark(format!(
+                "instance: the previous one exited after {} ms (no window {no_window}, refused {refused})",
+                start.elapsed().as_millis()
+            ));
+            return true; // the mutex is ours now, never released
+        }
     }
-    true // it never answered (hung, or closing): be the app instead of dropping the launch
+    // It never answered and never exited (hung, or very slow): be the app instead of dropping the launch.
+    crate::trace::mark(format!("instance: gave up on the running one (no window {no_window}, refused {refused})"));
+    true
 }
 
-fn forward(payload: &[u16]) -> bool {
+enum Forward {
+    Taken,
+    NoWindow,
+    /// The window is there but didn't take it: hung, busy past the timeout, or its app not attached yet.
+    Refused,
+}
+
+fn forward(payload: &[u16]) -> Forward {
     unsafe {
-        let Ok(hwnd) = FindWindowW(w!("LookerWindow"), None) else { return false };
+        let Ok(hwnd) = FindWindowW(w!("LookerWindow"), None) else { return Forward::NoWindow };
         if hwnd.is_invalid() {
-            return false;
+            return Forward::NoWindow;
         }
         let cds = COPYDATASTRUCT { dwData: COPYDATA_OPEN, cbData: (payload.len() * 2) as u32, lpData: payload.as_ptr() as _ };
         let mut answer = 0usize;
         let sent = SendMessageTimeoutW(hwnd, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, 3000, Some(&mut answer));
         // 1 = taken; 0 = the window exists but its app isn't attached yet.
         if sent.0 == 0 || answer != 1 {
-            return false;
+            return Forward::Refused;
         }
         // This process is the one the user just launched, so it may hand the foreground over.
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         let _ = SetForegroundWindow(hwnd);
-        true
+        Forward::Taken
     }
 }
 
