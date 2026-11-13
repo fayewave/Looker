@@ -119,7 +119,6 @@ impl App {
         // --- The header: a tab per section, the chevron at the right.
         let toggle = rect(inner.right - PAD - 26.0, inner.top + 5.0, 26.0, 24.0);
         let lane = (inner.left + PAD, toggle.left - 6.0);
-        let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
         // Each tab's width: its icon and name; when they don't all fit, the others are their icons alone (the open
         // one keeps its name while that fits), named in their tooltips.
         let full: Vec<f32> = secs.iter().map(|s| LABEL_X + g.measure(&wide(&s.label), &g.fonts.body) + 12.0).collect();
@@ -172,17 +171,6 @@ impl App {
         }
         moving |= drag.is_some();
         g.push_clip(D2D_RECT_F { left: lane.0 - 2.0, right: lane.1 + 2.0, top: inner.top, bottom: inner.top + DOCK_HEAD });
-        // Hover washes first (on the open tab too, under its box, so a click doesn't flash it away), then the open
-        // tab's box gliding to its tab's eased place, then the icons and names over both.
-        for &k in &order {
-            let id = Hit::SideHeader(secs[k].sec);
-            let hover = self.fades.hover(id, self.hover == Some(id) && drag.is_none());
-            if hover > 0.0 && Some(k) != dragged {
-                let r = rect(rs[k].0, inner.top + 5.0, rs[k].1, 24.0);
-                g.fill_round(r, 5.0, D2D1_COLOR_F { a: hover, ..hover_tint });
-                ui::stroke(g, r, 5.0, gfx::rgba(t.accent, hover));
-            }
-        }
         // The box: on the open tab while the dock is open, fading as it folds (no tab is open then); picked while
         // it's folded, it starts on its tab rather than gliding in from the last one.
         let mut pill = None;
@@ -195,8 +183,22 @@ impl App {
                 e.set(target, now);
             }
             moving |= e.moving(now);
-            let [px, pw] = e.value(now);
-            pill = Some((px, pw));
+            pill = Some(e.value(now));
+        }
+        // How much of each tab the box covers now (it lights the tab's text as it passes).
+        let covered = |rx: f32, rw: f32| pill.map_or(0.0, |[px, pw]: [f32; 2]| (((rx + rw).min(px + pw) - rx.max(px)).max(0.0) / rw.max(1.0)).clamp(0.0, 1.0)) * open;
+        // Hover washes first, then the box over them, then the icons and names. A hover is a plain grey wash, no
+        // outline: tinted and outlined like the box, the box seemed to slide in under it (Faye, 2026-11-13). It
+        // gives way as the box comes over its tab.
+        for &k in &order {
+            let id = Hit::SideHeader(secs[k].sec);
+            let hover = self.fades.hover(id, self.hover == Some(id) && drag.is_none()) * (1.0 - covered(rs[k].0, rs[k].1));
+            if hover > 0.0 && Some(k) != dragged {
+                let r = rect(rs[k].0, inner.top + 5.0, rs[k].1, 24.0);
+                g.fill_round(r, 5.0, gfx::rgba(t.hover_fill, hover));
+            }
+        }
+        if let (Some([px, pw]), Some(a)) = (pill, active) {
             if open > 0.0 && Some(a) != dragged {
                 let pr = rect(px, inner.top + 5.0, pw, 24.0);
                 g.fill_round(pr, 5.0, gfx::rgba(t.selected, open));
@@ -218,8 +220,7 @@ impl App {
                 ui::stroke(g, r, 5.0, theme::mix(raised.divider, t.accent, k_on));
             }
             // Its text lights as the box comes over it and dims as it leaves, with the hover.
-            let covered = pill.map_or(0.0, |(px, pw)| ((rx + rw).min(px + pw) - rx.max(px)).max(0.0) / rw.max(1.0)) * open;
-            let lit = if self.hover == Some(id) && drag.is_none() { 1.0 } else { covered.clamp(0.0, 1.0) };
+            let lit = if self.hover == Some(id) && drag.is_none() { 1.0 } else { covered(rx, rw) };
             let c = theme::mix(t.label, t.text, lit);
             g.text(&[s.glyph], &g.fonts.icons, rect(r.left + ICON_X, r.top, ICON_W, 24.0), c, Align::Center);
             // The name fades in and out with the tab's width (named or its icon alone), cut off at its right.
