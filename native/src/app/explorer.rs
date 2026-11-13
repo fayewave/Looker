@@ -486,7 +486,7 @@ pub(super) struct Explorer {
     /// A sidebar section being dragged by its heading, each section's eased top, and how long they ease
     /// after a drop.
     pub(super) section_drag: Option<SectionDrag>,
-    pub(super) section_pos: HashMap<SideSection, Ease<1>>,
+    pub(super) section_pos: HashMap<SideSection, Ease<2>>,
     pub(super) section_anim_until: Instant,
     /// A bookmark or collection being dragged into another place, the entries' eased tops in their section (by
     /// key), and until when they ease after a drop.

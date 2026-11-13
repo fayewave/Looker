@@ -26,8 +26,11 @@ const LIST_ROOM: f32 = 220.0;
 const COL_MIN: f32 = 180.0;
 const COL_GAP: f32 = 4.0;
 const PAD: f32 = 6.0;
-/// A section's tab with its icon alone.
-const ICON_TAB: f32 = 32.0;
+/// A section's tab with its icon alone, and where its icon and name sit in it.
+const ICON_TAB: f32 = 34.0;
+const ICON_X: f32 = 7.0;
+const ICON_W: f32 = 20.0;
+const LABEL_X: f32 = 31.0;
 
 /// A section in the header: where its items are in `sidebar_items`, its name and glyph.
 struct Section {
@@ -76,6 +79,13 @@ impl App {
         out
     }
 
+    /// The section the dock shows now (the picked one, else the first there is).
+    fn dock_active_section(&mut self) -> Option<SideSection> {
+        let items = self.sidebar_items();
+        let secs = Self::dock_sections(&items);
+        self.dock_active(&secs).map(|a| secs[a].sec)
+    }
+
     /// The section showing: the one picked, else the first.
     fn dock_active(&self, secs: &[Section]) -> Option<usize> {
         secs.iter().position(|s| Some(s.sec) == self.settings.dock_tab).or(if secs.is_empty() { None } else { Some(0) })
@@ -112,7 +122,7 @@ impl App {
         let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
         // Each tab's width: its icon and name; when they don't all fit, the others are their icons alone (the open
         // one keeps its name while that fits), named in their tooltips.
-        let full: Vec<f32> = secs.iter().map(|s| 16.0 + 6.0 + g.measure(&wide(&s.label), &g.fonts.body) + 22.0).collect();
+        let full: Vec<f32> = secs.iter().map(|s| LABEL_X + g.measure(&wide(&s.label), &g.fonts.body) + 12.0).collect();
         let room = lane.1 - lane.0 - 2.0 * secs.len() as f32;
         let named: Vec<bool> = if full.iter().sum::<f32>() <= room {
             vec![true; secs.len()]
@@ -141,63 +151,84 @@ impl App {
                 d.insert = insert;
             }
         }
-        let animate = drag.is_some() || now < self.explorer.section_anim_until;
-        let mut xs: Vec<f32> = vec![0.0; secs.len()];
+        // Every tab's place and width ease together (picking another tab in a narrow card names it and turns the
+        // last one to its icon, which moved them all at once while the box glided: Faye, 2026-11-13); a dragged one
+        // follows the pointer.
+        let mut rs: Vec<(f32, f32)> = vec![(0.0, 0.0); secs.len()];
         let mut x = 0.0;
         for &k in &order {
-            let e = self.explorer.section_pos.entry(secs[k].sec).or_insert_with(|| Ease::at([x]));
+            let target = [x, widths[k]];
+            let e = self.explorer.section_pos.entry(secs[k].sec).or_insert_with(|| Ease::at(target));
             if Some(k) == dragged {
                 let left = drag.map_or(0.0, |d| d.1).clamp(lane.0, (lane.1 - widths[k]).max(lane.0));
-                *e = Ease::at([left - lane.0]);
-            } else if animate {
-                e.set([x], now);
+                *e = Ease::at([left - lane.0, widths[k]]);
             } else {
-                *e = Ease::at([x]);
+                e.set(target, now);
             }
             moving |= e.moving(now);
-            xs[k] = lane.0 + e.value(now)[0];
+            let [ex, ew] = e.value(now);
+            rs[k] = (lane.0 + ex, ew);
             x += widths[k] + 2.0;
         }
         moving |= drag.is_some();
         g.push_clip(D2D_RECT_F { left: lane.0 - 2.0, right: lane.1 + 2.0, top: inner.top, bottom: inner.top + DOCK_HEAD });
-        // The open tab's box glides from one tab to the next.
+        // Hover washes first (on the open tab too, under its box, so a click doesn't flash it away), then the open
+        // tab's box gliding to its tab's eased place, then the icons and names over both.
+        for &k in &order {
+            let id = Hit::SideHeader(secs[k].sec);
+            let hover = self.fades.hover(id, self.hover == Some(id) && drag.is_none());
+            if hover > 0.0 && Some(k) != dragged {
+                let r = rect(rs[k].0, inner.top + 5.0, rs[k].1, 24.0);
+                g.fill_round(r, 5.0, D2D1_COLOR_F { a: hover, ..hover_tint });
+                ui::stroke(g, r, 5.0, gfx::rgba(t.accent, hover));
+            }
+        }
+        // The box: on the open tab while the dock is open, fading as it folds (no tab is open then); picked while
+        // it's folded, it starts on its tab rather than gliding in from the last one.
+        let mut pill = None;
         if let Some(a) = active {
-            let target = [xs[a], widths[a]];
+            let target = [rs[a].0, rs[a].1];
             let e = self.explorer.dock_pill.get_or_insert_with(|| Ease::at(target));
-            if Some(a) == dragged {
+            if Some(a) == dragged || open <= 0.01 {
                 *e = Ease::at(target);
             } else {
                 e.set(target, now);
             }
             moving |= e.moving(now);
             let [px, pw] = e.value(now);
-            let pr = rect(px, inner.top + 5.0, pw, 24.0);
-            g.fill_round(pr, 5.0, rgb(t.selected));
-            ui::stroke(g, pr, 5.0, rgb(t.accent));
+            pill = Some((px, pw));
+            if open > 0.0 && Some(a) != dragged {
+                let pr = rect(px, inner.top + 5.0, pw, 24.0);
+                g.fill_round(pr, 5.0, gfx::rgba(t.selected, open));
+                ui::stroke(g, pr, 5.0, gfx::rgba(t.accent, open));
+            }
         }
         for &k in order.iter().filter(|&&k| Some(k) != dragged).chain(dragged.iter()) {
             let s = &secs[k];
-            let r = rect(xs[k], inner.top + 5.0, widths[k], 24.0);
+            let (rx, rw) = rs[k];
+            let r = rect(rx, inner.top + 5.0, rw, 24.0);
             let id = Hit::SideHeader(s.sec);
             self.hits.add(id, r);
             let on = Some(k) == active;
-            let hovered = self.hover == Some(id) && drag.is_none();
-            let hover = self.fades.hover(id, hovered && !on);
             if Some(k) == dragged {
                 let raised = theme::raised();
                 ui::shadow(g, r, 5.0);
-                g.fill_round(r, 5.0, rgb(if on { t.selected } else { raised.popup }));
-                ui::stroke(g, r, 5.0, rgb(if on { t.accent } else { raised.divider }));
-            } else if hover > 0.0 {
-                g.fill_round(r, 5.0, D2D1_COLOR_F { a: hover, ..hover_tint });
-                ui::stroke(g, r, 5.0, gfx::rgba(t.accent, hover));
+                let k_on = if on { open } else { 0.0 };
+                g.fill_round(r, 5.0, theme::mix(raised.popup, t.selected, k_on));
+                ui::stroke(g, r, 5.0, theme::mix(raised.divider, t.accent, k_on));
             }
-            let c = if on || hovered { t.text } else { t.label };
-            if !named[k] {
-                g.text(&[s.glyph], &g.fonts.small_icons, r, rgb(c), Align::Center);
-            } else {
-                g.text(&[s.glyph], &g.fonts.small_icons, rect(r.left + 10.0, r.top, 16.0, 24.0), rgb(c), Align::Center);
-                g.text(&wide(&s.label), &g.fonts.body, rect(r.left + 32.0, r.top, r.right - r.left - 36.0, 24.0), rgb(c), Align::Left);
+            // Its text lights as the box comes over it and dims as it leaves, with the hover.
+            let covered = pill.map_or(0.0, |(px, pw)| ((rx + rw).min(px + pw) - rx.max(px)).max(0.0) / rw.max(1.0)) * open;
+            let lit = if self.hover == Some(id) && drag.is_none() { 1.0 } else { covered.clamp(0.0, 1.0) };
+            let c = theme::mix(t.label, t.text, lit);
+            g.text(&[s.glyph], &g.fonts.icons, rect(r.left + ICON_X, r.top, ICON_W, 24.0), c, Align::Center);
+            // The name fades in and out with the tab's width (named or its icon alone), cut off at its right.
+            let named_k = ((rw - ICON_TAB) / (full[k] - ICON_TAB).max(1.0)).clamp(0.0, 1.0);
+            if named_k > 0.0 {
+                let lr = rect(r.left + LABEL_X, r.top, (r.right - r.left - LABEL_X - 4.0).max(0.0), 24.0);
+                g.push_clip(D2D_RECT_F { right: r.right - 2.0, ..lr });
+                g.text(&wide(&s.label), &g.fonts.body, rect(lr.left, lr.top, full[k], 24.0), D2D1_COLOR_F { a: c.a * named_k, ..c }, Align::Left);
+                g.pop_clip();
             }
         }
         g.pop_clip();
@@ -404,12 +435,17 @@ impl App {
 
     // --- Picking a section, folding the dock ------------------------------------------------------------
 
-    /// A click on a section's tab shows it; a click on the open one while the dock is folded opens the dock.
+    /// A click on a section's tab shows it, opening the dock if it's folded; a click on the open one folds the dock
+    /// (so the tabs alone open and close it, Faye 2026-11-13).
     pub(super) fn dock_pick(&mut self, sec: SideSection) {
-        if self.settings.dock_tab == Some(sec) && self.settings.dock_open {
+        let current = self.dock_active_section();
+        if current == Some(sec) && self.settings.dock_open {
+            self.settings.dock_open = false;
+            settings::save(&self.settings);
+            self.invalidate();
             return;
         }
-        if self.settings.dock_tab != Some(sec) {
+        if current != Some(sec) {
             self.explorer.side_scroll = 0.0;
             self.explorer.side_anim = None;
         }
