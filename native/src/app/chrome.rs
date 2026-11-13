@@ -250,7 +250,7 @@ impl App {
             Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
             Hit::InfoRow(i) if self.info_row_field(i).is_some() => Some("Click to copy, double-click to edit".to_string()),
             Hit::Tool(Tool::Sort) => Some(self.sort_tooltip()),
-            Hit::Tool(Tool::Zoom) if self.model_active() => Some("Reset the view (Ctrl+0)".to_string()),
+            Hit::Tool(Tool::Zoom) if self.model_active() => Some("Drag left or right to zoom, click to reset the view".to_string()),
             Hit::ExplorerRow(_)
             | Hit::Crumb(_)
             | Hit::CrumbMore
@@ -277,7 +277,7 @@ impl App {
             Hit::Tool(Tool::Next) => "Next (→)",
             Hit::Tool(Tool::ZoomOut) => "Zoom out (Ctrl+-)",
             Hit::Tool(Tool::Fit) => "Fit to window (Ctrl+0)",
-            Hit::Tool(Tool::Zoom) => "Fit or 100 % (double-click the photo)",
+            Hit::Tool(Tool::Zoom) => "Drag left or right to zoom, click for fit or 100 %",
             Hit::Tool(Tool::ZoomIn) => "Zoom in (Ctrl++)",
             Hit::Tool(Tool::More) => "More",
             Hit::Tool(Tool::Fullscreen) => "Fullscreen (F11)",

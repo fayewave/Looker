@@ -292,6 +292,9 @@ impl App {
                     if matches!(self.pressed, Some(Hit::AudioWave | Hit::AudioScroll)) {
                         self.audio_pointer(x);
                     }
+                    if self.pressed == Some(Hit::Tool(Tool::Zoom)) {
+                        self.zoom_scrub_move(x);
+                    }
                     match self.pressed {
                         Some(Hit::TextView) => self.text_drag(x, y),
                         Some(Hit::TextScroll | Hit::TextHScroll) => self.text_scroll_drag(x, y),
@@ -359,6 +362,9 @@ impl App {
                     }
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
+                        // The zoom level drags left and right (all the way through a drag, wherever the pointer goes).
+                        _ if self.zoom_scrub.is_some_and(|(_, moved)| moved) => IDC_SIZEWE,
+                        Some(Hit::Tool(Tool::Zoom)) if self.tool_enabled(Tool::Zoom) => IDC_SIZEWE,
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::ColumnEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
@@ -543,6 +549,7 @@ impl App {
                     if h == Some(Hit::Viewport) {
                         self.motion_press();
                     }
+                    self.zoom_scrub = (h == Some(Hit::Tool(Tool::Zoom)) && self.tool_enabled(Tool::Zoom)).then_some((x, false));
                     self.invalidate();
                     Some(LRESULT(0))
                 }
@@ -557,6 +564,8 @@ impl App {
                     let pressed = self.pressed.take();
                     let was_drag = self.drag.take().is_some();
                     let held = self.motion_held;
+                    // A drag on the zoom level zoomed: no fit/100 % click as well.
+                    let scrubbed = self.zoom_scrub.take().is_some_and(|(_, moved)| moved);
                     self.motion_release();
                     self.text_drag = None;
                     self.info_grip_release();
@@ -586,7 +595,7 @@ impl App {
                         // A click on the photo (not a pan, nor a Live Photo held): clean view on or off.
                         self.clean_click();
                     }
-                    if pressed.is_some() && pressed == h && !dropped {
+                    if pressed.is_some() && pressed == h && !dropped && !scrubbed {
                         let r = h.and_then(|h| self.hits.rect_of(h));
                         match h {
                             Some(p @ (Hit::PickerPreset(_) | Hit::PickerDone | Hit::PickerCancel)) => self.picker_click(p),

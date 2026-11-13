@@ -763,6 +763,9 @@ pub struct App {
     /// A right-button press on a 3D model: where the pointer was, and whether it has moved far enough to be a
     /// pan (no context menu on release).
     pan_drag: Option<(f32, f32, bool)>,
+    /// A press on the toolbar's zoom level: where the pointer last was, and whether it has moved far enough to
+    /// zoom (dragging right zooms in, left out; no fit/100 % click on release).
+    zoom_scrub: Option<(f32, bool)>,
     cap_hover: Option<Caption>,
     cap_pressed: Option<Caption>,
 }
@@ -1239,6 +1242,25 @@ impl App {
         }
     }
 
+    /// The pointer moved while pressed on the toolbar's zoom level: past a few DIPs it zooms about the middle,
+    /// doubling every 100 DIPs to the right (a 3D model's camera the same way).
+    pub(super) fn zoom_scrub_move(&mut self, x: f32) {
+        let Some((last, moved)) = self.zoom_scrub else { return };
+        if !moved && (x - self.press_at.0).abs() <= 3.0 {
+            return;
+        }
+        let f = (((x - last) / 100.0) as f64).exp2();
+        self.zoom_scrub = Some((x, true));
+        if f == 1.0 {
+            return;
+        }
+        if self.model_active() {
+            self.model_zoom((1.0 / f) as f32);
+        } else {
+            self.zoom_center(f);
+        }
+    }
+
     fn zoom_center(&mut self, f: f64) {
         self.view.zoom_center(f);
         self.after_zoom();
@@ -1530,6 +1552,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             pressed: None,
             drag: None,
             pan_drag: None,
+            zoom_scrub: None,
             cap_hover: None,
             cap_pressed: None,
         });
