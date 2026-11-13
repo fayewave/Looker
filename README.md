@@ -28,7 +28,7 @@ it keeps itself up to date.
 - Move, copy, rename, delete and new folder, with undo. Drag onto folders and tabs, or out to other apps.
 - Favourites and colour tags.
 
-<img src="brand/screenshots/readme-explorer.jpg" alt="Browse mode: tabs, the sidebar and the file list" width="700">
+<img src="brand/screenshots/readme-explorer.jpg" alt="The file explorer: tabs, the sidebar and the file list" width="700">
 
 ## Viewer
 
