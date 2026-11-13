@@ -15,7 +15,7 @@ pub(super) const WM_RECENTS: u32 = WM_APP + 10;
 static WORDMARK: &[u8] = include_bytes!("../../assets/Brand/looker_wordmark.svg");
 const WORDMARK_H: f32 = 52.0;
 const COLUMN_W: f32 = 480.0;
-const ROW_H: f32 = 42.0;
+fn row_h() -> f32 { crate::gfx::tsr(42.0) }
 const THUMB_W: f32 = 48.0;
 const THUMB_H: f32 = 36.0;
 const SCROLL_STEP: f32 = 48.0;
@@ -203,7 +203,7 @@ impl App {
         let head = 16.0 + WORDMARK_H + 8.0 + 16.0 + 8.0 + 32.0 + 16.0;
         let mut content = head;
         if has_recent {
-            content += 16.0 + 16.0 + 28.0 + 4.0 + entries.len() as f32 * ROW_H;
+            content += 16.0 + 16.0 + 28.0 + 4.0 + entries.len() as f32 * row_h();
         }
         // The default-app hint sits on the bottom edge, under the scrolling block.
         let hint = crate::store::packaged() && !self.settings.default_hint_dismissed;
@@ -259,8 +259,8 @@ impl App {
 
             let want = ((THUMB_W * self.scale()).ceil() as u32).max(96);
             for (i, e) in entries.iter().enumerate() {
-                let row = rect(col.left, g.snap(y), COLUMN_W, ROW_H);
-                y += ROW_H;
+                let row = rect(col.left, g.snap(y), COLUMN_W, row_h());
+                y += row_h();
                 if row.bottom < v.top || row.top > v.bottom {
                     continue;
                 }
@@ -274,7 +274,7 @@ impl App {
                 } else if st.hover > 0.0 {
                     g.fill_round(row, 5.0, gfx::rgba(th.hover_fill, st.hover));
                 }
-                let tb = rect(row.left + 6.0, row.top + 3.0, THUMB_W, THUMB_H);
+                let tb = rect(row.left + 6.0, row.top + (row.bottom - row.top - THUMB_H) / 2.0, THUMB_W, THUMB_H);
                 g.fill_round(tb, 4.0, rgb(th.field));
                 if let Some(t) = self.thumbs.get(&e.path, e.stamp) {
                     t.draw_fit(g, tb);
@@ -282,8 +282,10 @@ impl App {
                 self.thumbs.want(&e.path, e.stamp, want, e.cloud, true);
                 let tx = tb.right + 12.0;
                 let tw = (row.right - 6.0 - tx).max(0.0);
-                g.text(&wide(&e.name), &g.fonts.body, rect(tx, row.top + 4.0, tw, 18.0), rgb(th.text), Align::Left);
-                g.text(&wide(&e.folder), &g.fonts.caption, rect(tx, row.top + 22.0, tw, 16.0), rgb(th.label), Align::Left);
+                // The two lines grow with the text size, as the row does.
+                let (l1, l2) = (crate::gfx::tsr(18.0), crate::gfx::tsr(16.0));
+                g.text(&wide(&e.name), &g.fonts.body, rect(tx, row.top + 4.0, tw, l1), rgb(th.text), Align::Left);
+                g.text(&wide(&e.folder), &g.fonts.caption, rect(tx, row.top + 4.0 + l1, tw, l2), rgb(th.label), Align::Left);
             }
         }
         g.pop_clip();

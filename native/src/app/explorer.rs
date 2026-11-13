@@ -1947,7 +1947,7 @@ impl App {
         };
         pp.cursor = Some(i);
         // Kept in view.
-        let row = super::explorer_view::POPUP_ROW;
+        let row = super::explorer_view::popup_row();
         let view = super::explorer_view::POPUP_ROWS as f32 * row;
         let (top, bottom) = (i as f32 * row, i as f32 * row + row);
         if top < pp.scroll {

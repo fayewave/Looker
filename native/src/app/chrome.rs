@@ -13,7 +13,7 @@ impl App {
         let (w, h) = self.size_dip();
         if self.chrome() {
             // Clean view gives the bars' room to the photo as they fade (`clean_k`).
-            let (top, status) = ((TITLE_H + TOOLBAR_H) * self.clean_k, STATUS_H * self.clean_k);
+            let (top, status) = ((TITLE_H + TOOLBAR_H) * self.clean_k, status_h() * self.clean_k);
             D2D_RECT_F { left: 0.0, top, right: w, bottom: (h - status - self.bottom_inset()).max(top) }
         } else {
             D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: (h - self.bottom_inset()).max(1.0) }
@@ -23,7 +23,7 @@ impl App {
     /// Where the content ends at the bottom: above the status row, or the window's edge in fullscreen.
     pub(super) fn content_bottom(&self) -> f32 {
         let (_, h) = self.size_dip();
-        if self.chrome() { h - STATUS_H * self.clean_k } else { h }
+        if self.chrome() { h - status_h() * self.clean_k } else { h }
     }
 
     /// The cards and the strip follow their toggles while a photo is up, in fullscreen too, but not behind
@@ -439,7 +439,7 @@ impl App {
                 let tw = g.measure_tabular(&wide(&text), &g.fonts.caption);
                 let need = tw + if with_link { 16.0 + lw } else { 0.0 };
                 if need <= room {
-                    let link = with_link.then(|| rect(SIDE_PAD + tw + 16.0, h - STATUS_H, lw, STATUS_H));
+                    let link = with_link.then(|| rect(SIDE_PAD + tw + 16.0, h - status_h(), lw, status_h()));
                     return (text, link);
                 }
             }
@@ -465,6 +465,7 @@ impl App {
         crate::motion::refresh();
         self.hits.clear();
         self.fades.begin();
+        let text_moving = self.step_text_scale(&mut g);
         // Clean view's opacity: what floats over the photo is drawn at it, and not at all (nor hit) once gone.
         let ui_k = self.step_clean();
         let ui_on = ui_k > 0.0;
@@ -515,7 +516,7 @@ impl App {
         }
         self.gfx = Some(g);
         self.pump_thumbs();
-        if self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || self.clean_moving() || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
+        if text_moving || self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || self.clean_moving() || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
             self.invalidate();
         }
     }
@@ -697,8 +698,8 @@ impl App {
             self.request_exif();
         }
         // Centred in the whole row (an inset box sat the text 1.5 px high).
-        let y = h - STATUS_H;
-        let row_h = STATUS_H;
+        let y = h - status_h();
+        let row_h = status_h();
         let (text, link) = self.status_line(g);
         if text.is_empty() {
             return;
@@ -820,7 +821,9 @@ impl App {
         self.draw_audio(g);
         self.draw_text_view(g);
         self.draw_archive(g);
-        if self.viewer.shown.is_none() && self.viewer.error.is_some() && !self.archive_shown() {
+        // Not under a placeholder (a folder, or a file Looker can't open, picked in the explorer): its own card
+        // says what it is, and the viewer's error is the last file's (the text sat across the card's icon).
+        if self.viewer.shown.is_none() && self.viewer.error.is_some() && !self.archive_shown() && self.placeholder.is_none() {
             self.draw_cant_display(g);
         }
         self.draw_placeholder(g);
@@ -855,7 +858,7 @@ impl App {
             g.fill_vgradient(D2D_RECT_F { bottom: bg.top + buttons_bottom, ..bg }, &edge_out);
         }
         // The status text: 12 px, centred in its row (~16 px line).
-        let text_top = (self.chrome() && !solid).then(|| bg.bottom - STATUS_H / 2.0 - 8.0);
+        let text_top = (self.chrome() && !solid).then(|| bg.bottom - status_h() / 2.0 - 8.0);
         let top = match (text_top, self.strip_cells_top()) {
             (Some(a), Some(b)) => a.min(b),
             (a, b) => match a.or(b) {

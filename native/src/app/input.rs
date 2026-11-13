@@ -370,6 +370,7 @@ impl App {
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
+                        Some(Hit::TextSizeStep(_)) => IDC_HAND,
                         Some(
                             Hit::Reveal
                             | Hit::StatusZoom
@@ -652,6 +653,7 @@ impl App {
                             }
                             Some(Hit::MenuSwatch(i, k)) => self.activate_swatch(i, k),
                             Some(Hit::Tool(t)) => self.act(t),
+                            Some(Hit::TextSizeStep(k)) => self.text_size_step(k),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::InfoRow(i)) => self.info_copy(i),
                             Some(Hit::InfoEdit(i)) => {

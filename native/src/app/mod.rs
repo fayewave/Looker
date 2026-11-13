@@ -73,7 +73,7 @@ const TITLE_H: f32 = 32.0;
 const TOOLBAR_H: f32 = 40.0;
 /// The photo's room is this far off the toolbar and the status row (or strip): the cards' margin, so it's even all round.
 const PREVIEW_PAD: f32 = 12.0;
-const STATUS_H: f32 = 28.0;
+fn status_h() -> f32 { crate::gfx::tsr(28.0) }
 const CAPTION_W: f32 = 46.0;
 /// The toolbar's boxed buttons, as Snapper's: 32 square, 4 apart within a group, 12 between groups, 16 from
 /// the window's edges.
@@ -179,6 +179,8 @@ enum Hit {
     PageThumb,
     Combo(page::Setting),
     Toggle(page::Setting),
+    /// Settings > Appearance's text size stepper: its − (0) and + (1).
+    TextSizeStep(u8),
     ToggleAnim(page::Setting),
     ThemeChip(u8),
     /// Appearance's accent chips, by place in `theme::Accent::ALL`.
@@ -420,7 +422,7 @@ impl Placement {
         } else {
             client_size_for(self)
         };
-        let vh = h as f32 - (TITLE_H + TOOLBAR_H + 2.0 * PREVIEW_PAD + STATUS_H + bottom_inset) * s;
+        let vh = h as f32 - (TITLE_H + TOOLBAR_H + 2.0 * PREVIEW_PAD + status_h() + bottom_inset) * s;
         let vw = w as f32 - right_inset * s;
         (vw.max(1.0) as u32, vh.max(1.0) as u32)
     }
@@ -708,6 +710,8 @@ pub struct App {
     /// Clean view (`clean.rs`): a click on the photo put the UI away; and the UI's opacity easing to match.
     clean_view: bool,
     clean_fade: crate::motion::Ease<1>,
+    /// The text size as drawn, easing to the setting (`step_text_scale`).
+    text_ease: crate::motion::Ease<1>,
     /// This frame's value of `clean_fade`: 1 the UI shown, 0 gone.
     clean_k: f32,
     /// For the file that failed to display: the Windows extension it needs, if that is why (worked out once).
@@ -1520,6 +1524,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             slides: Slides { info: ui::Slide::new(false), explorer: ui::Slide::new(false), strip: ui::Slide::new(false) },
             clean_view: false,
             clean_fade: crate::motion::Ease::at([1.0]),
+            text_ease: crate::motion::Ease::at([crate::gfx::ts()]),
             clean_k: 1.0,
             update: Default::default(),
             missing_extension: None,

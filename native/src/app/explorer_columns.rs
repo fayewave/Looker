@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::explorer::Listed;
-use super::explorer_view::{FILTER_H, ICON_H, ICON_W, ROW};
+use super::explorer_view::{FILTER_H, ICON_H, ICON_W, row_h};
 use super::*;
 use crate::explorer::{self, Kind, Layout, Place, Row, Watcher};
 
@@ -551,7 +551,7 @@ impl App {
     /// The rows' height and their pictures' size (the view's Height, as the list's).
     fn column_icon(&self) -> (f32, f32, f32) {
         let h = self.explorer.look.height;
-        let rh = ROW * h as f32;
+        let rh = row_h() * h as f32;
         if h == 1 { (ICON_W, ICON_H, rh) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0, rh) }
     }
 

@@ -328,7 +328,7 @@ impl Gfx {
             comp.Commit()?;
             crate::trace::mark("gfx: swap chain + DirectComposition");
             let brush = dev.dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
-            let fonts = make_fonts(&text)?;
+            let fonts = make_fonts(&text, ts())?;
             let mut g = Gfx {
                 dev,
                 text,
@@ -355,6 +355,20 @@ impl Gfx {
             };
             g.make_target()?;
             Ok(g)
+        }
+    }
+
+    /// Remakes the text fonts at `scale` times their sizes (icons keep theirs). Laid-out text and baselines are
+    /// dropped with the old fonts: their caches are keyed by a format's address, which a new one can reuse.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        if (scale - ts()).abs() < 1e-4 {
+            return;
+        }
+        if let Ok(f) = make_fonts(&self.text, scale) {
+            self.fonts = f;
+            TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            self.layouts.borrow_mut().clear();
+            self.baselines.borrow_mut().clear();
         }
     }
 
@@ -1640,11 +1654,30 @@ impl Gfx {
     }
 }
 
-fn make_fonts(core: &Text) -> Result<Fonts> {
+/// The text size (Settings > Appearance), as a scale of the default, as the fonts are made now (easing to a new
+/// setting): laid-out heights that hold text grow with it (`ts`, `tsr`). Icons keep their size (Transient's).
+static TEXT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000); // 1.0
+
+pub fn ts() -> f32 {
+    f32::from_bits(TEXT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The text size the first fonts are made at (the setting, before any `Gfx`).
+pub fn preset_text_scale(scale: f32) {
+    TEXT_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `v` DIPs grown with the text size, to a whole DIP.
+pub fn tsr(v: f32) -> f32 {
+    (v * ts()).round()
+}
+
+fn make_fonts(core: &Text, scale: f32) -> Result<Fonts> {
     unsafe {
         let dw = &core.dwrite;
         let mut ellipsis = Vec::new();
         let mut inter = |size: f32, weight: DWRITE_FONT_WEIGHT| -> Result<IDWriteTextFormat> {
+            let size = size * scale;
             let f = dw.CreateTextFormat(core.family(weight), &core.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
             prep(&f)?;
             let sign = dw.CreateEllipsisTrimmingSign(&f)?;
@@ -1660,11 +1693,11 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         let body_wrap = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         body_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         body_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 18.0, 13.5)?;
+        body_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 18.0 * scale, 13.5 * scale)?;
         let caption_wrap = inter(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
         caption_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         caption_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 17.0, 13.0)?;
+        caption_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 17.0 * scale, 13.0 * scale)?;
         let overline = inter(12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let page_title = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let body_large = inter(14.0, DWRITE_FONT_WEIGHT_MEDIUM)?;
@@ -1674,7 +1707,7 @@ fn make_fonts(core: &Text) -> Result<Fonts> {
         let heading_wrap = inter(14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         heading_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK)?;
         heading_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
-        heading_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 19.0, 14.0)?;
+        heading_wrap.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 19.0 * scale, 14.0 * scale)?;
         let icon = |size: f32| -> Result<IDWriteTextFormat> {
             let f = dw.CreateTextFormat(
                 w!("Segoe Fluent Icons"),

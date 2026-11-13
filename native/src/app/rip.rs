@@ -190,7 +190,7 @@ impl App {
             format!("Ripping {} \u{00B7} {}%{eta}", r.name, (frac * 100.0).floor() as u32)
         };
         let (_, h) = self.size_dip();
-        self.draw_progress_pill(g, h - STATUS_H - 12.0, &text, frac, Hit::RipPill, Hit::RipCancel, stopping);
+        self.draw_progress_pill(g, h - status_h() - 12.0, &text, frac, Hit::RipPill, Hit::RipCancel, stopping);
     }
 
     /// A pill at the bottom left whose bottom is at `bottom` (a rip's, an extraction's): the text, a bar along its
@@ -220,7 +220,7 @@ impl App {
     /// Where a pill above a rip's sits (an extraction's): above the rip's, or in its place (above the status row).
     pub(super) fn pill_stack_bottom(&self) -> f32 {
         let (_, h) = self.size_dip();
-        h - STATUS_H - 12.0 - if self.ripping.is_some() { PILL_H + 8.0 } else { 0.0 }
+        h - status_h() - 12.0 - if self.ripping.is_some() { PILL_H + 8.0 } else { 0.0 }
     }
 }
 

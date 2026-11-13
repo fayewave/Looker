@@ -13,7 +13,7 @@ use super::*;
 use crate::explorer::{self, ColKind, Kind, Place};
 use crate::shell_icons;
 
-pub(super) const ROW: f32 = 26.0;
+pub(super) fn row_h() -> f32 { crate::gfx::tsr(26.0) }
 const NAV: f32 = 28.0;
 /// The tab strip's height (Transient's).
 const STRIP_H: f32 = 32.0;
@@ -26,7 +26,7 @@ const HEADER: f32 = 26.0;
 pub(super) const FILTER_H: f32 = 28.0;
 pub(super) const ICON_W: f32 = 24.0;
 /// The crumb popup's rows, and how many show before it scrolls.
-pub(super) const POPUP_ROW: f32 = 25.0;
+pub(super) fn popup_row() -> f32 { crate::gfx::tsr(25.0) }
 pub(super) const POPUP_ROWS: usize = 12;
 pub(super) const ICON_H: f32 = 18.0;
 /// Windows' icons are drawn this many DIPs across (the shell's small icon, as Transient's Browser draws them).
@@ -552,7 +552,7 @@ impl App {
         }
 
         // Rows: `rh` tall (the view's Height, in rows), the thumbnail growing with it.
-        let rh = ROW * self.explorer.look.height as f32;
+        let rh = row_h() * self.explorer.look.height as f32;
         let (icon_w, icon_h) = if self.explorer.look.height == 1 { (ICON_W, ICON_H) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0) };
         // The rows stop 4 short of the scrollbar (it starts 12 in from the card's edge): a picked row's outline ran
         // under it (Faye, 2026-11-10).
@@ -904,7 +904,7 @@ impl App {
         let t = theme::t();
         self.hits.add(Hit::Sidebar, r);
         let items = self.sidebar_items();
-        let item_h = |it: &super::explorer::SideItem| if matches!(it.target, SideTarget::Header(_)) { 34.0 } else { ROW };
+        let item_h = |it: &super::explorer::SideItem| if matches!(it.target, SideTarget::Header(_)) { 34.0 } else { row_h() };
         let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
         let place = self.explorer.place.clone();
 
@@ -1111,8 +1111,8 @@ impl App {
                 SideTarget::Header(sec) => {
                     // A button, as Transient's headings are: hover tinted and outlined, pressed solid accent; the
                     // label semibold; a chevron at the right while hovered, and while folded.
-                    let hr = rect(r.left + 10.0, y + 8.0, r.right - r.left - 20.0, ROW);
-                    let box_ = rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, ROW);
+                    let hr = rect(r.left + 10.0, y + 8.0, r.right - r.left - 20.0, row_h());
+                    let box_ = rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, row_h());
                     self.hits.add(Hit::SideHeader(*sec), box_);
                     let hid = Hit::SideHeader(*sec);
                     let hovered = self.hover == Some(hid) && drag.is_none() && target.is_none();
@@ -1125,21 +1125,21 @@ impl App {
                         ui::stroke(g, box_, 4.0, gfx::rgba(t.accent, hover));
                     }
                     let (c, chev) = if pressed { (t.on_accent, t.on_accent) } else if hovered { (t.text, t.label) } else { (t.label, t.placeholder) };
-                    g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, ROW), rgb(c), Align::Center);
-                    g.text(&wide(&it.label), &g.fonts.overline, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 48.0, ROW), rgb(c), Align::Left);
+                    g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, row_h()), rgb(c), Align::Center);
+                    g.text(&wide(&it.label), &g.fonts.overline, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 48.0, row_h()), rgb(c), Align::Left);
                     let closed = self.settings.sidebar_closed.contains(sec);
                     let open = blocks.iter().position(|b| b.0 == *sec).map_or(1.0, |k| opens[k]);
                     let a = hover.max(1.0 - open);
                     if a > 0.0 {
                         let glyph = if closed { 0xE76C } else { 0xE70D };
-                        g.text(&[glyph], &g.fonts.small_icons, rect(box_.right - 24.0, hr.top, 16.0, ROW), gfx::rgba(chev, a), Align::Center);
+                        g.text(&[glyph], &g.fonts.small_icons, rect(box_.right - 24.0, hr.top, 16.0, row_h()), gfx::rgba(chev, a), Align::Center);
                     }
                 }
                 SideTarget::Hint => {
-                    g.text(&wide(&it.label), &g.fonts.body, rect(r.left + 20.0, y, r.right - r.left - 28.0, ROW), rgb(t.placeholder), Align::Left);
+                    g.text(&wide(&it.label), &g.fonts.body, rect(r.left + 20.0, y, r.right - r.left - 28.0, row_h()), rgb(t.placeholder), Align::Left);
                 }
                 SideTarget::Place(p) => {
-                    let row = rect(r.left + 6.0, y, r.right - r.left - 12.0, ROW);
+                    let row = rect(r.left + 6.0, y, r.right - r.left - 12.0, row_h());
                     if row.bottom > r.top && row.top < r.bottom {
                         self.hits.add(Hit::SideRow(i), row);
                     }
@@ -1159,7 +1159,7 @@ impl App {
                     }
                     let x = row.left + 4.0 + (it.depth.saturating_sub(1)) as f32 * 14.0;
                     if let Some(node) = &it.node {
-                        let cr = rect(x, row.top, 16.0, ROW);
+                        let cr = rect(x, row.top, 16.0, row_h());
                         self.hits.add(Hit::SideChevron(i), cr);
                         let _ = node;
                         g.text(&[if it.expanded { 0xE70D } else { 0xE76C }], &g.fonts.caption_icons, cr, rgb(t.placeholder), Align::Center);
@@ -1168,18 +1168,18 @@ impl App {
                     // Windows' icons for places, drives, bookmarks and history (by path: Downloads' arrow, a
                     // drive's own), the one folder icon for the folders opened under them, as Transient's tree.
                     let shell = if it.depth > 1 { Some(shell_icons::Kind::Folder) } else { place_icon(p) };
-                    let drew = shell.is_some_and(|k| shell_icon(g, &k, rect(ix, row.top, 16.0, ROW), 1.0, None));
+                    let drew = shell.is_some_and(|k| shell_icon(g, &k, rect(ix, row.top, 16.0, row_h()), 1.0, None));
                     if drew {
                         // Drawn.
                     } else if it.glyph == 0xEA3B {
                         // A colour collection: its swatch as a dot.
                         let c = it.tint.unwrap_or(t.icon);
-                        g.fill_round(rect(ix + 3.0, row.top + (ROW - 10.0) / 2.0, 10.0, 10.0), 5.0, rgb(c));
+                        g.fill_round(rect(ix + 3.0, row.top + (row_h() - 10.0) / 2.0, 10.0, 10.0), 5.0, rgb(c));
                     } else {
                         let glyph = if it.glyph == 0xE8B7 { 0xE8D5 } else { it.glyph };
-                        g.text(&[glyph], &g.fonts.body_icons, rect(ix, row.top, 16.0, ROW), rgb(it.tint.unwrap_or(t.icon)), Align::Center);
+                        g.text(&[glyph], &g.fonts.body_icons, rect(ix, row.top, 16.0, row_h()), rgb(it.tint.unwrap_or(t.icon)), Align::Center);
                     }
-                    g.text(&wide(&it.label), &g.fonts.body, rect(ix + 24.0, row.top, (row.right - ix - 28.0).max(0.0), ROW), rgb(t.text), Align::Left);
+                    g.text(&wide(&it.label), &g.fonts.body, rect(ix + 24.0, row.top, (row.right - ix - 28.0).max(0.0), row_h()), rgb(t.text), Align::Left);
                 }
             }
             if cut {
@@ -1190,12 +1190,12 @@ impl App {
         if let (Some(di), Some((_, head_y))) = (dragged, drag) {
             let raised = theme::raised();
             let it = &items[blocks[di].1];
-            let hr = rect(r.left + 6.0, head_y + 8.0, r.right - r.left - 12.0, ROW);
+            let hr = rect(r.left + 6.0, head_y + 8.0, r.right - r.left - 12.0, row_h());
             ui::shadow(g, hr, 4.0);
             g.fill_round(hr, 4.0, rgb(raised.popup));
             ui::stroke(g, hr, 4.0, rgb(raised.divider));
-            g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left + 4.0, hr.top, 16.0, ROW), rgb(raised.text), Align::Center);
-            g.text(&wide(&it.label), &g.fonts.body, rect(hr.left + 28.0, hr.top, hr.right - hr.left - 32.0, ROW), rgb(raised.text), Align::Left);
+            g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left + 4.0, hr.top, 16.0, row_h()), rgb(raised.text), Align::Center);
+            g.text(&wide(&it.label), &g.fonts.body, rect(hr.left + 28.0, hr.top, hr.right - hr.left - 32.0, row_h()), rgb(raised.text), Align::Left);
         }
         g.pop_clip();
         moving
@@ -1242,7 +1242,7 @@ impl App {
         let can_up = pp.listed.is_some();
         let rows = n.clamp(1, POPUP_ROWS);
         let w = 560.0f32.min(ww - 16.0);
-        let h = 44.0 + rows as f32 * POPUP_ROW + 8.0 + 34.0;
+        let h = 44.0 + rows as f32 * popup_row() + 8.0 + 34.0;
         let x = g.snap((anchor.left - 6.0).clamp(8.0, (ww - w - 8.0).max(8.0)));
         let y = g.snap((anchor.bottom + 4.0).min(wh - h - 8.0).max(8.0));
         let panel = rect(x, y, w, h);
@@ -1283,9 +1283,9 @@ impl App {
         }
 
         // The entries.
-        let list = rect(x + 6.0, y + 44.0, w - 12.0, rows as f32 * POPUP_ROW);
+        let list = rect(x + 6.0, y + 44.0, w - 12.0, rows as f32 * popup_row());
         let pp = self.explorer.path_edit.as_mut().unwrap();
-        pp.max_scroll = (n as f32 * POPUP_ROW - list.bottom + list.top).max(0.0);
+        pp.max_scroll = (n as f32 * popup_row() - list.bottom + list.top).max(0.0);
         pp.scroll = pp.scroll.min(pp.max_scroll);
         let (scroll, cursor) = (pp.scroll, pp.cursor);
         let items: Vec<(usize, PathBuf, bool)> = pp.shown.iter().enumerate().map(|(k, &i)| (k, pp.entries[i].0.clone(), pp.entries[i].1)).collect();
@@ -1293,11 +1293,11 @@ impl App {
         g.push_clip(list);
         if items.is_empty() {
             let msg = if pending { "\u{2026}" } else { "Nothing here" };
-            g.text(&wide(msg), &g.fonts.body, rect(list.left + 12.0, list.top, list.right - list.left - 24.0, POPUP_ROW), rgb(raised.placeholder), Align::Left);
+            g.text(&wide(msg), &g.fonts.body, rect(list.left + 12.0, list.top, list.right - list.left - 24.0, popup_row()), rgb(raised.placeholder), Align::Left);
         }
-        let first = (scroll / POPUP_ROW).floor() as usize;
+        let first = (scroll / popup_row()).floor() as usize;
         for (k, path, is_dir) in items.into_iter().skip(first).take(POPUP_ROWS + 1) {
-            let row = rect(list.left, list.top + k as f32 * POPUP_ROW - scroll, list.right - list.left, POPUP_ROW);
+            let row = rect(list.left, list.top + k as f32 * popup_row() - scroll, list.right - list.left, popup_row());
             self.hits.add(Hit::CrumbPopupRow(k), D2D_RECT_F { top: row.top.max(list.top), bottom: row.bottom.min(list.bottom), ..row });
             let hover = self.fades.hover(Hit::CrumbPopupRow(k), self.hover == Some(Hit::CrumbPopupRow(k)));
             if cursor == Some(k) {
@@ -1306,7 +1306,7 @@ impl App {
             } else if hover > 0.0 {
                 g.fill_round(row, 4.0, gfx::rgba(raised.hover_fill, hover));
             }
-            let ir = rect(row.left + 8.0, row.top, 18.0, POPUP_ROW);
+            let ir = rect(row.left + 8.0, row.top, 18.0, popup_row());
             let shell = if path.parent().is_none() {
                 Some(shell_icons::Kind::Path(path.clone()))
             } else if is_dir {
@@ -1324,7 +1324,7 @@ impl App {
                 };
                 g.text(&[glyph], &g.fonts.body_icons, ir, rgb(tint), Align::Center);
             }
-            g.text(&wide(&explorer::folder_name(&path)), &g.fonts.body, rect(row.left + 34.0, row.top, row.right - row.left - 40.0, POPUP_ROW), rgb(raised.text), Align::Left);
+            g.text(&wide(&explorer::folder_name(&path)), &g.fonts.body, rect(row.left + 34.0, row.top, row.right - row.left - 40.0, popup_row()), rgb(raised.text), Align::Left);
         }
         g.pop_clip();
 

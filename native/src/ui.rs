@@ -300,6 +300,28 @@ pub fn group_edges(g: &Gfx, b: D2D_RECT_F, segs: &[(D2D_RECT_F, bool)], enabled:
     }
 }
 
+/// A stepper's − and + buttons in its box `b` (square, 2 in from its ends).
+pub fn stepper_buttons(b: D2D_RECT_F) -> (D2D_RECT_F, D2D_RECT_F) {
+    let s = b.bottom - b.top - 4.0;
+    (rect(b.left + 2.0, b.top + 2.0, s, s), rect(b.right - 2.0 - s, b.top + 2.0, s, s))
+}
+
+/// A stepper (Transient's): a field box with − at the left, + at the right and `value` between them. `on` says
+/// which buttons can be pressed (the other greyed), `hot` each one's hover wash (0..1).
+pub fn stepper(g: &Gfx, b: D2D_RECT_F, value: &str, on: [bool; 2], hot: [f32; 2]) {
+    let t = theme::raised();
+    g.fill_round(b, 5.0, rgb(t.field));
+    stroke(g, b, 5.0, rgb(t.divider));
+    let (minus, plus) = stepper_buttons(b);
+    for (k, r, glyph) in [(0, minus, 0xE738u16), (1, plus, 0xE710)] {
+        if on[k] && hot[k] > 0.0 {
+            g.fill_round(r, 3.0, rgba(t.hover_fill, hot[k]));
+        }
+        g.text(&[glyph], &g.fonts.caption_icons, r, rgb(if on[k] { t.text } else { t.placeholder }), Align::Center);
+    }
+    g.text_tabular(&wide(value), &g.fonts.body, rect(minus.right, b.top, plus.left - minus.right, b.bottom - b.top), rgb(t.text), Align::Center);
+}
+
 /// A hairline just inside `r`.
 pub fn stroke(g: &Gfx, r: D2D_RECT_F, radius: f32, c: D2D1_COLOR_F) {
     g.outline_round(r, radius, c, g.px());
@@ -918,7 +940,7 @@ impl Toast {
 
 // --- Menus -------------------------------------------------------------------------------------------
 
-const MENU_ROW: f32 = 25.0;
+fn menu_row() -> f32 { crate::gfx::tsr(25.0) }
 const MENU_SEP: f32 = 11.0;
 const MENU_PAD_TOP: f32 = 4.0;
 const MENU_PAD_BOTTOM: f32 = 6.0;
@@ -984,10 +1006,10 @@ const SWATCH_CELL: f32 = 24.0;
 
 fn entry_h<A>(e: &Entry<A>) -> f32 {
     match e {
-        Entry::Item(_) | Entry::Sub(..) => MENU_ROW,
+        Entry::Item(_) | Entry::Sub(..) => menu_row(),
         Entry::Separator => MENU_SEP,
         Entry::Swatches(_) => MENU_SWATCHES,
-        Entry::Heading(_) | Entry::Stepper(_) => MENU_ROW,
+        Entry::Heading(_) | Entry::Stepper(_) => menu_row(),
     }
 }
 
@@ -1154,8 +1176,8 @@ impl<A: Copy> Menu<A> {
         for (i, e) in self.entries.iter().enumerate() {
             match e {
                 Entry::Item(_) | Entry::Sub(..) => {
-                    out.push((i, rect(self.x + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW)));
-                    y += MENU_ROW;
+                    out.push((i, rect(self.x + MENU_INSET, y, self.width - MENU_INSET * 2.0, menu_row())));
+                    y += menu_row();
                 }
                 e => y += entry_h(e),
             }
@@ -1189,13 +1211,11 @@ impl<A: Copy> Menu<A> {
 
     /// A stepper's box on the row at `y`, and its minus and plus buttons.
     fn stepper_box(&self, y: f32) -> D2D_RECT_F {
-        rect(self.x + self.width - 11.0 - STEPPER_W, y + (MENU_ROW - STEPPER_H) / 2.0, STEPPER_W, STEPPER_H)
+        rect(self.x + self.width - 11.0 - STEPPER_W, y + (menu_row() - STEPPER_H) / 2.0, STEPPER_W, STEPPER_H)
     }
 
     fn stepper_buttons(&self, y: f32) -> (D2D_RECT_F, D2D_RECT_F) {
-        let b = self.stepper_box(y);
-        let s = STEPPER_H - 4.0;
-        (rect(b.left + 2.0, b.top + 2.0, s, s), rect(b.right - 2.0 - s, b.top + 2.0, s, s))
+        stepper_buttons(self.stepper_box(y))
     }
 
     pub fn swatch_action(&self, i: usize, k: usize) -> Option<A> {
@@ -1266,7 +1286,7 @@ impl<A: Copy> Menu<A> {
             let it = match en {
                 Entry::Sub(glyph, text, _) => {
                     // Lit while the pointer's on it or its submenu is open; a chevron at the right.
-                    let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW);
+                    let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, menu_row());
                     let open = self.sub.as_ref().is_some_and(|(k, _)| *k == i);
                     let hot = hover == Some(i) || open || (hover.is_none() && self.cursor == Some(i));
                     if hot {
@@ -1274,11 +1294,11 @@ impl<A: Copy> Menu<A> {
                     }
                     let fg = if hot { rgb(raised.on_accent) } else { rgb(raised.text) };
                     if let Some(glyph) = glyph {
-                        g.text(&[*glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), if hot { fg } else { rgb(raised.icon) }, Align::Center);
+                        g.text(&[*glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, menu_row()), if hot { fg } else { rgb(raised.icon) }, Align::Center);
                     }
-                    label(g, text, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 30.0, MENU_ROW), fg, Align::Left);
-                    g.text(&[0xE76C], &g.fonts.caption_icons, rect(panel.right - 27.0, y, 16.0, MENU_ROW), fg, Align::Center);
-                    y += MENU_ROW;
+                    label(g, text, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 30.0, menu_row()), fg, Align::Left);
+                    g.text(&[0xE76C], &g.fonts.caption_icons, rect(panel.right - 27.0, y, 16.0, menu_row()), fg, Align::Center);
+                    y += menu_row();
                     continue;
                 }
                 Entry::Separator => {
@@ -1287,8 +1307,8 @@ impl<A: Copy> Menu<A> {
                     continue;
                 }
                 Entry::Heading(text) => {
-                    label(g, text, &g.fonts.body, rect(panel.left + MENU_LABEL_X, y + 2.0, self.width - MENU_LABEL_X - 14.0, MENU_ROW), rgb(raised.placeholder), Align::Left);
-                    y += MENU_ROW;
+                    label(g, text, &g.fonts.body, rect(panel.left + MENU_LABEL_X, y + 2.0, self.width - MENU_LABEL_X - 14.0, menu_row()), rgb(raised.placeholder), Align::Left);
+                    y += menu_row();
                     continue;
                 }
                 Entry::Swatches(s) => {
@@ -1306,24 +1326,15 @@ impl<A: Copy> Menu<A> {
                     continue;
                 }
                 Entry::Stepper(s) => {
-                    label(g, &s.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - STEPPER_W - 20.0, MENU_ROW), rgb(raised.text), Align::Left);
-                    let b = self.stepper_box(y);
-                    g.fill_round(b, 5.0, rgb(raised.field));
-                    stroke(g, b, 5.0, rgb(raised.divider));
-                    let (minus, plus) = self.stepper_buttons(y);
-                    for (k, r, glyph, on) in [(0, minus, 0xE738u16, s.dec.is_some()), (1, plus, 0xE710, s.inc.is_some())] {
-                        if on && swatch == Some((i, k)) {
-                            g.fill_round(r, 3.0, rgb(raised.hover_fill));
-                        }
-                        g.text(&[glyph], &g.fonts.caption_icons, r, rgb(if on { raised.text } else { raised.placeholder }), Align::Center);
-                    }
-                    label(g, &s.value, &g.fonts.body, rect(minus.right, b.top, plus.left - minus.right, STEPPER_H), rgb(raised.text), Align::Center);
-                    y += MENU_ROW;
+                    label(g, &s.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - STEPPER_W - 20.0, menu_row()), rgb(raised.text), Align::Left);
+                    let hot = [0, 1].map(|k| if swatch == Some((i, k)) { 1.0 } else { 0.0 });
+                    stepper(g, self.stepper_box(y), &s.value, [s.dec.is_some(), s.inc.is_some()], hot);
+                    y += menu_row();
                     continue;
                 }
                 Entry::Item(it) => it,
             };
-            let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, MENU_ROW);
+            let row = rect(panel.left + MENU_INSET, y, self.width - MENU_INSET * 2.0, menu_row());
             let hot = it.enabled && (hover == Some(i) || (hover.is_none() && self.cursor == Some(i)));
             if hot {
                 g.fill_round(row, 4.0, rgb(raised.accent));
@@ -1338,7 +1349,7 @@ impl<A: Copy> Menu<A> {
             } else {
                 rgb(raised.placeholder)
             };
-            let ir = rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW);
+            let ir = rect(panel.left + MENU_ICON_X, y, 16.0, menu_row());
             let shell = it.icon.as_ref().map(|k| crate::shell_icons::get(k, (16.0 * g.dpi / 96.0).round() as u32));
             if let Some(crate::shell_icons::Lookup::Ready(icon)) = &shell {
                 g.draw_icon(icon, ir, 16.0, if it.enabled { 1.0 } else { 0.45 }, None);
@@ -1348,15 +1359,15 @@ impl<A: Copy> Menu<A> {
                 let ic = if hot || !it.enabled { fg } else { it.tint.map_or(rgb(raised.icon), rgb) };
                 if glyph == 0xEA3B && it.tint.is_some() {
                     let c = it.tint.map_or(fg, rgb);
-                    g.fill_round(rect(panel.left + MENU_ICON_X + 3.0, y + (MENU_ROW - 10.0) / 2.0, 10.0, 10.0), 5.0, c);
+                    g.fill_round(rect(panel.left + MENU_ICON_X + 3.0, y + (menu_row() - 10.0) / 2.0, 10.0, 10.0), 5.0, c);
                 } else {
-                    g.text(&[glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, MENU_ROW), ic, Align::Center);
+                    g.text(&[glyph], &g.fonts.body_icons, rect(panel.left + MENU_ICON_X, y, 16.0, menu_row()), ic, Align::Center);
                 }
             }
-            label(g, &it.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 14.0, MENU_ROW), fg, Align::Left);
+            label(g, &it.label, &g.fonts.body, rect(panel.left + label_x, y, self.width - label_x - 14.0, menu_row()), fg, Align::Left);
             let mut right = panel.right - 13.0;
             if checks {
-                let b = rect(panel.right - 11.0 - 16.0, y + (MENU_ROW - 16.0) / 2.0, 16.0, 16.0);
+                let b = rect(panel.right - 11.0 - 16.0, y + (menu_row() - 16.0) / 2.0, 16.0, 16.0);
                 match it.check {
                     Some(true) => {
                         let on = if hot { rgb(raised.on_accent) } else { faded(rgb(raised.accent), if it.enabled { 1.0 } else { 0.45 }) };
@@ -1373,9 +1384,9 @@ impl<A: Copy> Menu<A> {
             }
             if let Some(a) = it.accel {
                 let hc = if hot { faded(rgb(raised.on_accent), 0.8) } else { rgb(raised.label) };
-                label(g, a, &g.fonts.caption, rect(right - 200.0, y, 200.0, MENU_ROW), hc, Align::Right);
+                label(g, a, &g.fonts.caption, rect(right - 200.0, y, 200.0, menu_row()), hc, Align::Right);
             }
-            y += MENU_ROW;
+            y += menu_row();
         }
         g.pop_fade();
     }

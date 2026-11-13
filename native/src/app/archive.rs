@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::imaging::archive::{self as arc, Entry};
 
-/// The explorer's own row and header heights (explorer_view.rs: ROW, HEADER), and the footer's.
-const ROW: f32 = 26.0;
+/// The explorer's own row and header heights (explorer_view.rs: row_h, HEADER), and the footer's.
+const ROW_BASE: f32 = 26.0;
 const COLS_H: f32 = 26.0;
 const HEADER_H: f32 = 46.0;
 const FOOT_H: f32 = 44.0;
@@ -387,7 +387,7 @@ impl App {
         let card = D2D_RECT_F { left: a.left + ml, top: v.top + m, right: a.right - mr, bottom: v.bottom - m };
         let list = D2D_RECT_F { left: card.left + 6.0, top: card.top + HEADER_H + COLS_H + 2.0, right: card.right - 16.0, bottom: card.bottom - FOOT_H };
         let height = self.explorer.look.height.max(1) as f32;
-        let rh = ROW * height;
+        let rh = crate::gfx::tsr(ROW_BASE) * height;
         let icon = if height <= 1.0 { (24.0, 18.0) } else { ((rh - 8.0) * 4.0 / 3.0, rh - 8.0) };
         let size_w = 100.0;
         let date_w = if card.right - card.left > 560.0 { 150.0 } else { 0.0 };

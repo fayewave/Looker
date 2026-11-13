@@ -65,6 +65,7 @@ fn main() {
         return;
     }
     let settings = settings::load();
+    gfx::preset_text_scale(settings.text_scale);
     let placement = app::initial_placement(&settings);
     // Before the launch decode: it decodes for the colour space of the monitor the window opens on.
     unsafe {

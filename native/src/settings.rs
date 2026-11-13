@@ -146,7 +146,13 @@ pub struct Settings {
     pub text_margins: [i32; 4],
     /// Subtitles' text size, percent of normal (`SUBTITLE_SIZES`).
     pub subtitle_size: u32,
+    /// The UI's text size, a scale of the default (Settings > Appearance, TEXT_SCALES): the fonts grow and so do
+    /// the rows that hold them; icons keep their size.
+    pub text_scale: f32,
 }
+
+/// The text size slider's range and step.
+pub const TEXT_SCALES: (f32, f32, f32) = (0.8, 1.3, 0.05);
 
 /// The sizes the Subtitles menu offers, percent.
 pub const SUBTITLE_SIZES: [u32; 5] = [75, 100, 125, 150, 200];
@@ -177,7 +183,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100 }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100, text_scale: 1.0 }
     }
 }
 
@@ -349,6 +355,7 @@ pub fn parse(text: &str) -> Settings {
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
             "subtitle_size" => s.subtitle_size = v.parse().unwrap_or(100).clamp(25, 400),
+            "text_scale" => s.text_scale = v.parse::<f32>().ok().filter(|x| x.is_finite()).map_or(1.0, |x| x.clamp(TEXT_SCALES.0, TEXT_SCALES.1)),
             "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Black),
             "theme_follow" => s.theme_follow = v != "0",
             "theme_dark" => s.theme_dark = crate::theme::ThemeId::parse(v).filter(|t| t.theme().dark).unwrap_or(crate::theme::ThemeId::Black),
@@ -439,6 +446,7 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("video_start_muted={}\n", s.video_start_muted as i32));
     out.push_str(&format!("video_resume={}\n", s.video_resume as i32));
     out.push_str(&format!("subtitle_size={}\n", s.subtitle_size));
+    out.push_str(&format!("text_scale={:.2}\n", s.text_scale));
     out.push_str(&format!("theme={}\n", s.theme.name().to_lowercase()));
     out.push_str(&format!("theme_follow={}\n", s.theme_follow as i32));
     out.push_str(&format!("theme_dark={}\n", s.theme_dark.name().to_lowercase()));
@@ -696,6 +704,7 @@ mod tests {
             text_markdown: false,
             text_margins: [500, 600, 700, 800],
             subtitle_size: 150,
+            text_scale: 1.15,
         };
         assert_eq!(parse(&format(&s)), s);
         assert_eq!(parse(&format(&Settings::default())), Settings::default());

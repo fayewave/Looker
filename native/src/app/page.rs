@@ -16,7 +16,7 @@ use crate::store::UpdateStatus;
 use crate::theme::{self, ThemeId};
 
 const SIDEBAR_W: f32 = 210.0;
-const ITEM_H: f32 = 34.0;
+fn item_h() -> f32 { crate::gfx::tsr(34.0) }
 const ROW_H: f32 = 44.0;
 const CARD_W: f32 = 800.0;
 const CARD_H: f32 = 600.0;
@@ -243,13 +243,15 @@ impl Rows {
         // short with an ellipsis at half the width: Faye, 2026-11-13).
         let tw = (self.w - room).max(160.0);
         let hint_h = if hint.is_empty() { 0.0 } else { g.measure_height(&wide(hint), &g.fonts.caption_wrap, tw).ceil() };
-        let h = if hint.is_empty() { ROW_H } else { (ROW_H + 10.0).max(25.0 + hint_h + 13.0) };
+        // The label's line, and the row, grow with the text size.
+        let (row_h, line) = (crate::gfx::tsr(ROW_H), crate::gfx::tsr(19.0));
+        let h = if hint.is_empty() { row_h } else { (row_h + 10.0).max(6.0 + line + hint_h + 13.0) };
         let r = rect(self.x, self.y, self.w, h);
         if hint.is_empty() {
             g.text(&wide(label), &g.fonts.body, rect(r.left, r.top, tw, h), rgb(t.text), Align::Left);
         } else {
-            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top + 6.0, tw, 20.0), rgb(t.text), Align::Left);
-            g.text(&wide(hint), &g.fonts.caption_wrap, rect(r.left, r.top + 25.0, tw, hint_h), rgb(t.label), Align::Left);
+            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top + 6.0, tw, line + 1.0), rgb(t.text), Align::Left);
+            g.text(&wide(hint), &g.fonts.caption_wrap, rect(r.left, r.top + 6.0 + line, tw, hint_h), rgb(t.label), Align::Left);
         }
         g.hline(r.left, g.snap((r.bottom + extra - g.px()).floor()), self.w, rgb(t.divider));
         self.y += h + extra;
@@ -258,8 +260,8 @@ impl Rows {
 
     fn heading(&mut self, g: &Gfx, text: &str) {
         self.y += 18.0;
-        ui::section(g, text, rect(self.x, self.y, self.w, 20.0));
-        self.y += 24.0;
+        ui::section(g, text, rect(self.x, self.y, self.w, crate::gfx::tsr(20.0)));
+        self.y += crate::gfx::tsr(24.0);
     }
 
     /// Wrapped small text in the label colour, under the rows.
@@ -624,7 +626,7 @@ impl App {
         let current = self.page.as_ref().map(|p| p.section);
         let mut y = side.top + PANE_HEAD;
         for (i, sec) in Section::ALL.into_iter().enumerate() {
-            let r = rect(side.left + 12.0, y, SIDEBAR_W - 24.0, ITEM_H);
+            let r = rect(side.left + 12.0, y, SIDEBAR_W - 24.0, item_h());
             let id = Hit::PageNav(i as u8);
             if open {
                 self.hits.add(id, r);
@@ -639,13 +641,13 @@ impl App {
                 g.fill_round(r, 5.0, gfx::rgba(t.selected, on));
             }
             let fg = theme::mix(t.label, t.text, on.max(hov));
-            g.text(&[sec.icon()], &g.fonts.small_icons, rect(r.left + 6.0, r.top, 24.0, ITEM_H), fg, Align::Center);
-            g.text(&wide(sec.label()), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, ITEM_H), fg, Align::Left);
+            g.text(&[sec.icon()], &g.fonts.small_icons, rect(r.left + 6.0, r.top, 24.0, item_h()), fg, Align::Center);
+            g.text(&wide(sec.label()), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, item_h()), fg, Align::Left);
             // The update waiting, marked where it is.
             if sec == Section::About && self.update == UpdateStatus::Available {
-                g.fill_round(rect(r.right - 16.0, r.top + (ITEM_H - 7.0) / 2.0, 7.0, 7.0), 3.5, rgb(t.accent));
+                g.fill_round(rect(r.right - 16.0, r.top + (item_h() - 7.0) / 2.0, 7.0, 7.0), 3.5, rgb(t.accent));
             }
-            y += ITEM_H;
+            y += item_h();
         }
     }
 
@@ -752,6 +754,8 @@ impl App {
             self.theme_chips(g, rows, "Theme", CHIPS_ANY, open);
         }
         self.accent_chips(g, rows, open);
+        let r = rows.row_room(g, "Text size", "Bigger or smaller text everywhere in Looker; icons stay as they are", 144.0, 0.0);
+        self.text_size_stepper(g, right_part(r, 120.0, 30.0), open);
         let r = rows.switch_row(g, "Solid status bar", "A solid bar behind the file details at the bottom. Off: they sit on the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
     }
@@ -865,6 +869,32 @@ impl App {
         self.text_button(g, r, "View licences", Hit::PageLink(link::LICENCES), ui::Kind::Standard, open);
         // Every component Build-Codecs ships (its codecs\licenses folder), with the font (2026-11-13).
         rows.note(g, "Inter (SIL Open Font License); libheif, libde265, dav1d and libavif for HEIC and AVIF; LibRaw, Little CMS and JasPer for camera RAW; FFmpeg, mpg123, libogg, libvorbis and liblc3 for video and sound; libass, FreeType, HarfBuzz, FriBidi, libaribcaption and libzvbi for subtitles; libopenmpt, FluidSynth and the GeneralUser GS sound bank for music files; libarchive, zlib, bzip2, liblzma, LZ4 and Zstandard for archives. Portions of this software are copyright \u{00A9} The FreeType Project (www.freetype.org).");
+    }
+
+    /// The text size: Transient's stepper, − 100% +, in 5 % steps (the menus' Height stepper, at a row's size).
+    fn text_size_stepper(&mut self, g: &Gfx, b: D2D_RECT_F, open: bool) {
+        let (lo, hi, _) = settings::TEXT_SCALES;
+        let v = self.settings.text_scale;
+        let can = [v > lo + 1e-3, v < hi - 1e-3];
+        let (minus, plus) = ui::stepper_buttons(b);
+        let mut hot = [0.0; 2];
+        for (k, r) in [(0usize, minus), (1, plus)] {
+            let id = Hit::TextSizeStep(k as u8);
+            if open && can[k] {
+                self.hits.add(id, r);
+            }
+            hot[k] = self.state(id, open && can[k]).hover;
+        }
+        ui::stepper(g, b, &format!("{:.0}%", v * 100.0), can, hot);
+    }
+
+    /// The stepper's − (0) or +: a step smaller or bigger. The fonts ease to it.
+    pub(super) fn text_size_step(&mut self, k: u8) {
+        let (lo, hi, step) = settings::TEXT_SCALES;
+        let v = self.settings.text_scale + if k == 0 { -step } else { step };
+        self.settings.text_scale = ((v.clamp(lo, hi)) * 100.0).round() / 100.0;
+        settings::save(&self.settings);
+        self.invalidate();
     }
 
     /// A drop-down at `r` for a setting.

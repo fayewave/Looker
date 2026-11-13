@@ -45,6 +45,21 @@ impl App {
         self.clean_k
     }
 
+    /// The text size eases to the setting (Settings > Appearance): the fonts are remade every frame of it, and
+    /// everything that holds text is laid out afresh (Transient's). True while it moves.
+    pub(super) fn step_text_scale(&mut self, g: &mut Gfx) -> bool {
+        let now = Instant::now();
+        self.text_ease.set([self.settings.text_scale], now);
+        let moving = self.text_ease.moving(now);
+        let landed = self.text_ease.settle(now);
+        let before = crate::gfx::ts();
+        g.set_text_scale(self.text_ease.value(now)[0]);
+        if crate::gfx::ts() != before || landed {
+            self.layout_changed();
+        }
+        moving
+    }
+
     pub(super) fn clean_moving(&self) -> bool {
         self.clean_fade.moving(Instant::now())
     }
