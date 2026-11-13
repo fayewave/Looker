@@ -20,7 +20,7 @@ it keeps itself up to date.
 
 ## File explorer
 
-- Beside the photo, or across the window with the photo as a preview (`Ctrl+B`).
+- Beside the photo, or widened to half the window with the photo as a preview (`Ctrl+B`); drag its edge for more.
 - Windows' own folder and drive icons; type a letter to jump to a name.
 - Tabs, and a sidebar of Bookmarks, Collections, History and Places.
 - Sortable, resizable columns: date taken, camera, lens, dimensions and more.
