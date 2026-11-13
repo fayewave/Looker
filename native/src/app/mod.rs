@@ -825,7 +825,13 @@ impl App {
     /// where a drag would move the window it takes a real pull (Faye, 2026-11-10: a click that wobbled a few
     /// pixels moved the window instead of pausing).
     pub(super) fn click_slop(&self) -> f32 {
-        if self.drag_moves_window() { 14.0 } else { 4.0 }
+        if self.drag_moves_window() || self.video_holds_still() { 14.0 } else { 4.0 }
+    }
+
+    /// A video at fit in full screen: a drag neither moves the window (there's none to move) nor pans it (Faye,
+    /// 2026-11-14: it slid the video about). Zoomed in, it pans as a photo does.
+    pub(super) fn video_holds_still(&self) -> bool {
+        self.fullscreen.is_some() && self.video_shown() && self.view.at_fit_position()
     }
 
     /// The photo is on screen to zoom and pan: there is one, and no file Looker can't open covers it.

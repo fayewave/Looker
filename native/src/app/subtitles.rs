@@ -11,7 +11,7 @@
 //!
 //! The pick: what was chosen for this file before (`subs.txt` in the data dir, with its delay), else a sidecar,
 //! else a track the file marks forced or default (`subs::pick_default`), else none. Keys (VLC's): G and H move the
-//! subtitles 50 ms earlier or later, V goes through the tracks.
+//! subtitles 10 ms earlier or later, V goes through the tracks.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ use crate::imaging::video::{SUB_ASS, SUB_BITMAP, Track as StreamTrack};
 use crate::subs::{self, Choice, Sidecar, Source};
 
 /// G and H move the subtitles by this much.
-const DELAY_STEP_US: i64 = 50_000;
+const DELAY_STEP_US: i64 = 10_000;
 /// The text's height at 100 %: this much of the video's height (or of its width's 16:9 height, if narrower).
 const TEXT_SCALE: f32 = 0.052;
 /// The margin to the video's edges: this much of its height.

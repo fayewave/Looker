@@ -631,7 +631,8 @@ impl App {
             let thumb_w = (avail * avail / total).max(28.0);
             let tx = area.left + (avail - thumb_w) * hs / max_h;
             let held = self.explorer.cols.hthumb.is_some();
-            ui::scroll_thumb(g, rect(tx, rows_bottom + (HBAR - ui::SCROLL_W) / 2.0, thumb_w, ui::SCROLL_W), held);
+            let lit = self.fades.hover(Hit::ColumnHScroll, held || self.hover == Some(Hit::ColumnHScroll));
+            ui::scroll_thumb(g, rect(tx, rows_bottom + (HBAR - ui::SCROLL_W) / 2.0, thumb_w, ui::SCROLL_W), lit);
         }
 
         self.draw_footer(g, body, area.bottom, body.right - body.left >= 420.0);
@@ -834,8 +835,13 @@ impl App {
             if active {
                 self.hits.add(Hit::ExplorerThumb, rect(pr.right - 11.0, list.top, 8.0, view_h));
             }
-            let held = active && self.explorer.thumb_drag.is_some();
-            ui::scroll_thumb(g, rect(pr.right - 5.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), held);
+            let lit = if active {
+                let held = self.explorer.thumb_drag.is_some();
+                self.fades.hover(Hit::ExplorerThumb, held || self.hover == Some(Hit::ExplorerThumb))
+            } else {
+                0.0
+            };
+            ui::scroll_thumb(g, rect(pr.right - 5.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), lit);
         }
         moving
     }

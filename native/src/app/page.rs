@@ -715,7 +715,8 @@ impl App {
             if open {
                 self.hits.add(Hit::PageThumb, strip);
             }
-            ui::scroll_thumb(g, rect(view.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), held);
+            let lit = self.fades.hover(Hit::PageThumb, held || (open && self.hover == Some(Hit::PageThumb)));
+            ui::scroll_thumb(g, rect(view.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), lit);
         }
         e < 1.0
     }

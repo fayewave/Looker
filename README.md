@@ -331,7 +331,7 @@ A `.ts` that's TypeScript rather than video opens as text.
 | `Ctrl+F`, `Ctrl+Z` | Filter the folder, undo |
 | `F11`, `F5`, `Space` | Fullscreen, slideshow, pause |
 | `,` `.`, `J` `K` `L`, `M` | Video: previous / next frame, backwards / pause / forwards (again: faster), mute |
-| `V`, `G` `H` | Video: next subtitle track, subtitles 50 ms earlier / later |
+| `V`, `G` `H` | Video: next subtitle track, subtitles 10 ms earlier / later |
 | `Shift+N`, `Shift+P` | Video: next / previous chapter |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |

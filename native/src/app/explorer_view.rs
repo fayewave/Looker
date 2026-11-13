@@ -726,7 +726,8 @@ impl App {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let ty = list.top + (view_h - thumb_h) * scroll / self.explorer.max_scroll;
             let held = self.explorer.thumb_drag.is_some();
-            ui::scroll_thumb(g, rect(body.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), held);
+            let lit = self.fades.hover(Hit::ExplorerThumb, held || self.hover == Some(Hit::ExplorerThumb));
+            ui::scroll_thumb(g, rect(body.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), lit);
         }
 
         self.draw_footer(g, body, list.bottom, wide_footer);

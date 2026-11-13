@@ -666,7 +666,7 @@ impl App {
             let thumb_h = (view_h * view_h / content_h).max(28.0);
             let track = inner.bottom - inner.top - 8.0;
             let ty = inner.top + 4.0 + (track - thumb_h) * scroll / self.info_card.max_scroll;
-            ui::scroll_thumb(g, rect(inner.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), false);
+            ui::scroll_thumb(g, rect(inner.right - 2.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), 0.0);
         }
 
         // The resize grip straddles the left border; its line shows on hover and turns accent while dragging.

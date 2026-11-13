@@ -411,11 +411,12 @@ pub fn focus_ring(g: &Gfx, r: D2D_RECT_F, radius: f32) {
 /// Every scrollbar's width: what the explorer's grew to on hover, now always (Faye, 2026-11-10).
 pub const SCROLL_W: f32 = 8.0;
 
-/// A scroll region's thumb (`r` is its full size): the buttons' fill, their hover fill while it's held.
-pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, held: bool) {
+/// A scroll region's thumb (`r` is its full size), lit by `lit` (0 to 1): brighter while the pointer is over its
+/// scrollbar or it's held (Faye, 2026-11-14), as a button's hover. `Fades::hover` eases it out.
+pub fn scroll_thumb(g: &Gfx, r: D2D_RECT_F, lit: f32) {
     let t = theme::t();
     // Ink, so it reads the same on the cards, the page and the Settings card (Faye, 2026-11-09: brighter).
-    let c = rgba(t.ink, if held { 0.55 } else { 0.3 });
+    let c = rgba(t.ink, 0.3 + 0.25 * lit.clamp(0.0, 1.0));
     g.fill_round(r, (r.right - r.left).min(r.bottom - r.top) / 2.0, c);
 }
 

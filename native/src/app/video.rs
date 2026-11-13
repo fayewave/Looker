@@ -768,6 +768,9 @@ impl App {
     fn toggle_mute(&mut self) {
         self.settings.video_muted = !self.settings.video_muted;
         self.apply_volume();
+        // Said as the volume keys say theirs (Faye, 2026-11-14).
+        let text = if self.settings.video_muted { "Muted".to_string() } else { format!("Unmuted, volume {:.0}%", self.settings.video_volume * 100.0) };
+        self.show_video_toast(text);
     }
 
     /// Plays the video on screen if it's paused.
@@ -1601,17 +1604,16 @@ impl App {
         self.invalidate();
     }
 
-    /// The Settings menu's rows: the speeds, then Loop, each ticked as the player is now.
+    /// The Settings menu's rows: the Speed submenu, then Loop, each ticked as the player is now.
     pub(super) fn video_settings_entries(&self) -> Vec<ui::Entry<menus::Action>> {
         let (speed, looping) = self.player_ref().map_or((1.0, false), |p| (p.speed(), p.looping()));
         let audio = self.player_ref().is_some_and(Engine::is_audio);
         let mut entries = Vec::new();
         if !audio {
-            entries.push(ui::Entry::Heading("Speed".into()));
-            entries.extend(
-                SPEEDS.iter().enumerate().map(|(i, &s)| menus::check(menus::Action::Choose(i), &if s == 1.0 { "Normal".to_string() } else { speed_text(s) }, s == speed)),
-            );
-            entries.push(ui::Entry::Separator);
+            // The speeds in a menu of their own beside it (Faye, 2026-11-14).
+            let name = |s: f64| if s == 1.0 { "Normal".to_string() } else { speed_text(s) };
+            let rows = SPEEDS.iter().enumerate().map(|(i, &s)| menus::check(menus::Action::Choose(i), &name(s), s == speed)).collect();
+            entries.push(ui::Entry::Sub(Some(0xEC4A), format!("Speed: {}", name(speed)), rows));
         }
         entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
         // The tracks and subtitles, as the right-click menu has them (Faye, 2026-11-13).

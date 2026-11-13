@@ -619,7 +619,7 @@ impl App {
         if max_scroll > 0.0 {
             let thumb_h = (view_h * view_h / (total as f32 * rh)).max(28.0);
             let ty = list.top + (view_h - thumb_h) * scroll / max_scroll;
-            ui::scroll_thumb(g, rect(card.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), false);
+            ui::scroll_thumb(g, rect(card.right - 4.0 - ui::SCROLL_W, ty, ui::SCROLL_W, thumb_h), 0.0);
         }
 
         // The footer: what's here, or the work's progress.

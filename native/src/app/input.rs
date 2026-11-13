@@ -332,6 +332,8 @@ impl App {
                             SendMessageW(self.hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(lp));
                             return Some(LRESULT(0));
                         }
+                    } else if self.drag.is_some() && self.video_holds_still() {
+                        // Full screen, the video stays put.
                     } else if let Some((px, py)) = self.drag.filter(|_| {
                         // At the fit position a press must pull a few DIPs before it pans: a double-click that
                         // wobbled would nudge the image off fit, and the double-click would refit instead of

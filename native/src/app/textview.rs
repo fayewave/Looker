@@ -1219,14 +1219,16 @@ impl App {
             let thumb_h = (track_h * view_h / total_h).max(28.0);
             let ty = r.track.top + (track_h - thumb_h) * scroll / max_scroll;
             self.hits.add(Hit::TextScroll, D2D_RECT_F { left: r.track.left - 2.0, right: r.track.right + 2.0, ..r.track });
-            ui::scroll_thumb(g, rect(r.track.left, ty, ui::SCROLL_W, thumb_h), held);
+            let lit = self.fades.hover(Hit::TextScroll, held || self.hover == Some(Hit::TextScroll));
+            ui::scroll_thumb(g, rect(r.track.left, ty, ui::SCROLL_W, thumb_h), lit);
         }
         if max_x > 0.0 {
             let track_w = r.htrack.right - r.htrack.left;
             let thumb_w = (track_w * vw / (vw + max_x)).max(28.0);
             let tx = r.htrack.left + (track_w - thumb_w) * scroll_x / max_x;
             self.hits.add(Hit::TextHScroll, D2D_RECT_F { top: r.htrack.top - 2.0, bottom: r.htrack.bottom + 2.0, ..r.htrack });
-            ui::scroll_thumb(g, rect(tx, r.htrack.top, thumb_w, ui::SCROLL_W), hheld);
+            let lit = self.fades.hover(Hit::TextHScroll, hheld || self.hover == Some(Hit::TextHScroll));
+            ui::scroll_thumb(g, rect(tx, r.htrack.top, thumb_w, ui::SCROLL_W), lit);
         }
 
         self.draw_text_bar(g, &r);
