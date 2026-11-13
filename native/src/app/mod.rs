@@ -85,8 +85,11 @@ const BAR_APART: f32 = BAR_GAP;
 const SIDE_PAD: f32 = 16.0;
 /// The status row's link, worded as the right-click menu's (Faye, 2026-11-11: it was "Open in Explorer").
 const STATUS_LINK: &str = "Reveal in Explorer\u{2026}";
-/// The sort button: its icon and a chevron.
+/// The sort button: its icon and a chevron, and between them what it sorts by unless the window is narrow.
 const SORT_W: f32 = 62.0;
+const SORT_LABEL_W: f32 = 100.0;
+/// The zoom control's middle: the zoom level (a click fits or goes to 100 %).
+const ZOOM_W: f32 = 56.0;
 /// The accent "Save" button that appears while a rotation preview is unsaved.
 const SAVE_W: f32 = 64.0;
 const DEFAULT_W: f32 = 1200.0;
@@ -116,11 +119,16 @@ enum Tool {
     Previous,
     Next,
     ZoomOut,
+    /// Fit to the window (Ctrl+0; not on the toolbar since the zoom level took its place).
     Fit,
+    /// The zoom control's level: fit or 100 %.
+    Zoom,
     ZoomIn,
     Fullscreen,
     Rotate,
     Delete,
+    /// The ⋯ menu: the right-click menu's file actions.
+    More,
     Sort,
     SaveRotation,
     Home,
@@ -130,22 +138,25 @@ enum Tool {
     Settings,
 }
 
+/// The toolbar (Faye, 2026-11-13): getting around and the photo at the left (Home, Previous/Next, the zoom control,
+/// Rotate, Delete, ⋯), how it's seen at the right (Sort, the panel switches, Fullscreen, Settings).
 const LEFT_TOOLS: &[(Tool, u16)] = &[
+    (Tool::Home, 0xE80F),
     (Tool::Previous, 0xE76B),
     (Tool::Next, 0xE76C),
-    (Tool::ZoomOut, 0xE71F),
-    (Tool::Fit, 0xE9A6),
-    (Tool::ZoomIn, 0xE8A3),
-    (Tool::Fullscreen, 0xE740),
+    (Tool::ZoomOut, 0xE738),
+    (Tool::Zoom, 0),
+    (Tool::ZoomIn, 0xE710),
     (Tool::Rotate, 0xE7AD),
     (Tool::Delete, 0xE74D),
-    (Tool::Sort, 0xE8CB),
+    (Tool::More, 0xE712),
 ];
 const RIGHT_TOOLS: &[(Tool, u16)] = &[
-    (Tool::Home, 0xE80F),
+    (Tool::Sort, 0xE8CB),
     (Tool::Explorer, 0xE8B7),
-    (Tool::Strip, 0xE8FD),
+    (Tool::Strip, 0xE90E),
     (Tool::Info, 0xE946),
+    (Tool::Fullscreen, 0xE740),
     (Tool::Settings, 0xE713),
 ];
 
@@ -1212,6 +1223,9 @@ impl App {
                 self.view.fit();
                 self.after_zoom();
             }
+            Tool::Zoom if self.model_active() => self.model_reset(),
+            Tool::Zoom => self.status_zoom_click(),
+            Tool::More => self.toggle_more_menu(),
             Tool::Fullscreen => self.toggle_fullscreen(),
             Tool::Home => self.close(),
             Tool::Sort => self.toggle_sort_menu(),

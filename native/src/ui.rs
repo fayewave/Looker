@@ -241,6 +241,65 @@ pub fn frame(g: &Gfx, r: D2D_RECT_F, radius: f32, kind: Kind, s: &State) -> D2D1
     }
 }
 
+// A row of buttons joined into one box (the toolbar's zoom control and panel switches): `group_frame` fills the
+// box, `segment` draws each button's hover, pressed or on state inside it (clipped to the button, so only the box's
+// ends are round), then `group_edges` the outline, the hairlines between buttons and an on button's accent edge.
+
+pub fn group_frame(g: &Gfx, b: D2D_RECT_F, enabled: bool) {
+    let t = theme::t();
+    g.fill_round(b, 5.0, faded(rgb(t.button), if enabled { 1.0 } else { 0.45 }));
+}
+
+/// One button of a joined box `b`; returns its content colour.
+pub fn segment(g: &Gfx, b: D2D_RECT_F, r: D2D_RECT_F, on: bool, s: &State) -> D2D1_COLOR_F {
+    let t = theme::t();
+    let k = if s.enabled { 1.0 } else { 0.45 };
+    let h = if s.enabled { s.hover } else { 0.0 };
+    g.push_clip(r);
+    let fg = if s.pressed && s.enabled {
+        g.fill_round(b, 5.0, rgb(t.accent));
+        rgb(t.on_accent)
+    } else {
+        if on {
+            g.fill_round(b, 5.0, faded(rgb(t.selected), k));
+        } else if h > 0.0 {
+            g.fill_round(b, 5.0, rgba(t.hover_fill, h));
+        }
+        faded(rgb(t.text), k)
+    };
+    g.pop_clip();
+    fg
+}
+
+/// `segs`: the box's buttons left to right, each with whether it's on.
+pub fn group_edges(g: &Gfx, b: D2D_RECT_F, segs: &[(D2D_RECT_F, bool)], enabled: bool) {
+    let t = theme::t();
+    let k = if enabled { 1.0 } else { 0.45 };
+    let px = g.px();
+    stroke(g, b, 5.0, faded(rgb(t.divider), k));
+    for pair in segs.windows(2) {
+        let ((_, a_on), (r, b_on)) = (pair[0], pair[1]);
+        if !a_on && !b_on {
+            g.fill(D2D_RECT_F { left: r.left - px / 2.0, right: r.left + px / 2.0, ..b }, faded(rgb(t.divider), k));
+        }
+    }
+    for &(r, on) in segs {
+        if !on {
+            continue;
+        }
+        let accent = faded(rgb(t.accent), k);
+        g.push_clip(r);
+        stroke(g, b, 5.0, accent);
+        g.pop_clip();
+        if r.left > b.left + 0.5 {
+            g.fill(D2D_RECT_F { right: r.left + px, ..r }, accent);
+        }
+        if r.right < b.right - 0.5 {
+            g.fill(D2D_RECT_F { left: r.right - px, ..r }, accent);
+        }
+    }
+}
+
 /// A hairline just inside `r`.
 pub fn stroke(g: &Gfx, r: D2D_RECT_F, radius: f32, c: D2D1_COLOR_F) {
     g.outline_round(r, radius, c, g.px());

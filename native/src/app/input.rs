@@ -455,9 +455,14 @@ impl App {
                     if self.menu.is_some() && !matches!(h, Some(Hit::MenuItem(_) | Hit::MenuSurface | Hit::MenuSwatch(..))) {
                         // On the card, a press elsewhere on it closes the menu and carries on (another drop-down).
                         let on_card = self.page_open() && h.is_some_and(|h| h != Hit::PageSurface);
-                        let reopening_sort = h == Some(Hit::Tool(Tool::Sort));
+                        // A toolbar drop-down pressed: its own menu just closes; another menu closes and it opens.
+                        let own = matches!(
+                            (h, &self.menu),
+                            (Some(Hit::Tool(Tool::Sort)), Some((menus::MenuKind::Sort, _))) | (Some(Hit::Tool(Tool::More)), Some((menus::MenuKind::More, _)))
+                        );
+                        let reopening = matches!(h, Some(Hit::Tool(Tool::Sort | Tool::More))) && !own;
                         self.close_menu();
-                        if !reopening_sort && !on_card {
+                        if !reopening && !on_card {
                             return Some(LRESULT(0));
                         }
                     }

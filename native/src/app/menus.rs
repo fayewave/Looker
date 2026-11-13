@@ -239,6 +239,36 @@ impl App {
         self.invalidate();
     }
 
+    /// The right-click menu without the toolbar's own buttons (Rotate right, Delete, the panel switches).
+    fn more_entries(&self) -> Vec<Entry<Action>> {
+        let mut out: Vec<Entry<Action>> = Vec::new();
+        for e in self.context_entries() {
+            match &e {
+                Entry::Item(m) if matches!(m.action, Action::RotateRight | Action::Delete | Action::ToggleExplorer | Action::ToggleStrip | Action::ToggleInfo) => {}
+                Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
+                _ => out.push(e),
+            }
+        }
+        if matches!(out.last(), Some(Entry::Separator)) {
+            out.pop();
+        }
+        out
+    }
+
+    /// The ⋯ drop-down, under its button; a second click on the button closes it.
+    pub(super) fn toggle_more_menu(&mut self) {
+        if matches!(self.menu, Some((MenuKind::More, _))) {
+            self.close_menu();
+            return;
+        }
+        let Some(r) = self.hits.rect_of(Hit::Tool(Tool::More)) else { return };
+        let Some(g) = &self.gfx else { return };
+        let (w, h) = self.size_dip();
+        self.menu = Some((MenuKind::More, Menu::below(g, self.more_entries(), r, rect(0.0, 0.0, w, h))));
+        self.hide_tooltip();
+        self.invalidate();
+    }
+
     pub(super) fn close_menu(&mut self) {
         if self.retire_menu().is_some() {
             self.invalidate();
@@ -387,9 +417,10 @@ impl App {
                 | Action::ToggleStrip
                 | Action::ToggleInfo
         );
-        if stays && matches!(self.menu, Some((MenuKind::Context, _))) {
+        if stays && matches!(self.menu, Some((MenuKind::Context | MenuKind::More, _))) {
+            let more = matches!(self.menu, Some((MenuKind::More, _)));
             self.run_action(action);
-            let entries = self.context_entries();
+            let entries = if more { self.more_entries() } else { self.context_entries() };
             if let Some((_, m)) = self.menu.as_mut() {
                 if let Some((i, sub)) = m.sub.as_mut() {
                     if let Some(Entry::Sub(_, _, rows)) = entries.get(*i) {
@@ -544,6 +575,8 @@ pub(super) enum MenuKind {
     /// An archive's rows or list.
     Archive,
     Sort,
+    /// The toolbar's ⋯: the right-click menu without what the toolbar already has.
+    More,
     /// The explorer's: a row's menu (on these paths), the list's, a sidebar row's, a crumb's folders, History,
     /// and the folders/files grouping.
     Rows(Vec<PathBuf>),

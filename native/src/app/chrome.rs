@@ -116,76 +116,110 @@ impl App {
         TITLE_H + (TOOLBAR_H - BUTTON_H) / 2.0
     }
 
-    pub(super) fn tool_rects(&self) -> Vec<(Tool, u16, D2D_RECT_F)> {
-        // A narrow window drops left-hand buttons in this order (each has a key, the wheel or a double-click);
-        // Previous, Next and Sort (no key) always stay, as does the right-hand group.
-        const DROP: [Tool; 6] = [Tool::ZoomOut, Tool::ZoomIn, Tool::Fullscreen, Tool::Fit, Tool::Rotate, Tool::Delete];
-        // Buttons that belong together sit 4 apart; groups 12.
-        fn group(t: Tool) -> u8 {
-            match t {
-                Tool::Previous | Tool::Next => 0,
-                Tool::ZoomOut | Tool::Fit | Tool::ZoomIn | Tool::Fullscreen => 1,
-                Tool::Rotate | Tool::Delete => 2,
-                Tool::Sort => 3,
-                Tool::SaveRotation => 4,
-                Tool::Home => 10,
-                Tool::Explorer | Tool::Strip | Tool::Info => 11,
-                Tool::Settings => 12,
-            }
+    /// The toolbar's groups; buttons of one group sit `BAR_GAP` apart, or touch when the group is joined into
+    /// one box (`joined`).
+    pub(super) fn tool_group(t: Tool) -> u8 {
+        match t {
+            Tool::Home => 0,
+            Tool::Previous | Tool::Next => 1,
+            Tool::ZoomOut | Tool::Zoom | Tool::Fit | Tool::ZoomIn => 2,
+            Tool::Rotate | Tool::Delete | Tool::More => 3,
+            Tool::SaveRotation => 4,
+            Tool::Sort => 10,
+            Tool::Explorer | Tool::Strip | Tool::Info => 11,
+            Tool::Fullscreen | Tool::Settings => 12,
         }
-        fn run(tools: &[Tool], width: impl Fn(Tool) -> f32) -> f32 {
+    }
+
+    /// The zoom control and the panel switches are each one box of segments.
+    pub(super) fn tool_joined(t: Tool) -> bool {
+        matches!(Self::tool_group(t), 2 | 11)
+    }
+
+    pub(super) fn tool_rects(&self) -> Vec<(Tool, u16, D2D_RECT_F)> {
+        // A narrow window gives up room in this order (each has a key, the wheel, a double-click or the ⋯ menu):
+        // zoom's − and +, Fullscreen, Rotate, Sort's label, the zoom level, Delete.
+        #[derive(Clone, Copy)]
+        enum Give {
+            Drop(&'static [Tool]),
+            SortLabel,
+        }
+        const GIVE: [Give; 6] = [
+            Give::Drop(&[Tool::ZoomOut, Tool::ZoomIn]),
+            Give::Drop(&[Tool::Fullscreen]),
+            Give::Drop(&[Tool::Rotate]),
+            Give::SortLabel,
+            Give::Drop(&[Tool::Zoom]),
+            Give::Drop(&[Tool::Delete]),
+        ];
+        let gap = |a: Tool, b: Tool| {
+            if Self::tool_group(a) != Self::tool_group(b) {
+                BAR_APART
+            } else if Self::tool_joined(a) {
+                0.0
+            } else {
+                BAR_GAP
+            }
+        };
+        let width = |t: Tool, given: &[Give]| match t {
+            Tool::Sort if given.iter().any(|g| matches!(g, Give::SortLabel)) => SORT_W,
+            Tool::Sort => SORT_LABEL_W,
+            Tool::SaveRotation => SAVE_W,
+            Tool::Zoom => ZOOM_W,
+            _ => BUTTON_W,
+        };
+        let run = |tools: &[Tool], given: &[Give]| {
             let mut w = 0.0;
             for (i, &t) in tools.iter().enumerate() {
                 if i > 0 {
-                    w += if group(tools[i - 1]) == group(t) { BAR_GAP } else { BAR_APART };
+                    w += gap(tools[i - 1], t);
                 }
-                w += width(t);
+                w += width(t, given);
             }
             w
-        }
-        let (w, _) = self.size_dip();
-        let y = Self::toolbar_y();
-        let width = |t: Tool| match t {
-            Tool::Sort => SORT_W,
-            Tool::SaveRotation => SAVE_W,
-            _ => BUTTON_W,
         };
-        let right: Vec<Tool> = RIGHT_TOOLS.iter().map(|&(t, _)| t).collect();
-        let room = w - SIDE_PAD * 2.0 - run(&right, width) - 16.0;
-        let left_of = |dropped: usize| {
-            // No Sort while the explorer is open: its columns sort (Faye, 2026-11-10).
-            let explorer = self.explorer_shown();
-            let mut v: Vec<Tool> =
-                LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|t| !DROP[..dropped].contains(t) && !(explorer && *t == Tool::Sort)).collect();
+        let dropped = |t: Tool, given: &[Give]| given.iter().any(|g| matches!(g, Give::Drop(d) if d.contains(&t)));
+        let left_of = |given: &[Give]| {
+            let mut v: Vec<Tool> = LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|&t| !dropped(t, given)).collect();
             if self.turns != 0 {
                 v.push(Tool::SaveRotation);
             }
             v
         };
-        let mut dropped = 0;
-        while dropped < DROP.len() && run(&left_of(dropped), width) > room {
-            dropped += 1;
+        // No Sort while the explorer is open: its columns sort (Faye, 2026-11-10). It's the right group's first, so
+        // nothing else moves.
+        let explorer = self.explorer_shown();
+        let right_of = |given: &[Give]| -> Vec<Tool> {
+            RIGHT_TOOLS.iter().map(|&(t, _)| t).filter(|&t| !dropped(t, given) && !(explorer && t == Tool::Sort)).collect()
+        };
+        let (w, _) = self.size_dip();
+        let room = w - SIDE_PAD * 2.0 - 16.0;
+        let mut n = 0;
+        while n < GIVE.len() && run(&left_of(&GIVE[..n]), &GIVE[..n]) + run(&right_of(&GIVE[..n]), &GIVE[..n]) > room {
+            n += 1;
         }
+        let given = &GIVE[..n];
+        let y = Self::toolbar_y();
         let glyph = |t: Tool| LEFT_TOOLS.iter().chain(RIGHT_TOOLS).find(|(x, _)| *x == t).map_or(0, |&(_, g)| g);
         let mut out = Vec::new();
         let mut x = SIDE_PAD;
         let mut prev: Option<Tool> = None;
-        for t in left_of(dropped) {
+        for t in left_of(given) {
             if let Some(p) = prev {
-                x += if group(p) == group(t) { BAR_GAP } else { BAR_APART };
+                x += gap(p, t);
             }
-            out.push((t, glyph(t), rect(x, y, width(t), BUTTON_H)));
-            x += width(t);
+            out.push((t, glyph(t), rect(x, y, width(t, given), BUTTON_H)));
+            x += width(t, given);
             prev = Some(t);
         }
         let mut x = w - SIDE_PAD;
         let mut prev: Option<Tool> = None;
-        for &t in right.iter().rev() {
+        for t in right_of(given).into_iter().rev() {
             if let Some(p) = prev {
-                x -= if group(p) == group(t) { BAR_GAP } else { BAR_APART };
+                x -= gap(t, p);
             }
-            x -= BUTTON_W;
-            out.push((t, glyph(t), rect(x, y, BUTTON_W, BUTTON_H)));
+            x -= width(t, given);
+            out.push((t, glyph(t), rect(x, y, width(t, given), BUTTON_H)));
             prev = Some(t);
         }
         out
@@ -196,10 +230,10 @@ impl App {
         match t {
             Tool::Settings => true,
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
-            Tool::Sort | Tool::Delete => has,
+            Tool::Sort | Tool::Delete | Tool::More => has,
             Tool::Rotate => has && self.can_rotate(),
             // Nothing to zoom while a file Looker can't open covers the photo.
-            Tool::ZoomIn | Tool::ZoomOut | Tool::Fit => has && self.placeholder.is_none(),
+            Tool::ZoomIn | Tool::ZoomOut | Tool::Fit | Tool::Zoom => has && self.placeholder.is_none(),
             Tool::SaveRotation => !self.saving_rotation,
             Tool::Info | Tool::Strip => has,
             Tool::Explorer => has || self.home_explorer(),
@@ -215,6 +249,8 @@ impl App {
             Hit::TextTab(i) => self.text.docs.get(i as usize).map(|d| if d.untitled > 0 { d.title() } else { d.path.to_string_lossy().into_owned() }),
             Hit::RecentRow(i) => self.recent_path(i).map(|p| p.to_string_lossy().into_owned()),
             Hit::InfoRow(i) if self.info_row_field(i).is_some() => Some("Click to copy, double-click to edit".to_string()),
+            Hit::Tool(Tool::Sort) => Some(self.sort_tooltip()),
+            Hit::Tool(Tool::Zoom) if self.model_active() => Some("Reset the view (Ctrl+0)".to_string()),
             Hit::ExplorerRow(_)
             | Hit::Crumb(_)
             | Hit::CrumbMore
@@ -241,7 +277,9 @@ impl App {
             Hit::Tool(Tool::Next) => "Next (→)",
             Hit::Tool(Tool::ZoomOut) => "Zoom out (Ctrl+-)",
             Hit::Tool(Tool::Fit) => "Fit to window (Ctrl+0)",
+            Hit::Tool(Tool::Zoom) => "Fit or 100 % (double-click the photo)",
             Hit::Tool(Tool::ZoomIn) => "Zoom in (Ctrl++)",
+            Hit::Tool(Tool::More) => "More",
             Hit::Tool(Tool::Fullscreen) => "Fullscreen (F11)",
             Hit::Tool(Tool::Rotate) => "Rotate right (Ctrl+R)",
             Hit::Tool(Tool::Delete) => "Delete (Del)",
@@ -525,37 +563,102 @@ impl App {
         ui::State { hover, pressed: self.pressed == Some(id) && self.hover == Some(id), enabled }
     }
 
+    /// What the toolbar's Sort says it sorts by.
+    fn sort_label(&self) -> &'static str {
+        match self.viewer_sort().field {
+            crate::folder::SortField::Name => "Name",
+            crate::folder::SortField::Date => "Date",
+            crate::folder::SortField::Size => "Size",
+        }
+    }
+
+    pub(super) fn sort_tooltip(&self) -> String {
+        use crate::folder::SortField;
+        let s = self.viewer_sort();
+        let (field, order) = match (s.field, s.descending) {
+            (SortField::Name, false) => ("name", "A to Z"),
+            (SortField::Name, true) => ("name", "Z to A"),
+            (SortField::Date, false) => ("date modified", "oldest first"),
+            (SortField::Date, true) => ("date modified", "newest first"),
+            (SortField::Size, false) => ("size", "smallest first"),
+            (SortField::Size, true) => ("size", "largest first"),
+        };
+        format!("Sorted by {field}, {order}")
+    }
+
     pub(super) fn draw_toolbar(&mut self, g: &Gfx) {
         let t = theme::t();
-        for (tool, glyph, r) in self.tool_rects() {
-            // The buttons float on the photo: the page colour under their (translucent) boxes keeps them
-            // looking the same whatever is behind.
-            g.fill_round(r, 5.0, rgb(if self.viewer.current.is_none() { theme::plain(t.content) } else { t.content }));
+        let tools = self.tool_rects();
+        // The buttons float on the photo: the page colour under their (translucent) boxes keeps them looking the
+        // same whatever is behind.
+        let page = rgb(if self.viewer.current.is_none() { theme::plain(t.content) } else { t.content });
+        // A joined group's box: drawn once under its segments, at 45 % when none of them can be used.
+        let box_of = |tool: Tool| {
+            let mut members = tools.iter().filter(|(x, _, _)| Self::tool_joined(*x) && Self::tool_group(*x) == Self::tool_group(tool));
+            let first = members.next()?.2;
+            Some(members.fold(first, |a, (_, _, r)| D2D_RECT_F { left: a.left.min(r.left), right: a.right.max(r.right), ..a }))
+        };
+        let mut boxes: Vec<(u8, D2D_RECT_F)> = Vec::new();
+        for &(tool, _, _) in &tools {
+            if Self::tool_joined(tool) && !boxes.iter().any(|(gr, _)| *gr == Self::tool_group(tool)) {
+                if let Some(b) = box_of(tool) {
+                    let enabled = tools.iter().any(|(x, _, _)| Self::tool_group(*x) == Self::tool_group(tool) && self.tool_enabled(*x));
+                    g.fill_round(b, 5.0, page);
+                    ui::group_frame(g, b, enabled);
+                    boxes.push((Self::tool_group(tool), b));
+                }
+            }
+        }
+        for &(tool, glyph, r) in &tools {
             let enabled = self.tool_enabled(tool);
             let id = Hit::Tool(tool);
             self.hits.add(id, r);
-            let open = tool == Tool::Sort && matches!(self.menu, Some((menus::MenuKind::Sort, _)));
             let st = self.state(id, enabled);
+            if let Some(&(_, b)) = boxes.iter().find(|(gr, _)| Self::tool_joined(tool) && *gr == Self::tool_group(tool)) {
+                let on = match tool {
+                    Tool::Info => self.info_shown(),
+                    Tool::Strip => self.strip_shown(),
+                    Tool::Explorer => self.explorer_shown(),
+                    _ => false,
+                };
+                let fg = ui::segment(g, b, r, on, &st);
+                if tool == Tool::Zoom {
+                    if self.model_active() {
+                        g.text(&[0xE9A6], &g.fonts.icons, r, fg, Align::Center);
+                    } else {
+                        let level = if self.photo_up() { format!("{:.0}%", self.view.zoom_percent()) } else { "\u{2013}".into() };
+                        g.text_tabular(&wide(&level), &g.fonts.body, r, fg, Align::Center);
+                    }
+                } else {
+                    g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+                }
+                continue;
+            }
+            g.fill_round(r, 5.0, page);
             if tool == Tool::SaveRotation {
                 let fg = ui::button_frame(g, r, ui::Kind::Accent, &st);
                 g.text(&wide("Save"), &g.fonts.body, r, fg, Align::Center);
                 continue;
             }
             let kind = match tool {
-                Tool::Info => ui::Kind::Toggle(self.info_shown()),
-                Tool::Strip => ui::Kind::Toggle(self.strip_shown()),
-                Tool::Explorer => ui::Kind::Toggle(self.explorer_shown()),
                 Tool::Settings => ui::Kind::Toggle(self.page_open()),
                 // A drop-down button is picked out while its menu is open.
-                Tool::Sort => ui::Kind::Toggle(open),
+                Tool::Sort => ui::Kind::Toggle(matches!(self.menu, Some((menus::MenuKind::Sort, _)))),
+                Tool::More => ui::Kind::Toggle(matches!(self.menu, Some((menus::MenuKind::More, _)))),
                 _ => ui::Kind::Standard,
             };
             let fg = ui::button_frame(g, r, kind, &st);
             if tool == Tool::Sort {
-                // Icon and chevron from the left, the same padding at both ends (the chevron a pixel right: its
-                // ink sits that far in from its cell).
-                g.text(&[glyph], &g.fonts.icons, rect(r.left + 14.0, r.top, 16.0, BUTTON_H), fg, Align::Center);
-                g.text(&[0xE70D], &g.fonts.caption_icons, rect(r.right - 14.0 - 12.0 + 1.0, r.top, 12.0, BUTTON_H), fg, Align::Center);
+                // Icon, label and chevron from the left, the same padding at both ends (the chevron a pixel right:
+                // its ink sits that far in from its cell). A narrow window drops the label.
+                let pad = if r.right - r.left >= SORT_LABEL_W { 12.0 } else { 14.0 };
+                g.text(&[glyph], &g.fonts.icons, rect(r.left + pad, r.top, 16.0, BUTTON_H), fg, Align::Center);
+                let chevron = r.right - pad - 12.0 + 1.0;
+                if r.right - r.left >= SORT_LABEL_W {
+                    let x = r.left + pad + 16.0 + 6.0;
+                    g.text(&wide(self.sort_label()), &g.fonts.body, rect(x, r.top, (chevron - 4.0 - x).max(0.0), BUTTON_H), fg, Align::Left);
+                }
+                g.text(&[0xE70D], &g.fonts.caption_icons, rect(chevron, r.top, 12.0, BUTTON_H), fg, Align::Center);
             } else {
                 g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
             }
@@ -563,6 +666,17 @@ impl App {
             if tool == Tool::Settings && self.update == crate::store::UpdateStatus::Available {
                 g.fill_round(rect(r.right - 9.0, r.top + 3.0, 6.0, 6.0), 3.0, rgb(t.accent));
             }
+        }
+        // The joined boxes' outlines and the hairlines between their segments, over the segments' fills.
+        for (group, b) in boxes {
+            let mut segs: Vec<(D2D_RECT_F, bool)> = tools
+                .iter()
+                .filter(|(x, _, _)| Self::tool_group(*x) == group)
+                .map(|&(x, _, r)| (r, matches!(x, Tool::Info if self.info_shown()) || matches!(x, Tool::Strip if self.strip_shown()) || matches!(x, Tool::Explorer if self.explorer_shown())))
+                .collect();
+            segs.sort_by(|a, b| a.0.left.total_cmp(&b.0.left));
+            let enabled = tools.iter().any(|(x, _, _)| Self::tool_group(*x) == group && self.tool_enabled(*x));
+            ui::group_edges(g, b, &segs, enabled);
         }
     }
 
