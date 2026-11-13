@@ -2,6 +2,7 @@
 //! Layout (DIPs, as in MainWindow.xaml): title bar 48 / toolbar 40 / viewport / status row 28.
 
 
+mod a11y;
 mod accent;
 mod archive;
 mod actions;
@@ -673,6 +674,9 @@ pub struct App {
     print_devmode: (HGLOBAL, HGLOBAL),
     /// Screen readers' view of the text editor (uia.rs), made the first time one asks.
     uia: Option<uia::Uia>,
+    /// State the drawing noted for the reader this frame, and which hit each published node is (a11y.rs).
+    a11y_marks: Vec<(Hit, a11y::Mark)>,
+    a11y_hits: Vec<(i32, Hit)>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
     dialog: Option<(actions::DialogKind, ui::Dialog<actions::Choice>)>,
@@ -1501,6 +1505,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             text: texttabs::TextDocs::new(),
             print_devmode: (HGLOBAL::default(), HGLOBAL::default()),
             uia: None,
+            a11y_marks: Vec::new(),
+            a11y_hits: Vec::new(),
             tooltip: None,
             dialog: None,
             toast: None,

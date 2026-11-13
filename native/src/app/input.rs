@@ -1509,8 +1509,12 @@ impl App {
                     }
                     None
                 }
-                // Screen readers asking for the window: the text editor's Document while it's up.
-                WM_GETOBJECT => self.text_uia_object(wp, lp),
+                // Screen readers asking for the window (a11y.rs).
+                WM_GETOBJECT => self.uia_object(wp, lp),
+                uia::WM_UIA_INVOKE => {
+                    self.a11y_invoke(wp.0 as u32 as i32);
+                    Some(LRESULT(0))
+                }
                 uia::WM_UIA_SELECT => {
                     self.text_uia_select();
                     Some(LRESULT(0))

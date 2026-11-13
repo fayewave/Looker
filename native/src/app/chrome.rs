@@ -328,7 +328,7 @@ impl App {
 
     /// The status row's parts in order, each with how soon it goes when the row is narrow (higher goes first;
     /// 0 stays).
-    fn status_parts(&self) -> Vec<(u8, String)> {
+    pub(super) fn status_parts(&self) -> Vec<(u8, String)> {
         if let Some(s) = self.placeholder_status() {
             return vec![(0, s)];
         }
@@ -461,6 +461,8 @@ impl App {
         let Some(mut g) = self.gfx.take() else { return };
         crate::motion::refresh();
         self.hits.clear();
+        self.a11y_marks.clear();
+        *g.texts.borrow_mut() = self.a11y_recording().then(Vec::new);
         self.fades.begin();
         let text_moving = self.step_text_scale(&mut g);
         // Clean view's opacity: what floats over the photo is drawn at it, and not at all (nor hit) once gone.
@@ -503,17 +505,23 @@ impl App {
         }
         g.pop_fade();
         // The Settings card blurs and dims all of that; the title bar stays over it, as Snapper's does.
+        let texts_at_page = g.texts.borrow().as_ref().map_or(0, Vec::len);
         let page_moving = self.draw_page(&mut g);
         if self.chrome() && ui_on {
             g.push_fade(ui_k, 1.0, 0.0, 0.0);
             self.draw_title(&g);
             g.pop_fade();
         }
+        let texts_at_overlays = g.texts.borrow().as_ref().map_or(0, Vec::len);
         let overlays_moving = self.draw_overlays(&g);
         if let Err(e) = g.end() {
             crate::trace::mark(format!("present failed: {e}"));
         }
+        let texts = g.texts.borrow_mut().take();
         self.gfx = Some(g);
+        if let Some(t) = texts {
+            self.a11y_publish(t, texts_at_page, texts_at_overlays);
+        }
         self.pump_thumbs();
         if text_moving || self.view.animating() || self.fades.moving || overlays_moving || card_moving || strip_moving || sliding || self.clean_moving() || page_moving || self.fade.is_some() || self.video_animating() || self.motion_animating() || self.audio_animating() || self.archive_animating() || self.model_animating() {
             self.invalidate();

@@ -1238,7 +1238,7 @@ impl App {
         if focused_text {
             self.place_ime();
         }
-        self.uia_sync();
+        self.text_uia_sync();
     }
 
     /// The find bar: Find (and Replace) or Go to line, with their buttons.
@@ -2658,20 +2658,8 @@ impl App {
 // --- Screen readers ---------------------------------------------------------------------------------
 
 impl App {
-    /// WM_GETOBJECT for the window's root while a text file is up: the editor as a Document (uia.rs).
-    pub(super) fn text_uia_object(&mut self, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
-        if lp.0 as i32 != windows::Win32::UI::Accessibility::UiaRootObjectId || !self.text_shown() {
-            return None;
-        }
-        if self.uia.is_none() {
-            self.uia = Some(super::uia::Uia::new(self.hwnd));
-        }
-        self.uia_sync();
-        self.uia.as_ref().map(|u| u.answer(self.hwnd, wp, lp))
-    }
-
     /// Hands the reader the text, selection and focus when they've changed, and says so.
-    fn uia_sync(&mut self) {
+    pub(super) fn text_uia_sync(&mut self) {
         if self.uia.is_none() || !super::uia::Uia::listening() {
             return;
         }
@@ -2696,13 +2684,34 @@ impl App {
         }
         u.synced = (id, version, sel, focused);
         use windows::Win32::UI::Accessibility::*;
+        let doc = super::uia::DOC_ID;
         if focus_gained {
-            u.raise(UIA_AutomationFocusChangedEventId);
+            u.raise_on(doc, UIA_AutomationFocusChangedEventId);
         }
         if text_changed {
-            u.raise(UIA_Text_TextChangedEventId);
+            u.raise_on(doc, UIA_Text_TextChangedEventId);
         }
-        u.raise(UIA_Text_TextSelectionChangedEventId);
+        u.raise_on(doc, UIA_Text_TextSelectionChangedEventId);
+    }
+
+    /// The editor's node for the reader: a Document named after its file.
+    pub(super) fn text_doc_info(&self) -> Option<super::a11y::DocInfo> {
+        let tv = self.text.cur()?;
+        Some(super::a11y::DocInfo { name: format!("{} - Text editor", tv.title()) })
+    }
+
+    /// The editor's part the keyboard is on, when the text file is up: the text, or a box of the find bar.
+    pub(super) fn text_a11y_focus(&self) -> Option<Hit> {
+        if !self.text_shown() {
+            return None;
+        }
+        match self.text.cur()?.focus {
+            Focus::Text => Some(Hit::TextView),
+            Focus::Find => Some(Hit::TextField(0)),
+            Focus::Replace => Some(Hit::TextField(1)),
+            Focus::GoTo => Some(Hit::TextField(2)),
+            Focus::None => Some(Hit::TextView),
+        }
     }
 
     /// A reader selected text.

@@ -42,6 +42,8 @@ it keeps itself up to date.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 - Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
+- Works with screen readers (Narrator, NVDA, JAWS): every button, menu, setting, file and dialog is named, and
+  the focus follows the keyboard.
 
 <img src="brand/screenshots/readme-info-panel.jpg" alt="The info panel and the thumbnail strip" width="700">
 

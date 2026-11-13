@@ -102,6 +102,10 @@ impl<T: Copy + PartialEq> Hits<T> {
     pub fn at(&self, x: f32, y: f32) -> Option<T> {
         self.items.iter().rev().find(|(_, r)| contains(r, x, y)).map(|(id, _)| *id)
     }
+    /// Everything drawn, bottom first.
+    pub fn items(&self) -> &[(T, D2D_RECT_F)] {
+        &self.items
+    }
     pub fn rect_of(&self, id: T) -> Option<D2D_RECT_F> {
         self.items.iter().rev().find(|(i, _)| *i == id).map(|(_, r)| *r)
     }

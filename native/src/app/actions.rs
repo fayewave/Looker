@@ -43,14 +43,18 @@ impl App {
     // --- Toast --------------------------------------------------------------------------------------
 
     pub(super) fn show_toast(&mut self, text: impl Into<String>, quick: bool) {
-        self.toast = Some(Toast::new(text.into(), quick, self.toast.as_ref()));
+        let text = text.into();
+        self.a11y_say(&text);
+        self.toast = Some(Toast::new(text, quick, self.toast.as_ref()));
         self.invalidate();
     }
 
     /// A video readout (volume, speed, frame step, loop): quick's fade out, held 900 ms (quick's is 350), at the
     /// top middle of the preview.
     pub(super) fn show_video_toast(&mut self, text: impl Into<String>) {
-        self.toast = Some(Toast::new(text.into(), true, self.toast.as_ref()).video(900.0));
+        let text = text.into();
+        self.a11y_say(&text);
+        self.toast = Some(Toast::new(text, true, self.toast.as_ref()).video(900.0));
         self.invalidate();
     }
 

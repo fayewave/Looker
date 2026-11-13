@@ -274,6 +274,9 @@ pub struct Gfx {
     icons: std::cell::RefCell<std::collections::HashMap<(usize, Option<u32>), (std::sync::Arc<crate::shell_icons::Icon>, ID2D1Bitmap1)>>,
     /// The soft shadow's blurred rounded square (`soft_shadow`), by corner radius (quarter DIPs) and DPI.
     shadows: std::cell::RefCell<std::collections::HashMap<(u32, u32), (ID2D1Bitmap1, u32)>>,
+    /// While a screen reader listens: every text drawn this frame and its box, which name what the hits are
+    /// (app/a11y.rs).
+    pub texts: std::cell::RefCell<Option<Vec<(D2D_RECT_F, String)>>>,
 }
 
 /// The UI layer under scRGB, a copy of the photo layer to blend it with and the effects that lay it over the
@@ -352,6 +355,7 @@ impl Gfx {
                 blur_failed: false,
                 icons: Default::default(),
                 shadows: Default::default(),
+                texts: Default::default(),
             };
             g.make_target()?;
             Ok(g)
@@ -1146,6 +1150,9 @@ impl Gfx {
     }
 
     fn draw_cached(&self, s: &[u16], fmt: &IDWriteTextFormat, r: D2D_RECT_F, color: D2D1_COLOR_F, align: Align, kind: LayoutKind) {
+        if let Some(t) = self.texts.borrow_mut().as_mut() {
+            t.push((r, String::from_utf16_lossy(s)));
+        }
         let r = self.snap_text(fmt, r);
         if !(r.right > r.left && r.bottom > r.top) {
             return;

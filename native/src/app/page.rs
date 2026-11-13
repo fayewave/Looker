@@ -288,6 +288,11 @@ impl App {
     }
 
     /// The Settings card is up and taking input (not on its way out).
+    /// The Settings section showing, by place in its sidebar.
+    pub(super) fn page_section_shown(&self) -> Option<usize> {
+        self.page.as_ref().map(|p| Section::ALL.iter().position(|s| *s == p.section).unwrap_or(0))
+    }
+
     pub(super) fn page_open(&self) -> bool {
         self.page.as_ref().is_some_and(|p| p.open)
     }
@@ -805,6 +810,7 @@ impl App {
             if open {
                 self.hits.add(hit, c);
             }
+            self.a11y_mark(hit, super::a11y::Mark::Selected(chosen == id));
             let st = self.state(hit, open);
             ui::theme_chip(g, c, id.name(), chosen == id, &st, Some(id.theme().content));
             cx += CHIP_W + 6.0;
@@ -829,6 +835,7 @@ impl App {
             if open {
                 self.hits.add(hit, c);
             }
+            self.a11y_mark(hit, super::a11y::Mark::Selected(self.settings.accent == a));
             let st = self.state(hit, open);
             // Custom shows as an empty outline (Faye, 2026-11-10): its colour is what you pick.
             let swatch = (a != theme::Accent::Custom).then(|| a.colour(id));
@@ -946,6 +953,7 @@ impl App {
         if open {
             self.hits.add(id, r);
         }
+        self.a11y_mark(id, super::a11y::Mark::Toggle(on));
         let st = self.state(id, open);
         let k = self.fades.get(Hit::ToggleAnim(which), on);
         ui::toggle_switch(g, right_part(r, ui::SWITCH_W, ui::SWITCH_H), k, &st);
