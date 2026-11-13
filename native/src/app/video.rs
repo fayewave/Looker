@@ -1593,6 +1593,12 @@ impl App {
             entries.push(ui::Entry::Separator);
         }
         entries.push(menus::check(menus::Action::ToggleVideoLoop, "Loop", looping));
+        // The tracks and subtitles, as the right-click menu has them (Faye, 2026-11-13).
+        let tracks = self.track_entries();
+        if !tracks.is_empty() {
+            entries.push(ui::Entry::Separator);
+            entries.extend(tracks);
+        }
         if !audio {
             entries.push(ui::Entry::Separator);
             entries.push(ui::Entry::Heading("Time".into()));

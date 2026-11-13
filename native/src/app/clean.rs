@@ -66,7 +66,8 @@ impl App {
 
     /// A single click on the photo (not a pan): toggles once the double-click time has passed without a second.
     pub(super) fn clean_click(&mut self) {
-        if !self.clean_possible() {
+        // Only with Settings > Photos' switch on (off by default: Faye, 2026-11-13).
+        if !self.settings.click_hides_ui || !self.clean_possible() {
             return;
         }
         unsafe {

@@ -280,10 +280,11 @@ pub fn group_edges(g: &Gfx, b: D2D_RECT_F, segs: &[(D2D_RECT_F, bool)], enabled:
     for pair in segs.windows(2) {
         let ((_, a_on), (r, b_on)) = (pair[0], pair[1]);
         if !a_on && !b_on {
-            g.fill(D2D_RECT_F { left: r.left - px / 2.0, right: r.left + px / 2.0, ..b }, faded(rgb(t.divider), k));
+            let x = g.snap(r.left - px / 2.0);
+            g.fill(D2D_RECT_F { left: x, right: x + px, ..b }, faded(rgb(t.divider), k));
         }
     }
-    for &(r, on) in segs {
+    for (i, &(r, on)) in segs.iter().enumerate() {
         if !on {
             continue;
         }
@@ -291,11 +292,19 @@ pub fn group_edges(g: &Gfx, b: D2D_RECT_F, segs: &[(D2D_RECT_F, bool)], enabled:
         g.push_clip(r);
         stroke(g, b, 5.0, accent);
         g.pop_clip();
-        if r.left > b.left + 0.5 {
-            g.fill(D2D_RECT_F { right: r.left + px, ..r }, accent);
+        // Two on side by side share one line between them, drawn by the left one (each drew its own: a double
+        // line, Faye 2026-11-13).
+        let left_on = i > 0 && segs[i - 1].1;
+        let right_on = segs.get(i + 1).is_some_and(|s| s.1);
+        if r.left > b.left + 0.5 && !left_on {
+            let x = g.snap(r.left);
+            g.fill(D2D_RECT_F { left: x, right: x + px, ..r }, accent);
         }
         if r.right < b.right - 0.5 {
-            g.fill(D2D_RECT_F { left: r.right - px, ..r }, accent);
+            // On whole device pixels, one wide, as the outline is (straddling two it read thicker).
+            let x = if right_on { g.snap(r.right - px / 2.0) } else { g.snap(r.right - px) };
+            let line = D2D_RECT_F { left: x, right: x + px, ..r };
+            g.fill(line, accent);
         }
     }
 }

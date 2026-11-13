@@ -205,9 +205,9 @@ impl App {
         let slide = self.fades.get_over(Hit::SidebarColumn, self.browsing() && w >= side_room.min(SIDEBAR_AT), super::explorer::EDGE_SECS);
         let column_sidebar = slide > 0.0;
         g.push_clip(inner);
-        // Without the keyboard, everything in it dimmed (Faye, 2026-11-12: instead of an outline round it with).
-        let keys = self.fades.get(Hit::Tab(u8::MAX), self.explorer.focused);
-        g.push_fade(ui::panel_opacity(keys), 1.0, 0.0, 0.0);
+        // Never dimmed without the keyboard (Faye, 2026-11-13; it was, 2026-11-12): the selection's colour and the
+        // cursor (in the list) still say where the keys are.
+        g.push_fade(1.0, 1.0, 0.0, 0.0);
         let mut moving = slide > 0.0 && slide < 1.0;
         let mut side_grip = None;
         let main = if column_sidebar {

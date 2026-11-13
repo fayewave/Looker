@@ -156,28 +156,13 @@ impl App {
         e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", Some("Ctrl+Shift+E"), file));
         // A video: which audio stream plays, in a submenu, there even with one (Faye, 2026-11-10).
         if self.video_shown() && self.player_ref().is_some() {
-            let tracks = self.video_audio_tracks();
-            let rows: Vec<Entry<Action>> = if tracks.is_empty() {
-                vec![Entry::Item(MenuItem { icon: None, tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
-            } else {
-                tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
-            };
             e.push(Entry::Separator);
             // Loop, ticked as the player is now (Faye, 2026-11-10), as in the bar's Settings.
             let looping = self.player_ref().is_some_and(|p| p.looping());
             e.push(Entry::Item(MenuItem { icon: None, tint: None, action: Action::ToggleVideoLoop, glyph: Some(0xE8EE), label: "Loop".into(), accel: None, check: Some(looping), enabled: true, current: false }));
-            // And which picture stream shows, as the audio (Faye, 2026-11-10), there even with one.
-            let pictures: Vec<Entry<Action>> =
-                self.video_picture_tracks().into_iter().map(|(stream, label, showing)| check(Action::VideoTrack(stream), &label, showing)).collect();
-            if !pictures.is_empty() {
-                e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
-            }
-            // An audio file plays its one stream: no menu of them, and no subtitles.
-            if !self.player_ref().is_some_and(video::Engine::is_audio) {
-                e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
-                // Subtitles beside them: off, the video's own, the files beside it, one picked by hand; delay, size.
-                e.push(Entry::Sub(Some(0xE7F0), "Subtitles".into(), self.subtitle_entries()));
-            }
+            // Which picture and sound streams play, and the subtitles: off, the video's own, the files beside it,
+            // one picked by hand; delay, size.
+            e.extend(self.track_entries());
         }
         e.extend([
             Entry::Separator,
@@ -194,7 +179,7 @@ impl App {
                 current: false,
             }),
             toggle(Action::ToggleExplorer, 0xE8B7, "File explorer", "Ctrl+E", has || self.home_explorer(), self.explorer_shown()),
-            toggle(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", "Ctrl+Shift+T", has, self.strip_shown()),
+            toggle(Action::ToggleStrip, 0xE90E, "Thumbnail strip", "Ctrl+Shift+T", has, self.strip_shown()),
             toggle(Action::ToggleInfo, 0xE946, "Info panel", "Ctrl+I", has, self.info_shown()),
         ]);
         e
@@ -286,7 +271,7 @@ impl App {
     /// The thumbnail strip's menu.
     pub(super) fn open_strip_menu(&mut self, x: f32, y: f32) {
         let entries = vec![
-            toggle(Action::ToggleStrip, 0xE8FD, "Thumbnail strip", "Ctrl+Shift+T", true, self.strip_shown()),
+            toggle(Action::ToggleStrip, 0xE90E, "Thumbnail strip", "Ctrl+Shift+T", true, self.strip_shown()),
         ];
         let Some(g) = &self.gfx else { return };
         let (w, h) = self.size_dip();
@@ -367,6 +352,75 @@ impl App {
         self.invalidate();
     }
 
+    /// A menu that stays open after a pick takes `entries` (made afresh), the submenu it was picked in still out.
+    /// A track pick (or passthrough) reopens the player, and until it's back the video's rows can't be made: the
+    /// menu became a different one, its tracks gone (Faye, 2026-11-13). Then it keeps its rows and just moves the
+    /// tick to what was picked.
+    fn refresh_open_menu(&mut self, entries: Vec<Entry<Action>>, picked: Action) {
+        let passthrough = self.settings.video_passthrough;
+        let reopening = self.video_shown() && self.player_ref().is_none();
+        let Some((_, m)) = self.menu.as_mut() else { return };
+        if reopening {
+            let tick = |rows: &mut Vec<Entry<Action>>| {
+                for e in rows.iter_mut() {
+                    match e {
+                        Entry::Item(it) if it.check.is_some() => match (it.action, picked) {
+                            (Action::AudioTrack(_), Action::AudioTrack(_)) | (Action::VideoTrack(_), Action::VideoTrack(_)) => it.check = Some(it.action == picked),
+                            (Action::TogglePassthrough, Action::TogglePassthrough) => it.check = Some(passthrough),
+                            _ => {}
+                        },
+                        Entry::Sub(_, _, sub) => {
+                            for s in sub.iter_mut() {
+                                if let Entry::Item(it) = s {
+                                    if let (Action::AudioTrack(_), Action::AudioTrack(_)) | (Action::VideoTrack(_), Action::VideoTrack(_)) = (it.action, picked) {
+                                        it.check = Some(it.action == picked);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            tick(&mut m.entries);
+            if let Some((_, sub)) = m.sub.as_mut() {
+                tick(&mut sub.entries);
+            }
+            return;
+        }
+        if let Some((i, sub)) = m.sub.as_mut() {
+            if let Some(Entry::Sub(_, _, rows)) = entries.get(*i) {
+                sub.entries = rows.clone();
+            }
+        }
+        m.entries = entries;
+    }
+
+    /// The video's Video track, Audio track and Subtitles submenus, for the right-click menu and the video bar's
+    /// Settings both (an audio file plays its one stream: none). The audio track's is there even with one stream.
+    pub(super) fn track_entries(&self) -> Vec<Entry<Action>> {
+        let mut e = Vec::new();
+        if !(self.video_shown() && self.player_ref().is_some()) {
+            return e;
+        }
+        let pictures: Vec<Entry<Action>> =
+            self.video_picture_tracks().into_iter().map(|(stream, label, showing)| check(Action::VideoTrack(stream), &label, showing)).collect();
+        if !pictures.is_empty() {
+            e.push(Entry::Sub(Some(0xE714), "Video track".into(), pictures));
+        }
+        if !self.player_ref().is_some_and(video::Engine::is_audio) {
+            let tracks = self.video_audio_tracks();
+            let rows: Vec<Entry<Action>> = if tracks.is_empty() {
+                vec![Entry::Item(MenuItem { icon: None, tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
+            } else {
+                tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
+            };
+            e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
+            e.push(Entry::Sub(Some(0xE7F0), "Subtitles".into(), self.subtitle_entries()));
+        }
+        e
+    }
+
     /// Runs the item at `index` of the open menu (if enabled) and closes the menu.
     pub(super) fn activate_menu(&mut self, index: usize) {
         let Some(action) = self.menu.as_ref().and_then(|(_, m)| m.action_at(index)) else { return };
@@ -378,12 +432,18 @@ impl App {
                 Action::VideoFrames(on) => self.set_video_frames(on),
                 Action::Chapter(i) => self.go_to_chapter(i),
                 Action::TogglePassthrough => self.toggle_passthrough(),
+                // Add subtitle file opens a dialog: the menu goes.
+                Action::SubAdd => {
+                    self.close_menu();
+                    self.add_subtitle_file();
+                    return;
+                }
+                // The tracks and subtitles, as the right-click menu has them (Faye, 2026-11-13).
+                a @ (Action::AudioTrack(_) | Action::VideoTrack(_) | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_)) => self.run_action(a),
                 _ => {}
             }
             let entries = self.video_settings_entries();
-            if let Some((_, m)) = self.menu.as_mut() {
-                m.entries = entries;
-            }
+            self.refresh_open_menu(entries, action);
             self.invalidate();
             return;
         }
@@ -421,14 +481,7 @@ impl App {
             let more = matches!(self.menu, Some((MenuKind::More, _)));
             self.run_action(action);
             let entries = if more { self.more_entries() } else { self.context_entries() };
-            if let Some((_, m)) = self.menu.as_mut() {
-                if let Some((i, sub)) = m.sub.as_mut() {
-                    if let Some(Entry::Sub(_, _, rows)) = entries.get(*i) {
-                        sub.entries = rows.clone();
-                    }
-                }
-                m.entries = entries;
-            }
+            self.refresh_open_menu(entries, action);
             self.invalidate();
             return;
         }

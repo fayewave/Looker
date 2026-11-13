@@ -770,6 +770,8 @@ pub struct App {
     /// A press on the toolbar's zoom level: where the pointer last was, and whether it has moved far enough to
     /// zoom (dragging right zooms in, left out; no fit/100 % click on release).
     zoom_scrub: Option<(f32, bool)>,
+    /// A drag on the text size stepper's number: where it began, and the size then.
+    text_size_drag: Option<(f32, f32)>,
     cap_hover: Option<Caption>,
     cap_pressed: Option<Caption>,
 }
@@ -1558,6 +1560,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             drag: None,
             pan_drag: None,
             zoom_scrub: None,
+            text_size_drag: None,
             cap_hover: None,
             cap_pressed: None,
         });

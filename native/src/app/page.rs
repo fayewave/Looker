@@ -60,6 +60,7 @@ pub(super) enum Setting {
     VideoResume,
     Slideshow,
     StripOther,
+    CleanClick,
     SubtitleSize,
     Passthrough,
 }
@@ -245,13 +246,17 @@ impl Rows {
         let hint_h = if hint.is_empty() { 0.0 } else { g.measure_height(&wide(hint), &g.fonts.caption_wrap, tw).ceil() };
         // The label's line, and the row, grow with the text size.
         let (row_h, line) = (crate::gfx::tsr(ROW_H), crate::gfx::tsr(19.0));
-        let h = if hint.is_empty() { row_h } else { (row_h + 10.0).max(6.0 + line + hint_h + 13.0) };
+        let block = line + hint_h;
+        let h = if hint.is_empty() { row_h } else { (row_h + 10.0).max(block + 19.0) };
         let r = rect(self.x, self.y, self.w, h);
         if hint.is_empty() {
             g.text(&wide(label), &g.fonts.body, rect(r.left, r.top, tw, h), rgb(t.text), Align::Left);
         } else {
-            g.text(&wide(label), &g.fonts.body, rect(r.left, r.top + 6.0, tw, line + 1.0), rgb(t.text), Align::Left);
-            g.text(&wide(hint), &g.fonts.caption_wrap, rect(r.left, r.top + 6.0 + line, tw, hint_h), rgb(t.label), Align::Left);
+            // The label and hint centred in the row, a DIP high: the room above the label's capitals then matches
+            // the room under the hint's baseline (they sat 6 from the top and 13 from the bottom: Faye, 2026-11-13).
+            let top = r.top + ((h - block) / 2.0 - 1.0).round();
+            g.text(&wide(label), &g.fonts.body, rect(r.left, top, tw, line + 1.0), rgb(t.text), Align::Left);
+            g.text(&wide(hint), &g.fonts.caption_wrap, rect(r.left, top + line, tw, hint_h), rgb(t.label), Align::Left);
         }
         g.hline(r.left, g.snap((r.bottom + extra - g.px()).floor()), self.w, rgb(t.divider));
         self.y += h + extra;
@@ -454,6 +459,13 @@ impl App {
                 return;
             }
             Setting::StripOther => s.strip_other_files = !s.strip_other_files,
+            Setting::CleanClick => {
+                s.click_hides_ui = !s.click_hides_ui;
+                // Off brings the UI back if it's away.
+                if !s.click_hides_ui {
+                    self.clean_view = false;
+                }
+            }
             Setting::Passthrough => {
                 self.toggle_passthrough();
                 return;
@@ -717,8 +729,8 @@ impl App {
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Wheel, open);
         let r = rows.row(g, "Zoom towards", "Where the wheel and a double-click zoom in. Ctrl + and Ctrl − always zoom into the middle");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Zoom, open);
-        let r = rows.switch_row(g, "Checkerboard behind transparency", "Shows which parts of a picture are see-through. Off: a plain background");
-        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
+        let r = rows.switch_row(g, "Click a photo to hide everything else", "The toolbar, panels and status bar fade away; click again to bring them back. A double-click still zooms");
+        self.switch(g, r, Setting::CleanClick, self.settings.click_hides_ui, open);
         let r = rows.row(g, "Slideshow speed", "How long each photo stays on screen");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::Slideshow, open);
         let r = rows.switch_row(g, "Show other files in the thumbnail strip", "Files Looker can't open appear greyed out, and the arrow keys stop on them too");
@@ -734,8 +746,6 @@ impl App {
         self.switch(g, r, Setting::VideoMuted, self.settings.video_start_muted, open);
         let r = rows.switch_row(g, "Resume long videos", "Videos over 5 minutes open where you stopped watching");
         self.switch(g, r, Setting::VideoResume, self.settings.video_resume, open);
-        let r = rows.switch_row(g, "Checkerboard behind videos", "Off: a plain background");
-        self.switch(g, r, Setting::CheckerboardVideo, self.settings.checkerboard_video, open);
         let r = rows.row(g, "Subtitle size", "");
         self.combo(g, right_part(r, 200.0, 30.0), Setting::SubtitleSize, open);
         let r = rows.switch_row(g, "Send surround sound to a receiver", "Dolby and DTS sound goes untouched to an AV receiver, when the sound output accepts it");
@@ -758,6 +768,11 @@ impl App {
         self.text_size_stepper(g, right_part(r, 120.0, 30.0), open);
         let r = rows.switch_row(g, "Solid status bar", "A solid bar behind the file details at the bottom. Off: they sit on the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
+        // Both checkerboards here, with the rest of how things look (Faye, 2026-11-13).
+        let r = rows.switch_row(g, "Checkerboard behind transparency", "Shows which parts of a picture are see-through. Off: a plain background");
+        self.switch(g, r, Setting::Checkerboard, self.settings.checkerboard, open);
+        let r = rows.switch_row(g, "Checkerboard behind videos", "Off: a plain background");
+        self.switch(g, r, Setting::CheckerboardVideo, self.settings.checkerboard_video, open);
     }
 
     fn page_advanced(&mut self, g: &Gfx, rows: &mut Rows, open: bool) {
@@ -877,6 +892,11 @@ impl App {
         let v = self.settings.text_scale;
         let can = [v > lo + 1e-3, v < hi - 1e-3];
         let (minus, plus) = ui::stepper_buttons(b);
+        // The number between the buttons drags left and right, a step every 6 DIPs (Transient's).
+        let mid = D2D_RECT_F { left: minus.right, right: plus.left, ..b };
+        if open {
+            self.hits.add(Hit::TextSizeStep(2), mid);
+        }
         let mut hot = [0.0; 2];
         for (k, r) in [(0usize, minus), (1, plus)] {
             let id = Hit::TextSizeStep(k as u8);
@@ -886,6 +906,17 @@ impl App {
             hot[k] = self.state(id, open && can[k]).hover;
         }
         ui::stepper(g, b, &format!("{:.0}%", v * 100.0), can, hot);
+    }
+
+    /// The stepper's number dragged to `x`: a step for every 6 DIPs from where the press began.
+    pub(super) fn text_size_drag_to(&mut self, x: f32) {
+        let Some((x0, v0)) = self.text_size_drag else { return };
+        let (lo, hi, step) = settings::TEXT_SCALES;
+        let v = ((v0 + ((x - x0) / 6.0).round() * step).clamp(lo, hi) * 100.0).round() / 100.0;
+        if v != self.settings.text_scale {
+            self.settings.text_scale = v;
+            self.invalidate();
+        }
     }
 
     /// The stepper's − (0) or +: a step smaller or bigger. The fonts ease to it.
