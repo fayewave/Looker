@@ -479,6 +479,8 @@ pub(super) struct Explorer {
     /// after a drop.
     pub(super) section_drag: Option<SectionDrag>,
     pub(super) section_pos: HashMap<SideSection, Ease<1>>,
+    /// The icon strip's icons' eased tops (dragged into another order as the sections are).
+    pub(super) rail_pos: HashMap<SideSection, Ease<1>>,
     pub(super) section_anim_until: Instant,
     /// A bookmark or collection being dragged into another place, the entries' eased tops in their section (by
     /// key), and until when they ease after a drop.
@@ -598,6 +600,7 @@ impl Explorer {
             section_drag: None,
             section_pos: HashMap::new(),
             section_anim_until: Instant::now(),
+            rail_pos: HashMap::new(),
             side_row_drag: None,
             marquee: None,
             list_geom: None,
@@ -2855,8 +2858,15 @@ impl App {
         if !d.active {
             return false;
         }
+        // `insert` counts the sections showing (History has none until there is some): it goes before the one it
+        // landed above, or after the last one showing.
+        let shown: Vec<SideSection> = self.sidebar_items().iter().filter_map(|it| if let SideTarget::Header(s) = it.target { Some(s) } else { None }).filter(|&s| s != d.sec).collect();
         let mut order: Vec<SideSection> = self.settings.sidebar_order.iter().copied().filter(|&s| s != d.sec).collect();
-        order.insert(d.insert.min(order.len()), d.sec);
+        let at = match shown.get(d.insert) {
+            Some(before) => order.iter().position(|s| s == before).unwrap_or(order.len()),
+            None => shown.last().and_then(|last| order.iter().position(|s| s == last)).map_or(order.len(), |i| i + 1),
+        };
+        order.insert(at, d.sec);
         if order != self.settings.sidebar_order {
             self.settings.sidebar_order = order;
             settings::save(&self.settings);
@@ -2965,8 +2975,10 @@ impl App {
         let Some((x0, w0)) = self.explorer.side_drag else { return };
         let raw = (w0 + x - x0).round();
         let rail = if self.settings.sidebar_rail { raw < RAIL_W + RAIL_SNAP } else { raw < SIDEBAR_MIN - RAIL_SNAP };
+        // The strip keeps its one width (it gave on the rubber band, so it seemed to change size: Faye,
+        // 2026-11-13); dragged out far enough it opens.
         let stretch = if rail {
-            if raw >= RAIL_W { rubber(raw - RAIL_W) } else { -rubber(RAIL_W - raw) }
+            0.0
         } else {
             self.settings.sidebar_width = raw.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
             if raw < SIDEBAR_MIN {
@@ -3016,6 +3028,12 @@ impl App {
     pub(super) fn sidebar_springing(&mut self) -> bool {
         let swinging = self.explorer.side_spring.is_some_and(|(_, at)| motion_on() && at.elapsed().as_secs_f32() < SPRING_SECS);
         swinging || (!swinging && self.explorer.side_spring.take().is_some())
+    }
+
+    /// A press on a section's icon on the strip: it may become a drag of it up or down the strip.
+    pub(super) fn rail_press(&mut self, sec: SideSection, y: f32) {
+        let top = self.hits.rect_of(Hit::RailIcon(sec)).map_or(y, |r| r.top);
+        self.explorer.section_drag = Some(SectionDrag { sec, start_y: y, y, grab: y - top, active: false, insert: 0 });
     }
 
     /// A section's icon on the strip clicked: its flyout opens, or closes if it's the one open.

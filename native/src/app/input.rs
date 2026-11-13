@@ -511,6 +511,7 @@ impl App {
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
                         Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
                         Some(Hit::SideHeader(s)) => self.section_press(s, y),
+                        Some(Hit::RailIcon(s)) => self.rail_press(s, y),
                         Some(Hit::SideRow(i)) => self.side_row_press(i, y),
                         Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
                         Some(Hit::ArchiveRow(_) | Hit::ArchiveList) => self.archive_press(x, y),

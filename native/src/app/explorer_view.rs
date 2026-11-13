@@ -230,7 +230,7 @@ impl App {
         }
         if open < 1.0 {
             g.push_fade(1.0 - open, 1.0, 0.0, 0.0);
-            self.draw_rail(g, side, open < 0.5);
+            moving |= self.draw_rail(g, side, open < 0.5);
             g.pop_fade();
         }
         g.pop_clip();
@@ -807,10 +807,14 @@ impl App {
         let fy = body.bottom - 8.0 - FILTER_H;
         // One line (Faye, 2026-11-10): the counts at the right as wide as they are, the filter stretching from the
         // left up to them; short of room the counts give way, the filter keeping at least 120.
-        let widths: Vec<f32> = status.iter().map(|(glyph, text)| if glyph.is_some() { 20.0 } else { 0.0 } + g.measure_tabular(&wide(text), &g.fonts.body).ceil() + 1.0).collect();
-        let total = widths.iter().sum::<f32>() + 16.0 * widths.len().saturating_sub(1) as f32;
+        // Spaced tighter (Faye, 2026-11-13: at the card's narrowest the size was cut off): 17 from an icon to its
+        // text, 10 between parts, 8 from the filter.
+        const ICON_GAP: f32 = 17.0;
+        const PART_GAP: f32 = 10.0;
+        let widths: Vec<f32> = status.iter().map(|(glyph, text)| if glyph.is_some() { ICON_GAP } else { 0.0 } + g.measure_tabular(&wide(text), &g.fonts.body).ceil() + 1.0).collect();
+        let total = widths.iter().sum::<f32>() + PART_GAP * widths.len().saturating_sub(1) as f32;
         let room = body.right - body.left - 16.0;
-        let fw = (room - total - 12.0).max(120.0_f32.min(room));
+        let fw = (room - total - 8.0).max(120.0_f32.min(room));
         let fr = rect(body.left + 8.0, fy, fw, FILTER_H);
         self.hits.add(Hit::ExplorerFilter, fr);
         let focused = self.explorer.field == Some(EField::Filter);
@@ -835,7 +839,7 @@ impl App {
                 self.caret_rect = caret;
             }
         }
-        let sr = rect(fr.right + 12.0, fy, (body.right - 8.0 - fr.right - 12.0).max(0.0), FILTER_H);
+        let sr = rect(fr.right + 8.0, fy, (body.right - 8.0 - fr.right - 8.0).max(0.0), FILTER_H);
         // Each part: an icon, then its text, right-aligned beside the filter.
         let mut x = (sr.right - total).max(sr.left);
         g.push_clip(sr);
@@ -843,10 +847,10 @@ impl App {
             let mut tx = x;
             if let Some(gl) = glyph {
                 g.text(&[*gl], &g.fonts.small_icons, rect(x, sr.top, 14.0, sr.bottom - sr.top), rgb(t.placeholder), Align::Center);
-                tx += 20.0;
+                tx += ICON_GAP;
             }
             g.text_tabular(&wide(text), &g.fonts.body, rect(tx, sr.top, x + w - tx + 40.0, sr.bottom - sr.top), rgb(t.label), Align::Left);
-            x += w + 16.0;
+            x += w + PART_GAP;
         }
         g.pop_clip();
     }
@@ -888,24 +892,75 @@ impl App {
 
     /// The icon strip (the sidebar folded): a button per section down its middle, each opening its flyout. `hits`:
     /// clickable (not while it fades out).
-    fn draw_rail(&mut self, g: &Gfx, r: D2D_RECT_F, hits: bool) {
-        let items = self.sidebar_items();
-        let mut y = r.top + 8.0;
-        for it in &items {
-            let SideTarget::Header(sec) = it.target else { continue };
-            let b = rect(r.left + (RAIL_W - 32.0) / 2.0, y, 32.0, 32.0);
+    /// Dragged up or down, an icon follows the pointer and the others make room where it would land (the sections'
+    /// order, as dragging their headings in the open sidebar).
+    fn draw_rail(&mut self, g: &Gfx, r: D2D_RECT_F, hits: bool) -> bool {
+        const PITCH: f32 = 36.0;
+        let secs: Vec<(explorer::SideSection, u16)> = self.sidebar_items().iter().filter_map(|it| if let SideTarget::Header(s) = it.target { Some((s, it.glyph)) } else { None }).collect();
+        let top = r.top + 8.0;
+        let drag = self.explorer.section_drag.as_ref().filter(|d| d.active).map(|d| (d.sec, d.y - d.grab));
+        let dragged = drag.and_then(|(sec, _)| secs.iter().position(|s| s.0 == sec));
+        let mut order: Vec<usize> = (0..secs.len()).collect();
+        if let (Some(di), Some((_, y))) = (dragged, drag) {
+            order.retain(|&k| k != di);
+            let insert = (((y - top) / PITCH).round().max(0.0) as usize).min(order.len());
+            order.insert(insert, di);
+            if let Some(d) = self.explorer.section_drag.as_mut() {
+                d.insert = insert;
+            }
+        }
+        let now = Instant::now();
+        let animate = drag.is_some() || now < self.explorer.section_anim_until;
+        let mut moving = drag.is_some();
+        let mut ys = vec![0.0; secs.len()];
+        for (pos, &k) in order.iter().enumerate() {
+            let target = pos as f32 * PITCH;
+            let e = self.explorer.rail_pos.entry(secs[k].0).or_insert_with(|| crate::motion::Ease::at([target]));
+            if Some(k) == dragged {
+                let y = drag.map_or(top, |d| d.1).clamp(top, top + (secs.len() - 1) as f32 * PITCH);
+                *e = crate::motion::Ease::at([y - top]);
+            } else if animate {
+                e.set([target], now);
+            } else {
+                *e = crate::motion::Ease::at([target]);
+            }
+            moving |= e.moving(now);
+            ys[k] = top + e.value(now)[0];
+        }
+        // Where it would land: an accent outline in its slot.
+        if let (Some(di), Some(_)) = (dragged, drag) {
+            let slot = order.iter().position(|&k| k == di).unwrap_or(0);
+            let sr = rect(r.left + (RAIL_W - 32.0) / 2.0, top + slot as f32 * PITCH, 32.0, 32.0);
+            g.fill_round(sr, 5.0, gfx::rgba(theme::t().accent, 0.10));
+            ui::stroke(g, sr, 5.0, rgb(theme::t().accent));
+        }
+        for &k in order.iter().filter(|&&k| Some(k) != dragged).chain(dragged.iter()) {
+            let (sec, glyph) = secs[k];
+            let b = rect(r.left + (RAIL_W - 32.0) / 2.0, ys[k], 32.0, 32.0);
             let id = Hit::RailIcon(sec);
             let on = self.explorer.rail_fly == Some(sec);
-            let st = if hits {
+            if Some(k) == dragged {
+                // Lifted where the pointer holds it.
+                let raised = theme::raised();
+                ui::shadow(g, b, 5.0);
+                g.fill_round(b, 5.0, rgb(raised.popup));
+                ui::stroke(g, b, 5.0, rgb(raised.divider));
+                g.text(&[glyph], &g.fonts.icons, b, rgb(raised.text), Align::Center);
+                continue;
+            }
+            let st = if hits && drag.is_none() {
                 self.hits.add(id, b);
                 self.state(id, true)
             } else {
+                if hits {
+                    self.hits.add(id, b);
+                }
                 ui::State::IDLE
             };
             let fg = ui::button_frame(g, b, if on { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
-            g.text(&[it.glyph], &g.fonts.icons, b, fg, Align::Center);
-            y += 36.0;
+            g.text(&[glyph], &g.fonts.icons, b, fg, Align::Center);
         }
+        moving
     }
 
     /// The sidebar in `r`: section headings and their places, scrolling; `only` one section (the icon strip's
