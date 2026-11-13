@@ -308,6 +308,11 @@ impl App {
 
     /// The hit the keyboard is on.
     fn a11y_focus(&self) -> Option<Hit> {
+        if let Some(e) = &self.edit {
+            if self.dialog.is_none() && self.menu.is_none() {
+                return Some(e.focus.unwrap_or(Hit::Viewport));
+            }
+        }
         if let Some((_, m)) = &self.menu {
             if let Some((_, sub)) = &m.sub {
                 if let Some(c) = sub.cursor {
@@ -571,6 +576,47 @@ impl App {
             Hit::VideoVolume => Info { value: Some(format!("{:.0} %", self.settings.video_volume * 100.0)), invoke: false, ..Info::new(UIA_SliderControlTypeId, "Volume") },
             Hit::AudioWave => Info { invoke: false, ..Info::new(UIA_ImageControlTypeId, "Waveform") },
             Hit::AudioMode(k) => Info::item(UIA_RadioButtonControlTypeId, if k == 0 { "Waveform" } else { "Spectrogram" }, (k == 1) == self.settings.audio_spectrum),
+            Hit::EditPanel => return None,
+            Hit::EditCrop(part) => {
+                let e = self.edit.as_ref()?;
+                let (w, h) = (e.p.crop[2] - e.p.crop[0], e.p.crop[3] - e.p.crop[1]);
+                let names = ["Crop frame", "Top left corner", "Top edge", "Top right corner", "Right edge", "Bottom right corner", "Bottom edge", "Bottom left corner", "Left edge"];
+                let name = names.get(part as usize).copied().unwrap_or("Crop");
+                if part != 0 {
+                    return None; // the frame itself speaks for its handles
+                }
+                Info { value: Some(format!("{:.0} × {:.0} pixels", w, h)), invoke: false, focusable: false, ..Info::new(UIA_PaneControlTypeId, name) }.help("Drag to move; the arrow keys nudge it")
+            }
+            Hit::EditAspect(i) => Info::item(UIA_RadioButtonControlTypeId, format!("Crop {}", super::edit::aspect_name(i)), false),
+            Hit::EditFlip => Info { focusable: true, ..Info::button(inside()) },
+            Hit::EditStraighten => {
+                let a = self.edit.as_ref().map_or(0.0, |e| e.p.angle);
+                Info { value: Some(super::edit::degrees_text(a)), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, "Straighten") }.help("Left and right arrows: 0.1 degree, Shift: 1")
+            }
+            Hit::EditExposure => {
+                let v = self.edit.as_ref().map_or(0.0, |e| e.p.ev);
+                Info { value: Some(format!("{} stops", super::edit::ev_text(v))), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, "Exposure") }.help("Left and right arrows: 0.1 stop, Shift: 0.5")
+            }
+            Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy => {
+                let name = match h {
+                    Hit::EditReset => "Reset",
+                    Hit::EditCancel => "Cancel",
+                    Hit::EditSave => "Save over the photo",
+                    _ => "Save a copy",
+                };
+                let mut i = Info { focusable: true, ..Info::button(name) };
+                i.accel = match h {
+                    Hit::EditCancel => "Esc",
+                    Hit::EditSave => "Ctrl+S",
+                    Hit::EditSaveCopy => "Enter",
+                    _ => "",
+                }
+                .into();
+                if h == Hit::EditSave {
+                    i.help = "The original goes to the Recycle Bin".into();
+                }
+                i
+            }
             Hit::RipPill | Hit::ExtractPill => Info { invoke: false, ..Info::new(UIA_ProgressBarControlTypeId, inside()) },
         })
     }

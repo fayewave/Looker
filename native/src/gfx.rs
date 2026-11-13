@@ -909,6 +909,55 @@ impl Gfx {
         }
     }
 
+    /// A photo being edited (app/edit.rs): `bmp` drawn into `dest` turned `angle` degrees clockwise about its
+    /// middle, its exposure moved `ev` stops, clipped at SDR white: as `photoedit::apply` will write it (a gain
+    /// of 2^(ev / 2.2) on sRGB values; 2^ev on linear scRGB ones). Resampled inside the effect graph, as
+    /// `draw_clamped` does.
+    pub fn draw_photo_edit(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, angle: f32, ev: f32) -> Result<()> {
+        unsafe {
+            let dc = &self.dev.dc;
+            let size = bmp.GetSize();
+            if size.width <= 0.0 || size.height <= 0.0 {
+                return Ok(());
+            }
+            let mut world = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut world);
+            let place = windows_numerics::Matrix3x2 {
+                M11: (dest.right - dest.left) / size.width,
+                M12: 0.0,
+                M21: 0.0,
+                M22: (dest.bottom - dest.top) / size.height,
+                M31: dest.left,
+                M32: dest.top,
+            };
+            let (cx, cy) = ((dest.left + dest.right) / 2.0, (dest.top + dest.bottom) / 2.0);
+            let (s, c) = angle.to_radians().sin_cos();
+            let turn = windows_numerics::Matrix3x2 { M11: c, M12: s, M21: -s, M22: c, M31: cx - cx * c + cy * s, M32: cy - cx * s - cy * c };
+            let px = self.dpi / 96.0;
+            let to_device = place * turn * world * windows_numerics::Matrix3x2 { M11: px, M12: 0.0, M21: 0.0, M22: px, M31: 0.0, M32: 0.0 };
+            let affine = dc.CreateEffect(&CLSID_D2D12DAffineTransform)?;
+            affine.SetInput(0, bmp, true);
+            let m = [to_device.M11, to_device.M12, to_device.M21, to_device.M22, to_device.M31, to_device.M32];
+            let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_le_bytes()).collect();
+            affine.SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_3X2, &bytes)?;
+            set_u32(&affine, D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE.0 as u32, D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC.0 as u32)?;
+            let out = if self.space.is_scrgb() {
+                // Linear: the gain itself, then SDR white is the ceiling (down to 1, clamped, back up).
+                let k = self.space.white_scale();
+                let down = color_matrix(dc, &affine.GetOutput()?, 2f32.powf(ev) / k, 1.0, true)?;
+                color_matrix(dc, &down.GetOutput()?, k, 1.0, false)?
+            } else {
+                color_matrix(dc, &affine.GetOutput()?, crate::photoedit::gain(ev), 1.0, true)?
+            };
+            dc.SetTransform(&windows_numerics::Matrix3x2::identity());
+            dc.SetUnitMode(D2D1_UNIT_MODE_PIXELS);
+            dc.DrawImage(&out.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            dc.SetUnitMode(D2D1_UNIT_MODE_DIPS);
+            dc.SetTransform(&world);
+            Ok(())
+        }
+    }
+
     fn draw_clamped(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32) -> Result<()> {
         unsafe {
             let dc = &self.dev.dc;

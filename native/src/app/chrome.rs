@@ -123,7 +123,7 @@ impl App {
             Tool::Home => 0,
             Tool::Previous | Tool::Next => 1,
             Tool::ZoomOut | Tool::Zoom | Tool::Fit | Tool::ZoomIn => 2,
-            Tool::Rotate | Tool::Delete | Tool::More => 3,
+            Tool::Rotate | Tool::Edit | Tool::Delete | Tool::More => 3,
             Tool::SaveRotation => 4,
             Tool::Sort => 10,
             Tool::Explorer | Tool::Strip | Tool::Info => 11,
@@ -232,6 +232,7 @@ impl App {
             Tool::Previous | Tool::Next => has && self.viewer.image_count() > 1,
             Tool::Sort | Tool::Delete | Tool::More => has,
             Tool::Rotate => has && self.can_rotate(),
+            Tool::Edit => has && self.can_edit(),
             // Nothing to zoom while a file Looker can't open covers the photo.
             Tool::ZoomIn | Tool::ZoomOut | Tool::Fit | Tool::Zoom => has && self.placeholder.is_none(),
             Tool::SaveRotation => !self.saving_rotation,
@@ -282,6 +283,7 @@ impl App {
             Hit::Tool(Tool::More) => "More",
             Hit::Tool(Tool::Fullscreen) => "Fullscreen (F11)",
             Hit::Tool(Tool::Rotate) => "Rotate right (Ctrl+R)",
+            Hit::Tool(Tool::Edit) => "Edit: crop, straighten, exposure (E)",
             Hit::Tool(Tool::Delete) => "Delete (Del)",
             Hit::Tool(Tool::Sort) => "Sort",
             Hit::Tool(Tool::SaveRotation) => "Save the rotation to the file (Ctrl+S)",
@@ -480,14 +482,17 @@ impl App {
         self.draw_viewport(&mut g, ui_k);
         g.push_fade(ui_k, 1.0, 0.0, 0.0);
         // Under the cards: where the explorer's edge will hold, while it's dragged near there.
-        let guide_moving = self.draw_sticky_guide(&g);
-        let info_moving = self.draw_info(&g) | guide_moving;
+        let editing = self.edit.is_some();
+        let guide_moving = !editing && self.draw_sticky_guide(&g);
+        let info_moving = !editing && self.draw_info(&g) | guide_moving;
         // The explorer's hover highlights end at once, no fade out (Faye, 2026-11-10).
         self.fades.instant_out = true;
-        let card_moving = info_moving | self.draw_explorer(&g);
+        let card_moving = info_moving | (!editing && self.draw_explorer(&g));
         self.fades.instant_out = false;
-        let strip_moving = self.draw_strip(&g);
-        if self.viewer.current.is_some() && self.placeholder.is_none() {
+        let strip_moving = !editing && self.draw_strip(&g);
+        if editing {
+            self.draw_edit_panel(&g);
+        } else if self.viewer.current.is_some() && self.placeholder.is_none() {
             if ui_on {
                 self.draw_page_bar(&g);
             }
@@ -499,7 +504,7 @@ impl App {
             }
         }
         self.update_media();
-        if self.chrome() && ui_on {
+        if self.chrome() && ui_on && !editing {
             self.draw_toolbar(&g);
             self.draw_status(&g);
         }
@@ -780,7 +785,9 @@ impl App {
                 } else {
                     dest
                 };
-                if let Some(d) = &doc {
+                if self.edit.is_some() {
+                    self.draw_edit_photo(g, frame);
+                } else if let Some(d) = &doc {
                     self.draw_pages(g, d, dest, bg);
                 } else if let Some((v, sdr)) = self.video_bitmap() {
                     // A video's picture: upright and at the still's size, so the same box.

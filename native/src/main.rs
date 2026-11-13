@@ -31,6 +31,7 @@ mod model;
 mod motion;
 mod motionphoto;
 mod pages;
+mod photoedit;
 mod player;
 mod settings;
 mod shell_icons;

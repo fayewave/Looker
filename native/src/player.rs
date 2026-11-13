@@ -2055,7 +2055,7 @@ mod tests {
         let frame = (1e6 * info.fps_den as f64 / info.fps_num as f64) as i64;
         next_due(&mut p).expect("first picture");
         let mid = info.duration_us / 2;
-        let mut run = |name: &str, targets: Vec<i64>, p: &mut Player| {
+        let run = |name: &str, targets: Vec<i64>, p: &mut Player| {
             let (mut worst, mut total) = (0.0f64, 0.0f64);
             for &target in &targets {
                 let t = Instant::now();

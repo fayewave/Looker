@@ -579,6 +579,7 @@ impl App {
         match done {
             Done::Rotated { path, ok } => self.on_rotated(path, ok),
             Done::MetaWritten { results } => self.on_meta_written(results),
+            Done::Edited { path, out, copy } => self.on_edited(path, out, copy),
             Done::Recycled { path, ok } => self.on_recycled(path, ok),
             Done::Renamed { from, to } => self.on_renamed(from, to),
             Done::Wallpaper { ok } => self.show_toast(if ok { "Wallpaper set" } else { "Couldn't set the wallpaper" }, false),

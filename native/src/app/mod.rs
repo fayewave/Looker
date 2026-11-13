@@ -9,6 +9,7 @@ mod actions;
 mod chrome;
 mod clean;
 mod document;
+mod edit;
 mod explorer;
 mod extract;
 pub(crate) use extract::ExtractResult;
@@ -127,6 +128,8 @@ enum Tool {
     ZoomIn,
     Fullscreen,
     Rotate,
+    /// Edit mode: crop, straighten, exposure (app/edit.rs).
+    Edit,
     Delete,
     /// The ⋯ menu: the right-click menu's file actions.
     More,
@@ -149,6 +152,7 @@ const LEFT_TOOLS: &[(Tool, u16)] = &[
     (Tool::Zoom, 0),
     (Tool::ZoomIn, 0xE710),
     (Tool::Rotate, 0xE7AD),
+    (Tool::Edit, 0xE70F),
     (Tool::Delete, 0xE74D),
     (Tool::More, 0xE712),
 ];
@@ -372,6 +376,18 @@ enum Hit {
     /// An extraction's (app/extract.rs).
     ExtractPill,
     ExtractCancel,
+    /// Edit mode (edit.rs): the crop frame (0 inside, 1-8 its handles clockwise from the top left), the panel, an
+    /// aspect choice, the frame's turn, the two sliders, and the buttons.
+    EditCrop(u8),
+    EditPanel,
+    EditAspect(u8),
+    EditFlip,
+    EditStraighten,
+    EditExposure,
+    EditReset,
+    EditCancel,
+    EditSave,
+    EditSaveCopy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -676,6 +692,8 @@ pub struct App {
     uia: Option<uia::Uia>,
     /// State the drawing noted for the reader this frame, and which hit each published node is (a11y.rs).
     a11y_marks: Vec<(Hit, a11y::Mark)>,
+    /// Edit mode, while it's up.
+    edit: Option<edit::Edit>,
     a11y_hits: Vec<(i32, Hit)>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
@@ -1246,6 +1264,7 @@ impl App {
             Tool::Home => self.close(),
             Tool::Sort => self.toggle_sort_menu(),
             Tool::Rotate => self.rotate_preview(true),
+            Tool::Edit => self.begin_edit(),
             Tool::SaveRotation => self.save_rotation(),
             Tool::Delete => self.confirm_delete(false),
             Tool::Info => self.toggle_info(),
@@ -1506,6 +1525,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             print_devmode: (HGLOBAL::default(), HGLOBAL::default()),
             uia: None,
             a11y_marks: Vec::new(),
+            edit: None,
             a11y_hits: Vec::new(),
             tooltip: None,
             dialog: None,

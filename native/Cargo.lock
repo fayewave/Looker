@@ -510,6 +510,7 @@ dependencies = [
  "kamadak-exif",
  "serde_json",
  "windows",
+ "windows-collections",
  "windows-core",
  "windows-numerics",
  "xcf",

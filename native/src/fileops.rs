@@ -63,6 +63,8 @@ pub enum Done {
     Extracted(crate::app::ExtractResult),
     /// The info card's Ctrl+S: each file, the edits written into it, and how it went.
     MetaWritten { results: Vec<(PathBuf, Vec<(crate::metawrite::Field, Option<String>)>, Result<(), String>)> },
+    /// An edit saved (app/edit.rs): the photo, the file written (or why not), and whether it was a copy.
+    Edited { path: PathBuf, out: Result<PathBuf, String>, copy: bool },
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work

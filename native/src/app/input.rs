@@ -107,6 +107,12 @@ impl App {
 
     pub(super) unsafe fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         unsafe {
+            // Edit mode takes the pointer and keys first (edit.rs).
+            if self.edit.is_some() {
+                if let Some(r) = self.edit_message(msg, wp, lp) {
+                    return Some(r);
+                }
+            }
             match msg {
                 WM_NCCALCSIZE if wp.0 != 0 && self.fullscreen.is_none() => {
                     let params = &mut *(lp.0 as *mut NCCALCSIZE_PARAMS);
@@ -370,6 +376,12 @@ impl App {
                         Some(Hit::Tool(Tool::Zoom)) if self.tool_enabled(Tool::Zoom) => IDC_SIZEWE,
                         Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::ColumnEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
                         Some(Hit::StripGrip) => IDC_SIZENS,
+                        Some(Hit::EditCrop(0)) => IDC_SIZEALL,
+                        Some(Hit::EditCrop(1 | 5)) => IDC_SIZENWSE,
+                        Some(Hit::EditCrop(3 | 7)) => IDC_SIZENESW,
+                        Some(Hit::EditCrop(2 | 6)) => IDC_SIZENS,
+                        Some(Hit::EditCrop(4 | 8)) => IDC_SIZEWE,
+                        Some(Hit::EditStraighten | Hit::EditExposure) => IDC_HAND,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
@@ -1191,6 +1203,7 @@ impl App {
                         VK_O if ctrl => self.open_dialog(),
                         VK_E if ctrl && shift => self.reveal(),
                         VK_E if ctrl => self.toggle_explorer(),
+                        VK_E if !shift && self.can_edit() => self.begin_edit(),
                         VK_I if ctrl => self.toggle_info(),
                         VK_T if ctrl && shift => self.toggle_strip(),
                         VK_C if ctrl && shift => self.copy_path(),
