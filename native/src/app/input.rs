@@ -304,6 +304,9 @@ impl App {
                     if self.pressed == Some(Hit::TextSizeStep(2)) {
                         self.text_size_drag_to(x);
                     }
+                    if matches!(self.pressed, Some(Hit::StyleStep(_, 2))) {
+                        self.style_drag_to(x);
+                    }
                     match self.pressed {
                         Some(Hit::TextView) => self.text_drag(x, y),
                         Some(Hit::TextScroll | Hit::TextHScroll) => self.text_scroll_drag(x, y),
@@ -395,7 +398,7 @@ impl App {
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         _ if self.text_size_drag.is_some() => IDC_SIZEWE,
-                        Some(Hit::TextSizeStep(2)) => IDC_SIZEWE,
+                        Some(Hit::TextSizeStep(2) | Hit::StyleStep(_, 2)) => IDC_SIZEWE,
                         Some(Hit::TextSizeStep(_)) => IDC_HAND,
                         Some(
                             Hit::Reveal
@@ -418,6 +421,11 @@ impl App {
                             | Hit::Toggle(_)
                             | Hit::ThemeChip(_)
                             | Hit::PageLink(_)
+                            | Hit::StyleRow(_)
+                            | Hit::StyleAct(_)
+                            | Hit::StyleStep(_, 0 | 1)
+                            | Hit::StyleColour(_)
+                            | Hit::StyleScene(_)
                             | Hit::GetExtension
                             | Hit::DefaultHint
                             | Hit::DefaultHintClose
@@ -562,6 +570,7 @@ impl App {
                         Some(Hit::VideoSeek) => self.scrub_start(x),
                         Some(Hit::VideoVolume) => self.volume_at(x),
                         Some(Hit::TextSizeStep(2)) => self.text_size_drag = Some((x, self.settings.text_scale)),
+                        Some(Hit::StyleStep(n, 2)) => self.style_drag_start(n, x),
                         Some(Hit::AudioWave) => self.audio_press(x),
                         Some(Hit::AudioScroll) => self.audio_scroll_press(x),
                         Some(Hit::TextView) => self.text_press(x, y, false),
@@ -605,6 +614,7 @@ impl App {
                     self.strip_grip_release();
                     self.explorer_grip_release();
                     self.page_thumb_release();
+                    self.style_drag_end();
                     if pressed == Some(Hit::VideoSeek) {
                         self.scrub_end();
                     }
@@ -713,6 +723,11 @@ impl App {
                             Some(Hit::Combo(s)) => self.open_combo(s),
                             Some(Hit::Toggle(s)) => self.toggle_setting(s),
                             Some(Hit::PageLink(i)) => self.page_link(i),
+                            Some(Hit::StyleRow(i)) => self.style_row(i as usize),
+                            Some(Hit::StyleAct(a)) => self.style_act(a),
+                            Some(Hit::StyleStep(n, k @ (0 | 1))) => self.style_step(n, k),
+                            Some(Hit::StyleColour(i)) => self.open_style_picker(i as usize),
+                            Some(Hit::StyleScene(i)) => self.style_scene(i),
                             Some(Hit::LandingFolder) => self.open_folder_dialog(),
                             Some(Hit::RecentRow(i)) => self.open_recent(i),
                             Some(Hit::RecentClear) => self.clear_recents(),
@@ -1004,6 +1019,8 @@ impl App {
                     // Over the text size stepper the wheel steps it (Transient's), not the page.
                     if self.page_open() && matches!(self.hit(x, y), Some(Hit::TextSizeStep(_))) {
                         self.text_size_step(if delta > 0.0 { 1 } else { 0 });
+                    } else if let (true, Some(Hit::StyleStep(n, _))) = (self.page_open(), self.hit(x, y)) {
+                        self.style_step(n, if delta > 0.0 { 1 } else { 0 });
                     } else if self.page_open() {
                         self.scroll_page(delta as f32);
                         return Some(LRESULT(0));

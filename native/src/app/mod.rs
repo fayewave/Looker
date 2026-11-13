@@ -30,6 +30,7 @@ mod rip;
 mod slideshow;
 mod audio;
 mod subtitles;
+mod substyle;
 mod tabstrip;
 mod textprint;
 mod texttabs;
@@ -200,6 +201,15 @@ enum Hit {
     PickerDone,
     PickerCancel,
     PageLink(u8),
+    /// The Subtitle styles card (substyle.rs): a style in its list (and the id its wash eases under), a button
+    /// (`substyle::act`), a stepper's − (0), + (1) or number (2) for `substyle::Num::ALL[n]`, a colour button
+    /// (`substyle::Paint::ALL`), a preview scene.
+    StyleRow(u8),
+    StyleRowOn(u8),
+    StyleAct(u8),
+    StyleStep(u8, u8),
+    StyleColour(u8),
+    StyleScene(u8),
     /// The landing page: "Open a folder", a recent file by index, and Clear (Open is "Open a file").
     LandingFolder,
     RecentRow(usize),

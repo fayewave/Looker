@@ -3,9 +3,10 @@
 //! minus the delay, in the UI layer (8-bit, SDR white under HDR), placed and scaled with the video's rect on
 //! screen (zoom, pan, fit):
 //!
-//! - plain text (SubRip, WebVTT, mov_text...): laid out here in Inter with DirectWrite, its italics, bold and
-//!   colours kept, white on a dark outline and soft shadow (`Gfx::outlined_text`), lifted above the controls bar
-//!   while it's up;
+//! - plain text (SubRip, WebVTT, mov_text...): laid out here with DirectWrite in the subtitle style in use
+//!   (`substyle.rs`: font, colour, outline, shadow, a box behind; Looker's own look is white Inter on a dark
+//!   outline and soft shadow), its italics, bold and colours kept (`Gfx::styled_text`), lifted above the
+//!   controls bar while it's up;
 //! - ASS/SSA: libass's picture of the moment, at the video rect's size in pixels, with the file's own fonts;
 //! - bitmap subtitles (PGS, VobSub, DVB): their pictures, placed on their canvas stretched over the video.
 //!
@@ -22,20 +23,19 @@ use windows::Win32::Graphics::DirectWrite::*;
 use super::*;
 use crate::imaging::video::{SUB_ASS, SUB_BITMAP, Track as StreamTrack};
 use crate::subs::{self, Choice, Sidecar, Source};
+use crate::substyle::{Backdrop, SubStyle};
 
 /// G and H move the subtitles by this much.
 const DELAY_STEP_US: i64 = 10_000;
 /// The text's height at 100 %: this much of the video's height (or of its width's 16:9 height, if narrower).
 const TEXT_SCALE: f32 = 0.052;
-/// The margin to the video's edges: this much of its height.
-const MARGIN_SCALE: f32 = 0.05;
 /// libass draws at most this many pixels across (zoomed far in, its picture is scaled up beyond).
 const ASS_MAX_PX: f32 = 3840.0;
 const MEMORY_CAP: usize = 500;
 
 /// A text group's picture: the events it shows, at what size, for which alignment.
 struct Sprite {
-    key: (Vec<u64>, u32, u32, u32),
+    key: (Vec<u64>, u32, u32, u32, u64),
     bitmap: ID2D1Bitmap1,
     /// Size in DIPs and the margin the outline takes (the layout's origin in it).
     w: f32,
@@ -128,7 +128,7 @@ fn remember(video: &Path, delay: i64, choice: &Choice) {
 }
 
 /// The text size for a video rect `w × h` DIPs at `percent`.
-fn text_size(w: f32, h: f32, percent: u32) -> f32 {
+pub(super) fn text_size(w: f32, h: f32, percent: u32) -> f32 {
     let base = h.min(w * 9.0 / 16.0 * 1.333);
     (base * TEXT_SCALE * percent as f32 / 100.0).clamp(11.0, 300.0)
 }
@@ -205,7 +205,8 @@ impl App {
         }
         self.sync_subtitle_track();
         let dest = self.video_dest();
-        let percent = self.settings.subtitle_size;
+        let style = self.settings.sub_style().clone();
+        let percent = style.size.round() as u32;
         let bar = self.video.as_ref().and_then(|v| v.bar_top);
         let Some(v) = self.video.as_mut() else { return };
         v.subs.shown.clear();
@@ -271,7 +272,10 @@ impl App {
             _ => {
                 let events = track.active(t);
                 let size = text_size(dw, dh, percent);
-                let margin = dh * MARGIN_SCALE;
+                // The sides keep Looker's 5 %; the style sets the bottom's.
+                let margin = dh * 0.05;
+                let bottom = dh * style.margin / 100.0;
+                let style_key = style.key();
                 // (Zoomed far in, the picture's width is capped: it's a bitmap that wide.)
                 let max_w = (dw * 0.9).clamp(40.0, 4000.0);
                 // One picture per alignment; within one, the newest event on top (as libass stacks them).
@@ -283,9 +287,10 @@ impl App {
                 }
                 v.subs.sprites.retain(|a, _| groups.contains_key(a));
                 for (&align, evs) in &groups {
-                    let key = (evs.iter().map(|e| e.id).collect::<Vec<_>>(), (size * 4.0).round() as u32, max_w.round() as u32, g.dpi.round() as u32);
+                    let key = (evs.iter().map(|e| e.id).collect::<Vec<_>>(), (size * 4.0).round() as u32, max_w.round() as u32, g.dpi.round() as u32, style_key);
                     if v.subs.sprites.get(&align).is_none_or(|s| s.key != key) {
-                        match text_sprite(g, evs, align, size, max_w) {
+                        let lines: Vec<Vec<subs::Run>> = evs.iter().filter_map(|e| e.styled.as_ref()).flat_map(|s| s.lines.iter().cloned()).collect();
+                        match text_sprite(g, &lines, align, size, max_w, &style) {
                             Some((bitmap, w, h, pad)) => {
                                 v.subs.sprites.insert(align, Sprite { key, bitmap, w, h, pad });
                             }
@@ -305,7 +310,7 @@ impl App {
                     };
                     let text_h = s.h - 2.0 * s.pad;
                     let mut ly = match row {
-                        0 => dest.bottom - margin - text_h,
+                        0 => dest.bottom - bottom - text_h,
                         1 => (dest.top + dest.bottom) / 2.0 - text_h / 2.0,
                         _ => dest.top + margin,
                     };
@@ -362,12 +367,31 @@ impl App {
         e.push(item(Action::SubDelay(1), "Later", Some("H"), true));
         e.push(item(Action::SubDelay(0), "Reset delay", None, v.subs.delay_us != 0));
         e.push(ui::Entry::Separator);
+        e.push(ui::Entry::Heading("Style".into()));
+        for (i, st) in self.settings.subtitle_styles.iter().enumerate() {
+            e.push(check(Action::SubStyle(i), &st.name, i == self.settings.subtitle_style));
+        }
+        e.push(ui::Entry::Item(ui::MenuItem { icon: None, tint: None, action: Action::SubStyles, glyph: Some(0xE790), label: "Customise styles\u{2026}".into(), accel: None, check: None, enabled: true, current: false }));
+        e.push(ui::Entry::Separator);
         e.push(ui::Entry::Heading("Size".into()));
+        let size = self.settings.sub_style().size.round() as u32;
         for s in settings::SUBTITLE_SIZES {
             let label = if s == 100 { "Normal".to_string() } else { format!("{s}%") };
-            e.push(check(Action::SubSize(s as u16), &label, self.settings.subtitle_size == s));
+            e.push(check(Action::SubSize(s as u16), &label, size == s));
         }
         e
+    }
+
+    /// The Subtitles menu's style `i` picked: in use at once, said in a toast.
+    pub(super) fn pick_subtitle_style(&mut self, i: usize) {
+        if i >= self.settings.subtitle_styles.len() {
+            return;
+        }
+        self.settings.subtitle_style = i;
+        settings::save(&self.settings);
+        let name = self.settings.sub_style().name.clone();
+        self.show_video_toast(format!("Subtitle style: {name}"));
+        self.invalidate();
     }
 
     /// Shows `choice` (the menu, V, a file added): remembered for this file.
@@ -423,8 +447,9 @@ impl App {
         self.invalidate();
     }
 
+    /// The size of the style in use.
     pub(super) fn subtitle_size(&mut self, percent: u32) {
-        self.settings.subtitle_size = percent;
+        self.settings.sub_style_mut().set(crate::substyle::Num::Size, percent as f32);
         settings::save(&self.settings);
         if let Some(v) = self.video.as_mut() {
             v.subs.sprites.clear();
@@ -470,44 +495,69 @@ fn sidecar_for(path: &Path) -> Sidecar {
     Sidecar { path: path.to_path_buf(), lang, forced, sdh, ext }
 }
 
-/// A text group's picture: the events' lines (styled), centred, wrapped at `max_w`, `size` DIPs.
-fn text_sprite(g: &Gfx, events: &[&subs::Event], align: u8, size: f32, max_w: f32) -> Option<(ID2D1Bitmap1, f32, f32, f32)> {
+/// What `Gfx::styled_text` needs from a style, at a text size of `size` DIPs.
+pub(super) fn text_look(style: &SubStyle, size: f32) -> gfx::TextLook {
+    gfx::TextLook {
+        size,
+        colour: style.colour,
+        // Looker's look had an outline of at least 1.2 DIPs on small text.
+        outline: if style.outline > 0.0 { (size * style.outline / 100.0).max(1.0) } else { 0.0 },
+        outline_colour: style.outline_colour,
+        shadow: style.shadow / 100.0,
+        shadow_colour: style.shadow_colour,
+        shadow_distance: size * style.shadow_distance / 100.0,
+        shadow_blur: (size * style.shadow_blur / 100.0).max(0.5),
+        backdrop: match style.backdrop {
+            Backdrop::None => 0,
+            Backdrop::Lines => 1,
+            Backdrop::Block => 2,
+        },
+        backdrop_colour: style.backdrop_colour,
+        backdrop_alpha: style.backdrop_opacity / 100.0,
+        backdrop_round: style.backdrop_round / 100.0,
+    }
+}
+
+/// A text group's picture: `lines` of styled runs in `style`, wrapped at `max_w`, `size` DIPs, aligned as ASS's
+/// numpad `align` says.
+pub(super) fn text_sprite(g: &Gfx, lines: &[Vec<subs::Run>], align: u8, size: f32, max_w: f32, style: &SubStyle) -> Option<(ID2D1Bitmap1, f32, f32, f32)> {
     let mut text: Vec<u16> = Vec::new();
     // (start, length, run) in UTF-16 units.
     let mut ranges: Vec<(u32, u32, subs::Run)> = Vec::new();
-    for e in events {
-        let Some(s) = &e.styled else { continue };
-        for line in &s.lines {
-            if !text.is_empty() {
-                text.push('\n' as u16);
-            }
-            for r in line {
-                let w: Vec<u16> = r.text.encode_utf16().collect();
-                ranges.push((text.len() as u32, w.len() as u32, r.clone()));
-                text.extend(w);
-            }
+    for line in lines {
+        if !text.is_empty() {
+            text.push('\n' as u16);
+        }
+        for r in line {
+            let w: Vec<u16> = r.text.encode_utf16().collect();
+            ranges.push((text.len() as u32, w.len() as u32, r.clone()));
+            text.extend(w);
         }
     }
     if text.iter().all(|&c| c == '\n' as u16 || c == ' ' as u16 || c == 0xA0) {
         return None;
     }
     unsafe {
-        let format = g.text.subtitle_format(size).ok()?;
+        let format = g.text.subtitle_format_in(&style.font, style.weight, style.italic, size).ok()?;
         let layout = g.text.dwrite.CreateTextLayout(&text, &format, max_w, 100_000.0).ok()?;
         let _ = layout.SetTextAlignment(match (align - 1) % 3 {
             0 => DWRITE_TEXT_ALIGNMENT_LEADING,
             1 => DWRITE_TEXT_ALIGNMENT_CENTER,
             _ => DWRITE_TEXT_ALIGNMENT_TRAILING,
         });
+        let inter = style.font == crate::substyle::INTER;
         for (start, len, r) in &ranges {
             let range = DWRITE_TEXT_RANGE { startPosition: *start, length: *len };
             if r.italic {
                 let _ = layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range);
             }
             if r.bold {
-                // Inter's SemiBold (its own family here) over the Medium the rest is in.
-                let _ = layout.SetFontFamilyName(g.text.family(DWRITE_FONT_WEIGHT_SEMI_BOLD), range);
-                let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, range);
+                // Two steps heavier than the style (Inter: its SemiBold, a family of its own here).
+                let w = DWRITE_FONT_WEIGHT((style.weight as i32 + 200).min(900));
+                if inter {
+                    let _ = layout.SetFontFamilyName(g.text.family(w), range);
+                }
+                let _ = layout.SetFontWeight(w, range);
             }
             if r.underline {
                 let _ = layout.SetUnderline(true, range);
@@ -515,14 +565,14 @@ fn text_sprite(g: &Gfx, events: &[&subs::Event], align: u8, size: f32, max_w: f3
             if r.strike {
                 let _ = layout.SetStrikethrough(true, range);
             }
-            if let Some(c) = r.color {
+            if let (Some(c), true) = (r.color, style.file_colours) {
                 let col: D2D1_COLOR_F = gfx::rgb(c);
                 if let Ok(brush) = g.dev.dc.CreateSolidColorBrush(&col, None) {
                     let _ = layout.SetDrawingEffect(&brush, range);
                 }
             }
         }
-        g.outlined_text(&layout, (size * 0.075).max(1.2)).ok()
+        g.styled_text(&layout, &text_look(style, size)).ok()
     }
 }
 

@@ -2,7 +2,8 @@
 //! Custom's colour picker over the Settings card (Snapper's `ui/picker.rs` and its accent card): a saturation and
 //! brightness square, a hue strip, the colour with its hex code in a box, a row of ready-made colours, Cancel and
 //! Done. Every change shows at once across the window; Done (Enter, or a press outside) keeps it, Cancel (Esc) puts
-//! back the accent from before.
+//! back the accent from before. The Subtitle styles card's colour buttons open it too, for a colour of the style
+//! in use (`target`), with subtitle colours as its ready-made ones.
 
 use std::time::Instant;
 
@@ -18,6 +19,8 @@ const PICKER_W: f32 = 236.0;
 const PICKER_H: f32 = 268.0;
 /// A row of ready-made colours (Snapper's).
 const PRESETS: [u32; 8] = [0xFF2D55, 0xFF9500, 0xAF52DE, 0x5856D6, 0x00C7BE, 0x8E8E93, 0xA2845E, 0x1C1C1E];
+/// A subtitle colour's: white, yellow, black and greys, and a few clear colours.
+const SUB_PRESETS: [u32; 8] = [0xFFFFFF, 0xFFE14D, 0x000000, 0x404040, 0xA0A0A0, 0x7FD8FF, 0x8EE07A, 0xFF7A7A];
 
 /// The Custom accent's colour picker: the colour as hue (0-360), saturation and value (0-1), its hex box, when it
 /// opened (and began closing), and the accent and colour to go back to if it's cancelled.
@@ -30,6 +33,8 @@ pub(super) struct AccentPicker {
     opened: Instant,
     closing: Option<Instant>,
     before: (Accent, u32),
+    /// A subtitle style's colour (the style in use's), and what it was; None: the accent.
+    target: Option<(crate::substyle::Paint, u32)>,
 }
 
 impl AccentPicker {
@@ -43,6 +48,10 @@ impl AccentPicker {
 
     fn live(&self) -> bool {
         self.closing.is_none()
+    }
+
+    fn presets(&self) -> [u32; 8] {
+        if self.target.is_some() { SUB_PRESETS } else { PRESETS }
     }
 }
 
@@ -76,7 +85,19 @@ impl App {
         let (h, s, v) = rgb_to_hsv(c);
         let mut hex = TextField::new(crate::textedit::TextEdit::new(&format!("#{c:06X}")));
         hex.edit.select_all();
-        self.accent_picker = Some(AccentPicker { h, s, v, hex, hex_focused: false, opened: Instant::now(), closing: None, before });
+        self.accent_picker = Some(AccentPicker { h, s, v, hex, hex_focused: false, opened: Instant::now(), closing: None, before, target: None });
+        self.invalidate();
+    }
+
+    /// The styles card's colour button `i` (`Paint::ALL`): the picker for that colour of the style in use.
+    pub(super) fn open_style_picker(&mut self, i: usize) {
+        let Some(paint) = crate::substyle::Paint::ALL.get(i).copied() else { return };
+        let c = self.settings.sub_style().paint(paint);
+        let (h, s, v) = rgb_to_hsv(c);
+        let mut hex = TextField::new(crate::textedit::TextEdit::new(&format!("#{c:06X}")));
+        hex.edit.select_all();
+        let before = (self.settings.accent, self.settings.accent_custom);
+        self.accent_picker = Some(AccentPicker { h, s, v, hex, hex_focused: false, opened: Instant::now(), closing: None, before, target: Some((paint, c)) });
         self.invalidate();
     }
 
@@ -97,6 +118,11 @@ impl App {
         if !from_box {
             p.hex.edit = crate::textedit::TextEdit::new(&format!("#{c:06X}"));
         }
+        if let Some((paint, _)) = p.target {
+            self.settings.sub_style_mut().set_paint(paint, c);
+            self.invalidate();
+            return;
+        }
         self.settings.accent = Accent::Custom;
         self.settings.accent_custom = c;
         self.apply_theme();
@@ -110,6 +136,14 @@ impl App {
         }
         p.closing = Some(Instant::now());
         p.hex_focused = false;
+        if let Some((paint, was)) = p.target {
+            if !keep {
+                self.settings.sub_style_mut().set_paint(paint, was);
+            }
+            settings::save(&self.settings);
+            self.invalidate();
+            return;
+        }
         if !keep {
             (self.settings.accent, self.settings.accent_custom) = p.before;
         }
@@ -163,7 +197,8 @@ impl App {
         match h {
             Hit::PickerPreset(i) => {
                 if let Some(p) = &mut self.accent_picker {
-                    p.set(PRESETS[(i as usize).min(PRESETS.len() - 1)]);
+                    let presets = p.presets();
+                    p.set(presets[(i as usize).min(presets.len() - 1)]);
                 }
                 self.picker_changed(false);
             }
@@ -241,7 +276,9 @@ impl App {
         }
         g.fill_round(card, 10.0, rgb(t.popup));
         ui::stroke(g, card, 10.0, rgb(t.divider));
-        g.text(&wide("Custom accent"), &g.fonts.title, rect(card.left + 16.0, card.top + 14.0, w - 32.0, 22.0), rgb(t.text), Align::Left);
+        let title = p.target.map_or("Custom accent", |(paint, _)| paint.title());
+        let presets = p.presets();
+        g.text(&wide(title), &g.fonts.title, rect(card.left + 16.0, card.top + 14.0, w - 32.0, 22.0), rgb(t.text), Align::Left);
 
         // The controls (Snapper's picker): saturation across and brightness down over the pure hue, then the hues.
         let (top, left) = (card.top + 34.0, card.left);
@@ -279,8 +316,8 @@ impl App {
             self.hits.add(Hit::PickerHex, field);
         }
         let py = row + 42.0;
-        let step = (sv.right - sv.left - 20.0) / (PRESETS.len() - 1) as f32;
-        for (i, c) in PRESETS.into_iter().enumerate() {
+        let step = (sv.right - sv.left - 20.0) / (presets.len() - 1) as f32;
+        for (i, c) in presets.into_iter().enumerate() {
             let r = rect(sv.left + i as f32 * step, py, 20.0, 20.0);
             if live {
                 self.hits.add(Hit::PickerPreset(i as u8), r);

@@ -50,6 +50,9 @@ pub(super) enum Action {
     SubAdd,
     SubDelay(i32),
     SubSize(u16),
+    /// A subtitle style (its place in the settings' list), and "Customise styles…" (the Subtitle styles card).
+    SubStyle(usize),
+    SubStyles,
     // The explorer's (explorer_ops.rs).
     OpenInViewer,
     /// A DVD drive's or VIDEO_TS folder's: Rip DVD (app/rip.rs).
@@ -432,14 +435,19 @@ impl App {
                 Action::VideoFrames(on) => self.set_video_frames(on),
                 Action::Chapter(i) => self.go_to_chapter(i),
                 Action::TogglePassthrough => self.toggle_passthrough(),
-                // Add subtitle file opens a dialog: the menu goes.
+                // Add subtitle file opens a dialog, Customise styles the styles card: the menu goes.
                 Action::SubAdd => {
                     self.close_menu();
                     self.add_subtitle_file();
                     return;
                 }
+                Action::SubStyles => {
+                    self.close_menu();
+                    self.open_sub_styles();
+                    return;
+                }
                 // The tracks and subtitles, as the right-click menu has them (Faye, 2026-11-13).
-                a @ (Action::AudioTrack(_) | Action::VideoTrack(_) | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_)) => self.run_action(a),
+                a @ (Action::AudioTrack(_) | Action::VideoTrack(_) | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_) | Action::SubStyle(_)) => self.run_action(a),
                 _ => {}
             }
             let entries = self.video_settings_entries();
@@ -472,6 +480,7 @@ impl App {
                 | Action::SubFile(_)
                 | Action::SubDelay(_)
                 | Action::SubSize(_)
+                | Action::SubStyle(_)
                 | Action::ToggleCheckerboard
                 | Action::ToggleExplorer
                 | Action::ToggleStrip
@@ -610,6 +619,8 @@ impl App {
             Action::SubAdd => self.add_subtitle_file(),
             Action::SubDelay(d) => self.subtitle_delay(d),
             Action::SubSize(s) => self.subtitle_size(s as u32),
+            Action::SubStyle(i) => self.pick_subtitle_style(i),
+            Action::SubStyles => self.open_sub_styles(),
             _ => {}
         }
     }

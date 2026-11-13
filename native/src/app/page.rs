@@ -61,8 +61,20 @@ pub(super) enum Setting {
     Slideshow,
     StripOther,
     CleanClick,
-    SubtitleSize,
     Passthrough,
+    /// The Subtitle styles card's (`substyle.rs`): the style in use's font, weight, box, italics, file colours.
+    SubFont,
+    SubWeight,
+    SubBackdrop,
+    SubItalic,
+    SubFileColours,
+}
+
+/// What the card shows: Settings, or the Subtitle styles (`substyle.rs`) in the same frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Mode {
+    Settings,
+    Styles,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -112,23 +124,31 @@ pub(super) mod link {
     pub const DEFAULT_APP: u8 = 5;
     pub const LOGS: u8 = 6;
     pub const LICENCES: u8 = 7;
+    pub const SUB_STYLES: u8 = 8;
 }
 
 pub(super) struct Page {
     /// False while it fades away (it takes no input then).
     pub open: bool,
-    shown: Ease<1>,
+    pub(super) mode: Mode,
+    pub(super) shown: Ease<1>,
     section: Section,
-    switched: Instant,
+    pub(super) switched: Instant,
     /// The rows' scroll: where it's going, and where it is, how fast, and when that was (a spring).
-    target: f32,
-    pos: f32,
-    vel: f32,
+    pub(super) target: f32,
+    pub(super) pos: f32,
+    pub(super) vel: f32,
     then: Instant,
-    content_h: f32,
-    view_h: f32,
+    pub(super) content_h: f32,
+    pub(super) view_h: f32,
     /// Dragging the scrollbar: the pointer's offset from where the thumb's travel starts.
-    thumb_drag: Option<f32>,
+    pub(super) thumb_drag: Option<f32>,
+    /// The styles card: the preview's scene (None: the video if one shows), a stepper's number being dragged
+    /// (which, from where, from what), where the preview was last drawn, and its subtitle's picture.
+    pub(super) scene: Option<u8>,
+    pub(super) style_drag: Option<(crate::substyle::Num, f32, f32)>,
+    pub(super) preview_rect: Option<D2D_RECT_F>,
+    pub(super) preview: Option<super::substyle::Preview>,
 }
 
 impl Page {
@@ -136,7 +156,29 @@ impl Page {
         let mut shown = Ease::at([0.0]);
         let now = Instant::now();
         shown.set([1.0], now);
-        Page { open: true, shown, section, switched: now - std::time::Duration::from_secs(1), target: 0.0, pos: 0.0, vel: 0.0, then: now, content_h: 0.0, view_h: 0.0, thumb_drag: None }
+        Page {
+            open: true,
+            mode: Mode::Settings,
+            shown,
+            section,
+            switched: now - std::time::Duration::from_secs(1),
+            target: 0.0,
+            pos: 0.0,
+            vel: 0.0,
+            then: now,
+            content_h: 0.0,
+            view_h: 0.0,
+            thumb_drag: None,
+            scene: None,
+            style_drag: None,
+            preview_rect: None,
+            preview: None,
+        }
+    }
+
+    /// The Subtitle styles card.
+    pub fn styles() -> Page {
+        Page { mode: Mode::Styles, ..Page::new(Section::Video) }
     }
 
     fn max_scroll(&self) -> f32 {
@@ -201,44 +243,41 @@ fn choices(s: &Settings, which: Setting) -> (Vec<String>, usize) {
             let now = s.slideshow_seconds.clamp(1, 120);
             (v.iter().map(|&n| if n == 1 { "1 second".into() } else { format!("{n} seconds") }).collect(), v.iter().position(|&n| n == now).unwrap_or(0))
         }
-        Setting::SubtitleSize => (
-            settings::SUBTITLE_SIZES.iter().map(|&p| if p == 100 { "Normal".into() } else { format!("{p}%") }).collect(),
-            settings::SUBTITLE_SIZES.iter().position(|&p| p == s.subtitle_size).unwrap_or(1),
-        ),
+        Setting::SubFont | Setting::SubWeight | Setting::SubBackdrop => App::style_choices(s, which),
         _ => (Vec::new(), 0),
     }
 }
 
 /// Lays rows out down the pane.
-struct Rows {
-    x: f32,
-    w: f32,
-    y: f32,
+pub(super) struct Rows {
+    pub(super) x: f32,
+    pub(super) w: f32,
+    pub(super) y: f32,
 }
 
 impl Rows {
     /// A row with `label` (and a hint under it, if any), its divider below; returns the row rect.
-    fn row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
+    pub(super) fn row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
         self.row_room(g, label, hint, CONTROL_ROOM, 0.0)
     }
 
     /// A row whose control is a switch: its text runs nearly to the edge.
-    fn switch_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
+    pub(super) fn switch_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
         self.row_room(g, label, hint, ui::SWITCH_W + 32.0, 0.0)
     }
 
     /// A row whose control is a text button.
-    fn button_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
+    pub(super) fn button_row(&mut self, g: &Gfx, label: &str, hint: &str) -> D2D_RECT_F {
         self.row_room(g, label, hint, 168.0, 0.0)
     }
 
     /// A row with `extra` room under its label for more controls (the divider goes below that). Returns the
     /// label part, as `row` does.
-    fn row_with(&mut self, g: &Gfx, label: &str, hint: &str, extra: f32) -> D2D_RECT_F {
+    pub(super) fn row_with(&mut self, g: &Gfx, label: &str, hint: &str, extra: f32) -> D2D_RECT_F {
         self.row_room(g, label, hint, CONTROL_ROOM, extra)
     }
 
-    fn row_room(&mut self, g: &Gfx, label: &str, hint: &str, room: f32, extra: f32) -> D2D_RECT_F {
+    pub(super) fn row_room(&mut self, g: &Gfx, label: &str, hint: &str, room: f32, extra: f32) -> D2D_RECT_F {
         let t = theme::raised();
         // The label and hint run up to the control's room; a long hint wraps and the row grows (they were cut
         // short with an ellipsis at half the width: Faye, 2026-11-13).
@@ -263,14 +302,14 @@ impl Rows {
         r
     }
 
-    fn heading(&mut self, g: &Gfx, text: &str) {
+    pub(super) fn heading(&mut self, g: &Gfx, text: &str) {
         self.y += 18.0;
         ui::section(g, text, rect(self.x, self.y, self.w, crate::gfx::tsr(20.0)));
         self.y += crate::gfx::tsr(24.0);
     }
 
     /// Wrapped small text in the label colour, under the rows.
-    fn note(&mut self, g: &Gfx, text: &str) {
+    pub(super) fn note(&mut self, g: &Gfx, text: &str) {
         let h = g.measure_height(&wide(text), &g.fonts.caption_wrap, self.w).ceil();
         g.text(&wide(text), &g.fonts.caption_wrap, rect(self.x, self.y + 10.0, self.w, h), rgb(theme::raised().label), Align::Left);
         self.y += h + 14.0;
@@ -278,7 +317,7 @@ impl Rows {
 }
 
 /// A `w`-wide slice from `r`'s right edge, `h` tall, centred vertically.
-fn right_part(r: D2D_RECT_F, w: f32, h: f32) -> D2D_RECT_F {
+pub(super) fn right_part(r: D2D_RECT_F, w: f32, h: f32) -> D2D_RECT_F {
     rect(r.right - w, r.top + (r.bottom - r.top - h) / 2.0, w, h)
 }
 
@@ -317,6 +356,13 @@ impl App {
             Some(p) => {
                 p.open = true;
                 p.shown.set([1.0], Instant::now());
+                if p.mode != Mode::Settings {
+                    p.mode = Mode::Settings;
+                    p.section = section;
+                    p.switched = Instant::now();
+                    p.target = 0.0;
+                    p.pos = 0.0;
+                }
             }
             None => self.page = Some(Page::new(section)),
         }
@@ -343,6 +389,7 @@ impl App {
     pub(super) fn page_section(&mut self, i: usize) {
         let Some(sec) = Section::ALL.get(i).copied() else { return };
         if let Some(p) = &mut self.page {
+            p.mode = Mode::Settings;
             if p.section != sec {
                 p.section = sec;
                 p.switched = Instant::now();
@@ -408,8 +455,8 @@ impl App {
 
     /// A drop-down choice was picked: applied at once and saved.
     pub(super) fn choose(&mut self, which: Setting, i: usize) {
-        if which == Setting::SubtitleSize {
-            self.subtitle_size(settings::SUBTITLE_SIZES[i.min(settings::SUBTITLE_SIZES.len() - 1)]);
+        if matches!(which, Setting::SubFont | Setting::SubWeight | Setting::SubBackdrop) {
+            self.style_choose(which, i);
             return;
         }
         let slideshow = slideshow_choices(&self.settings);
@@ -430,6 +477,10 @@ impl App {
     }
 
     pub(super) fn toggle_setting(&mut self, which: Setting) {
+        if matches!(which, Setting::SubItalic | Setting::SubFileColours) {
+            self.style_toggle(which);
+            return;
+        }
         let s = &mut self.settings;
         match which {
             Setting::Recents => {
@@ -532,6 +583,7 @@ impl App {
                 }
             }
             link::CHECK => self.check_updates(),
+            link::SUB_STYLES => self.open_sub_styles(),
             link::LOGS => {
                 shell_open(&std::env::temp_dir().to_string_lossy());
             }
@@ -628,9 +680,14 @@ impl App {
         g.fill_round(card, 10.0, rgb(t.sidebar));
         ui::stroke(g, card, 10.0, rgb(t.divider));
         let side = rect(card.left, card.top, SIDEBAR_W, ch);
-        self.draw_page_sidebar(g, side, open);
         let pane = D2D_RECT_F { left: side.right + 1.0, ..card };
-        moving |= self.draw_page_content(g, pane, open);
+        if self.styles_shown() {
+            self.draw_styles_sidebar(g, side, open);
+            moving |= self.draw_styles_content(g, pane, open);
+        } else {
+            self.draw_page_sidebar(g, side, open);
+            moving |= self.draw_page_content(g, pane, open);
+        }
         moving |= self.draw_accent_picker(g, card);
         g.pop_fade();
         moving
@@ -691,6 +748,7 @@ impl App {
         g.push_clip(view);
         g.push_fade(e, 1.0, 0.0, 0.0);
         let mut rows = Rows { x, w, y: view.top - off + (1.0 - e) * 10.0 };
+        let hits_at = self.hits.len();
         match section {
             Section::General => self.page_general(g, &mut rows, open),
             Section::Photos => self.page_photos(g, &mut rows, open),
@@ -699,6 +757,7 @@ impl App {
             Section::Advanced => self.page_advanced(g, &mut rows, open),
             Section::About => self.page_about(g, &mut rows, open),
         }
+        self.hits.clip_since(hits_at, view);
         g.pop_fade();
         g.pop_clip();
         let used = rows.y + off - view.top + 16.0 - (1.0 - e) * 10.0;
@@ -752,8 +811,9 @@ impl App {
         self.switch(g, r, Setting::VideoMuted, self.settings.video_start_muted, open);
         let r = rows.switch_row(g, "Resume long videos", "Videos over 5 minutes open where you stopped watching");
         self.switch(g, r, Setting::VideoResume, self.settings.video_resume, open);
-        let r = rows.row(g, "Subtitle size", "");
-        self.combo(g, right_part(r, 200.0, 30.0), Setting::SubtitleSize, open);
+        let hint = format!("In use: {}. Font, colour, outline, shadow, a box behind, size and position", self.settings.sub_style().name);
+        let r = rows.button_row(g, "Subtitle styles", &hint);
+        self.text_button(g, r, "Customise\u{2026}", Hit::PageLink(link::SUB_STYLES), ui::Kind::Standard, open);
         let r = rows.switch_row(g, "Send surround sound to a receiver", "Dolby and DTS sound goes untouched to an AV receiver, when the sound output accepts it");
         self.switch(g, r, Setting::Passthrough, self.settings.video_passthrough, open);
         rows.note(g, "Over a video the mouse wheel changes the volume; hold Ctrl to zoom.");
@@ -937,7 +997,7 @@ impl App {
     }
 
     /// A drop-down at `r` for a setting.
-    fn combo(&mut self, g: &Gfx, r: D2D_RECT_F, which: Setting, open: bool) {
+    pub(super) fn combo(&mut self, g: &Gfx, r: D2D_RECT_F, which: Setting, open: bool) {
         let id = Hit::Combo(which);
         if open {
             self.hits.add(id, r);
@@ -949,7 +1009,7 @@ impl App {
     }
 
     /// A switch at the right of row `r`; the whole row toggles it.
-    fn switch(&mut self, g: &Gfx, r: D2D_RECT_F, which: Setting, on: bool, open: bool) {
+    pub(super) fn switch(&mut self, g: &Gfx, r: D2D_RECT_F, which: Setting, on: bool, open: bool) {
         let id = Hit::Toggle(which);
         if open {
             self.hits.add(id, r);

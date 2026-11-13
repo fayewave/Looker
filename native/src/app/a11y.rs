@@ -370,6 +370,7 @@ impl App {
             Hit::PageSurface
             | Hit::PageCard
             | Hit::PageNavOn(_)
+            | Hit::StyleRowOn(_)
             | Hit::PageThumb
             | Hit::ToggleAnim(_)
             | Hit::PickerOutside
@@ -468,6 +469,18 @@ impl App {
                 Info::button(if t.is_empty() { fallback.to_string() } else { t })
             }
             Hit::TextSizeStep(k) => Info::button(if k == 0 { "Smaller text" } else { "Larger text" }),
+            Hit::StyleRow(i) => Info::item(UIA_ListItemControlTypeId, self.settings.subtitle_styles.get(i as usize).map_or_else(inside, |s| s.name.clone()), matches!(marks.get(&h), Some(Mark::Selected(true)))),
+            Hit::StyleScene(_) => Info::item(UIA_RadioButtonControlTypeId, inside(), matches!(marks.get(&h), Some(Mark::Selected(true)))),
+            Hit::StyleAct(_) | Hit::StyleColour(_) => named(self, "Button"),
+            Hit::StyleStep(_, k) => {
+                // Named after its row's label (the text left of it on the same line).
+                let row = texts.iter().filter(|(t, s)| !s.trim().is_empty() && t.right <= r.left && t.top < r.bottom && t.bottom > r.top).map(|(_, s)| s.trim().to_string()).next().unwrap_or_default();
+                match k {
+                    0 => Info::button(format!("Less {}", row.to_lowercase())),
+                    1 => Info::button(format!("More {}", row.to_lowercase())),
+                    _ => Info { value: Some(inside()), ..Info::new(UIA_TextControlTypeId, row) },
+                }
+            }
             Hit::ModelCube => Info::button("View cube").help("Click a face to look from that side"),
             Hit::PageNav(i) => Info::item(UIA_TabItemControlTypeId, inside(), self.page_section_shown() == Some(i as usize)),
             Hit::Toggle(_) => {

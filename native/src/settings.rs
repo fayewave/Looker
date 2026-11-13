@@ -146,8 +146,9 @@ pub struct Settings {
     pub text_autocorrect: bool,
     pub text_markdown: bool,
     pub text_margins: [i32; 4],
-    /// Subtitles' text size, percent of normal (`SUBTITLE_SIZES`).
-    pub subtitle_size: u32,
+    /// The subtitle styles (`substyle.rs`), never empty, and the one in use.
+    pub subtitle_styles: Vec<crate::substyle::SubStyle>,
+    pub subtitle_style: usize,
     /// The UI's text size, a scale of the default (Settings > Appearance, TEXT_SCALES): the fonts grow and so do
     /// the rows that hold them; icons keep their size.
     pub text_scale: f32,
@@ -158,6 +159,18 @@ pub struct Settings {
 
 /// The text size slider's range and step.
 pub const TEXT_SCALES: (f32, f32, f32) = (0.8, 1.3, 0.05);
+
+impl Settings {
+    /// The subtitle style in use.
+    pub fn sub_style(&self) -> &crate::substyle::SubStyle {
+        &self.subtitle_styles[self.subtitle_style.min(self.subtitle_styles.len() - 1)]
+    }
+
+    pub fn sub_style_mut(&mut self) -> &mut crate::substyle::SubStyle {
+        let i = self.subtitle_style.min(self.subtitle_styles.len() - 1);
+        &mut self.subtitle_styles[i]
+    }
+}
 
 /// The sizes the Subtitles menu offers, percent.
 pub const SUBTITLE_SIZES: [u32; 5] = [75, 100, 125, 150, 200];
@@ -188,7 +201,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, sidebar_rail: false, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100, text_scale: 1.0, click_hides_ui: false }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, sidebar_rail: false, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_styles: crate::substyle::presets(), subtitle_style: 0, text_scale: 1.0, click_hides_ui: false }
     }
 }
 
@@ -316,6 +329,8 @@ fn file() -> Option<PathBuf> {
 
 pub fn parse(text: &str) -> Settings {
     let mut s = Settings::default();
+    // The first style line replaces the presets; before styles, `subtitle_size` was the one setting.
+    let (mut styles_read, mut legacy_size) = (false, None);
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         let v = v.trim();
@@ -359,7 +374,17 @@ pub fn parse(text: &str) -> Settings {
             "video_loop" => s.video_loop_secs = if v == "always" { u32::MAX } else { v.parse().unwrap_or(10) },
             "video_start_muted" => s.video_start_muted = v == "1",
             "video_resume" => s.video_resume = v != "0",
-            "subtitle_size" => s.subtitle_size = v.parse().unwrap_or(100).clamp(25, 400),
+            "subtitle_size" => legacy_size = v.parse::<f32>().ok(),
+            "subtitle_style" => {
+                if !styles_read {
+                    s.subtitle_styles.clear();
+                    styles_read = true;
+                }
+                if s.subtitle_styles.len() < 100 {
+                    s.subtitle_styles.extend(crate::substyle::SubStyle::from_line(v));
+                }
+            }
+            "subtitle_style_active" => s.subtitle_style = v.parse().unwrap_or(0),
             "click_hides_ui" => s.click_hides_ui = v == "1",
             "text_scale" => s.text_scale = v.parse::<f32>().ok().filter(|x| x.is_finite()).map_or(1.0, |x| x.clamp(TEXT_SCALES.0, TEXT_SCALES.1)),
             "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Black),
@@ -411,6 +436,13 @@ pub fn parse(text: &str) -> Settings {
             _ => {}
         }
     }
+    if s.subtitle_styles.is_empty() {
+        s.subtitle_styles = crate::substyle::presets();
+    }
+    if let (false, Some(size)) = (styles_read, legacy_size) {
+        s.subtitle_styles[0].set(crate::substyle::Num::Size, size);
+    }
+    s.subtitle_style = s.subtitle_style.min(s.subtitle_styles.len() - 1);
     s
 }
 
@@ -452,7 +484,10 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("video_start_muted={}\n", s.video_start_muted as i32));
     out.push_str(&format!("video_resume={}\n", s.video_resume as i32));
-    out.push_str(&format!("subtitle_size={}\n", s.subtitle_size));
+    out.push_str(&format!("subtitle_style_active={}\n", s.subtitle_style));
+    for st in &s.subtitle_styles {
+        out.push_str(&format!("subtitle_style={}\n", st.to_line()));
+    }
     out.push_str(&format!("text_scale={:.2}\n", s.text_scale));
     out.push_str(&format!("click_hides_ui={}\n", s.click_hides_ui as u8));
     out.push_str(&format!("theme={}\n", s.theme.name().to_lowercase()));
@@ -713,7 +748,13 @@ mod tests {
             text_autocorrect: false,
             text_markdown: false,
             text_margins: [500, 600, 700, 800],
-            subtitle_size: 150,
+            subtitle_styles: {
+                let mut v = crate::substyle::presets();
+                v[1].colour = 0x123456;
+                v.push(crate::substyle::SubStyle::named("Mine"));
+                v
+            },
+            subtitle_style: 2,
             text_scale: 1.15,
             click_hides_ui: true,
         };

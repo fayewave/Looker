@@ -106,6 +106,20 @@ impl<T: Copy + PartialEq> Hits<T> {
     pub fn items(&self) -> &[(T, D2D_RECT_F)] {
         &self.items
     }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    /// The hits added since there were `start` cut to `r` (a scrolled region's view): what scrolled out of it
+    /// can't be pressed over what's beside it.
+    pub fn clip_since(&mut self, start: usize, r: D2D_RECT_F) {
+        let start = start.min(self.items.len());
+        let mut kept = self.items.split_off(start);
+        kept.retain_mut(|(_, h)| {
+            *h = D2D_RECT_F { left: h.left.max(r.left), top: h.top.max(r.top), right: h.right.min(r.right), bottom: h.bottom.min(r.bottom) };
+            h.right > h.left && h.bottom > h.top
+        });
+        self.items.extend(kept);
+    }
     pub fn rect_of(&self, id: T) -> Option<D2D_RECT_F> {
         self.items.iter().rev().find(|(i, _)| *i == id).map(|(_, r)| *r)
     }

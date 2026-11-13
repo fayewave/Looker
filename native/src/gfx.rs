@@ -131,12 +131,17 @@ impl Text {
         PCWSTR(if weight.0 >= DWRITE_FONT_WEIGHT_SEMI_BOLD.0 { self.inter_strong.as_ptr() } else { self.inter_family.as_ptr() })
     }
 
-    /// Subtitles' text: Inter Medium at `size` DIPs (bold is SemiBold, set per range by the caller), wrapping at
-    /// words, centred; scripts Inter lacks fall back to Windows' fonts.
-    pub fn subtitle_format(&self, size: f32) -> Result<IDWriteTextFormat> {
+    /// Subtitles' text in `font` (Inter: Looker's own) at `weight`, italic or not, `size` DIPs, wrapping at words;
+    /// what the font lacks falls back to Windows' fonts.
+    pub fn subtitle_format_in(&self, font: &str, weight: u16, italic: bool, size: f32) -> Result<IDWriteTextFormat> {
         unsafe {
-            let weight = DWRITE_FONT_WEIGHT_MEDIUM;
-            let f = self.dwrite.CreateTextFormat(self.family(weight), &self.inter, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
+            let w = DWRITE_FONT_WEIGHT(weight as i32);
+            let style = if italic { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL };
+            let f = if font == crate::substyle::INTER {
+                self.dwrite.CreateTextFormat(self.family(w), &self.inter, w, style, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?
+            } else {
+                self.dwrite.CreateTextFormat(&windows::core::HSTRING::from(font), None, w, style, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?
+            };
             f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
             f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
@@ -162,6 +167,26 @@ impl Text {
             Ok(f)
         }
     }
+}
+
+/// How `Gfx::styled_text` draws a subtitle (sizes in DIPs, alphas 0 to 1): from a `substyle::SubStyle`.
+#[derive(Clone, Copy, Debug)]
+pub struct TextLook {
+    /// The font size: the boxes' margins follow it.
+    pub size: f32,
+    pub colour: u32,
+    pub outline: f32,
+    pub outline_colour: u32,
+    pub shadow: f32,
+    pub shadow_colour: u32,
+    pub shadow_distance: f32,
+    pub shadow_blur: f32,
+    /// 0 none, 1 a box behind each line, 2 one box behind all.
+    pub backdrop: u8,
+    pub backdrop_colour: u32,
+    pub backdrop_alpha: f32,
+    /// The corners' radius, a share of a box's height (0.5: round ends).
+    pub backdrop_round: f32,
 }
 
 pub struct Fonts {
@@ -603,20 +628,32 @@ impl Gfx {
         }
     }
 
-    /// A subtitle's text as a picture, made outside a frame (Direct2D isn't mid-draw): `layout` (DIPs; white where
-    /// it has no colour of its own) over a dark outline `outline` DIPs wide and a soft shadow below it, so it reads
-    /// on any picture. Premultiplied BGRA at the display's DPI; returns it with its size in DIPs and where the
-    /// layout's origin sits in it (the margin the outline and shadow take).
-    pub fn outlined_text(&self, layout: &IDWriteTextLayout, outline: f32) -> Result<(ID2D1Bitmap1, f32, f32, f32)> {
+    /// A subtitle's text as a picture, made outside a frame (Direct2D isn't mid-draw): `layout` (DIPs; in
+    /// `look.colour` where it has no colour of its own) drawn as `look` says: an outline round its letters, a
+    /// soft shadow below, a box behind each line or all of them. Premultiplied BGRA at the display's DPI; returns
+    /// it with its size in DIPs and where the layout's origin sits in it (the margin the outline, shadow and box
+    /// take).
+    pub fn styled_text(&self, layout: &IDWriteTextLayout, look: &TextLook) -> Result<(ID2D1Bitmap1, f32, f32, f32)> {
         unsafe {
             let dc = &self.dev.dc;
             let mut m = DWRITE_TEXT_METRICS::default();
             layout.GetMetrics(&mut m)?;
-            let blur = outline.max(1.0) * 1.2;
-            let pad = (outline + blur * 3.0 + 2.0).ceil();
+            let outline = look.outline.max(0.0);
+            let shadowed = look.shadow > 0.004;
+            let (sx, sy) = (look.shadow_distance * 0.33, look.shadow_distance);
+            let blur = look.shadow_blur.max(0.0);
+            let boxed = look.backdrop != 0 && look.backdrop_alpha > 0.004;
+            let (bx, by) = (look.size * 0.3, if look.backdrop == 2 { look.size * 0.22 } else { look.size * 0.06 });
+            let mut pad = outline + 2.0;
+            if shadowed {
+                pad = pad.max(outline + blur * 3.0 + sx.max(sy) + 2.0);
+            }
+            if boxed {
+                pad = pad.max(bx.max(by) + 2.0);
+            }
+            let pad = pad.ceil();
             // The layout's whole width (its text is aligned within it), and its lines' height.
             let (w, h) = (m.layoutWidth + 2.0 * pad, m.height + 2.0 * pad);
-            let origin_x = pad;
             let k = self.dpi / 96.0;
             let (pw, ph) = (((w * k).ceil() as u32).clamp(1, self.max_bitmap_size()), ((h * k).ceil() as u32).clamp(1, self.max_bitmap_size()));
             let props = D2D1_BITMAP_PROPERTIES1 {
@@ -632,15 +669,46 @@ impl Gfx {
             dc.GetDpi(&mut dx, &mut dy);
             let mut world = windows_numerics::Matrix3x2::identity();
             dc.GetTransform(&mut world);
-            let white = dc.CreateSolidColorBrush(&rgb(0xFFFFFF), None)?;
-            let at = windows_numerics::Vector2 { X: origin_x, Y: pad };
+            let ink = dc.CreateSolidColorBrush(&rgb(look.colour), None)?;
+            let at = windows_numerics::Vector2 { X: pad, Y: pad };
+            // The boxes: each line's ink (hit-tested, so a centred line's box is its own width), or all of them.
+            let mut boxes: Vec<D2D_RECT_F> = Vec::new();
+            if boxed {
+                let mut n = 0u32;
+                let _ = layout.GetLineMetrics(None, &mut n);
+                let mut lines = vec![DWRITE_LINE_METRICS::default(); n as usize];
+                if n > 0 {
+                    layout.GetLineMetrics(Some(&mut lines), &mut n)?;
+                }
+                let mut start = 0u32;
+                let mut y = 0.0f32;
+                for l in &lines {
+                    let len = l.length - l.trailingWhitespaceLength;
+                    if len > 0 {
+                        let mut count = 0u32;
+                        let _ = layout.HitTestTextRange(start, len, 0.0, 0.0, None, &mut count);
+                        let mut hits = vec![DWRITE_HIT_TEST_METRICS::default(); count.max(1) as usize];
+                        if layout.HitTestTextRange(start, len, 0.0, 0.0, Some(&mut hits), &mut count).is_ok() && count > 0 {
+                            let left = hits[..count as usize].iter().map(|r| r.left).fold(f32::MAX, f32::min);
+                            let right = hits[..count as usize].iter().map(|r| r.left + r.width).fold(f32::MIN, f32::max);
+                            boxes.push(D2D_RECT_F { left: pad + left - bx, top: pad + y - by, right: pad + right + bx, bottom: pad + y + l.height + by });
+                        }
+                    }
+                    start += l.length;
+                    y += l.height;
+                }
+                if look.backdrop == 2 && !boxes.is_empty() {
+                    let all = boxes.iter().fold(boxes[0], |a, b| D2D_RECT_F { left: a.left.min(b.left), top: a.top.min(b.top), right: a.right.max(b.right), bottom: a.bottom.max(b.bottom) });
+                    boxes = vec![all];
+                }
+            }
             // The text's shape alone, for the outline and shadow to grow from.
             let shape = dc.CreateCommandList()?;
             dc.SetTarget(&shape);
             dc.SetDpi(self.dpi, self.dpi);
             dc.BeginDraw();
             dc.SetTransform(&windows_numerics::Matrix3x2::identity());
-            dc.DrawTextLayout(at, layout, &white, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            dc.DrawTextLayout(at, layout, &ink, D2D1_DRAW_TEXT_OPTIONS_NONE);
             let drew = dc.EndDraw(None, None);
             let closed = shape.Close();
             let r = drew.and(closed).and_then(|_| {
@@ -649,19 +717,41 @@ impl Gfx {
                 dc.BeginDraw();
                 dc.SetTransform(&windows_numerics::Matrix3x2::identity());
                 dc.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
-                let grown = dc.CreateEffect(&CLSID_D2D1Morphology)?;
-                grown.SetInput(0, &shape, true);
-                set_u32(&grown, D2D1_MORPHOLOGY_PROP_MODE.0 as u32, D2D1_MORPHOLOGY_MODE_DILATE.0 as u32)?;
-                let kernel = ((2.0 * outline * k).round() as u32 + 1).clamp(1, 99);
-                e_u32(&grown, D2D1_MORPHOLOGY_PROP_WIDTH.0 as u32, kernel)?;
-                e_u32(&grown, D2D1_MORPHOLOGY_PROP_HEIGHT.0 as u32, kernel)?;
-                // The outline: the grown shape, its edge softened a little; the shadow: blurred further, lower.
-                let edge = shadow(dc, &grown.GetOutput()?, (0.45 * k).max(0.5), 0.92)?;
-                let drop = shadow(dc, &grown.GetOutput()?, blur, 0.55)?;
-                let below = windows_numerics::Vector2 { X: outline * 0.3, Y: outline * 0.9 };
-                dc.DrawImage(&drop.GetOutput()?, Some(&below), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
-                dc.DrawImage(&edge.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
-                dc.DrawTextLayout(at, layout, &white, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                if !boxes.is_empty() {
+                    // One geometry, filled once: where lines' boxes overlap they don't darken.
+                    let factory = dc.GetFactory()?;
+                    let mut parts: Vec<Option<ID2D1Geometry>> = Vec::new();
+                    for b in &boxes {
+                        let radius = look.backdrop_round * (b.bottom - b.top);
+                        let rr = D2D1_ROUNDED_RECT { rect: *b, radiusX: radius, radiusY: radius };
+                        parts.push(Some(factory.CreateRoundedRectangleGeometry(&rr)?.cast()?));
+                    }
+                    let group = factory.CreateGeometryGroup(D2D1_FILL_MODE_WINDING, &parts)?;
+                    let fill = dc.CreateSolidColorBrush(&rgba(look.backdrop_colour, look.backdrop_alpha), None)?;
+                    dc.FillGeometry(&group, &fill, None);
+                }
+                // The outline: the shape grown, its edge softened a little; the shadow: from that, blurred, lower.
+                let grown: ID2D1Image = if outline > 0.01 {
+                    let grow = dc.CreateEffect(&CLSID_D2D1Morphology)?;
+                    grow.SetInput(0, &shape, true);
+                    set_u32(&grow, D2D1_MORPHOLOGY_PROP_MODE.0 as u32, D2D1_MORPHOLOGY_MODE_DILATE.0 as u32)?;
+                    let kernel = ((2.0 * outline * k).round() as u32 + 1).clamp(1, 99);
+                    e_u32(&grow, D2D1_MORPHOLOGY_PROP_WIDTH.0 as u32, kernel)?;
+                    e_u32(&grow, D2D1_MORPHOLOGY_PROP_HEIGHT.0 as u32, kernel)?;
+                    grow.GetOutput()?
+                } else {
+                    shape.cast()?
+                };
+                if shadowed {
+                    let drop = shadow_in(dc, &grown, blur.max(0.01), look.shadow_colour, look.shadow)?;
+                    let below = windows_numerics::Vector2 { X: sx, Y: sy };
+                    dc.DrawImage(&drop.GetOutput()?, Some(&below), None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                }
+                if outline > 0.01 {
+                    let edge = shadow_in(dc, &grown, (0.45 * k).max(0.5), look.outline_colour, 0.92)?;
+                    dc.DrawImage(&edge.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+                }
+                dc.DrawTextLayout(at, layout, &ink, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
                 dc.EndDraw(None, None).map(|_| ())
             });
             dc.SetTarget(prev.as_ref());
@@ -1420,6 +1510,32 @@ impl Gfx {
         }
     }
 
+    /// What `draw` paints, inside `r` with its corners rounded by `radius`.
+    pub fn with_round_clip(&self, r: D2D_RECT_F, radius: f32, draw: impl FnOnce()) {
+        let mask: Option<ID2D1Geometry> = unsafe {
+            self.dev.dc.GetFactory().ok().and_then(|f| f.CreateRoundedRectangleGeometry(&D2D1_ROUNDED_RECT { rect: r, radiusX: radius, radiusY: radius }).ok()).and_then(|g| g.cast().ok())
+        };
+        let Some(mask) = mask else {
+            draw();
+            return;
+        };
+        unsafe {
+            let params = D2D1_LAYER_PARAMETERS1 {
+                contentBounds: r,
+                geometricMask: std::mem::ManuallyDrop::new(Some(mask)),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: windows_numerics::Matrix3x2::identity(),
+                opacity: 1.0,
+                opacityBrush: std::mem::ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            };
+            self.dev.dc.PushLayer(&params, None);
+            draw();
+            self.dev.dc.PopLayer();
+            drop(std::mem::ManuallyDrop::into_inner(params.geometricMask));
+        }
+    }
+
     /// What `draw` paints, everywhere in `r` but a disc at (cx, cy) of radius `rad`: an icon with a notch cut out
     /// for a badge, whatever is behind it (the explorer's folder and gear).
     pub fn with_hole(&self, r: D2D_RECT_F, cx: f32, cy: f32, rad: f32, draw: impl FnOnce()) {
@@ -1976,12 +2092,14 @@ fn bake(dc: &ID2D1DeviceContext, image: &ID2D1Image, width: u32, height: u32) ->
 }
 
 /// A shadow of `src`'s alpha: black at `alpha`, blurred by `deviation` DIPs.
-fn shadow(dc: &ID2D1DeviceContext, src: &ID2D1Image, deviation: f32, alpha: f32) -> Result<ID2D1Effect> {
+/// `src`'s alpha blurred by `deviation`, in `colour` at `alpha`.
+fn shadow_in(dc: &ID2D1DeviceContext, src: &ID2D1Image, deviation: f32, colour: u32, alpha: f32) -> Result<ID2D1Effect> {
     unsafe {
         let fx = dc.CreateEffect(&CLSID_D2D1Shadow)?;
         fx.SetInput(0, src, true);
         set_f32(&fx, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION.0 as u32, deviation)?;
-        let c: [f32; 4] = [0.0, 0.0, 0.0, alpha];
+        let ch = |shift: u32| ((colour >> shift) & 0xFF) as f32 / 255.0;
+        let c: [f32; 4] = [ch(16), ch(8), ch(0), alpha];
         let bytes: Vec<u8> = c.iter().flat_map(|v| v.to_le_bytes()).collect();
         fx.SetValue(D2D1_SHADOW_PROP_COLOR.0 as u32, D2D1_PROPERTY_TYPE_VECTOR4, &bytes)?;
         Ok(fx)

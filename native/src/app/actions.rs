@@ -37,6 +37,9 @@ pub(super) enum DialogKind {
     InfoClose,
     /// The info card's Discard all.
     InfoDiscard,
+    /// The Subtitle styles card's Rename and Delete, for the style at this place in the list.
+    RenameStyle(usize),
+    DeleteStyle(usize),
 }
 
 impl App {
@@ -472,6 +475,11 @@ impl App {
                 self.start_rip(*setup, title, mp4, name);
             }
             DialogKind::Reset => self.reset_app(),
+            DialogKind::RenameStyle(i) => {
+                let name = d.field.map(|f| f.edit.text()).unwrap_or_default();
+                self.style_renamed(i, &name);
+            }
+            DialogKind::DeleteStyle(i) => self.style_deleted(i),
             DialogKind::DefaultView => self.set_default_view(),
             DialogKind::Rename(path) => {
                 let name = d.field.map(|f| f.edit.text()).unwrap_or_default();

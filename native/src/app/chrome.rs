@@ -267,6 +267,7 @@ impl App {
             | Hit::Tab(_)
             | Hit::RailIcon(_)
             | Hit::SideRow(_) => self.explorer_tooltip(h),
+            Hit::StyleAct(_) | Hit::StyleColour(_) | Hit::StyleStep(..) => Self::style_tooltip(h).map(String::from),
             _ => Self::tooltip_text(h).map(String::from),
         }
     }
@@ -477,6 +478,7 @@ impl App {
         self.prepare_archive(&g);
         self.prepare_text();
         self.prepare_subtitles(&g);
+        self.prepare_style_preview(&g);
         g.begin(self.theme().content);
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g, ui_k);

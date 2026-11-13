@@ -38,6 +38,7 @@ mod shell_icons;
 mod spell;
 mod store;
 mod subs;
+mod substyle;
 mod tags;
 mod textedit;
 mod theme;
