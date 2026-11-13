@@ -9,8 +9,8 @@
 //!
 //! Keys (agreed with Faye, native/PLAN.md N6): Space, or a click on the video, plays/pauses (a click flashes a
 //! play or pause in the middle); a double-click undoes the click and resets the zoom when zoomed or panned, else
-//! goes in or out of fullscreen (Faye, 2026-11-10); K pauses; L plays, then 2x, 4x; J slows back down, or at 1x jumps back
-//! 5 s; `,` / `.` step a picture; Shift+Left/Right jump 5 s; M mutes; Up/Down (when the explorer isn't shown) and
+//! goes in or out of fullscreen (Faye, 2026-11-10); K pauses; L plays, then 2x, 4x; J slows back down, then plays
+//! backwards (2x, 4x again; L slows that, then plays forwards); `,` / `.` step a picture; Shift+Left/Right jump 5 s; M mutes; Up/Down (when the explorer isn't shown) and
 //! the wheel over the video change the volume (Ctrl+wheel zooms).
 
 use std::cell::RefCell;
@@ -29,7 +29,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FO
 /// The hardware device couldn't be made: videos play from the CPU on WARP rather than wait for it.
 pub(super) static HW_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// What a jump (Shift+arrow, J) moves.
+/// What a jump (Shift+arrow; J and L for sound) moves.
 const JUMP_US: i64 = 5_000_000;
 /// The bar fades this long after the pointer last moved, while the video plays.
 const BAR_IDLE: Duration = Duration::from_millis(2500);
@@ -368,6 +368,11 @@ pub(super) fn draw_play_badge(g: &Gfx, r: D2D_RECT_F) {
 fn speed_text(s: f64) -> String {
     let t = format!("{s}");
     format!("{t}\u{00D7}")
+}
+
+/// Said as J takes it backwards: "Backwards", "Backwards 2×".
+fn reverse_text(s: f64) -> String {
+    if s == 1.0 { "Backwards".to_string() } else { format!("Backwards {}", speed_text(s)) }
 }
 
 // --- Where long videos were left: `resume.txt` in the data dir, `<µs>\t<path>` a line, newest last ---
@@ -917,6 +922,17 @@ impl App {
                         p.set_playing(false);
                         p.set_speed(1.0);
                     }
+                    // Backwards, L slows down, then plays forwards at 1x.
+                    VK_L if p.reverse() => {
+                        if p.speed() > 1.0 {
+                            let s = p.speed() / 2.0;
+                            p.play_reverse(s);
+                            toast = Some(reverse_text(s));
+                        } else {
+                            p.set_speed(1.0);
+                            p.set_playing(true);
+                        }
+                    }
                     VK_L => {
                         if !p.playing() {
                             p.set_speed(1.0);
@@ -927,14 +943,19 @@ impl App {
                             toast = Some(speed_text(s));
                         }
                     }
+                    // J plays backwards (again: 2x, 4x); played forwards faster than 1x, it slows down first.
                     VK_J => {
-                        if p.playing() && p.speed() > 1.0 {
+                        if p.reverse() {
+                            let s = (p.speed() * 2.0).min(4.0);
+                            p.play_reverse(s);
+                            toast = Some(reverse_text(s));
+                        } else if p.playing() && p.speed() > 1.0 {
                             let s = (p.speed() / 2.0).max(1.0);
                             p.set_speed(s);
                             toast = Some(speed_text(s));
                         } else {
-                            let t = p.position() - JUMP_US;
-                            p.seek(t, true);
+                            p.play_reverse(1.0);
+                            toast = Some(reverse_text(1.0));
                         }
                     }
                     // Said as the volume is (Faye, 2026-11-10).
@@ -1881,6 +1902,14 @@ impl Engine {
     fn set_speed(&mut self, s: f64) {
         if let Engine::Video(p) = self {
             p.set_speed(s)
+        }
+    }
+    fn reverse(&self) -> bool {
+        if let Engine::Video(p) = self { p.reverse() } else { false }
+    }
+    fn play_reverse(&mut self, s: f64) {
+        if let Engine::Video(p) = self {
+            p.play_reverse(s)
         }
     }
     fn exact_is_quick(&self, us: i64) -> bool {

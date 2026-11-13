@@ -89,7 +89,33 @@ impl Cache {
             return None;
         }
         self.focus = us;
-        let h = c.head;
+        Some(texture_frame(c.tex.clone(), &c.head))
+    }
+}
+
+impl Head {
+    fn of(p: &LvFrame) -> Head {
+        Head {
+            pts_us: p.pts_us,
+            duration_us: p.duration_us,
+            width: p.width,
+            height: p.height,
+            bit_depth: p.bit_depth,
+            shift: p.shift,
+            chroma_w_shift: p.chroma_w_shift,
+            chroma_h_shift: p.chroma_h_shift,
+            matrix: p.matrix,
+            full_range: p.full_range,
+            transfer: p.transfer,
+            primaries: p.primaries,
+        }
+    }
+}
+
+/// A queue frame showing our own copy `tex` of a GPU picture with the facts `h`.
+fn texture_frame(tex: Texture, h: &Head) -> Frame {
+    {
+        let h = *h;
         let mut f: LvFrame = unsafe { std::mem::zeroed() };
         f.kind = crate::imaging::video::VIDEO;
         f.layout = TEXTURE;
@@ -106,11 +132,13 @@ impl Cache {
         f.full_range = h.full_range;
         f.transfer = h.transfer;
         f.primaries = h.primaries;
-        f.texture = windows::core::Interface::as_raw(&c.tex.0);
+        f.texture = windows::core::Interface::as_raw(&tex.0);
         f.texture_index = 0;
-        Some(Frame { picture: Picture::detached(f), uploaded: None, _keep: Some(c.tex.clone()) })
+        Frame { picture: Picture::detached(f), uploaded: None, _keep: Some(tex) }
     }
+}
 
+impl Cache {
     /// Keeps a copy of GPU picture `p` (when it isn't kept already). `focus`: where the seek bar is (an exact
     /// seek's target while it decodes towards it), else `p` itself: what's furthest from it goes first.
     fn insert(&mut self, up: &Uploader, p: &LvFrame, focus: Option<i64>) {
@@ -133,20 +161,7 @@ impl Cache {
             }
         }
         let Ok(tex) = up.copy_surface(p, self.spare.pop().map(|t| t.0)) else { return };
-        let head = Head {
-            pts_us: p.pts_us,
-            duration_us: p.duration_us,
-            width: p.width,
-            height: p.height,
-            bit_depth: p.bit_depth,
-            shift: p.shift,
-            chroma_w_shift: p.chroma_w_shift,
-            chroma_h_shift: p.chroma_h_shift,
-            matrix: p.matrix,
-            full_range: p.full_range,
-            transfer: p.transfer,
-            primaries: p.primaries,
-        };
+        let head = Head::of(p);
         self.bytes += bytes;
         self.frames.insert(p.pts_us, Cached { tex: Texture(tex), head, bytes });
     }
@@ -236,6 +251,14 @@ struct State {
     fpf: usize,
     rate: u32,
     pass: Option<Pass>,
+
+    /// Playing backwards (J): the clock runs down, silent, and the queue holds pictures newest first, decoded a
+    /// stretch at a time (`reverse_chunk`). `rev_until`: the decode thread's next stretch ends before this time;
+    /// `rev_last`: how many pictures the last stretch had (the next is decoded once fewer are queued). `end` means
+    /// the start was reached.
+    reverse: bool,
+    rev_until: Option<i64>,
+    rev_last: usize,
 }
 
 impl State {
@@ -249,7 +272,8 @@ impl State {
 
     fn wall(&self, at: Instant) -> i64 {
         let dt = if at >= self.anchor_at { (at - self.anchor_at).as_secs_f64() } else { -(self.anchor_at - at).as_secs_f64() };
-        self.anchor + (dt * 1e6 * self.speed) as i64
+        let speed = if self.reverse { -self.speed } else { self.speed };
+        self.anchor + (dt * 1e6 * speed) as i64
     }
 
     /// The sound was at `heard` at `at`: the clock moves towards it (see the module doc).
@@ -269,7 +293,7 @@ impl State {
 
     /// Whether the sound is what's playing (0.25x to 2x; faster plays silent).
     fn audio_live(&self) -> bool {
-        !self.audio_dead && !self.audio_ended && (self.speed == 1.0 || (!self.tempo_failed && (0.25..=2.0).contains(&self.speed)))
+        !self.audio_dead && !self.audio_ended && !self.reverse && (self.speed == 1.0 || (!self.tempo_failed && (0.25..=2.0).contains(&self.speed)))
     }
 
     /// Re-anchors the wall clock at `t` (keeps the audio clock out until sound plays from there).
@@ -417,6 +441,9 @@ impl Player {
                 fpf: 2,
                 rate: AUDIO_RATE,
                 pass: None,
+                reverse: false,
+                rev_until: None,
+                rev_last: 0,
             }),
             wake: Condvar::new(),
             interrupt: Mutex::new(None),
@@ -491,15 +518,51 @@ impl Player {
                 pick = Some(p);
             }
         } else if fresh {
-            // The first picture after a seek (or the very first): shown at once, and the clock starts from it.
+            // The first picture after a seek (or the very first): shown at once, and the clock starts from it
+            // (backwards: from its end, so it has its time too).
             if let Some(p) = st.pictures.pop_front() {
-                st.set_anchor(p.pts_us, now);
+                let at = if st.reverse { p.pts_us + p.duration_us.max(1) - 1 } else { p.pts_us };
+                st.set_anchor(at, now);
                 st.picture_up = true;
                 self.target = None;
                 pick = Some(p);
+            } else if st.reverse && st.end {
+                // Backwards from the very first picture: nothing before it.
+                drop(st);
+                self.leave_reverse(false);
+                return None;
+            }
+        } else if st.reverse {
+            // Backwards: the queue runs newest first; each picture is due once the clock is below its end.
+            let t = st.clock(now);
+            while st.pictures.front().is_some_and(|p| t < p.pts_us + p.duration_us.max(1)) {
+                if pick.is_some() {
+                    self.dropped += 1;
+                }
+                pick = st.pictures.pop_front();
+            }
+            let overdue = self.shown.is_some_and(|(_, pts, _)| t < pts);
+            if pick.is_none() && st.playing && !st.end && st.pictures.is_empty() && overdue {
+                if !self.waiting {
+                    self.starved += 1;
+                    self.waiting = true;
+                }
+            } else if pick.is_some() {
+                self.waiting = false;
+            }
+            // At the start: stop on the first picture.
+            if pick.is_none() && st.end && st.pictures.is_empty() && overdue {
+                drop(st);
+                self.leave_reverse(false);
+                return None;
             }
         } else {
             let t = st.clock(now);
+            // The one on screen again (the decoder leaving a cached picture's hold gives it back): not shown twice.
+            let on_screen = self.shown.map(|(_, pts, _)| pts);
+            while st.pictures.front().is_some_and(|p| on_screen.is_some_and(|s| p.pts_us <= s)) {
+                st.pictures.pop_front();
+            }
             while st.pictures.front().is_some_and(|p| p.pts_us <= t) {
                 if pick.is_some() {
                     self.dropped += 1;
@@ -554,6 +617,11 @@ impl Player {
     pub fn set_playing(&mut self, play: bool) {
         let now = Instant::now();
         let mut st = self.shared.lock();
+        if st.reverse {
+            drop(st);
+            self.leave_reverse(play);
+            return;
+        }
         if st.playing == play {
             return;
         }
@@ -617,6 +685,22 @@ impl Player {
         let us = if d > 0 { us.clamp(0, d) } else { us.max(0) };
         let now = Instant::now();
         let mut st = self.shared.lock();
+        // Playing backwards: on backwards from there.
+        if st.reverse {
+            st.clear();
+            st.epoch = st.epoch.wrapping_add(1);
+            st.hold = None;
+            st.seek = None;
+            st.rev_until = Some(us + 1);
+            st.rev_last = 0;
+            st.set_anchor(us, now);
+            drop(st);
+            self.jump = false;
+            self.target = Some(us);
+            self.shared.wake.notify_all();
+            self.shared.interrupt();
+            return;
+        }
         // Paused and exact (dragging the seek bar slowly): the picture on screen or one already decoded may be the
         // one, and then the decoder isn't touched at all.
         if exact && !st.playing && st.seek.is_none() && !self.step {
@@ -644,6 +728,14 @@ impl Player {
                 }
             }
         }
+        drop(st);
+        self.reposition(us, exact);
+    }
+
+    /// The decoder goes to `us` (a new epoch): the seek proper, without `seek`'s shortcuts.
+    fn reposition(&mut self, us: i64, exact: bool) {
+        let now = Instant::now();
+        let mut st = self.shared.lock();
         self.jump = false;
         st.clear();
         st.epoch = st.epoch.wrapping_add(1);
@@ -687,6 +779,61 @@ impl Player {
 
     pub fn speed(&self) -> f64 {
         self.shared.lock().speed
+    }
+
+    /// Playing backwards.
+    pub fn reverse(&self) -> bool {
+        self.shared.lock().reverse
+    }
+
+    /// Plays backwards at `speed` from the picture on screen (or where a seek is going), silent; already
+    /// backwards, only the speed changes. The decode thread decodes a stretch before it from its keyframe and
+    /// hands it over newest first, so the first picture comes after one stretch's decode.
+    pub fn play_reverse(&mut self, speed: f64) {
+        let now = Instant::now();
+        let mut st = self.shared.lock();
+        if st.reverse {
+            let t = st.clock(now);
+            st.speed = speed;
+            st.set_anchor(t, now);
+            return;
+        }
+        let Some(from) = self.target.or(self.shown.map(|(_, pts, _)| pts)) else { return };
+        st.clear();
+        st.epoch = st.epoch.wrapping_add(1);
+        st.hold = None;
+        st.seek = None;
+        st.need_next = false;
+        st.reverse = true;
+        st.rev_until = Some(if self.target.is_some() { from + 1 } else { from });
+        st.rev_last = 0;
+        st.playing = true;
+        st.speed = speed;
+        st.set_anchor(from, now);
+        drop(st);
+        self.jump = false;
+        self.step = false;
+        self.target = None;
+        self.shared.wake.notify_all();
+        self.shared.interrupt();
+    }
+
+    /// Stops playing backwards, on the picture on screen: the decoder is put back there (exactly), and plays
+    /// forwards from it when `play`.
+    fn leave_reverse(&mut self, play: bool) {
+        let pos = self.shown.map_or(0, |(_, pts, _)| pts);
+        {
+            let mut st = self.shared.lock();
+            st.reverse = false;
+            st.rev_until = None;
+            st.rev_last = 0;
+            st.playing = false;
+            st.speed = 1.0; // backwards speeds don't carry over
+        }
+        self.reposition(pos, true);
+        if play {
+            self.shared.lock().playing = true;
+        }
     }
 
     /// Whether an exact seek to `us` is quick: forward of the picture on screen (the decoder carries on), into the
@@ -804,17 +951,32 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
     // just ahead of it decode on from here instead of from the keyframe.
     let mut dec_pos: Option<i64> = None;
     let gpu = dec.hardware();
+    // Playing backwards: the first picture's time (nothing before it), and how far before a stretch's end its
+    // seek aims (grows while stretches come out short: intra-only codecs give one picture from a seek just
+    // before).
+    let floor = dec.frame_times().first().copied().unwrap_or(0).max(0);
+    let mut lookback: i64 = 0;
     loop {
         // A seek or quit first; then wait while the queues are full (or at the end).
-        let (pending, sound_only, paused) = {
+        let (pending, sound_only, paused, reverse, epoch_at) = {
             let mut st = shared.lock();
             let mut sound_only = false;
+            let mut reverse = None;
             loop {
                 if st.quit {
                     return;
                 }
                 if st.seek.is_some() {
                     break;
+                }
+                // Backwards: the next stretch once the queue holds less than the last one.
+                if st.reverse {
+                    if let Some(until) = st.rev_until.filter(|_| st.playing && !st.end && st.pictures.len() < st.rev_last.max(1)) {
+                        reverse = Some((until, st.epoch));
+                        break;
+                    }
+                    st = shared.wake.wait_timeout(st, Duration::from_millis(100)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+                    continue;
                 }
                 // Showing a cached picture: the decoder moves only when more pictures are wanted.
                 if st.hold.is_some() {
@@ -845,8 +1007,30 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             if held.is_some() {
                 st.need_next = false;
             }
-            (st.seek.take().or(held).map(|s| (s, st.epoch)), sound_only, !st.playing)
+            (st.seek.take().or(held).map(|s| (s, st.epoch)), sound_only, !st.playing, reverse, st.epoch)
         };
+        if let (None, Some((until, epoch))) = (&pending, reverse) {
+            dec_pos = None;
+            let r = reverse_chunk(&mut dec, &shared, until, epoch, floor, &mut lookback, uploader.as_ref());
+            let mut st = shared.lock();
+            if st.quit {
+                return;
+            }
+            if !st.reverse || st.epoch != epoch || st.seek.is_some() {
+                continue;
+            }
+            match r {
+                Rev::Got(frames, earliest, start) => {
+                    st.rev_last = frames.len();
+                    st.pictures.extend(frames.into_iter().rev());
+                    st.rev_until = Some(earliest);
+                    st.end = start;
+                }
+                Rev::Start => st.end = true,
+                Rev::Cancelled => {}
+            }
+            continue;
+        }
         if let Some(((us, exact), epoch)) = pending {
             if exact && gpu {
                 exact_on_gpu(&mut dec, &shared, us, epoch, &mut dec_pos, uploader.as_ref());
@@ -864,7 +1048,7 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
             if st.quit {
                 return;
             }
-            if st.seek.is_some() {
+            if st.seek.is_some() || st.epoch != epoch_at || st.reverse {
                 continue;
             }
             match item {
@@ -906,8 +1090,8 @@ fn decode_thread(shared: Arc<Shared>, path: &Path, d3d11: *mut std::ffi::c_void,
         if st.quit {
             return;
         }
-        if st.seek.is_some() {
-            continue; // decoded for the old position: dropped
+        if st.seek.is_some() || st.epoch != epoch_at || st.reverse {
+            continue; // decoded for the old position (or before J took it backwards): dropped
         }
         match item {
             Ok(Item::Picture(p)) => {
@@ -1016,6 +1200,119 @@ fn exact_on_gpu(dec: &mut Decoder, shared: &Shared, us: i64, epoch: u32, dec_pos
             }
         }
     }
+}
+
+// --- Playing backwards ---
+
+/// GPU memory one backwards stretch may hold (two are about at once: the one showing, the next decoding): ~120
+/// pictures of 1080p, ~15 of 4K 10-bit. A longer GOP is done in parts, each decoding from the keyframe again.
+const REV_BYTES: usize = 384 << 20;
+
+enum Rev {
+    /// The pictures of a stretch, oldest first; the first one's time; whether nothing comes before it.
+    Got(Vec<Frame>, i64, bool),
+    /// Nothing before `until`: the start.
+    Start,
+    /// A seek, a stop or quit came.
+    Cancelled,
+}
+
+/// Decodes the stretch of pictures before `until` for playing backwards: from the keyframe before it (aimed
+/// `lookback` earlier) forwards, keeping copies of its own (GPU pictures copied off the decoder's surfaces, CPU
+/// ones uploaded) up to `REV_BYTES`, the oldest let go past that.
+fn reverse_chunk(dec: &mut Decoder, shared: &Shared, until: i64, epoch: u32, floor: i64, lookback: &mut i64, up: Option<&Uploader>) -> Rev {
+    let cancelled = || {
+        let st = shared.lock();
+        st.quit || !st.reverse || st.epoch != epoch || st.seek.is_some()
+    };
+    if until <= floor {
+        return Rev::Start;
+    }
+    let mut back = *lookback;
+    loop {
+        let target = (until - 1 - back).max(0);
+        if let Err(e) = dec.seek(target, false) {
+            crate::trace::mark(format!("video: reverse seek: {e}"));
+            return Rev::Start;
+        }
+        let mut kept: VecDeque<(Frame, usize)> = VecDeque::new();
+        let mut bytes = 0;
+        let mut evicted = false;
+        loop {
+            if cancelled() {
+                return Rev::Cancelled;
+            }
+            match dec.next() {
+                Ok(Item::Picture(p)) => {
+                    if p.pts_us >= until {
+                        break;
+                    }
+                    let (f, b) = own_picture(p, up);
+                    kept.push_back((f, b));
+                    bytes += b;
+                    while bytes > REV_BYTES && kept.len() > 1 {
+                        if let Some((_, b0)) = kept.pop_front() {
+                            bytes -= b0;
+                        }
+                        evicted = true;
+                    }
+                }
+                Ok(Item::Audio(..)) => {}
+                Ok(Item::End) => break,
+                Ok(Item::Interrupted) => {
+                    if cancelled() {
+                        return Rev::Cancelled;
+                    }
+                    dec.resume();
+                }
+                Err(e) => {
+                    crate::trace::mark(format!("video: reverse decode: {e}"));
+                    return Rev::Start;
+                }
+            }
+        }
+        if let Some(earliest) = kept.front().map(|k| k.0.pts_us) {
+            *lookback = if evicted {
+                0
+            } else if kept.len() < 12 {
+                (back * 2).clamp(250_000, 4_000_000)
+            } else {
+                back
+            };
+            let start = earliest <= floor || (!evicted && target <= floor);
+            return Rev::Got(kept.into_iter().map(|k| k.0).collect(), earliest, start);
+        }
+        // The keyframe landed at or past `until` (an index that's off): aim further back.
+        if target <= floor {
+            return Rev::Start;
+        }
+        back = (back * 4).max(1_000_000);
+        if back > 60_000_000 {
+            return Rev::Start;
+        }
+    }
+}
+
+/// A decoded picture as a queue frame that owns its pixels, and about the bytes it holds: GPU pictures are
+/// copied off the decoder's surfaces (held, they'd starve its pool), CPU ones uploaded.
+fn own_picture(mut p: Picture, up: Option<&Uploader>) -> (Frame, usize) {
+    if p.layout == TEXTURE {
+        let b = Uploader::surface_bytes(&p);
+        if let Some(Ok(tex)) = up.map(|u| u.copy_surface(&p, None)) {
+            let h = Head::of(&p);
+            drop(p);
+            return (texture_frame(Texture(tex), &h), b);
+        }
+        // No copy: few of these may be held.
+        return (Frame::decoded(p, None), REV_BYTES / 8);
+    }
+    let per = if p.bit_depth > 8 { 2 } else { 1 };
+    let b = p.width.max(0) as usize * p.height.max(0) as usize * per * 3;
+    if let Some(Ok(x)) = up.map(|u| u.upload(&p)) {
+        p.release();
+        return (Frame::decoded(p, Some(x)), b);
+    }
+    (Frame::decoded(p, None), b)
 }
 
 // --- The seek bar's previews ---
@@ -1907,5 +2204,81 @@ mod tests {
         let next = next_due(&mut p);
         assert!(next.is_none() || next.is_some_and(|n| n < far / 2), "a picture of the first seek showed: {next:?}");
         assert!(!p.playing());
+    }
+
+    /// Playing `LOOKER_DECODE` backwards (J) on the GPU (`LOOKER_TEST_HW=1`) or the CPU: from 3 s for 2 s at 1x,
+    /// every picture shown going down, how many were skipped; then 2x to the start, where it stops; then L plays
+    /// forwards from the picture it stopped on.
+    /// `LOOKER_CODECS=... LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture plays_backwards`
+    #[test]
+    #[ignore]
+    fn plays_backwards() {
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let device = std::env::var_os("LOOKER_TEST_HW").map(|_| unsafe {
+            use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+            use windows::Win32::Graphics::Direct3D11::*;
+            use windows::core::Interface;
+            let mut d = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, Default::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d), None, None).unwrap();
+            let d: ID3D11Device = d.unwrap();
+            let _ = d.cast::<ID3D11Multithread>().unwrap().SetMultithreadProtected(true);
+            d
+        });
+        let raw = device.as_ref().map_or(std::ptr::null_mut(), |d| windows::core::Interface::as_raw(d));
+        let mut p = Player::open(&path, crate::gfx::Sendable(raw), false, 0.0, true);
+        let t = Instant::now();
+        while p.poll_open().is_none() {
+            assert!(t.elapsed() < Duration::from_secs(3), "never opened");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let info = p.info.clone().unwrap();
+        let frame = (1e6 * info.fps_den as f64 / info.fps_num as f64) as i64;
+        next_due(&mut p).expect("first picture");
+        p.seek(3_000_000, true);
+        let from = next_due(&mut p).expect("seeked");
+        let t = Instant::now();
+        p.play_reverse(1.0);
+        let first = next_due(&mut p).expect("first picture backwards");
+        println!("backwards from {from}: first picture {first} after {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        assert!(first < from && from - first < 2 * frame, "first backwards {from} -> {first}");
+        let (mut last, mut shown) = (first, 1);
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(2) {
+            if let Some(d) = p.due(Instant::now()) {
+                assert!(d.picture.pts_us < last, "went up: {last} -> {}", d.picture.pts_us);
+                last = d.picture.pts_us;
+                shown += 1;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let covered = first - last;
+        println!("1x: {shown} pictures over {:.2} s of video in 2 s, {} skipped, {} waits", covered as f64 / 1e6, p.dropped, p.starved);
+        assert!(covered > 1_500_000 && covered < 2_300_000, "covered {covered}");
+        p.play_reverse(2.0);
+        let t = Instant::now();
+        while p.reverse() {
+            assert!(t.elapsed() < Duration::from_secs(5), "never reached the start (at {})", p.position());
+            if let Some(d) = p.due(Instant::now()) {
+                assert!(d.picture.pts_us <= last);
+                last = d.picture.pts_us;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        println!("2x: stopped at {last} after {:.2} s", t.elapsed().as_secs_f64());
+        assert!(last < 2 * frame, "stopped at {last}");
+        assert!(!p.playing());
+        // Forwards again from there: the decoder was put back.
+        p.set_playing(true);
+        let mut prev = -1;
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(500) {
+            if let Some(d) = p.due(Instant::now()) {
+                assert!(d.picture.pts_us > prev || prev < 0, "forwards went back: {prev} -> {}", d.picture.pts_us);
+                prev = d.picture.pts_us;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        println!("forwards: at {prev} after 0.5 s");
+        assert!(prev > 300_000 && prev < 700_000, "forwards at {prev}");
     }
 }
