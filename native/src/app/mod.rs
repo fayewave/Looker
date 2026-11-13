@@ -377,11 +377,14 @@ enum Hit {
     ExtractPill,
     ExtractCancel,
     /// Edit mode (edit.rs): the crop frame (0 inside, 1-8 its handles clockwise from the top left), the panel, an
-    /// aspect choice, the frame's turn, the two sliders, and the buttons.
+    /// aspect choice, its orientation, the two sliders, and the buttons.
     EditCrop(u8),
+    /// Outside the frame: a drag turns the photo.
+    EditRotate,
     EditPanel,
     EditAspect(u8),
-    EditFlip,
+    /// The fixed aspects' Landscape (0) and Portrait (1).
+    EditOrient(u8),
     EditStraighten,
     EditExposure,
     EditReset,

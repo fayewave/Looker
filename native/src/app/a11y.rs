@@ -585,10 +585,11 @@ impl App {
                 if part != 0 {
                     return None; // the frame itself speaks for its handles
                 }
-                Info { value: Some(format!("{:.0} × {:.0} pixels", w, h)), invoke: false, focusable: false, ..Info::new(UIA_PaneControlTypeId, name) }.help("Drag to move; the arrow keys nudge it")
+                Info { value: Some(format!("{:.0} × {:.0} pixels", w, h)), invoke: false, focusable: false, ..Info::new(UIA_PaneControlTypeId, name) }.help("Drag inside to move the photo, outside to turn it; the arrow keys nudge it")
             }
             Hit::EditAspect(i) => Info::item(UIA_RadioButtonControlTypeId, format!("Crop {}", super::edit::aspect_name(i)), false),
-            Hit::EditFlip => Info { focusable: true, ..Info::button(inside()) },
+            Hit::EditOrient(i) => Info { focusable: true, ..Info::item(UIA_RadioButtonControlTypeId, if i == 0 { "Landscape" } else { "Portrait" }, false) },
+            Hit::EditRotate => return None,
             Hit::EditStraighten => {
                 let a = self.edit.as_ref().map_or(0.0, |e| e.p.angle);
                 Info { value: Some(super::edit::degrees_text(a)), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, "Straighten") }.help("Left and right arrows: 0.1 degree, Shift: 1")

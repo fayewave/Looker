@@ -369,6 +369,13 @@ impl App {
                         SetCursor(None);
                         return Some(LRESULT(1));
                     }
+                    // Outside an edit's crop frame: the photo turns.
+                    if matches!(self.hover, Some(Hit::EditRotate)) || self.pressed == Some(Hit::EditRotate) {
+                        if let Some(c) = super::edit::rotate_cursor() {
+                            SetCursor(Some(c));
+                            return Some(LRESULT(1));
+                        }
+                    }
                     // As Snapper: a hand over anything that clicks.
                     let cursor = match self.hover {
                         // The zoom level drags left and right (all the way through a drag, wherever the pointer goes).

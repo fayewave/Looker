@@ -6,10 +6,14 @@
 //! preview is Direct2D's (`Gfx::draw_photo_edit`), the same sums.
 //!
 //! The crop is kept upright on screen, in pixels from the image's middle after its quarter turns and the
-//! straightening (`photoedit::Params::crop`), and always on the image: a drag that would take it off stops at
-//! the edge, and straightening shrinks it towards the middle when it no longer fits.
+//! straightening (`photoedit::Params::crop`), and always on the image. As Lightroom's (Faye, 2026-11-14): the
+//! frame holds still in the middle of the area, as big as fits, and the photo moves under it: a drag inside it
+//! pans the photo with the pointer, a drag outside it turns the photo about the frame's middle (the straightening;
+//! the frame shrinks to stay on the photo, the photo zooming to keep it the same size), and its edges and corners
+//! resize it with the photo still, the frame gliding back to the middle when let go.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use super::*;
 use crate::photoedit::{self, Params};
@@ -48,6 +52,11 @@ pub(super) struct Edit {
     /// Where the last frame put the image: its middle on screen and DIPs per image pixel.
     centre: (f32, f32),
     k: f32,
+    /// The view: DIPs per image pixel and the image's middle on screen, eased only when the frame glides back to
+    /// the middle (after a resize, a new aspect); a pan or a turn follows the pointer at once.
+    view: crate::motion::Ease<3>,
+    placed: bool,
+    glide: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -55,20 +64,67 @@ struct Drag {
     hit: Hit,
     from: (f32, f32),
     crop: [f32; 4],
+    angle: f32,
 }
 
 impl Edit {
+    /// The fixed aspects' width over height: landscape, or turned for portrait (Square is square either way).
     fn ratio(&self) -> Option<f32> {
         let r = match self.aspect {
-            1 => self.w / self.h,
+            1 => (self.w / self.h).max(self.h / self.w),
             2 => 1.0,
             3 => 4.0 / 3.0,
             4 => 1.5,
             5 => 16.0 / 9.0,
             _ => return None,
         };
-        // Original is the image's own; the others stand as the frame is turned.
-        Some(if self.aspect == 1 { if self.portrait != (self.h > self.w) { 1.0 / r } else { r } } else if self.portrait { 1.0 / r } else { r })
+        Some(if self.portrait { 1.0 / r } else { r })
+    }
+
+    /// Turns the photo to `angle` about the middle of the crop (`from_crop` at `from_angle`): the crop keeps its
+    /// size and place on screen, shrinking about its own middle only as far as it must to stay on the photo.
+    fn turn(&mut self, angle: f32, from_crop: [f32; 4], from_angle: f32) {
+        self.p.angle = angle;
+        let (s, c) = (angle - from_angle).to_radians().sin_cos();
+        let (mx, my) = ((from_crop[0] + from_crop[2]) / 2.0, (from_crop[1] + from_crop[3]) / 2.0);
+        let (hw, hh) = ((from_crop[2] - from_crop[0]) / 2.0, (from_crop[3] - from_crop[1]) / 2.0);
+        // The image turns about the crop's middle: seen from the image's middle, the crop's middle turns with it.
+        let (nx, ny) = (c * mx - s * my, s * mx + c * my);
+        let at = |m: f32| [nx - hw * m, ny - hh * m, nx + hw * m, ny + hh * m];
+        if photoedit::crop_fits(self.w, self.h, angle, at(1.0)) {
+            self.p.crop = at(1.0);
+            return;
+        }
+        if photoedit::on_image(self.w, self.h, angle, nx, ny) {
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for _ in 0..30 {
+                let m = (lo + hi) / 2.0;
+                if photoedit::crop_fits(self.w, self.h, angle, at(m)) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            if lo > 0.0 {
+                self.p.crop = at(lo);
+                return;
+            }
+        }
+        self.p.crop = at(1.0);
+        self.refit();
+    }
+
+    /// Where the view should be: the crop as big as fits in `area`, in its middle.
+    fn target(&self, area: D2D_RECT_F) -> [f32; 3] {
+        let [l, t, r, b] = self.p.crop;
+        let k = ((area.right - area.left) / (r - l)).min((area.bottom - area.top) / (b - t)).max(0.0001);
+        let (ax, ay) = ((area.left + area.right) / 2.0, (area.top + area.bottom) / 2.0);
+        [k, ax - k * (l + r) / 2.0, ay - k * (t + b) / 2.0]
+    }
+
+    /// A resize handle is being dragged: the view holds still meanwhile.
+    fn resizing(&self) -> bool {
+        self.drag.is_some_and(|d| matches!(d.hit, Hit::EditCrop(1..=8)))
     }
 
     fn full(&self) -> [f32; 4] {
@@ -125,9 +181,35 @@ impl Edit {
         let Hit::EditCrop(part) = d.hit else { return };
         let (dx, dy) = ((x - d.from.0) / self.k, (y - d.from.1) / self.k);
         let [l, t, r, b] = d.crop;
-        let mut c = match part {
-            0 => [l + dx, t + dy, r + dx, b + dy],
-            _ => {
+        if part == 0 {
+            // The photo follows the pointer: the crop moves the other way over it, each way as far as the photo
+            // goes (so it slides along an edge instead of sticking to it).
+            let along = |me: &Edit, c: [f32; 4], mx: f32, my: f32| -> [f32; 4] {
+                let to = [c[0] + mx, c[1] + my, c[2] + mx, c[3] + my];
+                if me.fits(to) {
+                    return to;
+                }
+                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                for _ in 0..24 {
+                    let m = (lo + hi) / 2.0;
+                    if me.fits([c[0] + mx * m, c[1] + my * m, c[2] + mx * m, c[3] + my * m]) {
+                        lo = m;
+                    } else {
+                        hi = m;
+                    }
+                }
+                [c[0] + mx * lo, c[1] + my * lo, c[2] + mx * lo, c[3] + my * lo]
+            };
+            let c = along(self, d.crop, -dx, 0.0);
+            let c = along(self, c, 0.0, -dy);
+            if self.fits(c) {
+                self.p.crop = c;
+                self.auto = false;
+            }
+            return;
+        }
+        let mut c = {
+            {
                 let (mut l, mut t, mut r, mut b) = (l, t, r, b);
                 // 1 top left, 2 top, 3 top right, 4 right, 5 bottom right, 6 bottom, 7 bottom left, 8 left.
                 if matches!(part, 1 | 7 | 8) {
@@ -256,6 +338,9 @@ impl App {
             saving: false,
             centre: (0.0, 0.0),
             k: 1.0,
+            view: crate::motion::Ease::at([1.0, 0.0, 0.0]),
+            placed: false,
+            glide: false,
         };
         e.p.crop = e.full();
         self.edit = Some(e);
@@ -280,6 +365,7 @@ impl App {
             e.portrait = e.h > e.w;
             e.auto = true;
             e.p.crop = e.full();
+            e.glide = true;
         }
         self.invalidate();
     }
@@ -291,32 +377,42 @@ impl App {
                 e.auto = true;
                 e.reset_crop();
             }
+            e.glide = true;
         }
         self.invalidate();
     }
 
-    fn edit_flip_frame(&mut self) {
+    /// The fixed aspect's frame wider than tall (`portrait` false) or taller than wide.
+    fn edit_orient(&mut self, portrait: bool) {
         if let Some(e) = &mut self.edit {
-            if e.aspect == 0 || e.aspect == 2 {
+            if e.aspect == 0 || e.aspect == 2 || e.portrait == portrait {
                 return;
             }
-            e.portrait = !e.portrait;
+            e.portrait = portrait;
             e.auto = true;
             e.reset_crop();
+            e.glide = true;
         }
         self.invalidate();
     }
 
+    /// Straightens to `a` degrees: the photo turns about the frame's middle (the slider, the keys and a drag
+    /// outside the frame alike).
     fn edit_set_angle(&mut self, a: f32) {
         if let Some(e) = &mut self.edit {
-            let a = (a * 10.0).round() / 10.0;
-            e.p.angle = a.clamp(-STRAIGHTEN_MAX, STRAIGHTEN_MAX);
+            let a = ((a * 10.0).round() / 10.0).clamp(-STRAIGHTEN_MAX, STRAIGHTEN_MAX);
             // Untouched, the frame stays the largest the straightened image holds (growing back towards 0); moved by
             // hand, it's kept, drawn in only as far as it must be.
             if e.auto {
+                e.p.angle = a;
                 e.reset_crop();
             } else {
-                e.refit();
+                // From where a turn began, so shrinking on the way doesn't stick when turning back.
+                let (crop, from) = match e.drag {
+                    Some(d) if matches!(d.hit, Hit::EditRotate | Hit::EditStraighten) => (d.crop, d.angle),
+                    _ => (e.p.crop, e.p.angle),
+                };
+                e.turn(a, crop, from);
             }
         }
         self.invalidate();
@@ -393,15 +489,32 @@ impl App {
         let area = self.edit_area();
         let (w, h) = self.size_dip();
         let Some(e) = &mut self.edit else { return };
-        let (s, c) = e.p.angle.to_radians().sin_cos();
-        let (bw, bh) = (e.w * c.abs() + e.h * s.abs(), e.w * s.abs() + e.h * c.abs());
-        let k = ((area.right - area.left) / bw).min((area.bottom - area.top) / bh).max(0.001);
+        // The frame as big as fits in the middle (with room around it for its handles), the photo placed under it.
+        let now = Instant::now();
+        let target = e.target(ui::grow(area, -24.0));
+        if !e.placed {
+            e.view.jump(target);
+            e.placed = true;
+        } else if e.resizing() {
+            // Resizing: the photo holds still while the frame's edge follows the pointer.
+        } else if e.glide {
+            e.view.set(target, now);
+            e.glide = false;
+        } else if e.view.target() != target {
+            e.view.jump(target);
+        }
+        let [k, ox, oy] = e.view.value(now);
+        let moving = e.view.moving(now);
         e.k = k;
-        e.centre = ((area.left + area.right) / 2.0, (area.top + area.bottom) / 2.0);
+        e.centre = (ox, oy);
         // The bitmap as decoded: unturned, so its box swaps sides for odd turns, and turns by the quarter turns too.
         let (uw, uh) = if e.p.turns & 1 == 1 { (e.h, e.w) } else { (e.w, e.h) };
         let dest = rect(e.centre.0 - uw * k / 2.0, e.centre.1 - uh * k / 2.0, uw * k, uh * k);
         let angle = e.p.turns as f32 * 90.0 + e.p.angle;
+        // Zoomed in under a turned or small frame the photo is bigger than its room: kept off the title bar and the
+        // panel.
+        let room = rect(0.0, area.top - GAP, w - PANEL_W - GAP * 2.0, h - area.top + GAP);
+        g.push_clip(room);
         if g.draw_photo_edit(frame, dest, angle, e.p.ev).is_err() {
             g.draw_photo(frame, dest, 1.0, true);
         }
@@ -414,10 +527,11 @@ impl App {
         g.fill(rect(0.0, cr.bottom, w - PANEL_W - GAP * 2.0, (h - cr.bottom).max(0.0)), dim);
         g.fill(rect(0.0, cr.top, cr.left.max(0.0), cr.bottom - cr.top), dim);
         g.fill(rect(cr.right, cr.top, (w - PANEL_W - GAP * 2.0 - cr.right).max(0.0), cr.bottom - cr.top), dim);
+        g.pop_clip();
         let white = gfx::rgba(0xFFFFFF, 0.95);
         let px = g.px();
         // Thirds while it's handled (finer while straightening, to line things up against).
-        let straightening = matches!(self.pressed, Some(Hit::EditStraighten));
+        let straightening = matches!(self.pressed, Some(Hit::EditStraighten | Hit::EditRotate));
         let lines = if straightening { 6 } else if dragging { 3 } else { 0 };
         for i in 1..lines {
             let f = i as f32 / lines as f32;
@@ -449,9 +563,13 @@ impl App {
         g.fill(rect(mx - bar / 2.0, b - th, bar, th), white);
         g.fill(rect(l, my - bar / 2.0, th, bar), white);
         g.fill(rect(r - th, my - bar / 2.0, th, bar), white);
-        // Hits: inside moves, edges and corners (on top) resize.
+        // Hits: outside the frame turns the photo, inside moves it, edges and corners (on top) resize the frame.
         let saving = e.saving;
+        if moving {
+            self.invalidate();
+        }
         if !saving {
+            self.hits.add(Hit::EditRotate, room);
             self.hits.add(Hit::EditCrop(0), cr);
             let band = |x0: f32, y0: f32, x1: f32, y1: f32| D2D_RECT_F { left: x0, top: y0, right: x1, bottom: y1 };
             self.hits.add(Hit::EditCrop(2), band(cr.left, cr.top - EDGE / 2.0, cr.right, cr.top + EDGE / 2.0));
@@ -500,16 +618,23 @@ impl App {
             ring_on(self, hit, r);
         }
         y += 2.0 * (ch + cg) + 4.0;
-        let flip_ok = !saving && aspect != 0 && aspect != 2;
-        let r = rect(x, y, w, 32.0);
-        if flip_ok {
-            self.hits.add(Hit::EditFlip, r);
+        // Landscape | Portrait, for the aspects that have both (not Free, not Square).
+        let orient_ok = !saving && aspect != 0 && aspect != 2;
+        let half = (w - cg) / 2.0;
+        for (i, name) in ["Landscape", "Portrait"].into_iter().enumerate() {
+            let r = rect(x + i as f32 * (half + cg), y, half, ch);
+            let hit = Hit::EditOrient(i as u8);
+            if orient_ok {
+                self.hits.add(hit, r);
+            }
+            let on = orient_ok && portrait == (i == 1);
+            self.a11y_mark(hit, super::a11y::Mark::Selected(on));
+            let st = self.state(hit, orient_ok);
+            let fg = ui::button_frame(g, r, ui::Kind::Toggle(on), &st);
+            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
+            ring_on(self, hit, r);
         }
-        let st = self.state(Hit::EditFlip, flip_ok);
-        let label = if portrait { "Make the frame wide" } else { "Make the frame tall" };
-        ui::icon_label_button(g, r, 0xE7AD, label, ui::Kind::Standard, &st);
-        ring_on(self, Hit::EditFlip, r);
-        y += 32.0 + 22.0;
+        y += ch + 22.0;
 
         for (hit, name, value, v, max) in [
             (Hit::EditStraighten, "Straighten", degrees_text(angle), angle, STRAIGHTEN_MAX),
@@ -574,14 +699,14 @@ impl App {
     /// The panel's controls in Tab order.
     fn edit_tab_order(&self) -> Vec<Hit> {
         let mut v: Vec<Hit> = (0..6).map(Hit::EditAspect).collect();
-        v.extend([Hit::EditFlip, Hit::EditStraighten, Hit::EditExposure, Hit::EditReset, Hit::EditCancel, Hit::EditSave, Hit::EditSaveCopy]);
+        v.extend([Hit::EditOrient(0), Hit::EditOrient(1), Hit::EditStraighten, Hit::EditExposure, Hit::EditReset, Hit::EditCancel, Hit::EditSave, Hit::EditSaveCopy]);
         v
     }
 
     fn edit_click(&mut self, h: Hit) {
         match h {
             Hit::EditAspect(i) => self.edit_aspect(i),
-            Hit::EditFlip => self.edit_flip_frame(),
+            Hit::EditOrient(i) => self.edit_orient(i == 1),
             Hit::EditReset => self.edit_reset(),
             Hit::EditCancel => self.cancel_edit(),
             Hit::EditSave => self.edit_save(false),
@@ -620,8 +745,11 @@ impl App {
                 }
                 self.pressed = Some(h);
                 if let Some(e) = &mut self.edit {
-                    e.focus = matches!(h, Hit::EditCrop(_)).then_some(e.focus).flatten().or(Some(h)).filter(|f| !matches!(f, Hit::EditCrop(_)));
-                    e.drag = Some(Drag { hit: h, from: (x, y), crop: e.p.crop });
+                    // The panel's controls take the keys; the frame and the photo leave them where they were.
+                    if !matches!(h, Hit::EditCrop(_) | Hit::EditRotate | Hit::EditPanel) {
+                        e.focus = Some(h);
+                    }
+                    e.drag = Some(Drag { hit: h, from: (x, y), crop: e.p.crop, angle: e.p.angle });
                 }
                 match h {
                     Hit::EditStraighten => {
@@ -648,6 +776,26 @@ impl App {
                         }
                         self.invalidate();
                     }
+                    // Outside the frame: the photo turns about the frame's middle as the pointer goes round it.
+                    Some(Hit::EditRotate) => {
+                        let turn = self.edit.as_ref().and_then(|e| {
+                            let d = e.drag?;
+                            let cr = e.crop_rect();
+                            let (cx, cy) = ((cr.left + cr.right) / 2.0, (cr.top + cr.bottom) / 2.0);
+                            let a0 = (d.from.1 - cy).atan2(d.from.0 - cx);
+                            let a1 = (y - cy).atan2(x - cx);
+                            let mut da = (a1 - a0).to_degrees();
+                            if da > 180.0 {
+                                da -= 360.0;
+                            } else if da < -180.0 {
+                                da += 360.0;
+                            }
+                            Some(d.angle + da)
+                        });
+                        if let Some(a) = turn {
+                            self.edit_set_angle(a);
+                        }
+                    }
                     Some(h @ (Hit::EditStraighten | Hit::EditExposure)) => {
                         let r = self.hits.rect_of(h).unwrap_or_default();
                         if h == Hit::EditStraighten {
@@ -671,6 +819,10 @@ impl App {
                 }
                 let (x, y) = self.dip_from_lparam(lp);
                 if let Some(e) = &mut self.edit {
+                    // A resized frame glides back to the middle, the photo with it.
+                    if e.resizing() {
+                        e.glide = true;
+                    }
                     e.drag = None;
                 }
                 if self.hit(x, y) == Some(pressed) {
@@ -713,6 +865,13 @@ impl App {
                                 let v = self.edit.as_ref().map_or(0.0, |e| e.p.ev);
                                 self.edit_set_ev(v + dir * if shift { 0.5 } else { 0.1 });
                             }
+                            Some(Hit::EditOrient(_)) => {
+                                let portrait = dir > 0.0;
+                                if let Some(e) = &mut self.edit {
+                                    e.focus = Some(Hit::EditOrient(portrait as u8));
+                                }
+                                self.edit_orient(portrait);
+                            }
                             Some(Hit::EditAspect(i)) => {
                                 let j = (i as i32 + dir as i32).rem_euclid(6) as u8;
                                 if let Some(e) = &mut self.edit {
@@ -742,7 +901,7 @@ impl App {
                         }
                     }
                     VK_RETURN | VK_SPACE => match focus {
-                        Some(h @ (Hit::EditAspect(_) | Hit::EditFlip | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy)) => self.edit_click(h),
+                        Some(h @ (Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy)) => self.edit_click(h),
                         _ if vk == VK_RETURN => self.edit_save(true),
                         _ => {}
                     },
@@ -762,11 +921,116 @@ impl App {
 pub(super) fn is_edit_hit(h: Hit) -> bool {
     matches!(
         h,
-        Hit::EditCrop(_) | Hit::EditAspect(_) | Hit::EditFlip | Hit::EditStraighten | Hit::EditExposure | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy | Hit::EditPanel
+        Hit::EditCrop(_) | Hit::EditRotate | Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditStraighten | Hit::EditExposure | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy | Hit::EditPanel
     )
 }
 
 /// The aspect choice's name, for readers.
 pub(super) fn aspect_name(i: u8) -> &'static str {
     ASPECTS.get(i as usize).copied().unwrap_or("")
+}
+
+thread_local! {
+    static ROTATE_CURSOR: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+/// The pointer outside the crop frame: a curved double arrow (Windows has no rotate cursor), made once at the
+/// system's cursor size, white with a dark edge as Windows' own.
+pub(super) fn rotate_cursor() -> Option<HCURSOR> {
+    let have = ROTATE_CURSOR.with(|c| c.get());
+    if have != 0 {
+        return Some(HCURSOR(have as _));
+    }
+    let made = unsafe { make_rotate_cursor() }?;
+    ROTATE_CURSOR.with(|c| c.set(made.0 as isize));
+    Some(made)
+}
+
+unsafe fn make_rotate_cursor() -> Option<HCURSOR> {
+    unsafe {
+        let n = GetSystemMetrics(SM_CXCURSOR).clamp(32, 128) as usize;
+        let s = n as f32;
+        let (cx, cy, r, th) = (s * 0.5, s * 0.6, s * 0.3, s * 0.075);
+        let (a0, a1) = (205f32.to_radians(), 335f32.to_radians());
+        // The arrowheads: at each end of the arc, pointing on along it.
+        let head = |a: f32, out: f32| -> [(f32, f32); 3] {
+            let (sn, cs) = a.sin_cos();
+            let (ex, ey) = (cx + r * cs, cy + r * sn);
+            let (dx, dy) = (-sn * out, cs * out);
+            let (len, half) = (s * 0.17, s * 0.13);
+            [(ex + dx * len, ey + dy * len), (ex - dy * half, ey + dx * half), (ex + dy * half, ey - dx * half)]
+        };
+        let heads = [head(a0, -1.0), head(a1, 1.0)];
+        let in_tri = |p: (f32, f32), t: &[(f32, f32); 3]| {
+            let sign = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| (a.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (a.1 - c.1);
+            let (d1, d2, d3) = (sign(p, t[0], t[1]), sign(p, t[1], t[2]), sign(p, t[2], t[0]));
+            !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+        };
+        let shape = |x: f32, y: f32| {
+            let (dx, dy) = (x - cx, y - cy);
+            let mut a = dy.atan2(dx);
+            if a < 0.0 {
+                a += std::f32::consts::TAU;
+            }
+            ((dx * dx + dy * dy).sqrt() - r).abs() <= th / 2.0 && a >= a0 && a <= a1 || heads.iter().any(|t| in_tri((x, y), t))
+        };
+        // Coverage, 4 x 4 samples a pixel.
+        let mut white = vec![0f32; n * n];
+        for y in 0..n {
+            for x in 0..n {
+                let mut hit = 0;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        if shape(x as f32 + (sx as f32 + 0.5) / 4.0, y as f32 + (sy as f32 + 0.5) / 4.0) {
+                            hit += 1;
+                        }
+                    }
+                }
+                white[y * n + x] = hit as f32 / 16.0;
+            }
+        }
+        // The dark edge: the shape grown by about a pixel and a half.
+        let grow = (s / 32.0 * 1.5).ceil() as i32;
+        let mut px = vec![0u8; n * n * 4];
+        for y in 0..n as i32 {
+            for x in 0..n as i32 {
+                let mut dark = 0f32;
+                for oy in -grow..=grow {
+                    for ox in -grow..=grow {
+                        let (xx, yy) = (x + ox, y + oy);
+                        if xx >= 0 && yy >= 0 && xx < n as i32 && yy < n as i32 && ((ox * ox + oy * oy) as f32) <= (grow * grow) as f32 + 0.5 {
+                            dark = dark.max(white[yy as usize * n + xx as usize]);
+                        }
+                    }
+                }
+                let w = white[y as usize * n + x as usize];
+                let a = dark.max(w);
+                let v = if a > 0.0 { (w / a * 255.0) as u8 } else { 0 };
+                let i = (y as usize * n + x as usize) * 4;
+                px[i..i + 4].copy_from_slice(&[v, v, v, (a * 255.0) as u8]);
+            }
+        }
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: n as i32,
+                biHeight: -(n as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let color = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+        std::ptr::copy_nonoverlapping(px.as_ptr(), bits as *mut u8, px.len());
+        let zeros = vec![0u8; n * n / 8];
+        let mask = CreateBitmap(n as i32, n as i32, 1, 1, Some(zeros.as_ptr() as *const _));
+        let info = ICONINFO { fIcon: false.into(), xHotspot: (cx) as u32, yHotspot: (cy - r) as u32, hbmMask: mask, hbmColor: color };
+        let icon = CreateIconIndirect(&info).ok();
+        let _ = DeleteObject(color.into());
+        let _ = DeleteObject(mask.into());
+        icon.map(|i| HCURSOR(i.0))
+    }
 }
