@@ -262,10 +262,9 @@ impl App {
             | Hit::ExplorerCollections
             | Hit::ExplorerGroup
             | Hit::ExplorerLayout
-            | Hit::ExplorerSidebar
             | Hit::ExplorerBrowse
             | Hit::Tab(_)
-            | Hit::SideHeader(_)
+            | Hit::RailIcon(_)
             | Hit::SideRow(_) => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }
@@ -436,7 +435,8 @@ impl App {
                 let tw = g.measure_tabular(&wide(&text), &g.fonts.caption);
                 let need = tw + if with_link { 16.0 + lw } else { 0.0 };
                 if need <= room {
-                    let link = with_link.then(|| rect(SIDE_PAD + tw + 16.0, h - status_h(), lw, status_h()));
+                    // A little wider than its measured text: exactly as wide, rounding cut its last letter off.
+                    let link = with_link.then(|| rect(SIDE_PAD + tw + 16.0, h - status_h(), lw + 4.0, status_h()));
                     return (text, link);
                 }
             }

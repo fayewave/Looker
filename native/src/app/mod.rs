@@ -12,7 +12,6 @@ mod explorer;
 mod extract;
 pub(crate) use extract::ExtractResult;
 mod explorer_columns;
-mod explorer_dock;
 mod explorer_ops;
 mod explorer_view;
 mod info;
@@ -231,7 +230,6 @@ enum Hit {
     ExplorerGroup,
     /// The Layout button: List or Columns, for the tab in front.
     ExplorerLayout,
-    ExplorerSidebar,
     ExplorerBrowse,
     Crumb(usize),
     CrumbChevron(usize),
@@ -262,6 +260,9 @@ enum Hit {
     SidebarGrip,
     /// Not hit: the key the sidebar column's slide in and out is eased under.
     SidebarColumn,
+    /// A section's icon on the sidebar's icon strip (a narrow card's sidebar), and the key of its flyout's fade.
+    RailIcon(crate::explorer::SideSection),
+    RailFlyout,
     /// Not a hit: the key of the sticky line's guide fading in and out.
     StickyGuide,
     SideRow(usize),

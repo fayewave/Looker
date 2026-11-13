@@ -345,10 +345,9 @@ pub(super) struct TabState {
 /// room, an outlined slot shows where it lands.
 pub(super) struct SectionDrag {
     pub sec: SideSection,
-    /// Across the dock's header: where the press was and the pointer now.
-    pub start: f32,
-    pub at: f32,
-    /// The pointer's offset from the tab's left when pressed.
+    pub start_y: f32,
+    pub y: f32,
+    /// The pointer's offset from the heading's top when pressed.
     pub grab: f32,
     pub active: bool,
     /// Where it would land among the other sections (worked out as the sidebar draws).
@@ -377,10 +376,6 @@ pub(super) struct EntryDrag {
     pub y: f32,
     /// The pointer's offset from the row's top when pressed.
     pub grab: f32,
-    /// The same across (the dock lays its places out in columns).
-    pub start_x: f32,
-    pub x: f32,
-    pub grab_x: f32,
     pub active: bool,
     /// Where it would land among the others (worked out as the sidebar draws).
     pub insert: usize,
@@ -443,16 +438,13 @@ pub(super) struct Explorer {
     pub row_drag: Option<RowDrag>,
     /// Rows cut to the clipboard (shown faded while it still holds them), and its sequence number then.
     pub(super) cut: Option<(HashSet<String>, u32)>,
-    /// The browse dock (explorer_dock.rs): the most its places area may take this frame, its edge pulled past a
-    /// limit (live) and the bounce it springs back with, its height easing back to its default, its edge being
-    /// dragged (where the press was, its height then), the open tab's box, and each place's eased spot.
-    pub(super) dock_max: f32,
-    pub(super) dock_stretch: f32,
-    pub(super) dock_spring: Option<(f32, Instant)>,
-    pub(super) dock_settle: Option<crate::motion::Settle>,
-    pub(super) dock_drag: Option<(f32, f32)>,
-    pub(super) dock_pill: Option<Ease<2>>,
-    pub(super) dock_pos: HashMap<String, Ease<2>>,
+    /// The icon strip's flyout: the section it shows (None: closed), and the one it last showed (drawn while it
+    /// fades out).
+    pub(super) rail_fly: Option<SideSection>,
+    pub(super) fly_shown: Option<SideSection>,
+    /// The sidebar's edge pulled past its narrowest or widest (live, + wider) and the bounce it springs back with.
+    pub(super) side_stretch: f32,
+    pub(super) side_spring: Option<(f32, Instant)>,
     pub(super) side_scroll: f32,
     /// The sidebar's scroll easing (from, to, since), as the list's `anim`.
     pub(super) side_anim: Option<(f32, f32, Instant)>,
@@ -486,7 +478,7 @@ pub(super) struct Explorer {
     /// A sidebar section being dragged by its heading, each section's eased top, and how long they ease
     /// after a drop.
     pub(super) section_drag: Option<SectionDrag>,
-    pub(super) section_pos: HashMap<SideSection, Ease<2>>,
+    pub(super) section_pos: HashMap<SideSection, Ease<1>>,
     pub(super) section_anim_until: Instant,
     /// A bookmark or collection being dragged into another place, the entries' eased tops in their section (by
     /// key), and until when they ease after a drop.
@@ -499,8 +491,10 @@ pub(super) struct Explorer {
     /// and the tabs whose titles are cut off: for full-text tooltips (Faye, 2026-11-10).
     pub(super) cell_tips: Vec<(D2D_RECT_F, String)>,
     pub(super) tip_cell: Option<usize>,
-    /// Until when the dock's places ease after a bookmark or collection is dropped into a new place.
+    pub(super) row_pos: HashMap<String, Ease<1>>,
     pub(super) row_anim_until: Instant,
+    /// How open each section is (1 open, 0 folded to its heading), eased.
+    pub(super) section_open: HashMap<SideSection, Ease<1>>,
     /// The box over the folder a drag would drop into: eased from one target to the next, its opacity, and the
     /// card's height (taller once it says what a drop does).
     pub(super) drop_box: Option<Ease<4>>,
@@ -513,6 +507,8 @@ pub(super) struct Explorer {
     tabs_loaded: bool,
     /// The tab strip's motion, drag and tooltips (tabstrip.rs).
     pub(super) strip: super::tabstrip::TabStrip,
+    /// The sidebar's edge being dragged: where the press was, and its width then.
+    pub(super) side_drag: Option<(f32, f32)>,
     /// 0 the card, 1 browse mode, eased between.
     pub(super) browse: Ease<1>,
     /// Browse mode was on when the explorer was closed: it opens in it again.
@@ -525,8 +521,9 @@ pub(super) struct Explorer {
     /// the window has no room for that (false); and where the pointer was last (for when it crosses).
     pub(super) latched: Option<bool>,
     pub(super) last_side: f32,
-    /// The card's width easing back to its default (its edge double-clicked).
+    /// The card's width and the sidebar's easing back to their defaults (an edge double-clicked).
     pub(super) width_settle: Option<crate::motion::Settle>,
+    pub(super) side_settle: Option<crate::motion::Settle>,
     /// What's been typed to jump to a row, and when the last character came (`explorer_type_ahead`).
     pub(super) ahead: (String, Option<Instant>),
     pub(super) tags: crate::tags::Tags,
@@ -575,13 +572,10 @@ impl Explorer {
             pending_rename: None,
             row_drag: None,
             cut: None,
-            dock_max: 0.0,
-            dock_stretch: 0.0,
-            dock_spring: None,
-            dock_settle: None,
-            dock_drag: None,
-            dock_pill: None,
-            dock_pos: HashMap::new(),
+            rail_fly: None,
+            fly_shown: None,
+            side_stretch: 0.0,
+            side_spring: None,
             side_scroll: 0.0,
             side_anim: None,
             side_max: 0.0,
@@ -609,7 +603,9 @@ impl Explorer {
             list_geom: None,
             cell_tips: Vec::new(),
             tip_cell: None,
+            row_pos: HashMap::new(),
             row_anim_until: Instant::now(),
+            section_open: HashMap::new(),
             drop_box: None,
             drop_shade: Ease::at([0.0]),
             drop_card_h: Ease::at([30.0]),
@@ -618,6 +614,7 @@ impl Explorer {
             next_tab_id: 1,
             tabs_loaded: false,
             strip: Default::default(),
+            side_drag: None,
             browse: Ease::at([0.0]).over(EDGE_SECS),
             reopen_browse: false,
             stretch: 0.0,
@@ -625,6 +622,7 @@ impl Explorer {
             latched: None,
             last_side: 0.0,
             width_settle: None,
+            side_settle: None,
             ahead: (String::new(), None),
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
@@ -823,6 +821,15 @@ impl App {
         let w = w + self.explorer_stretch();
         // Double-clicked back to its default: it eases there.
         match self.explorer.width_settle {
+            Some(s) if s.moving() => s.value(w),
+            _ => w,
+        }
+    }
+
+    /// The sidebar's width, easing back to its default after a double-click on its edge.
+    pub(super) fn sidebar_w(&self) -> f32 {
+        let w = self.settings.sidebar_width;
+        match self.explorer.side_settle {
             Some(s) if s.moving() => s.value(w),
             _ => w,
         }
@@ -2257,6 +2264,8 @@ impl App {
         let Some(it) = items.get(i) else { return };
         if let SideTarget::Place(p) = &it.target {
             let p = p.clone();
+            // Picked from the icon strip's flyout: it closes.
+            self.explorer.rail_fly = None;
             self.explorer_crumb(p);
         }
     }
@@ -2809,18 +2818,30 @@ impl App {
         true
     }
 
-    // --- The dock's tabs, dragged into another order ------------------------------------------------------
+    // --- Sidebar sections, dragged by their headings ----------------------------------------------------
 
-    /// A press on one of the dock's tabs: it may become a drag of it along the header (`x`).
-    pub(super) fn section_press(&mut self, sec: SideSection, x: f32) {
-        let left = self.hits.rect_of(Hit::SideHeader(sec)).map_or(x, |r| r.left);
-        self.explorer.section_drag = Some(SectionDrag { sec, start: x, at: x, grab: x - left, active: false, insert: 0 });
+    /// A click on a heading folds its section away to the heading, or opens it again (Transient's).
+    pub(super) fn toggle_section(&mut self, sec: SideSection) {
+        let closed = &mut self.settings.sidebar_closed;
+        match closed.iter().position(|&s| s == sec) {
+            Some(i) => {
+                closed.remove(i);
+            }
+            None => closed.push(sec),
+        }
+        settings::save(&self.settings);
+        self.invalidate();
     }
 
-    pub(super) fn section_drag_move(&mut self, x: f32) {
+    pub(super) fn section_press(&mut self, sec: SideSection, y: f32) {
+        let top = self.hits.rect_of(Hit::SideHeader(sec)).map_or(y, |r| r.top - 8.0);
+        self.explorer.section_drag = Some(SectionDrag { sec, start_y: y, y, grab: y - top, active: false, insert: 0 });
+    }
+
+    pub(super) fn section_drag_move(&mut self, y: f32) {
         let Some(d) = self.explorer.section_drag.as_mut() else { return };
-        d.at = x;
-        if !d.active && (x - d.start).abs() > DRAG_START {
+        d.y = y;
+        if !d.active && (y - d.start_y).abs() > DRAG_START {
             d.active = true;
         }
         if d.active {
@@ -2834,15 +2855,8 @@ impl App {
         if !d.active {
             return false;
         }
-        // `insert` counts the tabs showing (History has none until there is some): it goes before the one it
-        // landed in front of, or after the last one showing.
-        let shown: Vec<SideSection> = self.sidebar_items().iter().filter_map(|it| if let SideTarget::Header(s) = it.target { Some(s) } else { None }).filter(|&s| s != d.sec).collect();
         let mut order: Vec<SideSection> = self.settings.sidebar_order.iter().copied().filter(|&s| s != d.sec).collect();
-        let at = match shown.get(d.insert) {
-            Some(before) => order.iter().position(|s| s == before).unwrap_or(order.len()),
-            None => shown.last().and_then(|last| order.iter().position(|s| s == last)).map_or(order.len(), |i| i + 1),
-        };
-        order.insert(at, d.sec);
+        order.insert(d.insert.min(order.len()), d.sec);
         if order != self.settings.sidebar_order {
             self.settings.sidebar_order = order;
             settings::save(&self.settings);
@@ -2870,17 +2884,16 @@ impl App {
     }
 
     /// A press on a sidebar row: a bookmark or collection may become a drag of it.
-    pub(super) fn side_row_press(&mut self, i: usize, x: f32, y: f32) {
+    pub(super) fn side_row_press(&mut self, i: usize, y: f32) {
         let Some((sec, from)) = self.side_entry(i) else { return };
-        let r = self.hits.rect_of(Hit::SideRow(i)).unwrap_or(D2D_RECT_F { left: x, top: y, right: x, bottom: y });
-        self.explorer.side_row_drag = Some(EntryDrag { sec, from, start_y: y, y, grab: y - r.top, start_x: x, x, grab_x: x - r.left, active: false, insert: from });
+        let top = self.hits.rect_of(Hit::SideRow(i)).map_or(y, |r| r.top);
+        self.explorer.side_row_drag = Some(EntryDrag { sec, from, start_y: y, y, grab: y - top, active: false, insert: from });
     }
 
-    pub(super) fn side_row_drag_move(&mut self, x: f32, y: f32) {
+    pub(super) fn side_row_drag_move(&mut self, y: f32) {
         let Some(d) = self.explorer.side_row_drag.as_mut() else { return };
         d.y = y;
-        d.x = x;
-        let started = !d.active && (y - d.start_y).abs().max((x - d.start_x).abs()) > DRAG_START;
+        let started = !d.active && (y - d.start_y).abs() > DRAG_START;
         if started {
             d.active = true;
         }
@@ -2931,6 +2944,91 @@ impl App {
         let mut out: Vec<u8> = self.settings.collection_order.iter().copied().filter(|k| present.contains(k)).collect();
         out.extend(present.into_iter().filter(|k| !self.settings.collection_order.contains(k)));
         out
+    }
+
+    // --- Sidebar width --------------------------------------------------------------------------------
+
+    pub(super) fn sidebar_grip_press(&mut self, x: f32) {
+        use super::explorer_view::RAIL_W;
+        self.explorer.side_spring = None;
+        self.explorer.side_stretch = 0.0;
+        self.explorer.rail_fly = None;
+        let w = if self.settings.sidebar_rail { RAIL_W } else { self.settings.sidebar_width };
+        self.explorer.side_drag = Some((x, w));
+    }
+
+    /// Its edge dragged: wider or narrower between its narrowest and widest, giving on the panes' rubber band past
+    /// either; pulled in `RAIL_SNAP` past its narrowest it folds to its icon strip, and pulled out of the strip as
+    /// far it opens again (Faye, 2026-11-13).
+    pub(super) fn sidebar_grip_drag(&mut self, x: f32) {
+        use super::explorer_view::{RAIL_SNAP, RAIL_W, SIDEBAR_MAX, SIDEBAR_MIN};
+        let Some((x0, w0)) = self.explorer.side_drag else { return };
+        let raw = (w0 + x - x0).round();
+        let rail = if self.settings.sidebar_rail { raw < RAIL_W + RAIL_SNAP } else { raw < SIDEBAR_MIN - RAIL_SNAP };
+        let stretch = if rail {
+            if raw >= RAIL_W { rubber(raw - RAIL_W) } else { -rubber(RAIL_W - raw) }
+        } else {
+            self.settings.sidebar_width = raw.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+            if raw < SIDEBAR_MIN {
+                -rubber(SIDEBAR_MIN - raw)
+            } else if raw > SIDEBAR_MAX {
+                rubber(raw - SIDEBAR_MAX)
+            } else {
+                0.0
+            }
+        };
+        self.settings.sidebar_rail = rail;
+        self.explorer.side_stretch = stretch;
+        self.invalidate();
+    }
+
+    pub(super) fn sidebar_grip_release(&mut self) {
+        // Let go stretched: it springs back.
+        if self.explorer.side_stretch != 0.0 {
+            self.explorer.side_spring = Some((self.explorer.side_stretch, Instant::now()));
+            self.explorer.side_stretch = 0.0;
+            self.invalidate();
+        }
+        if self.explorer.side_drag.take().is_some() {
+            settings::save(&self.settings);
+        }
+    }
+
+    /// Double-click on its edge: open at its default width.
+    pub(super) fn sidebar_grip_reset(&mut self) {
+        self.explorer.side_settle = Some(crate::motion::Settle::from(self.sidebar_w()));
+        self.settings.sidebar_width = crate::settings::SIDEBAR_WIDTH;
+        self.settings.sidebar_rail = false;
+        settings::save(&self.settings);
+        self.invalidate();
+    }
+
+    /// How far the sidebar's edge is pulled or bouncing past where it rests.
+    pub(super) fn sidebar_stretch(&self) -> f32 {
+        let e = &self.explorer;
+        if e.side_stretch != 0.0 {
+            return e.side_stretch;
+        }
+        e.side_spring.map_or(0.0, |(from, at)| bounce(from, at))
+    }
+
+    /// The bounce is still swinging (the frame after it lands too).
+    pub(super) fn sidebar_springing(&mut self) -> bool {
+        let swinging = self.explorer.side_spring.is_some_and(|(_, at)| motion_on() && at.elapsed().as_secs_f32() < SPRING_SECS);
+        swinging || (!swinging && self.explorer.side_spring.take().is_some())
+    }
+
+    /// A section's icon on the strip clicked: its flyout opens, or closes if it's the one open.
+    pub(super) fn rail_click(&mut self, sec: SideSection) {
+        if self.explorer.rail_fly == Some(sec) {
+            self.explorer.rail_fly = None;
+        } else {
+            self.explorer.rail_fly = Some(sec);
+            self.explorer.fly_shown = Some(sec);
+            self.explorer.side_scroll = 0.0;
+            self.explorer.side_anim = None;
+        }
+        self.invalidate();
     }
 
     // --- Scrollbar ----------------------------------------------------------------------------------
@@ -3345,9 +3443,7 @@ impl App {
             Hit::ExplorerLayout => Some("Layout".into()),
             Hit::TabNew => Some("New tab  (Ctrl+T)".into()),
             Hit::TabClose(_) => Some("Close tab  (Ctrl+W)".into()),
-            Hit::ExplorerSidebar => Some(if self.settings.dock_open { "Hide places".into() } else { "Show places".into() }),
-            // The dock's tabs: their names (they're icons alone in a narrow card).
-            Hit::SideHeader(sec) => self.sidebar_items().into_iter().find(|it| it.target == SideTarget::Header(sec)).map(|it| it.label),
+            Hit::RailIcon(sec) => self.sidebar_items().into_iter().find(|it| it.target == SideTarget::Header(sec)).map(|it| it.label),
             Hit::ExplorerBrowse => Some(if self.browsing() { "Back to the photo (Ctrl+B)".into() } else { "Browse mode (Ctrl+B)".into() }),
             // A sidebar folder's path; anything else there (This PC, a collection) its name.
             Hit::SideRow(i) => {
@@ -3425,7 +3521,6 @@ impl App {
                     | Hit::ExplorerCollections
                     | Hit::ExplorerGroup
                     | Hit::ExplorerLayout
-                    | Hit::ExplorerSidebar
                     | Hit::ExplorerBrowse
                     | Hit::Tab(_)
                     | Hit::TabClose(_)
@@ -3478,6 +3573,12 @@ impl App {
     /// went into it). None for keys it doesn't use.
     pub(super) fn explorer_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> Option<LRESULT> {
         let has = self.viewer.current.is_some() || self.home_explorer();
+        // Escape closes the icon strip's flyout first.
+        if vk == VK_ESCAPE && self.explorer.rail_fly.is_some() {
+            self.explorer.rail_fly = None;
+            self.invalidate();
+            return Some(LRESULT(0));
+        }
         match vk {
             VK_F if ctrl && has => {
                 self.explorer_find();

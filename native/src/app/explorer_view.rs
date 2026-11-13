@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use super::explorer::{EField, FOLDER_TINT, Meta};
+use super::explorer::{EField, FOLDER_TINT, Meta, SideTarget};
 use super::*;
 use crate::explorer::{self, ColKind, Kind, Place};
 use crate::shell_icons;
@@ -17,6 +17,14 @@ pub(super) fn row_h() -> f32 { crate::gfx::tsr(26.0) }
 const NAV: f32 = 28.0;
 /// The tab strip's height (Transient's).
 const STRIP_H: f32 = 32.0;
+/// The sidebar column's width range (its width is the user's, `Settings::sidebar_width`).
+pub(super) const SIDEBAR_MIN: f32 = 150.0;
+pub(super) const SIDEBAR_MAX: f32 = 420.0;
+/// The sidebar folded to its icon strip: the strip's width, how far past its narrowest its edge is pulled to fold it
+/// (and out of the strip to open it), and the list's narrowest beside the open sidebar (narrower, it's the strip).
+pub(super) const RAIL_W: f32 = 44.0;
+pub(super) const RAIL_SNAP: f32 = 60.0;
+const LIST_MIN: f32 = 300.0;
 const HEADER: f32 = 26.0;
 pub(super) const FILTER_H: f32 = 28.0;
 pub(super) const ICON_W: f32 = 24.0;
@@ -193,14 +201,49 @@ impl App {
         self.hits.add(Hit::ExplorerCard, card);
         ui::card(g, card);
         let inner = D2D_RECT_F { left: card.left + 1.0, top: card.top + 1.0, right: card.right - 1.0, bottom: card.bottom - 1.0 };
+        let w = inner.right - inner.left;
         g.push_clip(inner);
         // Never dimmed without the keyboard (Faye, 2026-11-13; it was, 2026-11-12): the selection's colour and the
         // cursor (in the list) still say where the keys are.
         g.push_fade(1.0, 1.0, 0.0, 0.0);
-        // The browse dock across the top, above the file tabs (explorer_dock.rs; Faye, 2026-11-13: it was a
-        // column at the left that only came in a wide card), in the card and in browse mode alike.
-        let (dock_bottom, dock_grip, mut moving) = self.draw_dock(g, inner);
-        let main = D2D_RECT_F { top: dock_bottom, ..inner };
+        // The sidebar is always there, in the card and in browse mode (Faye, 2026-11-13: it used to come only with
+        // browse mode's width, and nobody would find it): open, or folded to its icon strip when its edge is dragged
+        // in past its narrowest or the card leaves the list too little room beside it. It eases between the two.
+        let full_w = self.sidebar_w().clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        let room = w - full_w >= LIST_MIN;
+        let open = self.fades.get(Hit::SidebarColumn, room && !self.settings.sidebar_rail);
+        let mut moving = (open > 0.0 && open < 1.0) | self.sidebar_springing() | self.explorer.side_settle.is_some_and(|s| s.moving());
+        // Only its own choice of width gives on the rubber band (the strip the card forces doesn't resize).
+        let resizable = room || self.settings.sidebar_rail;
+        let stretch = if resizable { self.sidebar_stretch() } else { 0.0 };
+        let side_w = g.snap((RAIL_W + (full_w - RAIL_W) * open + stretch).max(RAIL_W * 0.6));
+        let side = D2D_RECT_F { right: inner.left + side_w, ..inner };
+        // Its own fill, a step further from the page than the list's (theme `pane`), inside the card's corners.
+        g.push_clip(side);
+        g.fill_round(inner, 9.0, rgb(theme::t().pane));
+        // Open: the sections at their full width (so nothing reflows as it eases), cut off at its edge; folded,
+        // the strip's icons. Each fades over the other.
+        if open > 0.0 {
+            g.push_fade(open, 1.0, 0.0, 0.0);
+            moving |= self.draw_sidebar(g, D2D_RECT_F { right: inner.left + full_w.max(side_w), ..side }, None);
+            g.pop_fade();
+        }
+        if open < 1.0 {
+            g.push_fade(1.0 - open, 1.0, 0.0, 0.0);
+            self.draw_rail(g, side, open < 0.5);
+            g.pop_fade();
+        }
+        g.pop_clip();
+        g.fill(rect(side.right, inner.top, g.px(), inner.bottom - inner.top), rgb(theme::t().divider));
+        // Its edge resizes it: a line in the accent while held, the ink on hover.
+        // (Its hit goes in after the list's, which would otherwise take the half over it.)
+        let side_grip = resizable.then(|| rect(side.right - ui::GRIP / 2.0, inner.top, ui::GRIP, inner.bottom - inner.top));
+        if side_grip.is_some() {
+            let dragging = self.explorer.side_drag.is_some();
+            let k = self.fades.hover(Hit::SidebarGrip, self.hover == Some(Hit::SidebarGrip) || dragging);
+            ui::grip_line(g, rect(side.right - 1.0, inner.top + 10.0, 2.0, inner.bottom - inner.top - 20.0), k, dragging);
+        }
+        let main = D2D_RECT_F { left: side.right + 1.0, ..inner };
         let (strip_bottom, strip_moving) = self.draw_tabs(g, main, inner);
         moving |= strip_moving;
         let main = D2D_RECT_F { top: strip_bottom, ..main };
@@ -211,8 +254,24 @@ impl App {
         } else {
             moving |= self.draw_list(g, body);
         }
-        // Its edge's hit goes in last: the tab strip's would otherwise take the half over it.
-        if let Some(grip) = dock_grip {
+        // The strip's flyout: its section's tree over the list, beside the strip, sliding and fading in.
+        if open >= 0.5 && self.explorer.rail_fly.is_some() {
+            self.explorer.rail_fly = None;
+        }
+        let fly = self.fades.get(Hit::RailFlyout, self.explorer.rail_fly.is_some());
+        moving |= fly > 0.0 && fly < 1.0;
+        if let (true, Some(sec)) = (fly > 0.0, self.explorer.fly_shown) {
+            let fw = full_w.min(w - side_w - 16.0).max(SIDEBAR_MIN.min(w - side_w));
+            let dx = g.snap(-12.0 * (1.0 - fly));
+            let fr = D2D_RECT_F { left: side.right + 1.0 + dx, right: side.right + 1.0 + dx + fw, ..inner };
+            g.push_fade(fly, 1.0, 0.0, 0.0);
+            ui::shadow(g, fr, 0.0);
+            g.fill(fr, rgb(theme::t().pane));
+            g.fill(rect(fr.right, fr.top, g.px(), fr.bottom - fr.top), rgb(theme::t().divider));
+            moving |= self.draw_sidebar(g, fr, Some(sec));
+            g.pop_fade();
+        }
+        if let Some(grip) = side_grip {
             self.hits.add(Hit::SidebarGrip, grip);
         }
         g.pop_fade();
@@ -295,7 +354,8 @@ impl App {
         let fg = ui::button_frame(g, hist, if open { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
         g.text(&[0xE70D], &g.fonts.caption_icons, hist, fg, Align::Center);
 
-        // From the right: browse mode, the grouping, the layout.
+        // From the right: browse mode, the grouping, the layout. (Bookmarks and places are the sidebar's, always
+        // there now.)
         let mut rx = main.right - 6.0 - NAV;
         let browsing = self.browsing();
         let glyph = if browsing { 0xE73F } else { 0xE740 };
@@ -824,6 +884,344 @@ impl App {
             out.push((None, format_bytes(bytes)));
         }
         out
+    }
+
+    /// The icon strip (the sidebar folded): a button per section down its middle, each opening its flyout. `hits`:
+    /// clickable (not while it fades out).
+    fn draw_rail(&mut self, g: &Gfx, r: D2D_RECT_F, hits: bool) {
+        let items = self.sidebar_items();
+        let mut y = r.top + 8.0;
+        for it in &items {
+            let SideTarget::Header(sec) = it.target else { continue };
+            let b = rect(r.left + (RAIL_W - 32.0) / 2.0, y, 32.0, 32.0);
+            let id = Hit::RailIcon(sec);
+            let on = self.explorer.rail_fly == Some(sec);
+            let st = if hits {
+                self.hits.add(id, b);
+                self.state(id, true)
+            } else {
+                ui::State::IDLE
+            };
+            let fg = ui::button_frame(g, b, if on { ui::Kind::Toggle(true) } else { ui::Kind::Subtle }, &st);
+            g.text(&[it.glyph], &g.fonts.icons, b, fg, Align::Center);
+            y += 36.0;
+        }
+    }
+
+    /// The sidebar in `r`: section headings and their places, scrolling; `only` one section (the icon strip's
+    /// flyout: its heading a plain title, never folded or dragged).
+    /// Draws the sidebar; true while its sections are still easing.
+    fn draw_sidebar(&mut self, g: &Gfx, r: D2D_RECT_F, only: Option<explorer::SideSection>) -> bool {
+        let t = theme::t();
+        self.hits.add(Hit::Sidebar, r);
+        let items = self.sidebar_items();
+        let item_h = |it: &super::explorer::SideItem| if matches!(it.target, SideTarget::Header(_)) { 34.0 } else { row_h() };
+        let target = self.explorer.row_drag.as_ref().filter(|d| d.active).and_then(|d| d.target.clone());
+        let place = self.explorer.place.clone();
+
+        // The sections as blocks (from a heading to the next), each laid out from its eased top. A section
+        // dragged by its heading leaves the flow: the others close up around a slot its height, where it would
+        // land, and its heading follows the pointer.
+        let mut blocks: Vec<(explorer::SideSection, usize, usize, f32)> = Vec::new();
+        for (i, it) in items.iter().enumerate() {
+            if let SideTarget::Header(sec) = it.target {
+                blocks.push((sec, i, i, 0.0));
+            }
+            if let Some(b) = blocks.last_mut() {
+                b.2 = i + 1;
+                b.3 += item_h(it);
+            }
+        }
+        if let Some(sec) = only {
+            blocks.retain(|b| b.0 == sec);
+        }
+        // A folded section is its heading alone; folding or opening, its height eases and its rows are cut off
+        // at its bottom.
+        let now = Instant::now();
+        let mut opens: Vec<f32> = vec![1.0; blocks.len()];
+        let mut folding = false;
+        for (k, b) in blocks.iter_mut().enumerate() {
+            let want = if only.is_none() && self.settings.sidebar_closed.contains(&b.0) { 0.0 } else { 1.0 };
+            let e = self.explorer.section_open.entry(b.0).or_insert_with(|| crate::motion::Ease::at([want]));
+            e.set([want], now);
+            folding |= e.moving(now);
+            opens[k] = e.value(now)[0].clamp(0.0, 1.0);
+            b.3 = 34.0 + (b.3 - 34.0) * opens[k];
+        }
+        let content_h = blocks.iter().map(|b| b.3).sum::<f32>() + 16.0;
+        self.explorer.side_max = (content_h - (r.bottom - r.top)).max(0.0);
+        // Eased like the list's (it jumped a whole step a notch: Faye, 2026-11-11).
+        let (side_scroll, scrolling) = self.explorer.side_scroll_now();
+        let side_scroll = side_scroll.clamp(0.0, self.explorer.side_max);
+        if !scrolling {
+            self.explorer.side_scroll = side_scroll; // a section folded shut: no scrolling past the end
+        }
+        let origin = r.top + 6.0 - side_scroll;
+        let drag = self.explorer.section_drag.as_ref().filter(|d| d.active).map(|d| (d.sec, d.y - d.grab));
+        let dragged = drag.and_then(|(sec, _)| blocks.iter().position(|b| b.0 == sec));
+        let mut slot = None;
+        let mut tops: Vec<f32> = vec![0.0; blocks.len()];
+        if let (Some(di), Some((_, head_y))) = (dragged, drag) {
+            let others: Vec<usize> = (0..blocks.len()).filter(|&k| k != di).collect();
+            // Its heading's middle, against the others' middles as they'd sit without it.
+            let mid = head_y + 21.0 - origin;
+            let mut y = 0.0;
+            let mut insert = 0;
+            for &k in &others {
+                if y + blocks[k].3 / 2.0 < mid {
+                    insert += 1;
+                }
+                y += blocks[k].3;
+            }
+            if let Some(d) = self.explorer.section_drag.as_mut() {
+                d.insert = insert;
+            }
+            let mut y = 0.0;
+            for (n, &k) in others.iter().enumerate() {
+                if n == insert {
+                    slot = Some(y);
+                    y += blocks[di].3;
+                }
+                tops[k] = y;
+                y += blocks[k].3;
+            }
+            if slot.is_none() {
+                slot = Some(y);
+            }
+        } else {
+            let mut y = 0.0;
+            for (k, b) in blocks.iter().enumerate() {
+                tops[k] = y;
+                y += b.3;
+            }
+        }
+        let animate = drag.is_some() || now < self.explorer.section_anim_until;
+        let mut moving = drag.is_some() || folding || scrolling;
+        let mut ys: Vec<Option<f32>> = vec![None; items.len()];
+        let mut bottoms: Vec<f32> = vec![f32::MAX; items.len()];
+        // Where a dragged bookmark or collection would land: its slot's top and height.
+        let mut row_slots: Vec<(f32, f32)> = Vec::new();
+        for (k, b) in blocks.iter().enumerate() {
+            if Some(k) == dragged {
+                if let Some((_, head_y)) = drag {
+                    self.explorer.section_pos.insert(b.0, crate::motion::Ease::at([head_y - origin]));
+                }
+                continue;
+            }
+            let e = self.explorer.section_pos.entry(b.0).or_insert_with(|| crate::motion::Ease::at([tops[k]]));
+            if animate {
+                e.set([tops[k]], now);
+            } else {
+                *e = crate::motion::Ease::at([tops[k]]);
+            }
+            moving |= e.moving(now);
+            let top = origin + e.value(now)[0];
+            let bottom = top + b.3;
+            // Its entries (a top-level row and its open tree beneath it), each at its eased place in the section;
+            // a bookmark or collection being dragged follows the pointer and the others make room (Faye,
+            // 2026-11-10), as the sections do.
+            let mut groups: Vec<(usize, usize, f32, String)> = Vec::new(); // first item, end, height, key
+            let mut head_h = 0.0;
+            for i in b.1..b.2 {
+                let it = &items[i];
+                if it.depth == 1 && matches!(it.target, SideTarget::Place(_)) {
+                    groups.push((i, i + 1, item_h(it), format!("{:?}|{}", b.0, it.node.clone().unwrap_or_else(|| it.label.clone()))));
+                } else if let Some(gr) = groups.last_mut().filter(|_| it.depth > 1) {
+                    gr.1 = i + 1;
+                    gr.2 += item_h(it);
+                } else {
+                    ys[i] = Some(top + head_h);
+                    bottoms[i] = bottom;
+                    head_h += item_h(it);
+                }
+            }
+            let row_drag = self.explorer.side_row_drag.as_ref().filter(|d| d.active && d.sec == b.0).map(|d| (d.from, d.y - d.grab));
+            let mut offs: Vec<f32> = vec![0.0; groups.len()];
+            let mut row_slot = None;
+            match row_drag.filter(|&(from, _)| from < groups.len()) {
+                Some((from, row_y)) => {
+                    let others: Vec<usize> = (0..groups.len()).filter(|&k| k != from).collect();
+                    let mid = row_y + groups[from].2 / 2.0 - (top + head_h);
+                    let mut y = 0.0;
+                    let mut insert = 0;
+                    for &k in &others {
+                        if y + groups[k].2 / 2.0 < mid {
+                            insert += 1;
+                        }
+                        y += groups[k].2;
+                    }
+                    if let Some(d) = self.explorer.side_row_drag.as_mut() {
+                        d.insert = insert;
+                    }
+                    let mut y = 0.0;
+                    for (n, &k) in others.iter().enumerate() {
+                        if n == insert {
+                            row_slot = Some(y);
+                            y += groups[from].2;
+                        }
+                        offs[k] = y;
+                        y += groups[k].2;
+                    }
+                    if row_slot.is_none() {
+                        row_slot = Some(y);
+                    }
+                    offs[from] = row_y - (top + head_h);
+                }
+                None => {
+                    let mut y = 0.0;
+                    for (k, gr) in groups.iter().enumerate() {
+                        offs[k] = y;
+                        y += gr.2;
+                    }
+                }
+            }
+            let row_animate = row_drag.is_some() || now < self.explorer.row_anim_until;
+            for (k, gr) in groups.iter().enumerate() {
+                let dragged_row = row_drag.is_some_and(|(from, _)| from == k);
+                let e = self.explorer.row_pos.entry(gr.3.clone()).or_insert_with(|| crate::motion::Ease::at([offs[k]]));
+                if dragged_row || !row_animate {
+                    *e = crate::motion::Ease::at([offs[k]]);
+                } else {
+                    e.set([offs[k]], now);
+                }
+                moving |= e.moving(now) || dragged_row;
+                let mut y = top + head_h + e.value(now)[0];
+                for i in gr.0..gr.1 {
+                    ys[i] = Some(y);
+                    // The dragged row isn't cut off by its section's bottom while it's held.
+                    bottoms[i] = if dragged_row { f32::MAX } else { bottom };
+                    y += item_h(&items[i]);
+                }
+            }
+            if let (Some(sy), Some((from, _))) = (row_slot, row_drag) {
+                row_slots.push((top + head_h + sy, groups[from].2));
+            }
+        }
+
+        let hover_tint = theme::mix(t.sidebar, t.accent, 0.2);
+        g.push_clip(r);
+        if let (Some(di), Some(sy)) = (dragged, slot) {
+            let sr = rect(r.left + 6.0, origin + sy + 4.0, r.right - r.left - 12.0, blocks[di].3 - 6.0);
+            g.fill_round(sr, 4.0, gfx::rgba(t.accent, 0.10));
+            ui::stroke(g, sr, 4.0, rgb(t.accent));
+        }
+        for &(sy, sh) in &row_slots {
+            let sr = rect(r.left + 6.0, sy, r.right - r.left - 12.0, sh);
+            g.fill_round(sr, 4.0, gfx::rgba(t.accent, 0.10));
+            ui::stroke(g, sr, 4.0, rgb(t.accent));
+        }
+        for (i, it) in items.iter().enumerate() {
+            let Some(y) = ys[i] else { continue };
+            // A row of a section folding away: gone past its bottom, cut off where it crosses it.
+            let header = matches!(it.target, SideTarget::Header(_));
+            if !header && y >= bottoms[i] {
+                continue;
+            }
+            let cut = !header && y + item_h(it) > bottoms[i];
+            if cut {
+                g.push_clip(rect(r.left, y, r.right - r.left, bottoms[i] - y));
+            }
+            match &it.target {
+                SideTarget::Header(sec) => {
+                    // A button, as Transient's headings are: hover tinted and outlined, pressed solid accent; the
+                    // label semibold; a chevron at the right while hovered, and while folded.
+                    let hr = rect(r.left + 10.0, y + 8.0, r.right - r.left - 20.0, row_h());
+                    let box_ = rect(r.left + 6.0, y + 8.0, r.right - r.left - 12.0, row_h());
+                    if only.is_some() {
+                        // The flyout's title.
+                        g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, row_h()), rgb(t.label), Align::Center);
+                        g.text(&wide(&it.label), &g.fonts.overline, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 48.0, row_h()), rgb(t.label), Align::Left);
+                        if cut {
+                            g.pop_clip();
+                        }
+                        continue;
+                    }
+                    self.hits.add(Hit::SideHeader(*sec), box_);
+                    let hid = Hit::SideHeader(*sec);
+                    let hovered = self.hover == Some(hid) && drag.is_none() && target.is_none();
+                    let hover = self.fades.hover(hid, hovered);
+                    let pressed = hovered && self.pressed == Some(hid);
+                    if pressed {
+                        g.fill_round(box_, 4.0, rgb(t.accent));
+                    } else if hover > 0.0 {
+                        g.fill_round(box_, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
+                        ui::stroke(g, box_, 4.0, gfx::rgba(t.accent, hover));
+                    }
+                    let (c, chev) = if pressed { (t.on_accent, t.on_accent) } else if hovered { (t.text, t.label) } else { (t.label, t.placeholder) };
+                    g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left, hr.top, 16.0, row_h()), rgb(c), Align::Center);
+                    g.text(&wide(&it.label), &g.fonts.overline, rect(hr.left + 24.0, hr.top, hr.right - hr.left - 48.0, row_h()), rgb(c), Align::Left);
+                    let closed = self.settings.sidebar_closed.contains(sec);
+                    let open = blocks.iter().position(|b| b.0 == *sec).map_or(1.0, |k| opens[k]);
+                    let a = hover.max(1.0 - open);
+                    if a > 0.0 {
+                        let glyph = if closed { 0xE76C } else { 0xE70D };
+                        g.text(&[glyph], &g.fonts.small_icons, rect(box_.right - 24.0, hr.top, 16.0, row_h()), gfx::rgba(chev, a), Align::Center);
+                    }
+                }
+                SideTarget::Hint => {
+                    g.text(&wide(&it.label), &g.fonts.body, rect(r.left + 20.0, y, r.right - r.left - 28.0, row_h()), rgb(t.placeholder), Align::Left);
+                }
+                SideTarget::Place(p) => {
+                    let row = rect(r.left + 6.0, y, r.right - r.left - 12.0, row_h());
+                    if row.bottom > r.top && row.top < r.bottom {
+                        self.hits.add(Hit::SideRow(i), row);
+                    }
+                    let current = place.as_ref().is_some_and(|c| c.same(p)) && it.depth >= 1;
+                    let is_target = false;
+                    let hover = self.fades.hover(Hit::SideRow(i), self.hover == Some(Hit::SideRow(i)) && target.is_none());
+                    if current || is_target {
+                        g.fill_round(row, 4.0, rgb(t.selected));
+                        if is_target {
+                            ui::stroke(g, row, 4.0, rgb(t.accent));
+                        }
+                    } else if hover > 0.0 {
+                        g.fill_round(row, 4.0, windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F { a: hover, ..hover_tint });
+                    }
+                    if hover > 0.0 && !is_target {
+                        ui::stroke(g, row, 4.0, gfx::rgba(t.accent, hover));
+                    }
+                    let x = row.left + 4.0 + (it.depth.saturating_sub(1)) as f32 * 14.0;
+                    if let Some(node) = &it.node {
+                        let cr = rect(x, row.top, 16.0, row_h());
+                        self.hits.add(Hit::SideChevron(i), cr);
+                        let _ = node;
+                        g.text(&[if it.expanded { 0xE70D } else { 0xE76C }], &g.fonts.caption_icons, cr, rgb(t.placeholder), Align::Center);
+                    }
+                    let ix = x + 18.0;
+                    // Windows' icons for places, drives, bookmarks and history (by path: Downloads' arrow, a
+                    // drive's own), the one folder icon for the folders opened under them, as Transient's tree.
+                    let shell = if it.depth > 1 { Some(shell_icons::Kind::Folder) } else { place_icon(p) };
+                    let drew = shell.is_some_and(|k| shell_icon(g, &k, rect(ix, row.top, 16.0, row_h()), 1.0, None));
+                    if drew {
+                        // Drawn.
+                    } else if it.glyph == 0xEA3B {
+                        // A colour collection: its swatch as a dot.
+                        let c = it.tint.unwrap_or(t.icon);
+                        g.fill_round(rect(ix + 3.0, row.top + (row_h() - 10.0) / 2.0, 10.0, 10.0), 5.0, rgb(c));
+                    } else {
+                        let glyph = if it.glyph == 0xE8B7 { 0xE8D5 } else { it.glyph };
+                        g.text(&[glyph], &g.fonts.body_icons, rect(ix, row.top, 16.0, row_h()), rgb(it.tint.unwrap_or(t.icon)), Align::Center);
+                    }
+                    g.text(&wide(&it.label), &g.fonts.body, rect(ix + 24.0, row.top, (row.right - ix - 28.0).max(0.0), row_h()), rgb(t.text), Align::Left);
+                }
+            }
+            if cut {
+                g.pop_clip();
+            }
+        }
+        // The dragged heading, lifted over the rest where the pointer holds it.
+        if let (Some(di), Some((_, head_y))) = (dragged, drag) {
+            let raised = theme::raised();
+            let it = &items[blocks[di].1];
+            let hr = rect(r.left + 6.0, head_y + 8.0, r.right - r.left - 12.0, row_h());
+            ui::shadow(g, hr, 4.0);
+            g.fill_round(hr, 4.0, rgb(raised.popup));
+            ui::stroke(g, hr, 4.0, rgb(raised.divider));
+            g.text(&[it.glyph], &g.fonts.small_icons, rect(hr.left + 4.0, hr.top, 16.0, row_h()), rgb(raised.text), Align::Center);
+            g.text(&wide(&it.label), &g.fonts.body, rect(hr.left + 28.0, hr.top, hr.right - hr.left - 32.0, row_h()), rgb(raised.text), Align::Left);
+        }
+        g.pop_clip();
+        moving
     }
 
     /// The cover for a file Looker can't open: Windows' own thumbnail of it when there is one (a video's frame,

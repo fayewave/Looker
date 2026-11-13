@@ -599,7 +599,7 @@ impl SideSection {
     /// History last (Faye, 2026-11-09); Network after Places, as Explorer's (2026-11-10).
     pub const DEFAULT: [SideSection; 5] = [SideSection::Bookmarks, SideSection::Collections, SideSection::Places, SideSection::Network, SideSection::History];
 
-    pub fn key(self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
             SideSection::Bookmarks => "bookmarks",
             SideSection::Collections => "collections",
@@ -624,6 +624,19 @@ impl SideSection {
             if !out.contains(&x) {
                 let at = SideSection::DEFAULT[..i].iter().rev().find_map(|p| out.iter().position(|o| o == p)).map_or(0, |j| j + 1);
                 out.insert(at, x);
+            }
+        }
+        out
+    }
+
+    /// A set of sections (the folded ones): the known keys, once each, nothing added.
+    pub fn parse_set(s: &str) -> Vec<SideSection> {
+        let mut out: Vec<SideSection> = Vec::new();
+        for k in s.split(',') {
+            if let Some(x) = SideSection::DEFAULT.into_iter().find(|x| x.key() == k.trim()) {
+                if !out.contains(&x) {
+                    out.push(x);
+                }
             }
         }
         out
