@@ -183,7 +183,7 @@ pub const STRIP_MAX: f32 = 480.0;
 pub const INFO_WIDTH: f32 = 320.0;
 pub const INFO_MIN: f32 = 260.0;
 /// The explorer card's narrowest: a tad wider than the info card's (Faye, 2026-11-10), so its columns and footer fit.
-pub const EXPLORER_MIN: f32 = 400.0;
+pub const EXPLORER_MIN: f32 = 450.0;
 pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
