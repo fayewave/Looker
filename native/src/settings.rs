@@ -80,8 +80,11 @@ pub struct Settings {
     pub browse_share: f32,
     /// The explorer's columns, in order, with their widths (Name's is 0: it takes what's left).
     pub explorer_columns: Vec<(crate::explorer::ColKind, f32)>,
-    /// The explorer's sidebar column's width, as its edge was last dragged.
-    pub sidebar_width: f32,
+    /// The browse dock across the explorer's top: its places area's height as its edge was last dragged, whether
+    /// it's open (else folded to its tabs), and the section showing (None: the first).
+    pub dock_height: f32,
+    pub dock_open: bool,
+    pub dock_tab: Option<crate::explorer::SideSection>,
     /// The default view lists the subfolders' files too.
     pub explorer_subfolders: bool,
     /// The default view's row height, in rows (1-4).
@@ -93,10 +96,8 @@ pub struct Settings {
     pub explorer_column_w: f32,
     /// Folders (and the places that aren't folders, `explorer::view_key`) with a view of their own.
     pub views: Vec<crate::explorer::SavedView>,
-    /// The explorer sidebar's sections, top to bottom.
+    /// The browse dock's sections (its tabs), left to right.
     pub sidebar_order: Vec<crate::explorer::SideSection>,
-    /// The sections folded away to their headings.
-    pub sidebar_closed: Vec<crate::explorer::SideSection>,
     /// The Collections section's order as dragged: 0 Favourites, 1 + a colour tag's index (empty: the default).
     pub collection_order: Vec<u8>,
     /// The explorer's tabs, left to right (`explorer::place_key`), and the one in front.
@@ -169,7 +170,7 @@ pub const EXPLORER_WIDTH: f32 = 320.0;
 /// The home page lists this many recent files (Faye, 2026-11-11: it was 12).
 pub const RECENT_CAPACITY: usize = 50;
 pub const VISITED_CAPACITY: usize = 10;
-pub const SIDEBAR_WIDTH: f32 = 210.0;
+pub const DOCK_HEIGHT: f32 = 168.0;
 pub const CACHE_MB: u32 = 512;
 /// The choices the Settings page offers for the decode cache.
 pub const CACHE_CHOICES: [u32; 5] = [128, 256, 512, 1024, 2048];
@@ -186,7 +187,7 @@ pub const INFO_MAX: f32 = 640.0;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), sidebar_width: SIDEBAR_WIDTH, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), sidebar_closed: Vec::new(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100, text_scale: 1.0, click_hides_ui: false }
+        Settings { window: None, remember_window: true, sort: Sort { field: crate::folder::SortField::Date, descending: true }, info_visible: false, info_width: INFO_WIDTH, explorer_visible: false, explorer_width: 0.0, wheel_navigates: false, zoom_center: false, theme: crate::theme::ThemeId::Black, theme_follow: false, theme_dark: crate::theme::ThemeId::Black, theme_light: crate::theme::ThemeId::Light, bars_opaque: false, accent: crate::theme::Accent::DEFAULT, accent_custom: crate::theme::DEFAULT_CUSTOM, checkerboard: true, checkerboard_video: false, cache_mb: CACHE_MB, recents_enabled: true, recents: Vec::new(), strip_visible: false, strip_height: STRIP_HEIGHT, strip_other_files: true, explorer_other_files: true, slideshow_seconds: SLIDESHOW_SECONDS, default_hint_dismissed: false, bookmarks: Vec::new(), visited: Vec::new(), explorer_group: crate::explorer::Group::Mixed, browse_share: 0.0, explorer_columns: crate::explorer::ColKind::defaults(), dock_height: DOCK_HEIGHT, dock_open: true, dock_tab: None, explorer_subfolders: false, explorer_height: 1, explorer_xsort: None, explorer_layout: crate::explorer::Layout::List, explorer_column_w: crate::explorer::COLUMN_W, views: Vec::new(), sidebar_order: crate::explorer::SideSection::DEFAULT.to_vec(), collection_order: Vec::new(), tabs: Vec::new(), tab_active: 0, tab_layouts: Vec::new(), date_show_date: true, date_show_time: true, date_two_digit_year: false, date_pad: true, date_align: true, video_volume: 0.8, video_muted: false, video_autoplay: true, video_frames: false, video_passthrough: false, video_loop_secs: 10, video_start_muted: false, video_resume: true, audio_spectrum: false, text_wrap: true, text_font: "Consolas".into(), text_font_weight: 400, text_font_italic: false, text_font_pt: 10.5, text_status: true, text_numbers: true, text_spell: true, text_autocorrect: true, text_markdown: true, text_margins: [750, 1000, 750, 1000], subtitle_size: 100, text_scale: 1.0, click_hides_ui: false }
     }
 }
 
@@ -381,7 +382,9 @@ pub fn parse(text: &str) -> Settings {
             "bookmark" if !v.is_empty() => s.bookmarks.push(PathBuf::from(v)),
             "visited" if !v.is_empty() && s.visited.len() < VISITED_CAPACITY => s.visited.push(PathBuf::from(v)),
             "explorer_group" => s.explorer_group = crate::explorer::Group::parse(v).unwrap_or_default(),
-            "sidebar_width" => s.sidebar_width = v.parse::<f32>().map_or(SIDEBAR_WIDTH, |w| w.clamp(150.0, 420.0)),
+            "dock_height" => s.dock_height = v.parse::<f32>().map_or(DOCK_HEIGHT, |h| h.clamp(40.0, 2000.0)),
+            "dock_open" => s.dock_open = v != "0",
+            "dock_tab" => s.dock_tab = crate::explorer::SideSection::DEFAULT.into_iter().find(|x| x.key() == v.trim()),
             "explorer_columns" => s.explorer_columns = crate::explorer::ColKind::parse_list(v),
             "explorer_subfolders" => s.explorer_subfolders = v == "1",
             "explorer_height" => s.explorer_height = v.parse::<u8>().map_or(1, |h| h.clamp(1, crate::explorer::HEIGHT_MAX)),
@@ -392,7 +395,6 @@ pub fn parse(text: &str) -> Settings {
             "view3" => s.views.extend(crate::explorer::SavedView::parse3(v)),
             "explorer_layout" => (s.explorer_layout, s.explorer_column_w) = crate::explorer::Layout::parse(v),
             "sidebar_order" => s.sidebar_order = crate::explorer::SideSection::parse_list(v),
-            "sidebar_closed" => s.sidebar_closed = crate::explorer::SideSection::parse_set(v),
             "collection_order" => s.collection_order = v.split(',').filter_map(|k| k.trim().parse::<u8>().ok()).collect(),
             "tab" if !v.is_empty() && s.tabs.len() < 64 => s.tabs.push(v.to_string()),
             "tab_active" => s.tab_active = v.parse().unwrap_or(0),
@@ -481,7 +483,11 @@ pub fn format(s: &Settings) -> String {
     out.push_str(&format!("explorer_group={}\n", s.explorer_group.key()));
     out.push_str(&format!("browse_share={:.3}\n", s.browse_share));
     out.push_str(&format!("explorer_columns={}\n", crate::explorer::ColKind::format(&s.explorer_columns)));
-    out.push_str(&format!("sidebar_width={}\n", s.sidebar_width.round()));
+    out.push_str(&format!("dock_height={}\n", s.dock_height.round()));
+    out.push_str(&format!("dock_open={}\n", s.dock_open as u8));
+    if let Some(t) = s.dock_tab {
+        out.push_str(&format!("dock_tab={}\n", t.key()));
+    }
     out.push_str(&format!("explorer_subfolders={}\n", s.explorer_subfolders as i32));
     out.push_str(&format!("explorer_height={}\n", s.explorer_height));
     out.push_str(&format!("explorer_xsort={}\n", crate::explorer::format_xsort(s.explorer_xsort)));
@@ -490,7 +496,6 @@ pub fn format(s: &Settings) -> String {
         out.push_str(&format!("view3={}\n", v.format()));
     }
     out.push_str(&format!("sidebar_order={}\n", crate::explorer::SideSection::format(&s.sidebar_order)));
-    out.push_str(&format!("sidebar_closed={}\n", crate::explorer::SideSection::format(&s.sidebar_closed)));
     out.push_str(&format!("collection_order={}\n", s.collection_order.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")));
     for t in &s.tabs {
         out.push_str(&format!("tab={t}\n"));
@@ -663,7 +668,9 @@ mod tests {
             explorer_group: crate::explorer::Group::Mixed,
             browse_share: 0.625,
             explorer_columns: vec![(crate::explorer::ColKind::Name, 0.0), (crate::explorer::ColKind::Taken, 150.0)],
-            sidebar_width: 260.0,
+            dock_height: 240.0,
+            dock_open: false,
+            dock_tab: Some(crate::explorer::SideSection::Network),
             explorer_subfolders: true,
             explorer_height: 3,
             explorer_xsort: None,
@@ -678,7 +685,6 @@ mod tests {
                 crate::explorer::SavedView { path: PathBuf::from(r"D:\"), scope: crate::explorer::Scope::Off, view: crate::explorer::View::default() },
             ],
             sidebar_order: vec![crate::explorer::SideSection::History, crate::explorer::SideSection::Places, crate::explorer::SideSection::Bookmarks, crate::explorer::SideSection::Network, crate::explorer::SideSection::Collections],
-            sidebar_closed: vec![crate::explorer::SideSection::Places],
             collection_order: vec![3, 0, 1],
             tabs: vec![r"C:\Users\me\Pictures".into(), "::favourites".into()],
             tab_active: 1,

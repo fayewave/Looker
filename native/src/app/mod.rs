@@ -12,6 +12,7 @@ mod explorer;
 mod extract;
 pub(crate) use extract::ExtractResult;
 mod explorer_columns;
+mod explorer_dock;
 mod explorer_ops;
 mod explorer_view;
 mod info;

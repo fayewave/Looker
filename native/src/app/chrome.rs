@@ -265,6 +265,7 @@ impl App {
             | Hit::ExplorerSidebar
             | Hit::ExplorerBrowse
             | Hit::Tab(_)
+            | Hit::SideHeader(_)
             | Hit::SideRow(_) => self.explorer_tooltip(h),
             _ => Self::tooltip_text(h).map(String::from),
         }

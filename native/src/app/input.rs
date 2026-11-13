@@ -248,13 +248,13 @@ impl App {
                         self.header_drag_move(x);
                     }
                     if self.explorer.side_row_drag.is_some() {
-                        self.side_row_drag_move(y);
+                        self.side_row_drag_move(x, y);
                     }
                     if self.explorer.marquee.is_some() {
                         self.marquee_move(x, y);
                     }
                     if self.explorer.section_drag.is_some() {
-                        self.section_drag_move(y);
+                        self.section_drag_move(x);
                     }
                     if self.explorer.strip.drag.is_some() {
                         self.tab_drag_move(x);
@@ -274,8 +274,8 @@ impl App {
                     if self.explorer.thumb_drag.is_some() {
                         self.thumb_move(y);
                     }
-                    if self.explorer.side_drag.is_some() {
-                        self.sidebar_grip_drag(x);
+                    if self.explorer.dock_drag.is_some() {
+                        self.dock_grip_drag(y);
                     }
                     if self.pressed == Some(Hit::PageThumb) {
                         self.page_thumb_drag(y);
@@ -368,9 +368,9 @@ impl App {
                         // The zoom level drags left and right (all the way through a drag, wherever the pointer goes).
                         _ if self.zoom_scrub.is_some_and(|(_, moved)| moved) => IDC_SIZEWE,
                         Some(Hit::Tool(Tool::Zoom)) if self.tool_enabled(Tool::Zoom) => IDC_SIZEWE,
-                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::ColumnEdge(_) | Hit::SidebarGrip) => IDC_SIZEWE,
-                        Some(Hit::StripGrip) => IDC_SIZENS,
-                        Some(Hit::SideHeader(_)) => IDC_SIZEALL,
+                        Some(Hit::InfoGrip | Hit::ExplorerGrip | Hit::ColEdge(_) | Hit::ColumnEdge(_)) => IDC_SIZEWE,
+                        Some(Hit::StripGrip | Hit::SidebarGrip) => IDC_SIZENS,
+                        Some(Hit::SideHeader(_)) => IDC_HAND,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
                         _ if self.text_size_drag.is_some() => IDC_SIZEWE,
@@ -505,9 +505,9 @@ impl App {
                         Some(Hit::ColumnEdge(i)) => self.column_edge_press(i as usize, x),
                         Some(Hit::ColumnHScroll) => self.hthumb_press(x),
                         Some(Hit::ExplorerThumb) => self.thumb_press(y),
-                        Some(Hit::SidebarGrip) => self.sidebar_grip_press(x),
-                        Some(Hit::SideHeader(s)) => self.section_press(s, y),
-                        Some(Hit::SideRow(i)) => self.side_row_press(i, y),
+                        Some(Hit::SidebarGrip) => self.dock_grip_press(y),
+                        Some(Hit::SideHeader(s)) => self.section_press(s, x),
+                        Some(Hit::SideRow(i)) => self.side_row_press(i, x, y),
                         Some(Hit::Tab(i)) => self.tab_press(i as usize, x),
                         Some(Hit::ArchiveRow(_) | Hit::ArchiveList) => self.archive_press(x, y),
                         _ => {}
@@ -564,7 +564,7 @@ impl App {
                     let dropped = self.explorer_row_release() | self.header_release() | self.section_release() | self.side_row_release() | self.marquee_release() | self.tab_release() | self.text_tab_release();
                     self.archive_release(dropped);
                     self.col_edge_release();
-                    self.sidebar_grip_release();
+                    self.dock_grip_release();
                     self.explorer.thumb_drag = None;
                     let _ = ReleaseCapture();
                     let (x, y) = self.dip_from_lparam(lp);
@@ -633,7 +633,7 @@ impl App {
                             Some(Hit::ExplorerGroup) => self.explorer_group_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerLayout) => self.explorer_layout_menu(r.unwrap_or_default()),
                             Some(Hit::ExplorerSidebar) => {
-                                self.explorer.sidebar_open = !self.explorer.sidebar_open;
+                                self.dock_toggle();
                             }
                             Some(Hit::ExplorerBrowse) => self.toggle_browse(),
                             Some(Hit::CrumbChevron(i)) => self.crumb_popup(i + 1, r.unwrap_or_default()),
@@ -652,7 +652,7 @@ impl App {
                                 self.explorer_commit_fields();
                             }
                             Some(Hit::SideRow(i)) => self.sidebar_click(i),
-                            Some(Hit::SideHeader(s)) => self.toggle_section(s),
+                            Some(Hit::SideHeader(s)) => self.dock_pick(s),
                             Some(Hit::TabClose(i)) => self.close_tab(i as usize),
                             Some(Hit::TabNew) => self.new_tab(None),
                             Some(Hit::SideChevron(i)) => {
@@ -892,7 +892,7 @@ impl App {
                         self.column_press_focus(x, y);
                     }
                     if self.hit(x, y) == Some(Hit::SidebarGrip) {
-                        self.sidebar_grip_reset();
+                        self.dock_grip_reset();
                         return Some(LRESULT(0));
                     }
                     if let Some(Hit::ExplorerRow(i)) = self.hit(x, y) {
@@ -948,7 +948,7 @@ impl App {
                     self.col_edge_release();
                     self.column_edge_release();
                     self.explorer.cols.hthumb = None;
-                    self.sidebar_grip_release();
+                    self.dock_grip_release();
                     if self.pan_drag.take().is_some() {
                         self.model_pan_end();
                     }
