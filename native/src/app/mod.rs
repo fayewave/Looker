@@ -166,7 +166,6 @@ enum Hit {
     Tool(Tool),
     Reveal,
     /// The status row's zoom percentage: a click toggles fit and 100 %, as a double-click on the photo does.
-    StatusZoom,
     Open,
     Viewport,
     /// The Settings card: the window under it (modal: a press there puts it away), the card, a section in its
@@ -263,6 +262,8 @@ enum Hit {
     SidebarGrip,
     /// Not hit: the key the sidebar column's slide in and out is eased under.
     SidebarColumn,
+    /// Not a hit: the key of the sticky line's guide fading in and out.
+    StickyGuide,
     SideRow(usize),
     /// Not a hit: the key a row's multi-selection fill eases under.
     RowSolid(usize),
@@ -1273,13 +1274,10 @@ impl App {
         self.after_zoom();
     }
 
-    /// A zoom gesture: re-decode sharper if needed, and flash the new zoom level.
+    /// A zoom gesture: re-decode sharper if needed. (No toast of the level: the toolbar shows it. Faye, 2026-11-13.)
     fn after_zoom(&mut self) {
         self.sync_page_to_view();
         self.schedule_upgrade();
-        if self.view.has_content() {
-            self.show_toast(format!("{:.0}%", self.view.zoom_percent()), true);
-        }
         self.invalidate();
     }
 

@@ -378,7 +378,6 @@ impl App {
                         Some(Hit::TextSizeStep(_)) => IDC_HAND,
                         Some(
                             Hit::Reveal
-                            | Hit::StatusZoom
                             | Hit::InfoPath
                             | Hit::InfoRow(_)
                             | Hit::InfoEdit(_)
@@ -676,7 +675,6 @@ impl App {
                                 self.save_info_edits();
                             }
                             Some(Hit::InfoDiscard) => self.ask_info_discard(),
-                            Some(Hit::StatusZoom) => self.status_zoom_click(),
                             Some(Hit::StripCell(i)) => self.open_strip_item(i),
                             Some(Hit::ExplorerRow(i)) => self.explorer_click(i),
                             Some(Hit::ExplorerBack) => self.explorer_back(),

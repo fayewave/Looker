@@ -2989,6 +2989,27 @@ impl App {
         if browse - card >= 24.0 { (browse, true) } else { (card, false) }
     }
 
+    /// While the explorer's edge is dragged towards the middle, a soft line down the window shows the sticky line,
+    /// where it will hold (Faye, 2026-11-13): under the cards, fading in near it and out away from it or let go.
+    pub(super) fn draw_sticky_guide(&mut self, g: &Gfx) -> bool {
+        /// How near (DIPs) the dragged edge brings it in.
+        const NEAR: f32 = 240.0;
+        let (line, _) = self.sticky_target();
+        let near = self.explorer.drag.is_some() && (self.explorer.last_side - line).abs() < NEAR;
+        let k = self.fades.get(Hit::StickyGuide, near);
+        if k <= 0.0 {
+            return false;
+        }
+        // Where the card's edge (its grip line) sits at that width, top to bottom of the cards, fading at both ends.
+        let v = self.viewport();
+        let x = g.snap(v.left + line - MARGIN);
+        let r = rect(x - 1.0, v.top + MARGIN, 2.0, v.bottom - v.top - 2.0 * MARGIN);
+        let ink = theme::t().ink;
+        let a = 0.32 * k;
+        g.fill_vgradient(r, &[(0.0, gfx::rgba(ink, 0.0)), (0.18, gfx::rgba(ink, a)), (0.82, gfx::rgba(ink, a)), (1.0, gfx::rgba(ink, 0.0))]);
+        k < 1.0
+    }
+
     /// One drag covers both widths: the card up to its widest, then browse mode on from there (leaving the photo
     /// at least 200 DIPs); dragged back, it's the card again.
     pub(super) fn explorer_grip_drag(&mut self, x: f32) {
