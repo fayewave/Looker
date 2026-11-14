@@ -14,7 +14,11 @@ use windows::core::{HSTRING, PCSTR};
 use super::{Decoded, wic};
 
 /// `LOOKER_VIDEO_API` in looker_video.c: a DLL built for another version is refused.
-const API: c_int = 13;
+const API: c_int = 14;
+
+/// The audio stream to open for every audio track at once, mixed into one (LV_ALL_AUDIO): each `Track` is then
+/// marked playing.
+pub const ALL_AUDIO: i32 = -2;
 
 /// `LvInfo` in looker_video.c.
 #[repr(C)]

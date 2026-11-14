@@ -435,7 +435,15 @@ impl App {
             let rows: Vec<Entry<Action>> = if tracks.is_empty() {
                 vec![Entry::Item(MenuItem { icon: None, tint: None, action: Action::AudioTrack(-1), glyph: None, label: "No audio".into(), accel: None, check: None, enabled: false, current: false })]
             } else {
-                tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing)).collect()
+                let mixed = self.video_audio_mixed();
+                let several = tracks.len() > 1;
+                let mut rows: Vec<Entry<Action>> =
+                    tracks.into_iter().map(|(stream, label, playing)| check(Action::AudioTrack(stream), &label, playing && !mixed)).collect();
+                if several {
+                    rows.push(Entry::Separator);
+                    rows.push(check(Action::AudioTrack(crate::imaging::video::ALL_AUDIO), "All tracks at once", mixed));
+                }
+                rows
             };
             e.push(Entry::Sub(Some(0xE8D6), "Audio track".into(), rows));
             e.push(Entry::Sub(Some(0xE7F0), "Subtitles".into(), self.subtitle_entries()));

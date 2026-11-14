@@ -1509,13 +1509,31 @@ impl App {
         t.iter().enumerate().map(|(n, tr)| (tr.stream, tr.label(n + 1), tr.playing != 0)).collect()
     }
 
+    /// Whether the playing video plays every audio track at once (`ALL_AUDIO`: each one is marked playing).
+    pub(super) fn video_audio_mixed(&self) -> bool {
+        let t = self.video_audio_tracks();
+        t.len() > 1 && t.iter().all(|t| t.2)
+    }
+
     /// Plays the video's audio stream `stream` (Faye, 2026-11-10): the player opens again on it, where it was and
     /// playing if it was.
+    /// `stream` may be `ALL_AUDIO`: every track at once, mixed (Faye, 2026-11-14: game captures with the game and
+    /// the mic on tracks of their own).
     pub(super) fn set_audio_track(&mut self, stream: i32) {
-        let label = self.video_audio_tracks().into_iter().find(|t| t.0 == stream).map(|t| t.1);
+        let mixed = self.video_audio_mixed();
+        let label = if stream == crate::imaging::video::ALL_AUDIO {
+            Some("All audio tracks".to_string())
+        } else {
+            self.video_audio_tracks().into_iter().find(|t| t.0 == stream).map(|t| t.1)
+        };
         let Some(v) = self.video.as_mut() else { return };
         let Some(p) = v.player.as_ref() else { return };
-        if p.audio_tracks().iter().any(|t| t.stream == stream && t.playing != 0) {
+        let already = if stream == crate::imaging::video::ALL_AUDIO {
+            mixed
+        } else {
+            !mixed && p.audio_tracks().iter().any(|t| t.stream == stream && t.playing != 0)
+        };
+        if already {
             return;
         }
         let at = v.position();

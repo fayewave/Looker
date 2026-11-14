@@ -41,7 +41,7 @@
 #define EXPORT __declspec(dllexport)
 
 // Bumped whenever a signature or LvInfo changes; Looker refuses a DLL whose version differs.
-#define LOOKER_VIDEO_API 13
+#define LOOKER_VIDEO_API 14
 
 typedef struct LvInfo
 {
@@ -833,6 +833,8 @@ enum
     LV_PASS_DTS = 32,
     LV_PASS_TRUEHD = 64,
 };
+// lv_open_streams' `audio_stream`: every audio stream at once, mixed into one (no passthrough).
+#define LV_ALL_AUDIO (-2)
 enum
 {
     LV_TEXTURE = 1, // texture + texture_index: an NV12 (8-bit) or P010 (10-bit, MSB-aligned) array slice
@@ -858,6 +860,19 @@ typedef struct LvFrame
     int nb_samples;
     void *opaque; // the AVFrame behind a picture
 } LvFrame;
+
+// One audio stream of an LV_ALL_AUDIO mix: decoded into 48 kHz float stereo, placed on the player's clock.
+typedef struct MixIn
+{
+    int stream;
+    AVCodecContext *dec;
+    SwrContext *swr;
+    float *buf;       // interleaved stereo, not yet mixed
+    int len, cap;     // in frames (a sample per channel)
+    long long start;  // where buf[0] sits on the clock, in 48 kHz frames from the video's start
+    long long next;   // where the next decoded frame goes (start + len while anything is buffered)
+    int begun, done;  // has decoded something since the open or seek; drained
+} MixIn;
 
 typedef struct LvPlayer
 {
@@ -912,6 +927,14 @@ typedef struct LvPlayer
     long long sp_pts; // the time of the first packet in sp_buf, -1 when none
     int sp_eof;
     int sp_codec, sp_rate, sp_channels; // LV_PASS_* of the stream, and the IEC stream's rate and channel count
+    // LV_ALL_AUDIO: every audio stream decodes (`ai` is -1 and `adec` NULL) and mix_take sums them.
+    MixIn *mix;
+    int n_mix;
+    int mix_begun;     // mix_pos is set (from the earliest sound after the open or seek)
+    long long mix_pos; // the next frame handed out, in 48 kHz frames on the clock
+    float mix_gain;    // the limiter's gain
+    float *mbuf;
+    int mbuf_cap;
 } LvPlayer;
 
 // A chapter, on the player's clock (lv_start_us is 0).
@@ -1236,10 +1259,326 @@ EXPORT int lv_passthrough(const LvPlayer *p, int *rate, int *channels)
     return p->sp_codec;
 }
 
+// ---- every audio track at once (LV_ALL_AUDIO) -------------------------------------------------------------------
+// Each audio stream decodes into its own buffer of 48 kHz float stereo, placed on the player's clock by its
+// timestamps (a stream that starts late, or skips, gets silence there). What every stream has reached is summed at
+// full level, through a limiter, and handed out as one stream. A stream that falls more than MIX_LAG behind the
+// furthest (no packets there: it ended early, or has a hole) counts as silent until it catches up.
+
+#define MIX_LAG (LV_RATE * 2)
+#define MIX_BLOCK (LV_RATE / 10)    // the most handed out at once
+#define MIX_GAP (LV_RATE / 20)      // a timestamp this far past a stream's end is a hole, filled with silence
+#define MIX_MAX_GAP (LV_RATE * 10)  // further than this (either way) is a jump: the stream starts again there
+
+static long long mix_frame_at(long long us)
+{
+    return av_rescale(us, LV_RATE, 1000000);
+}
+
+static int mix_reserve(MixIn *m, int more)
+{
+    if (m->len + more <= m->cap)
+        return 1;
+    int cap = (m->len + more) * 2;
+    float *b = av_realloc(m->buf, (size_t)cap * 2 * sizeof(float));
+    if (b == NULL)
+        return 0;
+    m->buf = b;
+    m->cap = cap;
+    return 1;
+}
+
+// Appends `n` frames of silence (a hole in the stream).
+static void mix_silence(MixIn *m, int n)
+{
+    if (n <= 0 || !mix_reserve(m, n))
+        return;
+    if (m->len == 0)
+        m->start = m->next;
+    memset(m->buf + (size_t)m->len * 2, 0, (size_t)n * 2 * sizeof(float));
+    m->len += n;
+    m->next += n;
+}
+
+// What the resampler gives for `f` (NULL: what it still holds, at the end).
+static void mix_convert(MixIn *m, AVFrame *f)
+{
+    int cap = swr_get_out_samples(m->swr, f ? f->nb_samples : 0);
+    if (cap <= 0 || !mix_reserve(m, cap))
+        return;
+    if (m->len == 0)
+        m->start = m->next;
+    uint8_t *dst = (uint8_t *)(m->buf + (size_t)m->len * 2);
+    int n = swr_convert(m->swr, &dst, cap, f ? (const uint8_t **)f->extended_data : NULL, f ? f->nb_samples : 0);
+    if (n > 0)
+    {
+        m->len += n;
+        m->next += n;
+    }
+}
+
+static void mix_add(LvPlayer *p, MixIn *m, AVFrame *f)
+{
+    if (m->swr == NULL)
+    {
+        AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+        if (swr_alloc_set_opts2(&m->swr, &stereo, AV_SAMPLE_FMT_FLT, LV_RATE, &f->ch_layout, (enum AVSampleFormat)f->format,
+                                f->sample_rate, 0, NULL) < 0 ||
+            swr_init(m->swr) < 0)
+        {
+            swr_free(&m->swr);
+            av_frame_free(&f);
+            m->done = 1; // a stream that can't be converted is left out
+            return;
+        }
+    }
+    int64_t ts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+    long long at = ts != AV_NOPTS_VALUE ? mix_frame_at(to_us(p, m->stream, ts)) : m->next;
+    long long gap = at - m->next;
+    if (!m->begun || gap >= MIX_MAX_GAP || gap <= -MIX_MAX_GAP)
+    {
+        // The first sound since the open or seek, or a jump: the stream goes on from here.
+        m->begun = 1;
+        m->len = 0;
+        m->start = m->next = at;
+    }
+    else if (gap > MIX_GAP)
+        mix_silence(m, (int)gap);
+    mix_convert(m, f);
+    av_frame_free(&f);
+}
+
+// Drops what every stream holds before `frame` (mixed already, or too late to be).
+static void mix_drop(LvPlayer *p, long long frame)
+{
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        long long d = frame - m->start;
+        if (m->len == 0 || d <= 0)
+            continue;
+        if (d >= m->len)
+            m->len = 0;
+        else
+        {
+            memmove(m->buf, m->buf + (size_t)d * 2, (size_t)(m->len - d) * 2 * sizeof(float));
+            m->len -= (int)d;
+        }
+        m->start = frame;
+    }
+}
+
+// The next block of the mix: 1 with `out` filled, 0 when the streams need more packets, AVERROR_EOF at the end.
+static int mix_take(LvPlayer *p, LvFrame *out)
+{
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        while (!m->done)
+        {
+            AVFrame *f = av_frame_alloc();
+            if (f == NULL)
+                return AVERROR(ENOMEM);
+            int r = avcodec_receive_frame(m->dec, f);
+            if (r == 0)
+            {
+                mix_add(p, m, f);
+                continue;
+            }
+            av_frame_free(&f);
+            if (r != AVERROR(EAGAIN))
+            {
+                m->done = 1; // the end, or a broken stream (the others play on)
+                if (m->swr)
+                    mix_convert(m, NULL);
+            }
+            break;
+        }
+    }
+    long long lo = LLONG_MAX, hi = LLONG_MIN;
+    int live = 0, waiting = 0;
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        if (m->len > 0)
+        {
+            lo = m->start < lo ? m->start : lo;
+            hi = m->start + m->len > hi ? m->start + m->len : hi;
+        }
+        if (!m->done)
+        {
+            live++;
+            waiting |= !m->begun;
+        }
+    }
+    if (hi == LLONG_MIN)
+        return live ? 0 : AVERROR_EOF;
+    if (!p->mix_begun)
+    {
+        // From the earliest sound, once every stream has some (or the others are well on without it).
+        if (waiting && hi - lo < MIX_LAG)
+            return 0;
+        p->mix_pos = lo;
+        p->mix_begun = 1;
+    }
+    if (p->audio_skip)
+    {
+        long long t = mix_frame_at(p->seek_target); // an exact seek: nothing before its target
+        if (p->mix_pos < t)
+            p->mix_pos = t;
+    }
+    // Up to where every stream still going has reached, or the furthest less the lag.
+    long long end = hi;
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        if (!m->done)
+        {
+            long long e = m->begun ? m->next : p->mix_pos;
+            end = e < end ? e : end;
+        }
+    }
+    if (end < hi - MIX_LAG)
+        end = hi - MIX_LAG;
+    if (end > p->mix_pos + MIX_BLOCK)
+        end = p->mix_pos + MIX_BLOCK;
+    if (end <= p->mix_pos)
+    {
+        mix_drop(p, p->mix_pos);
+        return live ? 0 : AVERROR_EOF;
+    }
+    int n = (int)(end - p->mix_pos);
+    if (n > p->mbuf_cap)
+    {
+        av_free(p->mbuf);
+        p->mbuf = av_malloc((size_t)n * 2 * sizeof(float));
+        p->mbuf_cap = p->mbuf ? n : 0;
+        if (p->mbuf == NULL)
+            return AVERROR(ENOMEM);
+    }
+    float *o = p->mbuf;
+    memset(o, 0, (size_t)n * 2 * sizeof(float));
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        long long a = m->start > p->mix_pos ? m->start : p->mix_pos;
+        long long b = m->start + m->len < end ? m->start + m->len : end;
+        const float *src = m->buf + (size_t)(a - m->start) * 2;
+        float *dst = o + (size_t)(a - p->mix_pos) * 2;
+        for (long long k = 0; k < (b - a) * 2; k++)
+            dst[k] += src[k];
+    }
+    mix_drop(p, end);
+    // Limiter: the gain drops at once to keep peaks under the ceiling and recovers over ~200 ms.
+    const float ceiling = 0.977f; // -0.2 dBFS
+    const float release = 1.0f - expf(-1.0f / (0.2f * LV_RATE));
+    float g = p->mix_gain;
+    for (int i = 0; i < n; i++)
+    {
+        float l = o[2 * i], r = o[2 * i + 1];
+        float peak = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
+        if (peak * g > ceiling)
+            g = ceiling / peak;
+        o[2 * i] = l * g;
+        o[2 * i + 1] = r * g;
+        g += (1.0f - g) * release;
+    }
+    p->mix_gain = g;
+    memset(out, 0, sizeof *out);
+    out->kind = LV_AUDIO;
+    out->pts_us = av_rescale(p->mix_pos, 1000000, LV_RATE);
+    out->duration_us = (long long)n * 1000000 / LV_RATE;
+    out->samples = o;
+    out->nb_samples = n;
+    p->mix_pos = end;
+    p->audio_skip = 0;
+    return 1;
+}
+
+// A packet for one of the mixed streams goes to its decoder: 1 when it was one of them.
+static int mix_send(LvPlayer *p, const AVPacket *pkt)
+{
+    for (int i = 0; i < p->n_mix; i++)
+        if (p->mix[i].stream == pkt->stream_index)
+        {
+            if (!p->mix[i].done)
+                avcodec_send_packet(p->mix[i].dec, pkt);
+            return 1;
+        }
+    return 0;
+}
+
+// The file's end: every decoder gives up what it holds.
+static void mix_eof(LvPlayer *p)
+{
+    for (int i = 0; i < p->n_mix; i++)
+        if (!p->mix[i].done)
+            avcodec_send_packet(p->mix[i].dec, NULL);
+}
+
+// After a seek: every stream starts again.
+static void mix_reset(LvPlayer *p)
+{
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        MixIn *m = &p->mix[i];
+        avcodec_flush_buffers(m->dec);
+        swr_free(&m->swr);
+        m->len = 0;
+        m->begun = m->done = 0;
+    }
+    p->mix_begun = 0;
+}
+
+// Opens a decoder for every audio stream it can (a stream without one is left out). 0 when none opened.
+static int mix_open(LvPlayer *p)
+{
+    AVFormatContext *fmt = p->in.fmt;
+    p->mix = calloc(fmt->nb_streams, sizeof *p->mix);
+    if (p->mix == NULL)
+        return 0;
+    for (unsigned i = 0; i < fmt->nb_streams; i++)
+    {
+        AVStream *s = fmt->streams[i];
+        if (s->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            continue;
+        const AVCodec *c = avcodec_find_decoder(s->codecpar->codec_id);
+        MixIn *m = &p->mix[p->n_mix];
+        if (c == NULL || open_decoder(s, c, NULL, 0, &m->dec) < 0)
+            continue;
+        m->stream = (int)i;
+        s->discard = AVDISCARD_DEFAULT;
+        p->n_mix++;
+    }
+    p->mix_gain = 1.0f;
+    for (int t = 0; t < p->n_tracks; t++)
+    {
+        p->tracks[t].playing = 0;
+        for (int i = 0; i < p->n_mix; i++)
+            p->tracks[t].playing |= p->tracks[t].stream == p->mix[i].stream;
+    }
+    return p->n_mix;
+}
+
+static void mix_free(LvPlayer *p)
+{
+    for (int i = 0; i < p->n_mix; i++)
+    {
+        avcodec_free_context(&p->mix[i].dec);
+        swr_free(&p->mix[i].swr);
+        av_free(p->mix[i].buf);
+    }
+    free(p->mix);
+    p->mix = NULL;
+    p->n_mix = 0;
+    av_free(p->mbuf);
+}
+
 EXPORT void lv_close(LvPlayer *p)
 {
     if (p == NULL)
         return;
+    mix_free(p);
     av_frame_free(&p->held);
     av_frame_free(&p->pending);
     vq_clear(p);
@@ -1510,7 +1849,8 @@ EXPORT int lv_open(const wchar_t *path, void *d3d11, int flags, LvInfo *info, Lv
 }
 
 // lv_open playing the audio stream `audio_stream` (an index lv_audio_tracks gave), or the best one when it's -1
-// or not an audio stream.
+// or not an audio stream. LV_ALL_AUDIO plays every audio stream at once, mixed (lv_audio_tracks marks each one
+// playing); a file without sound plays silent as ever.
 EXPORT int lv_open_audio(const wchar_t *path, void *d3d11, int flags, int audio_stream, LvInfo *info, LvPlayer **out)
 {
     return lv_open_streams(path, d3d11, flags, -1, audio_stream, info, out);
@@ -1605,6 +1945,8 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
     p->keyframes = (flags & LV_KEYFRAMES) != 0;
     if (p->ai >= 0 && (flags & LV_NO_AUDIO))
         p->ai = -1;
+    if (audio_stream == LV_ALL_AUDIO && p->ai >= 0 && mix_open(p) > 0)
+        p->ai = -1; // the mix plays instead
     if (p->ai >= 0)
     {
         AVStream *as = fmt->streams[p->ai];
@@ -1616,7 +1958,7 @@ EXPORT int lv_open_streams(const wchar_t *path, void *d3d11, int flags, int vide
         if (p->ai >= 0)
             sp_choose(p, flags);
     }
-    if (p->ai < 0)
+    if (p->ai < 0 && p->n_mix == 0)
         p->a_done = 1;
     p->pkt = av_packet_alloc();
     if (p->pkt == NULL)
@@ -1744,10 +2086,11 @@ static int video_out(LvPlayer *p, AVFrame *f, LvFrame *out)
                 if (p->adec)
                     { avcodec_flush_buffers(p->adec); if (p->sp) sp_open(p); }
                 swr_free(&p->swr);
+                mix_reset(p);
                 vq_clear(p);
                 deint_reset(p);
                 p->demux_eof = p->v_done = 0;
-                p->a_done = p->adec ? 0 : 1;
+                p->a_done = p->adec || p->n_mix ? 0 : 1;
                 p->seek_first = 1;
             }
             return 0;
@@ -2023,7 +2366,15 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             else if (r != AVERROR(EAGAIN))
                 return r;
         }
-        if (p->a_done == 0 && p->sp)
+        if (p->a_done == 0 && p->n_mix)
+        {
+            int t = mix_take(p, out);
+            if (t == 1)
+                return 0;
+            if (t < 0)
+                p->a_done = 1;
+        }
+        else if (p->a_done == 0 && p->sp)
         {
             int t = sp_take(p, out);
             if (t == 1)
@@ -2076,6 +2427,8 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             avcodec_send_packet(p->vdec, NULL);
             if (p->adec && p->a_done == 0)
                 a_send(p, NULL);
+            if (p->a_done == 0)
+                mix_eof(p);
             continue;
         }
         if (r < 0)
@@ -2084,6 +2437,8 @@ EXPORT int lv_next(LvPlayer *p, LvFrame *out)
             avcodec_send_packet(p->vdec, p->pkt);
         else if (p->pkt->stream_index == p->ai && p->a_done == 0)
             a_send(p, p->pkt);
+        else if (p->a_done == 0)
+            mix_send(p, p->pkt);
         av_packet_unref(p->pkt);
     }
 }
@@ -2119,10 +2474,11 @@ EXPORT int lv_seek(LvPlayer *p, long long us, int exact)
     if (p->adec)
         { avcodec_flush_buffers(p->adec); if (p->sp) sp_open(p); }
     swr_free(&p->swr);
+    mix_reset(p);
     vq_clear(p);
     deint_reset(p);
     p->demux_eof = p->v_done = 0;
-    p->a_done = p->adec ? 0 : 1;
+    p->a_done = p->adec || p->n_mix ? 0 : 1;
     p->next_vpts = us;
     p->skip_until_us = exact ? us : INT64_MIN;
     av_frame_free(&p->held);
@@ -2300,7 +2656,14 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
         if (p->a_done)
             return AVERROR_EOF;
         int r;
-        if (p->sp)
+        if (p->n_mix)
+        {
+            int t = mix_take(p, out);
+            if (t == 1)
+                return 0;
+            r = t == 0 ? AVERROR(EAGAIN) : t;
+        }
+        else if (p->sp)
         {
             int t = sp_take(p, out);
             if (t == 1)
@@ -2338,7 +2701,10 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
         {
             p->demux_eof = 1;
             p->v_flush = 1;
-            a_send(p, NULL);
+            if (p->n_mix)
+                mix_eof(p);
+            else
+                a_send(p, NULL);
             continue;
         }
         if (r < 0)
@@ -2353,6 +2719,8 @@ EXPORT int lv_next_audio(LvPlayer *p, LvFrame *out)
         }
         else if (p->pkt->stream_index == p->ai)
             a_send(p, p->pkt);
+        else
+            mix_send(p, p->pkt);
         av_packet_unref(p->pkt);
     }
 }

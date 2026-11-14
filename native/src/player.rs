@@ -1962,6 +1962,65 @@ mod tests {
         }
     }
 
+    /// Plays `LOOKER_DECODE`'s audio as every track at once and as its default track, printing the loudness of each
+    /// half second, and seeks into the middle: the mix must be louder than one track, with no holes in time.
+    /// `LOOKER_CODECS=... LOOKER_DECODE=two-tracks.mkv cargo test --release -- --ignored --nocapture all_tracks_mix`
+    #[test]
+    #[ignore]
+    fn all_tracks_mix() {
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        // (time of each block, its samples) until the end, after an optional exact seek.
+        let run = |audio: Option<i32>, seek: Option<i64>| -> (Vec<Track>, Vec<(i64, Vec<f32>)>) {
+            let (mut d, _) = Decoder::open_audio(&path, std::ptr::null_mut(), false, audio).expect("opens");
+            if let Some(s) = seek {
+                d.seek(s, true).expect("seeks");
+            }
+            let mut blocks = Vec::new();
+            loop {
+                match d.next().expect("decodes") {
+                    Item::Audio(t, s) => blocks.push((t, s)),
+                    Item::Picture(_) => {}
+                    Item::End | Item::Interrupted => break,
+                }
+            }
+            (d.audio_tracks(), blocks)
+        };
+        let rms = |blocks: &[(i64, Vec<f32>)], from: i64, to: i64| -> f64 {
+            let (mut sum, mut n) = (0.0f64, 0usize);
+            for (t, s) in blocks {
+                for (i, v) in s.chunks(2).enumerate() {
+                    let at = t + i as i64 * 1_000_000 / 48_000;
+                    if at >= from && at < to {
+                        sum += (v[0] as f64).powi(2);
+                        n += 1;
+                    }
+                }
+            }
+            if n == 0 { 0.0 } else { (sum / n as f64).sqrt() }
+        };
+        let (tracks, mixed) = run(Some(crate::imaging::video::ALL_AUDIO), None);
+        assert!(tracks.len() > 1 && tracks.iter().all(|t| t.playing != 0), "every track marked playing");
+        let (_, one) = run(None, None);
+        let end = mixed.last().map_or(0, |(t, s)| t + (s.len() / 2) as i64 * 1_000_000 / 48_000);
+        let mut t = 0;
+        while t < end {
+            println!("  {:5.1} s  mixed {:.3}  default track {:.3}", t as f64 / 1e6, rms(&mixed, t, t + 500_000), rms(&one, t, t + 500_000));
+            t += 500_000;
+        }
+        // Blocks follow each other without holes or overlaps.
+        for w in mixed.windows(2) {
+            let next = w[0].0 + (w[0].1.len() / 2) as i64 * 1_000_000 / 48_000;
+            assert!((w[1].0 - next).abs() <= 1, "hole or overlap at {} us: next block at {}", next, w[1].0);
+        }
+        let peak = mixed.iter().flat_map(|(_, s)| s.iter()).fold(0.0f32, |a, v| a.max(v.abs()));
+        println!("  peak {peak:.3}, {} blocks to {:.2} s", mixed.len(), end as f64 / 1e6);
+        assert!(peak <= 0.98, "the limiter keeps peaks under the ceiling");
+        let (_, sought) = run(Some(crate::imaging::video::ALL_AUDIO), Some(end / 2));
+        let first = sought.first().map(|b| b.0).expect("sound after the seek");
+        println!("  seek to {:.2} s: first block at {:.3} s", (end / 2) as f64 / 1e6, first as f64 / 1e6);
+        assert!((first - end / 2).abs() < 30_000, "starts at the seek's target");
+    }
+
     #[test]
     fn frame_numbers_are_the_nearest_listed() {
         let f = [0, 8000, 17000, 25000];
