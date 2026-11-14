@@ -281,7 +281,7 @@ impl App {
         self.hits.add(Hit::ExplorerGrip, ui::card_grip(card.right, card.top, card.bottom, 1.0));
         let dragging = self.explorer.drag.is_some();
         let t = self.fades.hover(Hit::ExplorerGrip, self.hover == Some(Hit::ExplorerGrip) || dragging);
-        ui::grip_line(g, rect(card.right - 1.0, card.top + 10.0, 2.0, card.bottom - card.top - 20.0), t, dragging);
+        ui::card_edge(g, card, true, t, dragging);
         moving
     }
 

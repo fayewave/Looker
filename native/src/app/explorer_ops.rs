@@ -275,6 +275,11 @@ impl App {
     /// Ctrl+D: stars the selection (or takes the star off, if they all have it).
     pub(super) fn explorer_favourite(&mut self) {
         let paths = self.explorer.targets();
+        self.favourite_paths(paths);
+    }
+
+    /// Stars `paths` (or takes the star off, if they all have it).
+    fn favourite_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
@@ -286,6 +291,11 @@ impl App {
     /// Alt+1..7 (Alt+0 clears): a colour tag on the selection; the colour they all have already comes off.
     pub(super) fn explorer_colour(&mut self, c: Option<u8>) {
         let paths = self.explorer.targets();
+        self.colour_paths(paths, c);
+    }
+
+    /// A colour tag on `paths`; the colour they all have already comes off.
+    fn colour_paths(&mut self, paths: Vec<PathBuf>, c: Option<u8>) {
         if paths.is_empty() {
             return;
         }
@@ -645,14 +655,26 @@ impl App {
         self.show_menu_below(MenuKind::Layout, e, anchor);
     }
 
-    /// A tab's menu (right-click), as Transient's: a new tab, close it, close the others.
+    /// A tab's menu (right-click), as Transient's: a new tab, close it, close the others; for a folder's tab also
+    /// Bookmark, the favourite star and the colour labels, for that folder (Faye, 2026-11-14).
     pub(super) fn tab_menu(&mut self, i: usize, x: f32, y: f32) {
         let n = self.explorer.tabs.len();
-        let e = vec![
+        let mut e = vec![
             item(Action::NewTab, 0xE710, "New tab", Some("Ctrl+T"), true),
             item(Action::CloseTab, 0xE711, "Close tab", Some("Ctrl+W"), n > 1),
             item(Action::CloseOtherTabs, 0xE8BB, "Close other tabs", None, n > 1),
         ];
+        if let Some(Place::Folder(f)) = self.tab_place(i) {
+            let marked = self.settings.is_bookmarked(&f);
+            e.push(Entry::Separator);
+            e.push(item(Action::Bookmark, if marked { 0xE840 } else { 0xE718 }, if marked { "Remove bookmark" } else { "Bookmark" }, None, true));
+            let mut tags = self.tag_entries(std::slice::from_ref(&f));
+            // The star's Ctrl+D is the selection's, not the tab's.
+            if let Some(Entry::Item(it)) = tags.first_mut() {
+                it.accel = None;
+            }
+            e.extend(tags);
+        }
         self.show_menu(MenuKind::Tab(i), e, x, y);
     }
 
@@ -739,6 +761,10 @@ impl App {
         let paths: Vec<PathBuf> = match &kind {
             MenuKind::Rows(p) => p.clone(),
             MenuKind::Side(Place::Folder(f)) => vec![f.clone()],
+            MenuKind::Tab(i) => match self.tab_place(*i) {
+                Some(Place::Folder(f)) => vec![f],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         };
         let first = paths.first().cloned();
@@ -774,6 +800,8 @@ impl App {
                 }
             }
             (Action::Delete, _) => self.explorer_delete(),
+            (Action::Favourite, MenuKind::Tab(_)) => self.favourite_paths(paths),
+            (Action::Colour(c), MenuKind::Tab(_)) => self.colour_paths(paths, c),
             (Action::Favourite, _) => self.explorer_favourite(),
             (Action::Colour(c), _) => self.explorer_colour(c),
             (Action::Bookmark, _) => self.explorer_toggle_bookmark(first),

@@ -453,6 +453,16 @@ pub fn grip_line(g: &Gfx, r: D2D_RECT_F, hover: f32, dragging: bool) {
     }
 }
 
+/// A card's resize edge (its left or right side): as `grip_line`, but along the card's border, round its corners
+/// and fading out a little way along the top and bottom, as the tab in front's accent does (Faye, 2026-11-14).
+pub fn card_edge(g: &Gfx, card: D2D_RECT_F, right: bool, hover: f32, dragging: bool) {
+    let t = theme::t();
+    let c = if dragging { rgb(t.accent) } else { rgba(t.ink, 0.45 * hover) };
+    if c.a > 0.0 {
+        g.stroke_edge(card, 10.0, right, 26.0, 2.0, c);
+    }
+}
+
 /// A card floating over the photo: the shared shadow, the lighter fill, a divider hairline, radius 10.
 pub fn card(g: &Gfx, r: D2D_RECT_F) {
     let t = theme::t();

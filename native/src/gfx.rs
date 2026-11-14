@@ -1530,6 +1530,50 @@ impl Gfx {
         }
     }
 
+    /// A card's left (`right` false) or right edge stroked `width` wide in `color`: down the side, round both
+    /// corners (`radius`, the card's) and `tail` DIPs along the top and bottom, fading out there as the accent on
+    /// the tab in front fades (Faye, 2026-11-14).
+    pub fn stroke_edge(&self, r: D2D_RECT_F, radius: f32, right: bool, tail: f32, width: f32, color: D2D1_COLOR_F) {
+        let x = if right { r.right } else { r.left };
+        // Inwards from the edge: towards the card's middle.
+        let dir = if right { -1.0 } else { 1.0 };
+        let v = |x: f32, y: f32| windows_numerics::Vector2 { X: x, Y: y };
+        let geo = unsafe {
+            let Ok(geo) = self.dev.dc.GetFactory().and_then(|f| f.CreatePathGeometry()) else { return };
+            let Ok(sink) = geo.Open() else { return };
+            let arc = |to: windows_numerics::Vector2, sweep: D2D1_SWEEP_DIRECTION| D2D1_ARC_SEGMENT { point: to, size: D2D_SIZE_F { width: radius, height: radius }, rotationAngle: 0.0, sweepDirection: sweep, arcSize: D2D1_ARC_SIZE_SMALL };
+            // Top tail, the top corner, down the side, the bottom corner, the bottom tail.
+            let (into_side, out_of_side) = if right { (D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_CLOCKWISE) } else { (D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE) };
+            sink.BeginFigure(v(x + dir * (radius + tail), r.top), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(v(x + dir * radius, r.top));
+            sink.AddArc(&arc(v(x, r.top + radius), into_side));
+            sink.AddLine(v(x, r.bottom - radius));
+            sink.AddArc(&arc(v(x + dir * radius, r.bottom), out_of_side));
+            sink.AddLine(v(x + dir * (radius + tail), r.bottom));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            if sink.Close().is_err() {
+                return;
+            }
+            geo
+        };
+        // Solid down the side and round most of each corner, eased out (smoothstep) along the tails.
+        let stops: Vec<D2D1_GRADIENT_STOP> = (0..=12)
+            .map(|i| {
+                let u = i as f32 / 12.0;
+                let k = 1.0 - u * u * (3.0 - 2.0 * u);
+                D2D1_GRADIENT_STOP { position: u, color: D2D1_COLOR_F { a: color.a * k, ..color } }
+            })
+            .collect();
+        unsafe {
+            let rt: &ID2D1RenderTarget = &self.dev.dc;
+            let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: v(x + dir * radius * 0.6, r.top), endPoint: v(x + dir * (radius + tail), r.top) };
+            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                self.dev.dc.DrawGeometry(&geo, &b, width, None);
+            }
+        }
+    }
+
     fn path(&self, points: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry> {
         let (&first, rest) = points.split_first()?;
         unsafe {
