@@ -288,6 +288,8 @@ impl App {
             Hit::EditUndo => "Undo (Ctrl+Z)",
             Hit::EditRedo => "Redo (Ctrl+Y)",
             Hit::EditBefore => "Hold to see the photo before (\\)",
+            Hit::EditCopy => "Copy edits: the light and colour (Ctrl+Shift+C)",
+            Hit::EditPaste => "Paste edits (Ctrl+Shift+V)",
             Hit::Tool(Tool::Delete) => "Delete (Del)",
             Hit::Tool(Tool::Sort) => "Sort",
             Hit::Tool(Tool::SaveRotation) => "Save the rotation to the file (Ctrl+S)",
@@ -951,6 +953,7 @@ impl App {
         }
         self.draw_rip(g);
         self.draw_extract(g);
+        self.draw_paste(g);
         // A submenu row under the pointer opens its menu beside it; another row of the menu closes it.
         let hovered = match self.hover {
             Some(Hit::MenuItem(i)) => Some(i),

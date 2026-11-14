@@ -396,7 +396,7 @@ impl App {
                         Some(Hit::EditCrop(3 | 7)) => IDC_SIZENESW,
                         Some(Hit::EditCrop(2 | 6)) => IDC_SIZENS,
                         Some(Hit::EditCrop(4 | 8)) => IDC_SIZEWE,
-                        Some(Hit::EditStraighten | Hit::EditExposure | Hit::EditAdjust(_)) => IDC_HAND,
+                        Some(Hit::EditStraighten | Hit::EditExposure | Hit::EditAdjust(_) | Hit::EditCurve) => IDC_HAND,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
@@ -747,6 +747,7 @@ impl App {
                             Some(Hit::DialogChoice(i, j)) => self.dialog_pick(i, j),
                             Some(Hit::RipCancel) => self.cancel_rip(),
                             Some(Hit::ExtractCancel) => self.cancel_extract(),
+                            Some(Hit::PasteCancel) => self.cancel_paste(),
                             Some(Hit::DialogFieldClear) => self.field_clear(),
                             Some(Hit::PagePrevious) => self.turn_page(-1),
                             Some(Hit::PageNext) => self.turn_page(1),
@@ -1287,7 +1288,7 @@ impl App {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOAST);
                             self.invalidate();
                         }
-                        rip::TIMER_RIP | extract::TIMER_EXTRACT => self.invalidate(),
+                        rip::TIMER_RIP | extract::TIMER_EXTRACT | batchedit::TIMER_PASTE => self.invalidate(),
                         TIMER_TOOLTIP => {
                             let _ = KillTimer(Some(self.hwnd), TIMER_TOOLTIP);
                             if self.menu.is_none() && self.pressed.is_none() {
@@ -1576,6 +1577,7 @@ impl App {
                     self.close_text(); // unsaved edits are saved, as when moving to another file
                     self.stop_rip_for_close();
                     self.stop_extract_for_close();
+                    self.stop_paste_for_close();
                     self.save_placement();
                     None
                 }

@@ -267,6 +267,16 @@ pub fn decode_srgb(f: &IWICImagingFactory, path: &Path, box_w: u32, box_h: u32) 
     r
 }
 
+/// `decode` at full size with the pixels left in the file's own colour space where WIC reads it (its RGB profile
+/// in `colour`), as an edit is saved in (photoedit.rs); the other decoders give sRGB as ever. The target asked
+/// for is a monitor profile with no bytes: only `wic::finish` looks at it, to keep the file's space.
+pub fn decode_own_space(f: &IWICImagingFactory, path: &Path) -> Result<Decoded, String> {
+    let saved = TARGET.with(|t| t.replace(Space::Icc(std::sync::Arc::new(Vec::new()))));
+    let r = decode(f, path, MAX_EDGE, MAX_EDGE, true);
+    TARGET.with(|t| *t.borrow_mut() = saved);
+    r
+}
+
 /// `decode_srgb` for an image already in memory (a texture inside a GLB), through WIC.
 pub fn decode_memory_srgb(f: &IWICImagingFactory, bytes: &[u8], box_w: u32, box_h: u32) -> Result<Decoded, String> {
     let saved = TARGET.with(|t| t.replace(Space::Srgb));

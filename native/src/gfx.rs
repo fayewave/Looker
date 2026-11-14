@@ -1086,7 +1086,15 @@ impl Gfx {
             let wb = pe::wb_gains(p);
             // The curves over sRGB values, `n` steps from 0 to 1 (`f` maps a step's input first).
             let curves = |n: usize, f: &dyn Fn(f32) -> f32| -> [Vec<f32>; 3] { std::array::from_fn(|c| (0..n).map(|i| pe::tone(p, &wb, c, f(i as f32 / (n - 1) as f32))).collect()) };
-            let saturate = |src: &ID2D1Image| -> Result<ID2D1Effect> { saturation(dc, src, &pe::saturation_matrix(p)) };
+            // Saturation, then vibrance (round 3): HSV saturation through its curve, hue and value kept.
+            let saturate = |src: &ID2D1Image| -> Result<ID2D1Effect> {
+                let sat = saturation(dc, src, &pe::saturation_matrix(p))?;
+                if p.vibrance.abs() < 0.005 {
+                    return Ok(sat);
+                }
+                let curve: Vec<f32> = (0..1024).map(|i| pe::vibrance_curve(p.vibrance, i as f32 / 1023.0)).collect();
+                vibrance(dc, &sat.GetOutput()?, curve)
+            };
             let out = if self.space.is_scrgb() {
                 // Linear: down to SDR white = 1 (clamped), into sRGB values with the curves on top (a fine table: linear
                 // steps are coarse in the shadows), the saturation, back to linear and up again.
@@ -2111,6 +2119,25 @@ fn table_transfer(dc: &ID2D1DeviceContext, src: &ID2D1Image, t: &[Vec<f32>; 3]) 
         fx.SetValue(D2D1_TABLETRANSFER_PROP_ALPHA_DISABLE.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
         fx.SetValue(D2D1_TABLETRANSFER_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
         Ok(fx)
+    }
+}
+
+/// `src` with its HSV saturation through `curve` (evenly spaced over 0..1): RGB to hue, a table on the
+/// saturation alone, back to RGB, each in half floats (8 bits would band the hue).
+fn vibrance(dc: &ID2D1DeviceContext, src: &ID2D1Image, curve: Vec<f32>) -> Result<ID2D1Effect> {
+    unsafe {
+        let precise = |fx: &ID2D1Effect| set_u32(fx, D2D1_PROPERTY_PRECISION.0 as u32, D2D1_BUFFER_PRECISION_16BPC_FLOAT.0 as u32);
+        let to_hsv = dc.CreateEffect(&CLSID_D2D1RgbToHue)?;
+        to_hsv.SetInput(0, src, true);
+        set_u32(&to_hsv, D2D1_RGBTOHUE_PROP_OUTPUT_COLOR_SPACE.0 as u32, D2D1_RGBTOHUE_OUTPUT_COLOR_SPACE_HUE_SATURATION_VALUE.0 as u32)?;
+        precise(&to_hsv)?;
+        let table = table_transfer(dc, &to_hsv.GetOutput()?, &[vec![0.0, 1.0], curve, vec![0.0, 1.0]])?;
+        precise(&table)?;
+        let back = dc.CreateEffect(&CLSID_D2D1HueToRgb)?;
+        back.SetInput(0, &table.GetOutput()?, true);
+        set_u32(&back, D2D1_HUETORGB_PROP_INPUT_COLOR_SPACE.0 as u32, D2D1_HUETORGB_INPUT_COLOR_SPACE_HUE_SATURATION_VALUE.0 as u32)?;
+        precise(&back)?;
+        Ok(back)
     }
 }
 

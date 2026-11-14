@@ -34,7 +34,7 @@ pub(super) struct Ripping {
     started: Instant,
 }
 
-const PILL_H: f32 = 44.0;
+pub(super) const PILL_H: f32 = 44.0;
 
 impl App {
     /// "Rip DVD…" on `path` (a drive, a folder holding VIDEO_TS, or VIDEO_TS itself).

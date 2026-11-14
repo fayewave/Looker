@@ -7,6 +7,12 @@
 //! matrix: exactly what the edit mode's preview does with Direct2D (a table transfer and a colour matrix), so the
 //! saved file looks as the preview did. Exposure is a gain in linear light under a 2.2 gamma: 2^(ev / 2.2) on
 //! sRGB values.
+//!
+//! Round 3 (Faye 2026-11-14): vibrance (HSV saturation pushed most where it's lowest: `vibrance`, the preview's
+//! RGB-to-hue, table and hue-to-RGB effects doing the same), a point curve per channel (RGB, then red, green and
+//! blue: `Curve`, monotone cubic through the points, the last step of `tone`), and a photo with its own colour
+//! profile (Display P3, Adobe RGB as an ICC profile) edited and saved in its own space with the profile embedded
+//! (JPEG and PNG; `embed_icc`) instead of being converted down to sRGB.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +24,8 @@ use windows::core::HSTRING;
 /// What an edit does, in the space it's seen in: the image mirrored left to right (`flip`), then turned by `turns`
 /// quarter turns (clockwise), `w` x `h` pixels after them; turned `angle` degrees clockwise about its middle;
 /// cropped to `crop` (left, top, right, bottom in pixels from the image's middle, upright on screen); exposure `ev`
-/// stops; contrast, highlights, shadows, temperature, tint and saturation each -100..100, 0 leaving it be.
+/// stops; contrast, highlights, shadows, temperature, tint, vibrance and saturation each -100..100, 0 leaving it
+/// be; the tone curves (RGB, red, green, blue). A crop of all zeros is the whole image (a pasted edit's).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Params {
     pub turns: u8,
@@ -31,13 +38,144 @@ pub struct Params {
     pub shadows: f32,
     pub temp: f32,
     pub tint: f32,
+    pub vibrance: f32,
     pub saturation: f32,
+    pub curves: [Curve; 4],
+}
+
+/// The most points a curve holds (its two ends included).
+pub const CURVE_POINTS: usize = 16;
+/// The least gap between two points' inputs.
+pub const CURVE_GAP: f32 = 0.02;
+
+/// A tone curve: points (input, output, each 0..1) by input, joined by a monotone cubic (Fritsch-Carlson: no
+/// overshoot between points), flat beyond the ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Curve {
+    pub n: u8,
+    pub pts: [[f32; 2]; CURVE_POINTS],
+}
+
+impl Default for Curve {
+    fn default() -> Curve {
+        let mut pts = [[0.0; 2]; CURVE_POINTS];
+        pts[1] = [1.0, 1.0];
+        Curve { n: 2, pts }
+    }
+}
+
+impl Curve {
+    pub fn points(&self) -> &[[f32; 2]] {
+        &self.pts[..self.n as usize]
+    }
+
+    /// Leaves every value as it is: all its points on the diagonal, its ends at the corners.
+    pub fn identity(&self) -> bool {
+        let p = self.points();
+        p.iter().all(|q| (q[0] - q[1]).abs() < 0.002) && p.first().is_some_and(|q| q[0] < 0.002) && p.last().is_some_and(|q| q[0] > 0.998)
+    }
+
+    /// Adds a point at input `x` on the curve as it is; its place, or None (too close to one, or full).
+    pub fn insert(&mut self, x: f32) -> Option<usize> {
+        let n = self.n as usize;
+        if n >= CURVE_POINTS {
+            return None;
+        }
+        let p = self.points();
+        let i = p.iter().position(|q| q[0] > x)?;
+        if i == 0 || x - p[i - 1][0] < CURVE_GAP || p[i][0] - x < CURVE_GAP {
+            return None;
+        }
+        let y = self.eval(x);
+        self.pts.copy_within(i..n, i + 1);
+        self.pts[i] = [x, y];
+        self.n += 1;
+        Some(i)
+    }
+
+    /// Takes point `i` out (never an end).
+    pub fn remove(&mut self, i: usize) {
+        let n = self.n as usize;
+        if i == 0 || i + 1 >= n {
+            return;
+        }
+        self.pts.copy_within(i + 1..n, i);
+        self.n -= 1;
+    }
+
+    /// Moves point `i` towards `(x, y)`: between its neighbours (`CURVE_GAP` from each), on the square.
+    pub fn set(&mut self, i: usize, x: f32, y: f32) {
+        let n = self.n as usize;
+        if i >= n {
+            return;
+        }
+        let lo = if i == 0 { 0.0 } else { self.pts[i - 1][0] + CURVE_GAP };
+        let hi = if i + 1 == n { 1.0 } else { self.pts[i + 1][0] - CURVE_GAP };
+        self.pts[i] = [x.clamp(lo, hi.max(lo)), y.clamp(0.0, 1.0)];
+    }
+
+    pub fn eval(&self, x: f32) -> f32 {
+        let p = self.points();
+        let n = p.len();
+        if n == 0 {
+            return x;
+        }
+        if x <= p[0][0] {
+            return p[0][1];
+        }
+        if x >= p[n - 1][0] {
+            return p[n - 1][1];
+        }
+        // Secants, then tangents: their mean inside (0 at a turn), the secant at the ends, limited so each piece
+        // stays monotone.
+        let mut d = [0f32; CURVE_POINTS];
+        let mut m = [0f32; CURVE_POINTS];
+        for k in 0..n - 1 {
+            d[k] = (p[k + 1][1] - p[k][1]) / (p[k + 1][0] - p[k][0]).max(1e-6);
+        }
+        m[0] = d[0];
+        m[n - 1] = d[n - 2];
+        for k in 1..n - 1 {
+            m[k] = if d[k - 1] * d[k] <= 0.0 { 0.0 } else { (d[k - 1] + d[k]) / 2.0 };
+        }
+        for k in 0..n - 1 {
+            if d[k].abs() < 1e-9 {
+                m[k] = 0.0;
+                m[k + 1] = 0.0;
+            } else {
+                let (a, b) = (m[k] / d[k], m[k + 1] / d[k]);
+                let s = a * a + b * b;
+                if s > 9.0 {
+                    let t = 3.0 / s.sqrt();
+                    m[k] = t * a * d[k];
+                    m[k + 1] = t * b * d[k];
+                }
+            }
+        }
+        let k = (0..n - 1).find(|&k| x < p[k + 1][0]).unwrap_or(n - 2);
+        let h = p[k + 1][0] - p[k][0];
+        let t = (x - p[k][0]) / h;
+        let (t2, t3) = (t * t, t * t * t);
+        let v = (2.0 * t3 - 3.0 * t2 + 1.0) * p[k][1] + (t3 - 2.0 * t2 + t) * h * m[k] + (-2.0 * t3 + 3.0 * t2) * p[k + 1][1] + (t3 - t2) * h * m[k + 1];
+        v.clamp(0.0, 1.0)
+    }
 }
 
 impl Params {
     /// The tone and colour left as they are (the geometry may still change).
     pub fn neutral(&self) -> bool {
-        [self.ev, self.contrast, self.highlights, self.shadows, self.temp, self.tint, self.saturation].iter().all(|v| v.abs() < 0.005)
+        [self.ev, self.contrast, self.highlights, self.shadows, self.temp, self.tint, self.vibrance, self.saturation].iter().all(|v| v.abs() < 0.005)
+            && self.curves.iter().all(Curve::identity)
+    }
+
+    /// The tone and colour alone (what Copy edits keeps): no turn, flip, straightening or crop.
+    pub fn tone_only(&self) -> Params {
+        Params { turns: 0, flip: false, angle: 0.0, crop: [0.0; 4], ..*self }
+    }
+
+    /// This geometry with `t`'s tone and colour (Paste edits).
+    pub fn with_tone(&self, t: &Params) -> Params {
+        Params { turns: self.turns, flip: self.flip, angle: self.angle, crop: self.crop, ..*t }
     }
 
     /// The same geometry with the tone and colour as they were (edit mode's before view).
@@ -73,7 +211,29 @@ pub fn tone(p: &Params, wb: &[f32; 3], c: usize, v: f32) -> f32 {
         let k = 2f32.powf(p.contrast / 100.0 * 1.5);
         v = if v < 0.5 { 0.5 * (2.0 * v).powf(k) } else { 1.0 - 0.5 * (2.0 * (1.0 - v)).powf(k) };
     }
-    v.clamp(0.0, 1.0)
+    let v = p.curves[0].eval(v.clamp(0.0, 1.0));
+    p.curves[c + 1].eval(v)
+}
+
+/// Vibrance's curve on HSV saturation `s` (0..1), `vibrance` -100..100: pushed most where it's low and not at all
+/// at grey or full, monotone either way (up: s + 1.5 a s (1 - s)^2; down: s (1 + a (1 - s)^2)).
+pub fn vibrance_curve(vibrance: f32, s: f32) -> f32 {
+    let a = vibrance / 100.0;
+    let k = if a > 0.0 { 1.5 } else { 1.0 };
+    (s * (1.0 + a * k * (1.0 - s) * (1.0 - s))).clamp(0.0, 1.0)
+}
+
+/// `rgb` (0..1) with its HSV saturation through `vibrance_curve`, hue and value kept: each channel's distance
+/// below the brightest scaled.
+pub fn vibrance(vibrance: f32, rgb: [f32; 3]) -> [f32; 3] {
+    let mx = rgb[0].max(rgb[1]).max(rgb[2]);
+    let mn = rgb[0].min(rgb[1]).min(rgb[2]);
+    if mx <= 1e-6 || mx - mn <= 1e-6 {
+        return rgb;
+    }
+    let s = (mx - mn) / mx;
+    let f = vibrance_curve(vibrance, s) / s;
+    rgb.map(|c| (mx - (mx - c) * f).clamp(0.0, 1.0))
 }
 
 /// Saturation's matrix on sRGB values (`m[i][j]`: input channel i's share of output j), about Rec. 709 luma.
@@ -157,6 +317,7 @@ pub fn apply(src: &[u8], sw: u32, sh: u32, p: &Params) -> (Vec<u8>, u32, u32) {
     let lut: [[f32; 256]; 3] = std::array::from_fn(|c| std::array::from_fn(|i| tone(p, &wb, c, i as f32 / 255.0)));
     let sat = saturation_matrix(p);
     let saturate = p.saturation.abs() > 0.005;
+    let vibrant = p.vibrance.abs() > 0.005;
     let mut out = vec![0u8; ow as usize * oh as usize * 4];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let rows_per = (oh as usize).div_ceil(threads);
@@ -190,6 +351,7 @@ pub fn apply(src: &[u8], sw: u32, sh: u32, p: &Params) -> (Vec<u8>, u32, u32) {
                                 lut[c][i] + (lut[c][i + 1] - lut[c][i]) * f
                             });
                             let rgb = if saturate { std::array::from_fn(|j| (0..3).map(|i| rgb[i] * sat[i][j]).sum::<f32>().clamp(0.0, 1.0)) } else { rgb };
+                            let rgb = if vibrant { vibrance(p.vibrance, rgb) } else { rgb };
                             for c in 0..3 {
                                 d[2 - c] = (rgb[c] * a).round().clamp(0.0, 255.0) as u8;
                             }
@@ -299,13 +461,26 @@ const KEPT: [&str; 20] = [
 /// the original moved to the Recycle Bin first (`owner` owns the shell's question for a drive without one).
 /// Returns the file written.
 pub fn save(path: &Path, p: &Params, copy: bool, owner: isize) -> Result<PathBuf, String> {
-    let img = crate::fileops::full_image(path, 0).ok_or("couldn't read the photo")?;
-    let (pixels, w, h) = apply(&img.pixels, img.width, img.height, p);
-    let alpha = pixels.chunks_exact(4).any(|px| px[3] < 255);
-    let out = if copy { copy_path(path, alpha) } else { path.to_path_buf() };
     if !copy && !writable(path) {
         return Err("this format can't be written: save a copy".into());
     }
+    // In the photo's own space when it has a profile and the file written can carry it (round 3: a P3 photo
+    // stays P3), else in sRGB.
+    let (mut img, mut icc) = crate::fileops::full_image_own_space(path).ok_or("couldn't read the photo")?;
+    let alpha = img.pixels.chunks_exact(4).any(|px| px[3] < 255);
+    let out = if copy { copy_path(path, alpha) } else { path.to_path_buf() };
+    if icc.is_some() && !carries_icc(&out) {
+        img = crate::fileops::full_image(path, 0).ok_or("couldn't read the photo")?;
+        icc = None;
+    }
+    let mut p = *p;
+    if p.crop == [0.0; 4] {
+        // A pasted edit: the whole photo (as turned).
+        let (w, h) = if p.turns & 1 == 1 { (img.height, img.width) } else { (img.width, img.height) };
+        p.crop = [-(w as f32) / 2.0, -(h as f32) / 2.0, w as f32 / 2.0, h as f32 / 2.0];
+    }
+    let (pixels, w, h) = apply(&img.pixels, img.width, img.height, &p);
+    drop(img);
     let encoder_id = match encoder_for(&out) {
         Some(e) => e,
         None => return Err("no encoder".into()),
@@ -316,6 +491,11 @@ pub fn save(path: &Path, p: &Params, copy: bool, owner: isize) -> Result<PathBuf
     let r = (|| {
         std::fs::File::create(&temp).map_err(|e| e.to_string())?;
         encode(path, &temp, encoder_id, &pixels, w, h)?;
+        if let Some(icc) = &icc {
+            let bytes = std::fs::read(&temp).map_err(|e| e.to_string())?;
+            let with = embed_icc(&bytes, icc).ok_or("couldn't embed the colour profile")?;
+            std::fs::write(&temp, with).map_err(|e| e.to_string())?;
+        }
         if copy {
             std::fs::rename(&temp, &out).map_err(|e| e.to_string())
         } else {
@@ -335,6 +515,91 @@ pub fn save(path: &Path, p: &Params, copy: bool, owner: isize) -> Result<PathBuf
     })();
     let _ = std::fs::remove_file(&temp);
     r.map(|()| out)
+}
+
+/// Whether the file written to `path` can carry an ICC profile (`embed_icc`): JPEG and PNG.
+fn carries_icc(path: &Path) -> bool {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "jpe" | "jfif" | "png")
+}
+
+/// `file` (a JPEG or PNG WIC wrote) with ICC profile `icc` in it: a JPEG's APP2 "ICC_PROFILE" segments after its
+/// APP0/APP1 ones, a PNG's iCCP chunk after IHDR (its sRGB, gAMA and cHRM chunks, which would contradict it,
+/// left out). None for anything else.
+pub fn embed_icc(file: &[u8], icc: &[u8]) -> Option<Vec<u8>> {
+    const PNG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if file.starts_with(&[0xFF, 0xD8]) {
+        // After SOI and any APP0/APP1 (JFIF, EXIF, XMP), dropping an APP2 profile already there.
+        let mut out = file[..2].to_vec();
+        let mut i = 2;
+        let mut inserted = false;
+        while i + 4 <= file.len() && file[i] == 0xFF {
+            let marker = file[i + 1];
+            if marker == 0xDA || marker == 0xD9 {
+                break;
+            }
+            let len = u16::from_be_bytes([file[i + 2], file[i + 3]]) as usize;
+            let seg = file.get(i..i + 2 + len)?;
+            let leading = matches!(marker, 0xE0 | 0xE1);
+            if !leading && !inserted {
+                push_icc_segments(&mut out, icc)?;
+                inserted = true;
+            }
+            if !(marker == 0xE2 && seg.get(4..16) == Some(b"ICC_PROFILE\0")) {
+                out.extend_from_slice(seg);
+            }
+            i += 2 + len;
+        }
+        if !inserted {
+            push_icc_segments(&mut out, icc)?;
+        }
+        out.extend_from_slice(file.get(i..)?);
+        return Some(out);
+    }
+    if file.starts_with(&PNG) {
+        let mut out = PNG.to_vec();
+        let mut i = 8;
+        while i + 12 <= file.len() {
+            let len = u32::from_be_bytes(file[i..i + 4].try_into().ok()?) as usize;
+            let kind = file.get(i + 4..i + 8)?;
+            let chunk = file.get(i..i + 12 + len)?;
+            if !matches!(kind, b"sRGB" | b"gAMA" | b"cHRM" | b"iCCP") {
+                out.extend_from_slice(chunk);
+            }
+            if kind == b"IHDR" {
+                let mut data = b"ICC Profile\0\0".to_vec();
+                let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+                std::io::Write::write_all(&mut z, icc).ok()?;
+                data.extend(z.finish().ok()?);
+                out.extend((data.len() as u32).to_be_bytes());
+                let mut crc = flate2::Crc::new();
+                crc.update(b"iCCP");
+                crc.update(&data);
+                out.extend_from_slice(b"iCCP");
+                out.extend(&data);
+                out.extend(crc.sum().to_be_bytes());
+            }
+            i += 12 + len;
+        }
+        return Some(out);
+    }
+    None
+}
+
+/// `icc` as JPEG APP2 segments of at most 65519 bytes each, numbered from 1.
+fn push_icc_segments(out: &mut Vec<u8>, icc: &[u8]) -> Option<()> {
+    let parts: Vec<&[u8]> = icc.chunks(65519).collect();
+    if parts.is_empty() || parts.len() > 255 {
+        return None;
+    }
+    for (k, part) in parts.iter().enumerate() {
+        out.extend_from_slice(&[0xFF, 0xE2]);
+        out.extend(((part.len() + 16) as u16).to_be_bytes());
+        out.extend_from_slice(b"ICC_PROFILE\0");
+        out.extend_from_slice(&[k as u8 + 1, parts.len() as u8]);
+        out.extend_from_slice(part);
+    }
+    Some(())
 }
 
 /// The JPEG quality (0..1) `path` was written at, read from its luminance quantisation table against the IJG
@@ -547,5 +812,152 @@ mod tests {
         assert_eq!(copy_path(&dir.join("b.heic"), false).file_name().unwrap(), "b (edited).jpg");
         assert_eq!(copy_path(&dir.join("b.webp"), true).file_name().unwrap(), "b (edited).png");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn curves_pass_through_their_points_without_overshoot() {
+        let mut c = Curve::default();
+        assert!(c.identity());
+        for i in 0..=20 {
+            let x = i as f32 / 20.0;
+            assert!((c.eval(x) - x).abs() < 1e-5);
+        }
+        // An S: darker shadows, brighter highlights.
+        let a = c.insert(0.25).unwrap();
+        c.set(a, 0.25, 0.15);
+        let b = c.insert(0.75).unwrap();
+        c.set(b, 0.75, 0.85);
+        assert!(!c.identity());
+        assert!((c.eval(0.25) - 0.15).abs() < 1e-5 && (c.eval(0.75) - 0.85).abs() < 1e-5);
+        let mut last = 0.0;
+        for i in 0..=200 {
+            let v = c.eval(i as f32 / 200.0);
+            assert!(v >= last - 1e-6, "monotone at {i}");
+            last = v;
+        }
+        // Too close to a point, or past the ends: no new point; ends can't be removed.
+        assert!(c.insert(0.26).is_none());
+        c.remove(0);
+        assert_eq!(c.n, 4);
+        c.remove(1);
+        assert_eq!(c.n, 3);
+        // A point is kept between its neighbours.
+        c.set(1, 0.0, 2.0);
+        assert!((c.pts[1][0] - CURVE_GAP).abs() < 1e-6 && c.pts[1][1] == 1.0);
+        // The curves join the tone: a curve that lifts everything shows in every channel.
+        let mut p = Params::default();
+        p.curves[0].set(0, 0.0, 0.2);
+        assert!(!p.neutral());
+        let wb = wb_gains(&p);
+        assert!((tone(&p, &wb, 1, 0.0) - 0.2).abs() < 1e-5);
+        // A channel's own curve only touches it.
+        let mut p = Params::default();
+        p.curves[3].set(1, 1.0, 0.5);
+        let wb = wb_gains(&p);
+        assert!((tone(&p, &wb, 2, 1.0) - 0.5).abs() < 1e-5 && (tone(&p, &wb, 0, 1.0) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn vibrance_lifts_muted_colours_most() {
+        // Grey and fully saturated colours stay; hue and value are kept.
+        assert_eq!(vibrance(100.0, [0.5, 0.5, 0.5]), [0.5, 0.5, 0.5]);
+        assert_eq!(vibrance(100.0, [1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+        let muted = [0.6, 0.5, 0.45];
+        let up = vibrance(100.0, muted);
+        assert_eq!(up[0], 0.6);
+        assert!(up[2] < muted[2] && up[1] < muted[1]);
+        // More push at low saturation than high.
+        let gain = |s: f32| vibrance_curve(100.0, s) - s;
+        assert!(gain(0.2) > gain(0.8));
+        // Monotone both ways, and never past 0..1.
+        for v in [-100.0f32, -50.0, 50.0, 100.0] {
+            let mut last = 0.0;
+            for i in 0..=100 {
+                let s = vibrance_curve(v, i as f32 / 100.0);
+                assert!(s >= last - 1e-6 && (0.0..=1.0).contains(&s), "{v} at {i}");
+                last = s;
+            }
+        }
+        // Down: towards grey.
+        let down = vibrance(-100.0, muted);
+        assert!(down[2] > muted[2]);
+    }
+
+    #[test]
+    fn tone_only_and_with_tone_keep_the_geometry_apart() {
+        let a = Params { turns: 1, flip: true, angle: 3.0, crop: [-1.0, -2.0, 1.0, 2.0], ev: 0.5, vibrance: 20.0, ..Params::default() };
+        let t = a.tone_only();
+        assert_eq!((t.turns, t.flip, t.angle, t.crop), (0, false, 0.0, [0.0; 4]));
+        assert_eq!((t.ev, t.vibrance), (0.5, 20.0));
+        let b = Params { turns: 2, crop: [-5.0, -5.0, 5.0, 5.0], ..Params::default() }.with_tone(&t);
+        assert_eq!((b.turns, b.crop, b.ev, b.vibrance), (2, [-5.0, -5.0, 5.0, 5.0], 0.5, 20.0));
+    }
+
+    #[test]
+    fn embeds_icc_profiles_in_jpeg_and_png() {
+        let icc: Vec<u8> = (0..70000u32).map(|i| (i % 251) as u8).collect();
+        // A JPEG skeleton: SOI, APP0, APP1, DQT, SOS, data, EOI.
+        let mut jpeg = vec![0xFF, 0xD8];
+        jpeg.extend([0xFF, 0xE0, 0, 4, 1, 2]);
+        jpeg.extend([0xFF, 0xE1, 0, 4, 3, 4]);
+        jpeg.extend([0xFF, 0xDB, 0, 4, 5, 6]);
+        jpeg.extend([0xFF, 0xDA, 0, 2, 9, 9, 9, 0xFF, 0xD9]);
+        let out = embed_icc(&jpeg, &icc).unwrap();
+        // The profile comes after APP0/APP1, in two parts, before DQT; the rest unchanged.
+        assert_eq!(&out[..14], &jpeg[..14]);
+        assert_eq!(&out[14..16], &[0xFF, 0xE2]);
+        assert_eq!(&out[18..30], b"ICC_PROFILE\0");
+        assert_eq!(&out[30..32], &[1, 2]);
+        let mut got = Vec::new();
+        let mut i = 14;
+        while out[i + 1] == 0xE2 {
+            let len = u16::from_be_bytes([out[i + 2], out[i + 3]]) as usize;
+            got.extend_from_slice(&out[i + 18..i + 2 + len]);
+            i += 2 + len;
+        }
+        assert_eq!(got, icc);
+        assert_eq!(&out[i..], &jpeg[14..]);
+        // Embedding again replaces it rather than adding a second.
+        assert_eq!(embed_icc(&out, &icc).unwrap(), out);
+
+        // A PNG: signature, IHDR, sRGB, IDAT, IEND.
+        let chunk = |kind: &[u8], data: &[u8]| {
+            let mut c = (data.len() as u32).to_be_bytes().to_vec();
+            c.extend_from_slice(kind);
+            c.extend_from_slice(data);
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            c.extend(crc.sum().to_be_bytes());
+            c
+        };
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend(chunk(b"IHDR", &[0; 13]));
+        png.extend(chunk(b"sRGB", &[0]));
+        png.extend(chunk(b"IDAT", &[1, 2, 3]));
+        png.extend(chunk(b"IEND", &[]));
+        let out = embed_icc(&png, &icc).unwrap();
+        let mut kinds = Vec::new();
+        let mut i = 8;
+        while i + 12 <= out.len() {
+            let len = u32::from_be_bytes(out[i..i + 4].try_into().unwrap()) as usize;
+            let kind = out[i + 4..i + 8].to_vec();
+            if kind == b"iCCP" {
+                let data = &out[i + 8..i + 8 + len];
+                assert!(data.starts_with(b"ICC Profile\0\0"));
+                let mut z = flate2::read::ZlibDecoder::new(&data[13..]);
+                let mut back = Vec::new();
+                std::io::Read::read_to_end(&mut z, &mut back).unwrap();
+                assert_eq!(back, icc);
+                let mut crc = flate2::Crc::new();
+                crc.update(b"iCCP");
+                crc.update(data);
+                assert_eq!(&out[i + 8 + len..i + 12 + len], &crc.sum().to_be_bytes());
+            }
+            kinds.push(String::from_utf8(kind).unwrap());
+            i += 12 + len;
+        }
+        assert_eq!(kinds, ["IHDR", "iCCP", "IDAT", "IEND"]);
+        assert!(embed_icc(b"GIF89a", &icc).is_none());
     }
 }

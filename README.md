@@ -39,8 +39,10 @@ it keeps itself up to date.
   ratings, author and copyright in JPEG, TIFF, PNG and HEIC, one file or a whole selection at once.
 - Filter a folder by field: `keyword:beach`, `camera:x100`, `rating:4+`, `taken:2024`, `ext:png`.
 - Rotate, rename, copy, set as wallpaper, show in File Explorer.
-- Crop (free or to an aspect), straighten and adjust exposure (`E`); save a copy beside the photo, or over it with
-  the original sent to the Recycle Bin.
+- Edit (`E`): crop (free or to an aspect), straighten, rotate and flip; exposure, contrast, highlights, shadows,
+  white balance, vibrance, saturation and a tone curve; undo, and a before view. Copy an edit and paste it onto
+  other photos. Save a copy beside the photo, or over it with the original sent to the Recycle Bin; wide-gamut
+  photos keep their colour profile.
 - Colour managed, wide gamut included; HDR photos at full brightness on an HDR display.
 - Animated GIF, WebP and APNG play. PDFs open as a row of pages. 3D models open in a live view.
 - Four themes (Black, Dark, Paper, Light) that can follow Windows, and any accent colour.
@@ -335,7 +337,7 @@ A `.ts` that's TypeScript rather than video opens as text.
 | `Shift+N`, `Shift+P` | Video: next / previous chapter |
 | `Delete`, `F2` | Delete, rename |
 | `Ctrl+R`, `Ctrl+S` | Rotate, save rotation |
-| `E`; then `Enter`, `Ctrl+S`, `Esc` | Edit (crop, straighten, exposure); save a copy, save over the photo, cancel |
+| `E`; then `Enter`, `Ctrl+S`, `Esc` | Edit (crop, straighten, light and colour); save a copy, save over the photo, cancel |
 | `Ctrl+C`, `Ctrl+Shift+C`, `Ctrl+Shift+E` | Copy image, copy path, show in File Explorer |
 | `Ctrl+,` | Settings |
 

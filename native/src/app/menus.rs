@@ -17,6 +17,9 @@ pub(super) enum Action {
     Wallpaper,
     /// Edit mode (app/edit.rs), from the viewer's menu or a row's in the explorer.
     Edit,
+    /// Paste edits (round 3): in the viewer, edit mode with the edit pasted; on the explorer's rows, saved onto
+    /// each photo, over it or (true) as copies (app/batchedit.rs).
+    PasteEdits(bool),
     Reveal,
     ToggleExplorer,
     ToggleStrip,
@@ -155,6 +158,9 @@ impl App {
         // Edit for what edit mode takes (Faye, 2026-11-14), not there otherwise, as Rotate.
         if self.can_edit() {
             e.push(item(Action::Edit, 0xE70F, "Edit", Some("E"), true));
+            if self.has_edit_clipboard() {
+                e.push(item(Action::PasteEdits(false), 0xE77F, "Paste edits", None, true));
+            }
         }
         if !e.is_empty() {
             e.push(Entry::Separator);
@@ -603,6 +609,10 @@ impl App {
             Action::Delete => self.confirm_delete(false),
             Action::Wallpaper => self.set_wallpaper(),
             Action::Edit => self.begin_edit(),
+            Action::PasteEdits(_) => {
+                self.begin_edit();
+                self.edit_paste();
+            }
             Action::Reveal => self.reveal(),
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.viewer_sort() }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.viewer_sort() }),

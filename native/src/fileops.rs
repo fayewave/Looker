@@ -65,6 +65,8 @@ pub enum Done {
     MetaWritten { results: Vec<(PathBuf, Vec<(crate::metawrite::Field, Option<String>)>, Result<(), String>)> },
     /// An edit saved (app/edit.rs): the photo, the file written (or why not), and whether it was a copy.
     Edited { path: PathBuf, out: Result<PathBuf, String>, copy: bool },
+    /// Paste edits onto photos picked in the explorer (app/batchedit.rs).
+    EditsPasted(crate::app::PasteResult),
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work
@@ -440,6 +442,22 @@ pub fn full_image(path: &Path, page: usize) -> Option<Image> {
         .ok()?;
     let pixels = d.frames.into_iter().next()?.pixels;
     Some(Image { width: d.width, height: d.height, pixels })
+}
+
+/// The full-size picture an edit is saved from: in the file's own colour space with its ICC profile when it has
+/// an RGB one, else sRGB (no profile). A colour space named only by EXIF (Adobe RGB) is converted to sRGB.
+pub fn full_image_own_space(path: &Path) -> Option<(Image, Option<Vec<u8>>)> {
+    let f = wic()?;
+    if format::sniff_file(path) == Format::Pdf {
+        return full_image(path, 0).map(|i| (i, None));
+    }
+    let d = imaging::decode_own_space(&f, path).map_err(|e| crate::trace::mark(format!("full decode failed: {e}"))).ok()?;
+    let (width, height) = (d.width, d.height);
+    match d.colour {
+        imaging::Colour::Srgb => Some((Image { width, height, pixels: d.frames.into_iter().next()?.pixels }, None)),
+        imaging::Colour::Icc(p) => Some((Image { width, height, pixels: d.frames.into_iter().next()?.pixels }, Some(p.to_vec()))),
+        _ => full_image(path, 0).map(|i| (i, None)),
+    }
 }
 
 // --- Wallpaper --------------------------------------------------------------------------------------

@@ -455,7 +455,7 @@ impl App {
             Hit::ExplorerBack | Hit::ExplorerForward | Hit::ExplorerUp | Hit::ExplorerHistory | Hit::ExplorerBookmarks | Hit::ExplorerCollections | Hit::ExplorerGroup | Hit::ExplorerLayout | Hit::ExplorerBrowse | Hit::CrumbMore => named(self, "Button"),
             Hit::RailIcon(_) => named(self, "Section"),
             Hit::PageClose => Info::button("Close Settings").help("Esc"),
-            Hit::PageLink(_) | Hit::PickerDone | Hit::PickerCancel | Hit::LandingFolder | Hit::RecentClear | Hit::GetExtension | Hit::DefaultHint | Hit::ArchiveBack | Hit::ArchiveForward | Hit::ArchiveUp | Hit::ArchiveExtractAll | Hit::ArchiveExtractTo | Hit::ArchiveCancel | Hit::AudioClear | Hit::RipCancel | Hit::ExtractCancel | Hit::CrumbPopupUp | Hit::CrumbPopupClose | Hit::PathClear | Hit::ExplorerFilterClear | Hit::DialogFieldClear => {
+            Hit::PageLink(_) | Hit::PickerDone | Hit::PickerCancel | Hit::LandingFolder | Hit::RecentClear | Hit::GetExtension | Hit::DefaultHint | Hit::ArchiveBack | Hit::ArchiveForward | Hit::ArchiveUp | Hit::ArchiveExtractAll | Hit::ArchiveExtractTo | Hit::ArchiveCancel | Hit::AudioClear | Hit::RipCancel | Hit::ExtractCancel | Hit::PasteCancel | Hit::CrumbPopupUp | Hit::CrumbPopupClose | Hit::PathClear | Hit::ExplorerFilterClear | Hit::DialogFieldClear => {
                 let fallback = match h {
                     Hit::ArchiveBack => "Back",
                     Hit::ArchiveForward => "Forward",
@@ -463,7 +463,7 @@ impl App {
                     Hit::AudioClear => "Clear the loop",
                     Hit::CrumbPopupClose => "Close",
                     Hit::PathClear | Hit::ExplorerFilterClear | Hit::DialogFieldClear => "Clear",
-                    Hit::RipCancel | Hit::ExtractCancel | Hit::ArchiveCancel | Hit::PickerCancel => "Cancel",
+                    Hit::RipCancel | Hit::ExtractCancel | Hit::PasteCancel | Hit::ArchiveCancel | Hit::PickerCancel => "Cancel",
                     _ => "Button",
                 };
                 let t = inside();
@@ -620,6 +620,22 @@ impl App {
                 Info { value: Some(super::edit::slider_text(s, v)), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, super::edit::slider_name(s)) }.help("Left and right arrows: 1, Shift: 10; double-click for 0")
             }
             Hit::EditTool(i) => Info { focusable: true, ..Info::button(super::edit::tool_name(i)) },
+            Hit::EditCurveChannel(i) => {
+                let on = self.edit.as_ref().is_some_and(|e| e.curve_ch == i);
+                Info { focusable: true, ..Info::item(UIA_RadioButtonControlTypeId, format!("{} curve", super::edit::curve_channel_name(i)), on) }
+            }
+            Hit::EditCurve => {
+                let e = self.edit.as_ref()?;
+                let c = e.p.curves[e.curve_ch as usize];
+                let value = match e.curve_sel.and_then(|i| c.points().get(i).copied()) {
+                    Some(q) => format!("Point {} of {}: {:.0} to {:.0}", e.curve_sel.unwrap_or(0) + 1, c.n, q[0] * 255.0, q[1] * 255.0),
+                    None => format!("{} points", c.n),
+                };
+                Info { value: Some(value), invoke: false, focusable: true, ..Info::new(UIA_PaneControlTypeId, "Tone curve") }
+                    .help("Click the line to add a point, drag points, double-click one to take it out; Left and Right pick a point, Up and Down move it, Delete takes it out")
+            }
+            Hit::EditCopy => Info { accel: "Ctrl+Shift+C".into(), ..Info::button("Copy edits") },
+            Hit::EditPaste => Info { accel: "Ctrl+Shift+V".into(), ..Info::button("Paste edits") },
             Hit::EditUndo => Info { accel: "Ctrl+Z".into(), ..Info::button("Undo") },
             Hit::EditRedo => Info { accel: "Ctrl+Y".into(), ..Info::button("Redo") },
             Hit::EditBefore => Info { accel: "\\".into(), ..Info::button("Hold to see the photo before") },
@@ -643,7 +659,7 @@ impl App {
                 }
                 i
             }
-            Hit::RipPill | Hit::ExtractPill => Info { invoke: false, ..Info::new(UIA_ProgressBarControlTypeId, inside()) },
+            Hit::RipPill | Hit::ExtractPill | Hit::PastePill => Info { invoke: false, ..Info::new(UIA_ProgressBarControlTypeId, inside()) },
         })
     }
 }

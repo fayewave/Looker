@@ -450,6 +450,17 @@ impl App {
             }
             e.push(Entry::Separator);
         }
+        // Paste edits (round 3): the edit copied or last saved, onto every photo picked.
+        if self.has_edit_clipboard() {
+            let photos = super::batchedit::pasteable(&paths).len();
+            if photos > 0 {
+                let free = self.pasting.is_none();
+                let label = if photos == 1 { "Paste edits".to_string() } else { format!("Paste edits onto {photos} photos") };
+                e.push(item(Action::PasteEdits(false), 0xE77F, &label, None, free));
+                e.push(item(Action::PasteEdits(true), 0xE8C8, if photos == 1 { "Paste edits as a copy" } else { "Paste edits as copies" }, None, free));
+                e.push(Entry::Separator);
+            }
+        }
         // Archives: unpacked beside themselves in one click, or into a folder picked.
         if super::extract::all_archives(&paths) {
             let free = self.extracting.is_none();
@@ -800,6 +811,7 @@ impl App {
                 }
             }
             (Action::ArchiveExtractHere, MenuKind::Rows(_)) => self.extract_archives(paths, false),
+            (Action::PasteEdits(copy), MenuKind::Rows(_)) => self.paste_edits(paths, copy),
             (Action::ArchiveExtractTo, MenuKind::Rows(_)) => self.extract_archives(paths, true),
             (Action::Cut, _) => self.explorer_clip(true),
             (Action::CopyFiles, _) => self.explorer_clip(false),

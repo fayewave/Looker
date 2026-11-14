@@ -6,7 +6,13 @@
 //! preview is Direct2D's (`Gfx::draw_photo_edit`), the same sums.
 //!
 //! The crop is kept upright on screen, in pixels from the image's middle after its quarter turns and the
-//! straightening (`photoedit::Params::crop`), and always on the image. As Lightroom's (Faye, 2026-11-14): the
+//! straightening (`photoedit::Params::crop`), and always on the image.
+//!
+//! Round 3 (Faye 2026-11-14): Vibrance, a tone curve per channel (the panel's Curve: click the line to add a
+//! point, drag points, double-click one to take it out; Tab to it, then Left/Right pick a point, Up/Down move it,
+//! Delete takes it out), and Copy / Paste edits (the head's buttons, Ctrl+Shift+C / V): the tone and colour, not
+//! the crop or turns. Saving also copies, so a photo just edited can be pasted onto others from the explorer's row
+//! menu (`App::paste_edits`, app/batchedit.rs) or the viewer's. As Lightroom's (Faye, 2026-11-14): the
 //! frame holds still in the middle of the area, as big as fits, and the photo moves under it: a drag inside it
 //! pans the photo with the pointer, a drag outside it turns the photo about the frame's middle (the straightening;
 //! the frame shrinks to stay on the photo, the photo zooming to keep it the same size), and its edges and corners
@@ -40,7 +46,7 @@ const TOOLS: [&str; 4] = ["Rotate left", "Rotate right", "Flip horizontal", "Fli
 
 /// The sliders, by place (round 2, Faye 2026-11-14): name, reach either side of 0, the arrow keys' step and
 /// Shift's. 0 is `Hit::EditStraighten`, 1 `Hit::EditExposure`, the rest `Hit::EditAdjust(place - 2)`.
-const SLIDERS: [(&str, f32, f32, f32); 8] = [
+const SLIDERS: [(&str, f32, f32, f32); 9] = [
     ("Straighten", STRAIGHTEN_MAX, 0.1, 1.0),
     ("Exposure", EXPOSURE_MAX, 0.1, 0.5),
     ("Contrast", 100.0, 1.0, 10.0),
@@ -48,14 +54,21 @@ const SLIDERS: [(&str, f32, f32, f32); 8] = [
     ("Shadows", 100.0, 1.0, 10.0),
     ("Temperature", 100.0, 1.0, 10.0),
     ("Tint", 100.0, 1.0, 10.0),
+    ("Vibrance", 100.0, 1.0, 10.0),
     ("Saturation", 100.0, 1.0, 10.0),
 ];
+
+/// The tone curve's channels, by place (`Hit::EditCurveChannel`; `Params::curves` in the same order), and their
+/// lines' colours.
+const CURVE_CHANNELS: [&str; 4] = ["RGB", "Red", "Green", "Blue"];
+const CURVE_COLOURS: [u32; 3] = [0xE5484D, 0x46A758, 0x3E8EED];
 
 /// Undo groups: changes of one kind in a row (the wheel's notches, a slider's key presses) make one step.
 const GROUP_WHEEL: u8 = 1;
 const GROUP_NUDGE: u8 = 2;
 const GROUP_ASPECT: u8 = 3;
 const GROUP_BUTTON: u8 = 4;
+const GROUP_CURVE: u8 = 5;
 const GROUP_SLIDER: u8 = 16;
 
 fn slider_hit(s: usize) -> Hit {
@@ -82,6 +95,7 @@ fn adjust_mut(p: &mut Params, i: usize) -> &mut f32 {
         2 => &mut p.shadows,
         3 => &mut p.temp,
         4 => &mut p.tint,
+        5 => &mut p.vibrance,
         _ => &mut p.saturation,
     }
 }
@@ -162,6 +176,12 @@ pub(super) struct Edit {
     scroll: f32,
     scroll_max: f32,
     reveal: bool,
+    /// The curve shown (0 RGB, 1-3 red, green, blue), its point picked (the keys move it), the point being dragged,
+    /// and where last frame drew the graph (whole, even when scrolled partly out of view).
+    pub curve_ch: u8,
+    pub curve_sel: Option<usize>,
+    curve_drag: Option<usize>,
+    curve_rect: D2D_RECT_F,
 }
 
 #[derive(Clone, Copy)]
@@ -572,6 +592,10 @@ impl App {
             scroll: 0.0,
             scroll_max: 0.0,
             reveal: false,
+            curve_ch: 0,
+            curve_sel: None,
+            curve_drag: None,
+            curve_rect: D2D_RECT_F::default(),
         };
         e.p.crop = e.full();
         e.start = e.snap_now();
@@ -703,6 +727,10 @@ impl App {
         }
         e.saving = true;
         let (path, p) = (e.path.clone(), e.p);
+        // What's saved can be pasted onto other photos (round 3).
+        if !p.neutral() {
+            self.edit_clipboard = Some(p.tone_only());
+        }
         let owner = self.hwnd.0 as isize;
         self.show_toast(if copy { "Saving a copy\u{2026}" } else { "Saving\u{2026}" }, false);
         crate::fileops::spawn(self.hwnd, false, move || {
@@ -889,8 +917,17 @@ impl App {
         let top = panel.top + PAD;
         g.text(&ui::wide("Edit"), &g.fonts.title, rect(x, top, w, 26.0), rgb(t.text), Align::Left);
         let ib = 30.0;
-        for (i, (hit, glyph, enabled, on)) in [(Hit::EditBefore, 0xE7B3u16, !saving, before), (Hit::EditRedo, 0xE7A6, !saving && can_redo, false), (Hit::EditUndo, 0xE7A7, !saving && can_undo, false)].into_iter().enumerate() {
-            let r = rect(x + w - ib - i as f32 * (ib + 6.0), top - 2.0, ib, ib);
+        let can_paste = self.edit_clipboard.is_some_and(|c| p.with_tone(&c) != p);
+        let heads = [
+            (Hit::EditBefore, 0xE7B3u16, !saving, before),
+            (Hit::EditRedo, 0xE7A6, !saving && can_redo, false),
+            (Hit::EditUndo, 0xE7A7, !saving && can_undo, false),
+            (Hit::EditPaste, 0xE77F, !saving && can_paste, false),
+            (Hit::EditCopy, 0xE8C8, !saving && !p.neutral(), false),
+        ];
+        for (i, (hit, glyph, enabled, on)) in heads.into_iter().enumerate() {
+            // Undo, redo and before at the right; paste and copy a little apart from them.
+            let r = rect(x + w - ib - i as f32 * (ib + 6.0) - if i >= 3 { 10.0 } else { 0.0 }, top - 2.0, ib, ib);
             if enabled {
                 self.hits.add(hit, r);
             }
@@ -1043,6 +1080,76 @@ impl App {
             ring_on(hit, r);
             y += SLIDER_H + 14.0;
         }
+
+        // The tone curve: its channel, then the graph (the photo's histogram behind, the diagonal, the other
+        // channels' curves faintly under RGB's), the points on the line.
+        ui::section(g, "Curve", rect(x, y, w, 20.0));
+        y += 26.0;
+        let (ch_now, sel) = self.edit.as_ref().map_or((0, None), |e| (e.curve_ch as usize, e.curve_sel));
+        let qw = (w - cg * 3.0) / 4.0;
+        for (i, name) in CURVE_CHANNELS.iter().enumerate() {
+            let r = rect(x + i as f32 * (qw + cg), y, qw, 28.0);
+            let hit = Hit::EditCurveChannel(i as u8);
+            if let Some(v) = shown(r).filter(|_| !saving) {
+                self.hits.add(hit, v);
+            }
+            placed.push((hit, r));
+            self.a11y_mark(hit, super::a11y::Mark::Selected(ch_now == i));
+            let st = self.state(hit, !saving);
+            let fg = ui::button_frame(g, r, ui::Kind::Toggle(ch_now == i), &st);
+            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
+            ring_on(hit, r);
+        }
+        y += 28.0 + 10.0;
+        let gr = rect(x, y, w, w);
+        if let Some(v) = shown(gr).filter(|_| !saving) {
+            self.hits.add(Hit::EditCurve, v);
+        }
+        placed.push((Hit::EditCurve, gr));
+        g.fill_round(gr, 4.0, gfx::rgba(t.track, 0.6));
+        let at = |px: f32, py: f32| (gr.left + px * (gr.right - gr.left), gr.bottom - py * (gr.bottom - gr.top));
+        if let Some(hist) = self.viewer.current_entry().and_then(|e| e.histogram.clone()) {
+            let bins = match ch_now {
+                1 => &hist.red,
+                2 => &hist.green,
+                3 => &hist.blue,
+                _ => &hist.luma,
+            };
+            let peak = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
+            let mut pts = vec![at(0.0, 0.0)];
+            pts.extend(bins.iter().enumerate().map(|(i, &v)| at(i as f32 / 255.0, (v as f32 / peak).sqrt() * 0.9)));
+            pts.push(at(1.0, 0.0));
+            let tint = if ch_now == 0 { t.label } else { CURVE_COLOURS[ch_now - 1] };
+            g.fill_polygon(&pts, gfx::rgba(tint, 0.18));
+        }
+        for i in 1..4 {
+            let f = i as f32 / 4.0;
+            let (vx, _) = at(f, 0.0);
+            let (_, hy) = at(0.0, f);
+            g.fill(rect(g.snap(vx), gr.top, g.px(), gr.bottom - gr.top), gfx::rgba(t.label, 0.22));
+            g.fill(rect(gr.left, g.snap(hy), gr.right - gr.left, g.px()), gfx::rgba(t.label, 0.22));
+        }
+        g.polyline(&[at(0.0, 0.0), at(1.0, 1.0)], gfx::rgba(t.label, 0.35), 1.0);
+        let line = |c: &photoedit::Curve| -> Vec<(f32, f32)> { (0..=96).map(|i| i as f32 / 96.0).map(|v| at(v, c.eval(v))).collect() };
+        if ch_now == 0 {
+            for k in 1..4 {
+                if !p.curves[k].identity() {
+                    g.polyline(&line(&p.curves[k]), gfx::rgba(CURVE_COLOURS[k - 1], 0.45), 1.5);
+                }
+            }
+        }
+        let colour = if ch_now == 0 { rgb(t.text) } else { gfx::rgba(CURVE_COLOURS[ch_now - 1], 1.0) };
+        let cur = p.curves[ch_now];
+        g.polyline(&line(&cur), colour, 2.0);
+        for (i, q) in cur.points().iter().enumerate() {
+            let (px, py) = at(q[0], q[1]);
+            let big = sel == Some(i);
+            let rad = if big { 6.0 } else { 4.5 };
+            g.fill_round(rect(px - rad - 1.5, py - rad - 1.5, (rad + 1.5) * 2.0, (rad + 1.5) * 2.0), rad + 1.5, gfx::rgba(0x000000, 0.45));
+            g.fill_round(rect(px - rad, py - rad, rad * 2.0, rad * 2.0), rad, if big { colour } else { rgb(t.text) });
+        }
+        ring_on(Hit::EditCurve, gr);
+        y += w + 14.0;
         let content = y - y0;
         g.pop_clip();
 
@@ -1068,6 +1175,7 @@ impl App {
         if let Some(e) = &mut self.edit {
             e.reveal = false;
             e.scroll_max = most;
+            e.curve_rect = gr;
             if (next - e.scroll).abs() > 0.01 {
                 e.scroll = next;
                 self.invalidate();
@@ -1081,6 +1189,8 @@ impl App {
         v.extend([Hit::EditOrient(0), Hit::EditOrient(1)]);
         v.extend((0..TOOLS.len() as u8).map(Hit::EditTool));
         v.extend((0..SLIDERS.len()).map(slider_hit));
+        v.extend((0..4).map(Hit::EditCurveChannel));
+        v.push(Hit::EditCurve);
         v.extend([Hit::EditReset, Hit::EditCancel, Hit::EditSave, Hit::EditSaveCopy]);
         v
     }
@@ -1103,6 +1213,15 @@ impl App {
             }
             Hit::EditUndo => self.edit_undo(false),
             Hit::EditRedo => self.edit_undo(true),
+            Hit::EditCopy => self.edit_copy(),
+            Hit::EditPaste => self.edit_paste(),
+            Hit::EditCurveChannel(i) => {
+                if let Some(e) = &mut self.edit {
+                    e.curve_ch = i.min(3);
+                    e.curve_sel = None;
+                }
+                self.invalidate();
+            }
             Hit::EditReset => self.edit_reset(),
             Hit::EditCancel => self.cancel_edit(),
             Hit::EditSave => self.edit_save(false),
@@ -1127,6 +1246,71 @@ impl App {
             e.group = None;
         }
         self.a11y_say(if redo { "Redone" } else { "Undone" });
+        self.invalidate();
+    }
+
+    /// Copy edits: the tone and colour, for pasting onto this or other photos.
+    fn edit_copy(&mut self) {
+        let Some(e) = &self.edit else { return };
+        if e.p.neutral() {
+            return;
+        }
+        self.edit_clipboard = Some(e.p.tone_only());
+        self.show_toast("Edits copied", false);
+        self.invalidate();
+    }
+
+    /// Paste edits: the tone and colour copied, over this photo's (its crop and turns kept). Undo takes it back.
+    pub(super) fn edit_paste(&mut self) {
+        let Some(clip) = self.edit_clipboard else { return };
+        if let Some(e) = &mut self.edit {
+            if e.saving {
+                return;
+            }
+            e.settle_zoom();
+            let before = e.snap_now();
+            e.p = e.p.with_tone(&clip);
+            e.record(before, None);
+            e.group = None;
+        }
+        self.a11y_say("Edits pasted");
+        self.invalidate();
+    }
+
+    /// The point of the curve showing under `(x, y)` (within reach), else where a click there adds one.
+    fn curve_press(&mut self, x: f32, y: f32) {
+        let Some(e) = &mut self.edit else { return };
+        let gr = e.curve_rect;
+        let (gw, gh) = (gr.right - gr.left, gr.bottom - gr.top);
+        if gw <= 0.0 || gh <= 0.0 {
+            return;
+        }
+        let ch = e.curve_ch as usize;
+        let c = &mut e.p.curves[ch];
+        let near = c
+            .points()
+            .iter()
+            .enumerate()
+            .map(|(i, q)| (i, (gr.left + q[0] * gw - x).hypot(gr.bottom - q[1] * gh - y)))
+            .filter(|&(_, d)| d <= 10.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i);
+        let i = near.or_else(|| c.insert(((x - gr.left) / gw).clamp(0.0, 1.0)));
+        e.curve_sel = i;
+        e.curve_drag = i;
+    }
+
+    /// The point being dragged follows the pointer.
+    fn curve_drag_to(&mut self, x: f32, y: f32) {
+        let Some(e) = &mut self.edit else { return };
+        let Some(i) = e.curve_drag else { return };
+        let gr = e.curve_rect;
+        let (gw, gh) = (gr.right - gr.left, gr.bottom - gr.top);
+        if gw <= 0.0 || gh <= 0.0 {
+            return;
+        }
+        let ch = e.curve_ch as usize;
+        e.p.curves[ch].set(i, (x - gr.left) / gw, (gr.bottom - y) / gh);
         self.invalidate();
     }
 
@@ -1166,6 +1350,22 @@ impl App {
                 if let Some(e) = &mut self.edit {
                     e.focus_visible = false;
                 }
+                // A double-click on a curve's point takes it out (not an end).
+                if msg == WM_LBUTTONDBLCLK && h == Hit::EditCurve {
+                    self.curve_press(x, y);
+                    if let Some(e) = &mut self.edit {
+                        let ch = e.curve_ch as usize;
+                        if let Some(i) = e.curve_sel {
+                            e.p.curves[ch].remove(i);
+                        }
+                        e.curve_sel = None;
+                        e.curve_drag = None;
+                        e.focus = Some(Hit::EditCurve);
+                        e.record(before, None);
+                    }
+                    self.invalidate();
+                    return Some(LRESULT(0));
+                }
                 // A double-click on a slider puts it back to 0.
                 if msg == WM_LBUTTONDBLCLK {
                     if let Some(s) = slider_index(h) {
@@ -1182,7 +1382,7 @@ impl App {
                 self.pressed = Some(h);
                 if let Some(e) = &mut self.edit {
                     // The panel's controls take the keys; the frame and the photo leave them where they were.
-                    if !matches!(h, Hit::EditCrop(_) | Hit::EditRotate | Hit::EditPanel | Hit::EditBefore | Hit::EditUndo | Hit::EditRedo) {
+                    if !matches!(h, Hit::EditCrop(_) | Hit::EditRotate | Hit::EditPanel | Hit::EditBefore | Hit::EditUndo | Hit::EditRedo | Hit::EditCopy | Hit::EditPaste) {
                         e.focus = Some(h);
                     }
                     e.drag = Some(Drag { hit: h, from: (x, y), crop: e.p.crop, angle: e.p.angle });
@@ -1194,6 +1394,9 @@ impl App {
                 if let Some(s) = slider_index(h) {
                     let r = self.hits.rect_of(h).unwrap_or_default();
                     self.edit_set_slider(s, slider_value(r, x, SLIDERS[s].1));
+                }
+                if h == Hit::EditCurve {
+                    self.curve_press(x, y);
                 }
                 self.invalidate();
                 Some(LRESULT(0))
@@ -1234,6 +1437,7 @@ impl App {
                         let r = self.hits.rect_of(h).unwrap_or_default();
                         self.edit_set_slider(s, slider_value(r, x, SLIDERS[s].1));
                     }
+                    Some(Hit::EditCurve) => self.curve_drag_to(x, y),
                     _ => {}
                 }
                 None // hover and the cursor as usual
@@ -1254,6 +1458,7 @@ impl App {
                         e.glide = true;
                     }
                     e.drag = None;
+                    e.curve_drag = None;
                     e.before = e.before_key;
                 }
                 if self.hit(x, y) == Some(pressed) {
@@ -1261,7 +1466,7 @@ impl App {
                 }
                 // One step for the whole press (a drag, a slider's run, a button), unless it was undo or redo.
                 if let Some(e) = &mut self.edit {
-                    if let Some(b) = e.press.take().filter(|_| !matches!(pressed, Hit::EditUndo | Hit::EditRedo)) {
+                    if let Some(b) = e.press.take().filter(|_| !matches!(pressed, Hit::EditUndo | Hit::EditRedo | Hit::EditPaste)) {
                         e.record(b, None);
                     }
                 }
@@ -1335,6 +1540,22 @@ impl App {
                     }
                     VK_Z if ctrl => self.edit_undo(shift),
                     VK_Y if ctrl => self.edit_undo(true),
+                    VK_C if ctrl && shift => self.edit_copy(),
+                    VK_V if ctrl && shift => self.edit_paste(),
+                    VK_DELETE | VK_BACK if focus == Some(Hit::EditCurve) => {
+                        if let Some(e) = &mut self.edit {
+                            let ch = e.curve_ch as usize;
+                            if let Some(i) = e.curve_sel {
+                                let n = e.p.curves[ch].n as usize;
+                                if i > 0 && i + 1 < n {
+                                    e.p.curves[ch].remove(i);
+                                    e.curve_sel = Some(i - 1);
+                                }
+                            }
+                        }
+                        group = Some(GROUP_BUTTON);
+                        self.invalidate();
+                    }
                     VK_TAB => {
                         let order = self.edit_tab_order();
                         let i = focus.and_then(|f| order.iter().position(|&o| o == f));
@@ -1355,6 +1576,23 @@ impl App {
                     VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN => {
                         let dir = if matches!(vk, VK_RIGHT | VK_UP) { 1.0 } else { -1.0 };
                         match focus {
+                            // The curve: Left/Right pick a point, Up/Down move it (Shift: further).
+                            Some(Hit::EditCurve) => {
+                                if let Some(e) = &mut self.edit {
+                                    let ch = e.curve_ch as usize;
+                                    let n = e.p.curves[ch].n as usize;
+                                    if matches!(vk, VK_LEFT | VK_RIGHT) {
+                                        let i = e.curve_sel.map_or(if dir > 0.0 { 0 } else { n - 1 } as i32, |i| i as i32 + dir as i32);
+                                        e.curve_sel = Some(i.clamp(0, n as i32 - 1) as usize);
+                                    } else {
+                                        let i = *e.curve_sel.get_or_insert(0);
+                                        let q = e.p.curves[ch].pts[i];
+                                        e.p.curves[ch].set(i, q[0], q[1] + dir * if shift { 0.05 } else { 0.01 });
+                                        group = Some(GROUP_CURVE);
+                                    }
+                                }
+                                self.invalidate();
+                            }
                             Some(h) if slider_index(h).is_some() => {
                                 let s = slider_index(h).unwrap_or(0);
                                 let (_, _, step, big) = SLIDERS[s];
@@ -1401,7 +1639,7 @@ impl App {
                         }
                     }
                     VK_RETURN | VK_SPACE => match focus {
-                        Some(h @ (Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditTool(_) | Hit::EditReset)) => {
+                        Some(h @ (Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditTool(_) | Hit::EditCurveChannel(_) | Hit::EditReset)) => {
                             self.edit_click(h);
                             group = Some(GROUP_BUTTON);
                         }
@@ -1445,6 +1683,10 @@ pub(super) fn is_edit_hit(h: Hit) -> bool {
             | Hit::EditStraighten
             | Hit::EditExposure
             | Hit::EditAdjust(_)
+            | Hit::EditCurve
+            | Hit::EditCurveChannel(_)
+            | Hit::EditCopy
+            | Hit::EditPaste
             | Hit::EditUndo
             | Hit::EditRedo
             | Hit::EditBefore
@@ -1459,6 +1701,11 @@ pub(super) fn is_edit_hit(h: Hit) -> bool {
 /// A rotate or flip button's name, for readers.
 pub(super) fn tool_name(i: u8) -> &'static str {
     TOOLS.get(i as usize).copied().unwrap_or("")
+}
+
+/// A curve channel's name, for readers.
+pub(super) fn curve_channel_name(i: u8) -> &'static str {
+    CURVE_CHANNELS.get(i as usize).copied().unwrap_or("")
 }
 
 /// The aspect choice's name, for readers.

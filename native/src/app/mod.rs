@@ -6,12 +6,14 @@ mod a11y;
 mod accent;
 mod archive;
 mod actions;
+mod batchedit;
 mod chrome;
 mod clean;
 mod document;
 mod edit;
 mod explorer;
 mod extract;
+pub(crate) use batchedit::PasteResult;
 pub(crate) use extract::ExtractResult;
 mod explorer_columns;
 mod explorer_ops;
@@ -390,6 +392,9 @@ enum Hit {
     /// An extraction's (app/extract.rs).
     ExtractPill,
     ExtractCancel,
+    /// Edits being pasted onto photos (app/batchedit.rs).
+    PastePill,
+    PasteCancel,
     /// Edit mode (edit.rs): the crop frame (0 inside, 1-8 its handles clockwise from the top left), the panel, an
     /// aspect choice, its orientation, the two sliders, and the buttons.
     EditCrop(u8),
@@ -403,8 +408,14 @@ enum Hit {
     EditTool(u8),
     EditStraighten,
     EditExposure,
-    /// Contrast, Highlights, Shadows, Temperature, Tint, Saturation (`edit::SLIDERS` from 2).
+    /// Contrast, Highlights, Shadows, Temperature, Tint, Vibrance, Saturation (`edit::SLIDERS` from 2).
     EditAdjust(u8),
+    /// The tone curve's graph, and its channel (RGB, Red, Green, Blue).
+    EditCurve,
+    EditCurveChannel(u8),
+    /// Copy and Paste edits (the tone and colour).
+    EditCopy,
+    EditPaste,
     /// The panel's head: undo, redo, and Before (held: the photo as it was).
     EditUndo,
     EditRedo,
@@ -727,6 +738,10 @@ pub struct App {
     edit: Option<edit::Edit>,
     /// The explorer's Edit on a file not yet up: edit mode starts once it's decoded (`edit_when_up`).
     edit_pending: Option<(PathBuf, std::time::Instant)>,
+    /// Copy edits' tone and colour (also the last edit saved), for Paste edits.
+    edit_clipboard: Option<crate::photoedit::Params>,
+    /// Edits being pasted onto photos and saved (app/batchedit.rs).
+    pasting: Option<batchedit::Pasting>,
     a11y_hits: Vec<(i32, Hit)>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
@@ -1574,6 +1589,8 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             a11y_marks: Vec::new(),
             edit: None,
             edit_pending: None,
+            edit_clipboard: None,
+            pasting: None,
             a11y_hits: Vec::new(),
             tooltip: None,
             dialog: None,
