@@ -60,6 +60,10 @@ pub(super) struct Edit {
     view: crate::motion::Ease<3>,
     placed: bool,
     glide: bool,
+    /// The wheel's zoom eases the crop (`zooming` while it does), the view following it frame by frame so the
+    /// frame holds still and the photo zooms smoothly under it.
+    zoom: crate::motion::Ease<4>,
+    zooming: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -195,28 +199,38 @@ impl Edit {
         at(lo)
     }
 
-    /// The wheel (Faye, 2026-11-14): the photo zooms under the frame, the crop shrinking (`f` > 1) or growing in
-    /// image pixels with its aspect kept, about image point `at` (under the pointer, which stays there) or the
-    /// crop's middle. Zooming out stops at the photo's edge: from the pointer or the middle, whichever gets
-    /// further.
-    fn zoom(&mut self, f: f32, at: Option<(f32, f32)>) {
-        let c = self.p.crop;
-        let mid = ((c[0] + c[2]) / 2.0, (c[1] + c[3]) / 2.0);
-        let about = |p: (f32, f32)| {
-            let m = 1.0 / f;
-            self.toward(c, [p.0 + (c[0] - p.0) * m, p.1 + (c[1] - p.1) * m, p.0 + (c[2] - p.0) * m, p.1 + (c[3] - p.1) * m])
-        };
-        let w = |c: [f32; 4]| c[2] - c[0];
-        let mut to = about(at.unwrap_or(mid));
-        if at.is_some() && f < 1.0 {
-            let m = about(mid);
-            if w(m) > w(to) + 0.01 {
-                to = m;
-            }
-        }
-        if to != c && self.fits(to) {
-            self.p.crop = to;
-            self.auto = false;
+    /// The wheel (Faye, 2026-11-14): crop `from` zoomed by `f` (> 1 in: the crop shrinks in image pixels, its aspect
+    /// kept) about image point `at` (under the pointer) or its middle, as far as the photo allows. Out against the
+    /// photo's edge it slides back onto it rather than stopping there: a crop of a given size fits wherever its
+    /// middle lies in a rectangle of the photo's own axes (the photo's half-size less the crop's reach along each),
+    /// so the middle is clamped into that.
+    fn zoomed(&self, from: [f32; 4], f: f32, at: Option<(f32, f32)>) -> [f32; 4] {
+        let (hw1, hh1) = ((from[2] - from[0]) / 2.0, (from[3] - from[1]) / 2.0);
+        let mid = ((from[0] + from[2]) / 2.0, (from[1] + from[3]) / 2.0);
+        let (sn, cs) = self.p.angle.to_radians().sin_cos();
+        let (sa, ca) = (sn.abs(), cs.abs());
+        // The crop's reach along the photo's x and y at this size.
+        let (ex1, ey1) = (ca * hw1 + sa * hh1, sa * hw1 + ca * hh1);
+        let most = (self.w / 2.0 / ex1).min(self.h / 2.0 / ey1) * 0.9999;
+        let least = (MIN_SIDE.min(self.w) / (2.0 * hw1)).max(MIN_SIDE.min(self.h) / (2.0 * hh1));
+        let m = (1.0 / f).min(most).max(least);
+        let p = at.unwrap_or(mid);
+        let (cx, cy) = (p.0 + (mid.0 - p.0) * m, p.1 + (mid.1 - p.1) * m);
+        let (hw, hh) = (hw1 * m, hh1 * m);
+        // Into the photo's axes, clamped, and back.
+        let (qx, qy) = (cs * cx + sn * cy, -sn * cx + cs * cy);
+        let bx = (self.w / 2.0 - (ca * hw + sa * hh)).max(0.0);
+        let by = (self.h / 2.0 - (sa * hw + ca * hh)).max(0.0);
+        let (qx, qy) = (qx.clamp(-bx, bx), qy.clamp(-by, by));
+        let (cx, cy) = (cs * qx - sn * qy, sn * qx + cs * qy);
+        [cx - hw, cy - hh, cx + hw, cy + hh]
+    }
+
+    /// A wheel zoom still easing ends where it was going (before anything else changes the crop).
+    fn settle_zoom(&mut self) {
+        if self.zooming {
+            self.p.crop = self.zoom.target();
+            self.zooming = false;
         }
     }
 
@@ -385,6 +399,8 @@ impl App {
             view: crate::motion::Ease::at([1.0, 0.0, 0.0]),
             placed: false,
             glide: false,
+            zoom: crate::motion::Ease::at([0.0; 4]),
+            zooming: false,
         };
         e.p.crop = e.full();
         self.edit = Some(e);
@@ -440,6 +456,7 @@ impl App {
 
     fn edit_reset(&mut self) {
         if let Some(e) = &mut self.edit {
+            e.settle_zoom();
             e.p.angle = 0.0;
             e.p.ev = 0.0;
             e.aspect = ORIGINAL;
@@ -453,6 +470,7 @@ impl App {
 
     fn edit_aspect(&mut self, i: u8) {
         if let Some(e) = &mut self.edit {
+            e.settle_zoom();
             e.aspect = i;
             if i != 0 || e.auto {
                 e.auto = true;
@@ -466,6 +484,7 @@ impl App {
     /// The fixed aspect's frame wider than tall (`portrait` false) or taller than wide.
     fn edit_orient(&mut self, portrait: bool) {
         if let Some(e) = &mut self.edit {
+            e.settle_zoom();
             if e.aspect == 0 || e.aspect == 2 || e.portrait == portrait {
                 return;
             }
@@ -481,6 +500,7 @@ impl App {
     /// outside the frame alike).
     fn edit_set_angle(&mut self, a: f32) {
         if let Some(e) = &mut self.edit {
+            e.settle_zoom();
             let a = ((a * 10.0).round() / 10.0).clamp(-STRAIGHTEN_MAX, STRAIGHTEN_MAX);
             // Untouched, the frame stays the largest the straightened image holds (growing back towards 0); moved by
             // hand, it's kept, drawn in only as far as it must be.
@@ -509,6 +529,7 @@ impl App {
     /// Saves on a thread: a copy beside the photo, or over it (`copy` false).
     pub(super) fn edit_save(&mut self, copy: bool) {
         let Some(e) = &mut self.edit else { return };
+        e.settle_zoom();
         if e.saving || !e.changed() || (!copy && !photoedit::writable(&e.path)) {
             return;
         }
@@ -572,6 +593,14 @@ impl App {
         let Some(e) = &mut self.edit else { return };
         // The frame as big as fits in the middle (with room around it for its handles), the photo placed under it.
         let now = Instant::now();
+        let zooming = e.zooming;
+        if zooming {
+            e.p.crop = e.zoom.value(now);
+            if !e.zoom.moving(now) {
+                e.p.crop = e.zoom.target();
+                e.zooming = false;
+            }
+        }
         let target = e.target(ui::grow(area, -FRAME_MARGIN));
         if !e.placed {
             e.view.jump(target);
@@ -585,7 +614,7 @@ impl App {
             e.view.jump(target);
         }
         let [k, ox, oy] = e.view.value(now);
-        let moving = e.view.moving(now);
+        let moving = e.view.moving(now) || zooming;
         e.k = k;
         e.centre = (ox, oy);
         // The bitmap as decoded: unturned, so its box swaps sides for odd turns, and turns by the quarter turns too.
@@ -801,6 +830,11 @@ impl App {
         if self.dialog.is_some() || self.menu.is_some() {
             return None;
         }
+        if matches!(msg, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_KEYDOWN) {
+            if let Some(e) = &mut self.edit {
+                e.settle_zoom();
+            }
+        }
         match msg {
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
                 let (x, y) = self.dip_from_lparam(lp);
@@ -920,7 +954,17 @@ impl App {
                         let cr = e.crop_rect();
                         let inside = x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom;
                         let at = inside.then(|| ((x - e.centre.0) / e.k, (y - e.centre.1) / e.k));
-                        e.zoom(1.1f32.powf(delta / 120.0), at);
+                        // From where a zoom under way is going, so quick notches add up.
+                        let from = if e.zooming { e.zoom.target() } else { e.p.crop };
+                        let to = e.zoomed(from, 1.15f32.powf(delta / 120.0), at);
+                        if to != from && e.fits(to) {
+                            if !e.zooming {
+                                e.zoom.jump(e.p.crop);
+                            }
+                            e.zoom.set(to, Instant::now());
+                            e.zooming = true;
+                            e.auto = false;
+                        }
                     }
                     self.invalidate();
                 }
