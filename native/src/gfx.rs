@@ -952,6 +952,55 @@ impl Gfx {
         pixel_rect_at(dest, w, h, self.dpi / 96.0)
     }
 
+    /// A photo layer's bitmap (a video picture) drawn on the UI layer, as a small preview inside a card. Under scRGB
+    /// those bitmaps are linear FP16 at SDR white's level, which the 8-bit layer would take as sRGB values (far too
+    /// contrasty, highlights blown out): brought down to SDR white, HDR highlights rolled off into it, and encoded.
+    pub fn draw_photo_ui(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, sdr: bool) {
+        if !self.space.is_scrgb() || unsafe { self.try_photo_ui(bmp, dest, sdr) }.is_err() {
+            self.draw_photo(bmp, dest, 1.0, sdr);
+        }
+    }
+
+    unsafe fn try_photo_ui(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, sdr: bool) -> Result<()> {
+        unsafe {
+            let dc = &self.dev.dc;
+            let size = bmp.GetSize();
+            if size.width <= 0.0 || size.height <= 0.0 {
+                return Ok(());
+            }
+            let mut out: ID2D1Image = scale_rgb(dc, &bmp.cast()?, 1.0 / self.space.white_scale())?.GetOutput()?;
+            let headroom = if sdr { 1.0 } else { self.space.headroom() };
+            if headroom > 1.01 {
+                // scRGB 1.0 is 80 nits: SDR white is there now.
+                let tm = dc.CreateEffect(&CLSID_D2D1HdrToneMap)?;
+                tm.SetInput(0, &out, true);
+                set_f32(&tm, D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE.0 as u32, headroom * 80.0)?;
+                set_f32(&tm, D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE.0 as u32, 80.0)?;
+                set_u32(&tm, D2D1_HDRTONEMAP_PROP_DISPLAY_MODE.0 as u32, D2D1_HDRTONEMAP_DISPLAY_MODE_SDR.0 as u32)?;
+                out = tm.GetOutput()?;
+            }
+            let enc = dc.CreateEffect(&CLSID_D2D1ColorManagement)?;
+            enc.SetInput(0, &out, true);
+            set_interface(&enc, D2D1_COLORMANAGEMENT_PROP_SOURCE_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SCRGB, None)?)?;
+            set_interface(&enc, D2D1_COLORMANAGEMENT_PROP_DESTINATION_COLOR_CONTEXT.0 as u32, &dc.CreateColorContext(D2D1_COLOR_SPACE_SRGB, None)?)?;
+            let clamped = color_matrix(dc, &enc.GetOutput()?, 1.0, 1.0, true)?;
+            let mut world = windows_numerics::Matrix3x2::identity();
+            dc.GetTransform(&mut world);
+            let place = windows_numerics::Matrix3x2 {
+                M11: (dest.right - dest.left) / size.width,
+                M12: 0.0,
+                M21: 0.0,
+                M22: (dest.bottom - dest.top) / size.height,
+                M31: dest.left,
+                M32: dest.top,
+            };
+            dc.SetTransform(&(place * world));
+            dc.DrawImage(&clamped.GetOutput()?, None, None, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_COMPOSITE_MODE_SOURCE_OVER);
+            dc.SetTransform(&world);
+            Ok(())
+        }
+    }
+
     pub fn draw_photo_px(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, opacity: f32, sdr: bool, pixels: bool) {
         if pixels && self.device_scale(bmp, dest) >= PIXELS_FROM {
             unsafe {

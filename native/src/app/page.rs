@@ -149,6 +149,8 @@ pub(super) struct Page {
     pub(super) style_drag: Option<(crate::substyle::Num, f32, f32)>,
     pub(super) preview_rect: Option<D2D_RECT_F>,
     pub(super) preview: Option<super::substyle::Preview>,
+    /// The style being changed, not saved yet (the style in use's).
+    pub(super) draft: Option<crate::substyle::SubStyle>,
 }
 
 impl Page {
@@ -173,6 +175,7 @@ impl Page {
             style_drag: None,
             preview_rect: None,
             preview: None,
+            draft: None,
         }
     }
 
@@ -243,7 +246,6 @@ fn choices(s: &Settings, which: Setting) -> (Vec<String>, usize) {
             let now = s.slideshow_seconds.clamp(1, 120);
             (v.iter().map(|&n| if n == 1 { "1 second".into() } else { format!("{n} seconds") }).collect(), v.iter().position(|&n| n == now).unwrap_or(0))
         }
-        Setting::SubFont | Setting::SubWeight | Setting::SubBackdrop => App::style_choices(s, which),
         _ => (Vec::new(), 0),
     }
 }
@@ -369,8 +371,27 @@ impl App {
         self.invalidate();
     }
 
+    /// A drop-down's choices: the styles card's from its draft.
+    fn choices_for(&self, which: Setting) -> (Vec<String>, usize) {
+        match which {
+            Setting::SubFont | Setting::SubWeight | Setting::SubBackdrop => self.style_choices(which),
+            _ => choices(&self.settings, which),
+        }
+    }
+
+    /// Escape, the close button, a press outside: the styles card asks about unsaved changes first.
     pub(super) fn close_page(&mut self) {
+        if self.page.as_ref().is_some_and(|p| p.open && p.mode == Mode::Styles) {
+            self.styles_close();
+        } else {
+            self.close_page_now();
+        }
+    }
+
+    /// Away at once (a draft is dropped).
+    pub(super) fn close_page_now(&mut self) {
         if let Some(p) = &mut self.page {
+            p.draft = None;
             if p.open {
                 p.open = false;
                 p.thumb_drag = None;
@@ -445,7 +466,7 @@ impl App {
     pub(super) fn open_combo(&mut self, which: Setting) {
         let Some(r) = self.hits.rect_of(Hit::Combo(which)) else { return };
         let Some(g) = &self.gfx else { return };
-        let (items, sel) = choices(&self.settings, which);
+        let (items, sel) = self.choices_for(which);
         let entries = items.iter().enumerate().map(|(i, l)| menus::check(menus::Action::Choose(i), l.as_str(), i == sel)).collect();
         let (w, h) = self.size_dip();
         self.menu = Some((menus::MenuKind::Combo(which), ui::Menu::below(g, entries, r, rect(0.0, 0.0, w, h))));
@@ -1004,7 +1025,7 @@ impl App {
         }
         let st = self.state(id, open);
         let menu_open = matches!(&self.menu, Some((menus::MenuKind::Combo(c), _)) if *c == which);
-        let (items, sel) = choices(&self.settings, which);
+        let (items, sel) = self.choices_for(which);
         ui::dropdown(g, r, items.get(sel).map_or("", String::as_str), &st, menu_open);
     }
 

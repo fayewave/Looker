@@ -286,7 +286,7 @@ impl SubStyle {
             font: INTER.into(),
             weight: 500,
             italic: false,
-            size: 100.0,
+            size: 80.0,
             colour: 0xFFFFFF,
             file_colours: true,
             outline: 7.5,
@@ -321,6 +321,16 @@ pub fn presets() -> Vec<SubStyle> {
     ]
 }
 
+/// Settings from before the presets were 80 %: the presets (by name) still at 100 % go to their new size.
+pub fn migrate_sizes(styles: &mut [SubStyle]) {
+    let presets = presets();
+    for s in styles.iter_mut().filter(|s| s.size == 100.0) {
+        if let Some(p) = presets.iter().find(|p| p.name == s.name) {
+            s.size = p.size;
+        }
+    }
+}
+
 /// `base`, or "base 2", "base 3"... whichever no style has yet.
 pub fn unique_name(styles: &[SubStyle], base: &str) -> String {
     let taken = |n: &str| styles.iter().any(|s| s.name.eq_ignore_ascii_case(n));
@@ -345,6 +355,28 @@ mod tests {
         assert_eq!(SubStyle::from_line("font=Arial"), None);
         let s = SubStyle::from_line("name=X\tsize=9999\tcolour=zz\tweight=123\toutline=0.26").unwrap();
         assert_eq!((s.size, s.colour, s.weight, s.outline), (400.0, 0xFFFFFF, 500, 0.5));
+    }
+
+    #[test]
+    fn old_preset_sizes_move_to_80() {
+        let mut v = presets();
+        for s in v.iter_mut() {
+            s.size = 100.0;
+        }
+        v[4].size = 140.0;
+        v.push(SubStyle { size: 100.0, ..SubStyle::named("Mine") });
+        migrate_sizes(&mut v);
+        let sizes: Vec<f32> = v.iter().map(|s| s.size).collect();
+        assert_eq!(sizes, vec![80.0, 80.0, 80.0, 80.0, 140.0, 100.0]);
+        // Old settings: styles without the version marker are migrated; saved ones aren't again.
+        let old = "subtitle_style=name=Looker	size=100
+";
+        assert_eq!(crate::settings::parse(old).subtitle_styles[0].size, 80.0);
+        let new = format!("subtitle_styles_v=2
+{old}");
+        assert_eq!(crate::settings::parse(&new).subtitle_styles[0].size, 100.0);
+        assert_eq!(crate::settings::parse("subtitle_size=125").subtitle_styles[0].size, 125.0);
+        assert_eq!(crate::settings::parse("subtitle_size=100").subtitle_styles[0].size, 80.0);
     }
 
     #[test]

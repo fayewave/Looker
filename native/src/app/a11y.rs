@@ -371,6 +371,7 @@ impl App {
             | Hit::PageCard
             | Hit::PageNavOn(_)
             | Hit::StyleRowOn(_)
+            | Hit::StyleFooter
             | Hit::PageThumb
             | Hit::ToggleAnim(_)
             | Hit::PickerOutside

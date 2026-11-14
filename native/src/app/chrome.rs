@@ -483,10 +483,8 @@ impl App {
         // Bottom to top: hits added later win.
         self.draw_viewport(&mut g, ui_k);
         g.push_fade(ui_k, 1.0, 0.0, 0.0);
-        // Under the cards: where the explorer's edge will hold, while it's dragged near there.
         let editing = self.edit.is_some();
-        let guide_moving = !editing && self.draw_sticky_guide(&g);
-        let info_moving = !editing && self.draw_info(&g) | guide_moving;
+        let info_moving = !editing && self.draw_info(&g);
         // The explorer's hover highlights end at once, no fade out (Faye, 2026-11-10).
         self.fades.instant_out = true;
         let card_moving = info_moving | (!editing && self.draw_explorer(&g));
@@ -518,6 +516,11 @@ impl App {
             g.push_fade(ui_k, 1.0, 0.0, 0.0);
             self.draw_title(&g);
             g.pop_fade();
+        }
+        // Over everything, the explorer and the bars too: where the explorer's edge will hold, while it's dragged
+        // near there (its fade keeps the frames coming).
+        if !editing {
+            self.draw_sticky_guide(&g);
         }
         let texts_at_overlays = g.texts.borrow().as_ref().map_or(0, Vec::len);
         let overlays_moving = self.draw_overlays(&g);

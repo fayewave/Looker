@@ -40,6 +40,8 @@ pub(super) enum DialogKind {
     /// The Subtitle styles card's Rename and Delete, for the style at this place in the list.
     RenameStyle(usize),
     DeleteStyle(usize),
+    /// Unsaved changes to a subtitle style: Save, Discard or Cancel, then what was asked.
+    StyleUnsaved(super::substyle::Pending),
 }
 
 impl App {
@@ -462,11 +464,14 @@ impl App {
         if let DialogKind::InfoClose = kind {
             return self.info_close_answer(choice);
         }
+        if let DialogKind::StyleUnsaved(then) = kind {
+            return self.style_leave_answer(then, choice);
+        }
         if choice != Choice::Confirm {
             return;
         }
         match kind {
-            DialogKind::TextClose(_) | DialogKind::InfoClose => {}
+            DialogKind::TextClose(_) | DialogKind::InfoClose | DialogKind::StyleUnsaved(_) => {}
             DialogKind::InfoDiscard => self.info_discard_all(),
             DialogKind::Notice => {}
             DialogKind::Rip(setup) => {

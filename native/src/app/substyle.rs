@@ -1,7 +1,9 @@
 //! The Subtitle styles card: the Settings card's frame (the same blur, fade, scroll and modality; `page.rs`'s
 //! `Mode::Styles`), its sidebar the styles (the one picked is the one in use, as a theme chip is) with New style
 //! under them, its pane the picked style: a preview of a video frame with two lines of subtitle on it (the video
-//! playing, or a night or a day scene), then the style's settings, applied the moment they change.
+//! playing, or a night or a day scene), then the style's settings. Changes go to a draft (`Page::draft`) that the
+//! preview and the subtitles behind the card show at once; a footer offers Discard and Save while it differs from
+//! the saved style, and leaving it (closing the card, another style, New, Duplicate) asks which first.
 //! Opened from the Subtitles menu's "Customise styles…" and Settings > Video and audio.
 
 use std::sync::OnceLock;
@@ -18,7 +20,21 @@ pub(super) mod act {
     pub const RENAME: u8 = 1;
     pub const DUPLICATE: u8 = 2;
     pub const DELETE: u8 = 3;
+    pub const SAVE: u8 = 4;
+    pub const DISCARD: u8 = 5;
 }
+
+/// What waits on the Save / Discard / Cancel question about unsaved changes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Pending {
+    Close,
+    Pick(usize),
+    New,
+    Duplicate,
+}
+
+/// The footer's height while it shows.
+const FOOTER_H: f32 = 60.0;
 
 /// The preview's backgrounds (`Hit::StyleScene`).
 const SCENE_VIDEO: u8 = 0;
@@ -111,14 +127,89 @@ impl App {
         self.page.as_ref().is_some_and(|p| p.mode == Mode::Styles)
     }
 
-    /// Anything shown changed: saved, and the subtitles drawn again.
+    /// The list or the settings changed: saved, and the subtitles drawn again.
     fn style_changed(&mut self) {
         settings::save(&self.settings);
         self.invalidate();
     }
 
+    /// The style the subtitles show: the card's draft while there is one, else the one in use.
+    pub(super) fn shown_sub_style(&self) -> &SubStyle {
+        self.page.as_ref().and_then(|p| p.draft.as_ref()).unwrap_or_else(|| self.settings.sub_style())
+    }
+
+    /// The draft to change (made from the style in use the first time).
+    fn edit_style(&mut self) -> &mut SubStyle {
+        let saved = self.settings.sub_style().clone();
+        let p = self.page.as_mut().expect("the styles card is open");
+        p.draft.get_or_insert(saved)
+    }
+
+    /// The draft differs from the saved style.
+    pub(super) fn style_dirty(&self) -> bool {
+        self.page.as_ref().and_then(|p| p.draft.as_ref()).is_some_and(|d| d.key() != self.settings.sub_style().key())
+    }
+
+    /// Save: the draft becomes the style (its name stays the saved one's).
+    fn save_style_draft(&mut self) {
+        let Some(mut d) = self.page.as_mut().and_then(|p| p.draft.take()) else { return };
+        d.name = self.settings.sub_style().name.clone();
+        *self.settings.sub_style_mut() = d;
+        self.style_changed();
+        self.show_toast("Subtitle style saved", true);
+    }
+
+    pub(super) fn discard_style_draft(&mut self) {
+        if let Some(p) = &mut self.page {
+            p.draft = None;
+        }
+        self.invalidate();
+    }
+
+    /// `then` now, or once the unsaved changes are saved or discarded (asked first). True if it can go now.
+    fn style_leave(&mut self, then: Pending) -> bool {
+        if !self.style_dirty() {
+            self.discard_style_draft();
+            return true;
+        }
+        let name = self.settings.sub_style().name.clone();
+        let buttons = vec![
+            ui::DialogButton::new("Save", actions::Choice::Confirm),
+            ui::DialogButton::new("Discard", actions::Choice::Discard),
+            ui::DialogButton::new("Cancel", actions::Choice::Cancel),
+        ];
+        let body = "Your changes to this style haven't been saved.".to_string();
+        self.open_dialog_ui(actions::DialogKind::StyleUnsaved(then), ui::Dialog::new(format!("Save changes to \u{201C}{name}\u{201D}?"), body, buttons, 0, false));
+        false
+    }
+
+    /// The answer to `style_leave`'s question.
+    pub(super) fn style_leave_answer(&mut self, then: Pending, choice: actions::Choice) {
+        match choice {
+            actions::Choice::Cancel => return,
+            actions::Choice::Confirm => self.save_style_draft(),
+            actions::Choice::Discard => self.discard_style_draft(),
+        }
+        match then {
+            Pending::Close => self.close_page_now(),
+            Pending::Pick(i) => self.style_row(i),
+            Pending::New => self.style_act(act::NEW),
+            Pending::Duplicate => self.style_act(act::DUPLICATE),
+        }
+    }
+
+    /// Closing the card: asked first if the draft isn't saved.
+    pub(super) fn styles_close(&mut self) {
+        if self.style_leave(Pending::Close) {
+            self.close_page_now();
+        }
+    }
+
     pub(super) fn style_row(&mut self, i: usize) {
         if i < self.settings.subtitle_styles.len() && i != self.settings.subtitle_style {
+            if !self.style_leave(Pending::Pick(i)) {
+                return;
+            }
             self.settings.subtitle_style = i;
             if let Some(p) = &mut self.page {
                 p.switched = std::time::Instant::now();
@@ -128,6 +219,21 @@ impl App {
     }
 
     pub(super) fn style_act(&mut self, a: u8) {
+        let leaving = match a {
+            act::NEW => Some(Pending::New),
+            act::DUPLICATE => Some(Pending::Duplicate),
+            _ => None,
+        };
+        if let Some(then) = leaving {
+            if !self.style_leave(then) {
+                return;
+            }
+        }
+        match a {
+            act::SAVE => return self.save_style_draft(),
+            act::DISCARD => return self.discard_style_draft(),
+            _ => {}
+        }
         let s = &mut self.settings;
         match a {
             act::NEW if s.subtitle_styles.len() < MAX_STYLES => {
@@ -175,13 +281,21 @@ impl App {
             return;
         }
         let others: Vec<SubStyle> = self.settings.subtitle_styles.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, s)| s.clone()).collect();
-        self.settings.subtitle_styles[i].name = substyle::unique_name(&others, &name);
+        let name = substyle::unique_name(&others, &name);
+        self.settings.subtitle_styles[i].name = name.clone();
+        if let Some(d) = self.page.as_mut().and_then(|p| p.draft.as_mut()).filter(|_| i == self.settings.subtitle_style) {
+            d.name = name;
+        }
         self.style_changed();
     }
 
     pub(super) fn style_deleted(&mut self, i: usize) {
         let s = &mut self.settings;
         if s.subtitle_styles.len() > 1 && i < s.subtitle_styles.len() {
+            if let Some(p) = &mut self.page {
+                p.draft = None;
+            }
+            let s = &mut self.settings;
             s.subtitle_styles.remove(i);
             s.subtitle_style = i.saturating_sub(1).min(s.subtitle_styles.len() - 1);
             self.style_changed();
@@ -192,15 +306,15 @@ impl App {
     pub(super) fn style_step(&mut self, n: u8, k: u8) {
         let Some(num) = Num::ALL.get(n as usize).copied() else { return };
         let step = num.range().2;
-        let st = self.settings.sub_style_mut();
+        let st = self.edit_style();
         st.set(num, st.get(num) + if k == 0 { -step } else { step });
-        self.style_changed();
+        self.invalidate();
     }
 
     /// A press on a stepper's number: it drags from here.
     pub(super) fn style_drag_start(&mut self, n: u8, x: f32) {
         let Some(num) = Num::ALL.get(n as usize).copied() else { return };
-        let v = self.settings.sub_style().get(num);
+        let v = self.shown_sub_style().get(num);
         if let Some(p) = &mut self.page {
             p.style_drag = Some((num, x, v));
         }
@@ -210,7 +324,7 @@ impl App {
     pub(super) fn style_drag_to(&mut self, x: f32) {
         let Some((num, x0, v0)) = self.page.as_ref().and_then(|p| p.style_drag) else { return };
         let step = num.range().2;
-        let st = self.settings.sub_style_mut();
+        let st = self.edit_style();
         let before = st.get(num);
         st.set(num, v0 + ((x - x0) / 6.0).round() * step);
         if st.get(num) != before {
@@ -218,10 +332,10 @@ impl App {
         }
     }
 
-    /// Released: kept.
+    /// Released.
     pub(super) fn style_drag_end(&mut self) {
-        if self.page.as_mut().and_then(|p| p.style_drag.take()).is_some() {
-            settings::save(&self.settings);
+        if let Some(p) = &mut self.page {
+            p.style_drag = None;
         }
     }
 
@@ -233,8 +347,8 @@ impl App {
     }
 
     /// A drop-down's choices on the card (`page::choices` asks): its labels and which is picked.
-    pub(super) fn style_choices(s: &Settings, which: Setting) -> (Vec<String>, usize) {
-        let st = s.sub_style();
+    pub(super) fn style_choices(&self, which: Setting) -> (Vec<String>, usize) {
+        let st = self.shown_sub_style();
         match which {
             Setting::SubFont => {
                 let v = fonts(&st.font);
@@ -249,7 +363,7 @@ impl App {
 
     /// A drop-down choice on the card.
     pub(super) fn style_choose(&mut self, which: Setting, i: usize) {
-        let st = self.settings.sub_style_mut();
+        let st = self.edit_style();
         match which {
             Setting::SubFont => {
                 if let Some(f) = fonts(&st.font).get(i) {
@@ -260,17 +374,23 @@ impl App {
             Setting::SubBackdrop => st.backdrop = Backdrop::ALL[i.min(Backdrop::ALL.len() - 1)],
             _ => return,
         }
-        self.style_changed();
+        self.invalidate();
     }
 
     pub(super) fn style_toggle(&mut self, which: Setting) {
-        let st = self.settings.sub_style_mut();
+        let st = self.edit_style();
         match which {
             Setting::SubItalic => st.italic = !st.italic,
             Setting::SubFileColours => st.file_colours = !st.file_colours,
             _ => return,
         }
-        self.style_changed();
+        self.invalidate();
+    }
+
+    /// The colour picker's colour for `paint`, into the draft.
+    pub(super) fn style_set_paint(&mut self, paint: Paint, c: u32) {
+        self.edit_style().set_paint(paint, c);
+        self.invalidate();
     }
 
     /// Tooltips for the card's buttons.
@@ -280,6 +400,8 @@ impl App {
             Hit::StyleAct(act::DUPLICATE) => "Duplicate",
             Hit::StyleAct(act::DELETE) => "Delete",
             Hit::StyleAct(act::NEW) => "A new style, starting from Looker's",
+            Hit::StyleAct(act::SAVE) => "Keep the changes to this style",
+            Hit::StyleAct(act::DISCARD) => "Put the style back as it was saved",
             Hit::StyleColour(i) => Paint::ALL.get(i as usize)?.title(),
             Hit::StyleStep(_, 0) => "Less",
             Hit::StyleStep(_, 1) => "More",
@@ -292,7 +414,7 @@ impl App {
     pub(super) fn prepare_style_preview(&mut self, g: &Gfx) {
         let Some(p) = self.page.as_ref().filter(|p| p.mode == Mode::Styles) else { return };
         let Some(r) = p.preview_rect else { return };
-        let style = self.settings.sub_style().clone();
+        let style = self.shown_sub_style().clone();
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         let size = super::subtitles::text_size(w, h, style.size.round() as u32);
         let max_w = (w * 0.9).max(40.0);
@@ -316,6 +438,7 @@ impl App {
         let mut y = side.top + 64.0;
         let current = self.settings.subtitle_style;
         let n = self.settings.subtitle_styles.len();
+        let dirty = self.style_dirty();
         g.push_clip(rect(side.left, y, SIDEBAR_W, side.bottom - y - 8.0));
         for i in 0..=n {
             let r = rect(side.left + 12.0, y, SIDEBAR_W - 24.0, item_h);
@@ -342,13 +465,17 @@ impl App {
                 g.text(&wide("New style"), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, item_h), fg, Align::Left);
             } else {
                 // A swatch of the style: its text colour on its box (or a dark square).
-                let st = &self.settings.subtitle_styles[i];
+                let st = if i == current { self.shown_sub_style() } else { &self.settings.subtitle_styles[i] };
                 let sw = rect(r.left + 9.0, r.top + (item_h - 18.0) / 2.0, 18.0, 18.0);
                 let bg = if st.backdrop != Backdrop::None { st.backdrop_colour } else { 0x2A2A2A };
                 g.fill_round(sw, 4.0, rgb(bg));
                 ui::stroke(g, sw, 4.0, gfx::rgba(t.ink, 0.2));
                 g.text(&wide("A"), &g.fonts.body, sw, rgb(st.colour), Align::Center);
-                g.text(&wide(&st.name), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 42.0, item_h), fg, Align::Left);
+                g.text(&wide(&self.settings.subtitle_styles[i].name), &g.fonts.body, rect(r.left + 38.0, r.top, r.right - r.left - 56.0, item_h), fg, Align::Left);
+                // Unsaved changes, marked where they are.
+                if i == current && dirty {
+                    g.fill_round(rect(r.right - 16.0, r.top + (item_h - 7.0) / 2.0, 7.0, 7.0), 3.5, rgb(t.accent));
+                }
             }
             y += item_h;
         }
@@ -365,8 +492,10 @@ impl App {
         let pv = p.preview.as_ref().map(|pv| (pv.bitmap.clone(), pv.w, pv.h, pv.pad));
         let x = pane.left + PANE_LEFT;
         let w = pane.right - pane.left - PANE_LEFT - PANE_RIGHT;
-        let style = self.settings.sub_style().clone();
+        let style = self.shown_sub_style().clone();
+        let name = self.settings.sub_style().name.clone();
         let count = self.settings.subtitle_styles.len();
+        let dirty = self.style_dirty();
 
         // The head: the name, Rename, Duplicate, Delete, and Close.
         let head = rect(x, pane.top + 18.0, w, 28.0);
@@ -386,7 +515,7 @@ impl App {
             let fg = if enabled { fg } else { rgb(t.placeholder) };
             g.text(&[glyph], &g.fonts.small_icons, b, fg, Align::Center);
         }
-        g.text(&wide(&style.name), &g.fonts.page_title, rect(head.left, head.top, (bx - head.left - 8.0).max(0.0), head.bottom - head.top), rgb(t.text), Align::Left);
+        g.text(&wide(&name), &g.fonts.page_title, rect(head.left, head.top, (bx - head.left - 8.0).max(0.0), head.bottom - head.top), rgb(t.text), Align::Left);
 
         // The preview: 16:9 across the pane, no taller than 42 % of the card.
         let mut pw = w;
@@ -411,7 +540,7 @@ impl App {
                     let (iw, ih) = (size.width.max(1.0), size.height.max(1.0));
                     let k = (pw / iw).min(ph / ih);
                     let (dw, dh) = (iw * k, ih * k);
-                    g.draw_photo(bmp, rect(preview.left + (pw - dw) / 2.0, preview.top + (ph - dh) / 2.0, dw, dh), 1.0, *sdr);
+                    g.draw_photo_ui(bmp, rect(preview.left + (pw - dw) / 2.0, preview.top + (ph - dh) / 2.0, dw, dh), *sdr);
                 }
                 (SCENE_DAY, _) => draw_day(g, preview),
                 _ => draw_night(g, preview),
@@ -448,8 +577,35 @@ impl App {
             sx += bw + 6.0;
         }
 
+        // The footer, rising in while there are unsaved changes: Discard and Save.
+        let f = self.fades.get(Hit::StyleFooter, dirty);
+        let fh = (FOOTER_H * f).round();
+        if f > 0.0 {
+            let foot = rect(pane.left + 1.0, pane.bottom - fh, pane.right - pane.left - 2.0, fh);
+            g.push_clip(foot);
+            g.push_fade(f, 1.0, 0.0, 0.0);
+            let top = pane.bottom - fh;
+            g.hline(pane.left, g.snap(top), pane.right - pane.left, rgb(t.divider));
+            let row = rect(x, top + (FOOTER_H - 30.0) / 2.0, w, 30.0);
+            g.text(&wide("Unsaved changes"), &g.fonts.body, row, rgb(t.label), Align::Left);
+            let save = rect(g.snap(row.right - 100.0), g.snap(row.top), 100.0, 30.0);
+            let discard = rect(g.snap(save.left - 8.0 - 100.0), g.snap(row.top), 100.0, 30.0);
+            for (b, id, label, kind) in [(discard, Hit::StyleAct(act::DISCARD), "Discard", ui::Kind::Standard), (save, Hit::StyleAct(act::SAVE), "Save", ui::Kind::Accent)] {
+                let live = open && dirty;
+                if live {
+                    self.hits.add(id, b);
+                }
+                let st = self.state(id, live);
+                let fg = ui::button_frame(g, b, kind, &st);
+                g.text(&wide(label), &g.fonts.body, b, fg, Align::Center);
+            }
+            g.pop_fade();
+            g.pop_clip();
+        }
+        moving |= f > 0.0 && f < 1.0;
+
         // The settings, scrolling under the preview.
-        let view = D2D_RECT_F { left: pane.left, top: sy + 26.0 + 10.0, right: pane.right, bottom: pane.bottom - 12.0 };
+        let view = D2D_RECT_F { left: pane.left, top: sy + 26.0 + 10.0, right: pane.right, bottom: pane.bottom - 12.0 - fh };
         g.push_clip(view);
         g.push_fade(e, 1.0, 0.0, 0.0);
         let mut rows = Rows { x, w, y: view.top - off + (1.0 - e) * 10.0 };
@@ -486,7 +642,7 @@ impl App {
         self.combo(g, right_part(r, 200.0, 30.0), Setting::SubWeight, open);
         let r = rows.switch_row(g, "Italic", "");
         self.switch(g, r, Setting::SubItalic, st.italic, open);
-        let r = rows.row_room(g, "Size", "Follows the video's height. The Subtitles menu changes it too", STEPPER_W + 24.0, 0.0);
+        let r = rows.row_room(g, "Size", "Follows the video's height", STEPPER_W + 24.0, 0.0);
         self.style_stepper(g, r, Num::Size, st, open);
         let r = rows.row_room(g, "Colour", "", 144.0, 0.0);
         self.style_swatch(g, r, Paint::Text, st, open);

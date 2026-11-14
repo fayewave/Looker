@@ -205,7 +205,7 @@ impl App {
         }
         self.sync_subtitle_track();
         let dest = self.video_dest();
-        let style = self.settings.sub_style().clone();
+        let style = self.shown_sub_style().clone();
         let percent = style.size.round() as u32;
         let bar = self.video.as_ref().and_then(|v| v.bar_top);
         let Some(v) = self.video.as_mut() else { return };
@@ -372,13 +372,6 @@ impl App {
             e.push(check(Action::SubStyle(i), &st.name, i == self.settings.subtitle_style));
         }
         e.push(ui::Entry::Item(ui::MenuItem { icon: None, tint: None, action: Action::SubStyles, glyph: Some(0xE790), label: "Customise styles\u{2026}".into(), accel: None, check: None, enabled: true, current: false }));
-        e.push(ui::Entry::Separator);
-        e.push(ui::Entry::Heading("Size".into()));
-        let size = self.settings.sub_style().size.round() as u32;
-        for s in settings::SUBTITLE_SIZES {
-            let label = if s == 100 { "Normal".to_string() } else { format!("{s}%") };
-            e.push(check(Action::SubSize(s as u16), &label, size == s));
-        }
         e
     }
 
@@ -444,17 +437,6 @@ impl App {
         remember(&v.path, v.subs.delay_us, &choice);
         let text = subs::delay_text(v.subs.delay_us);
         self.show_video_toast(text);
-        self.invalidate();
-    }
-
-    /// The size of the style in use.
-    pub(super) fn subtitle_size(&mut self, percent: u32) {
-        self.settings.sub_style_mut().set(crate::substyle::Num::Size, percent as f32);
-        settings::save(&self.settings);
-        if let Some(v) = self.video.as_mut() {
-            v.subs.sprites.clear();
-        }
-        self.show_video_toast(if percent == 100 { "Subtitles normal size".to_string() } else { format!("Subtitles {percent}%") });
         self.invalidate();
     }
 

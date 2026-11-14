@@ -43,13 +43,12 @@ pub(super) enum Action {
     /// The video bar's Settings menu: passthrough to a receiver on/off.
     TogglePassthrough,
     /// The context menu's Subtitles: none, one of the video's streams, a sidecar (by its place in the list), a
-    /// file picked by hand, the delay (-1 earlier, +1 later, 0 none), the text's size (percent).
+    /// file picked by hand, the delay (-1 earlier, +1 later, 0 none).
     SubOff,
     SubStream(i32),
     SubFile(usize),
     SubAdd,
     SubDelay(i32),
-    SubSize(u16),
     /// A subtitle style (its place in the settings' list), and "Customise styles…" (the Subtitle styles card).
     SubStyle(usize),
     SubStyles,
@@ -143,16 +142,22 @@ impl App {
         // Set as wallpaper for photos only (not videos, documents or 3D models: Faye, 2026-11-10).
         let photo = image
             && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Audio | format::Format::Pdf | format::Format::Text | format::Format::Model | format::Format::Mtl));
-        let mut e = vec![
-            item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), rotate),
-            item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), rotate),
-            Entry::Separator,
+        // Rotate only for what can turn: otherwise not there at all, rather than greyed (Faye, 2026-11-14).
+        let mut e = Vec::new();
+        if rotate {
+            e.extend([
+                item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), true),
+                item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), true),
+                Entry::Separator,
+            ]);
+        }
+        e.extend([
             item(Action::CopyImage, 0xE8C8, "Copy", Some("Ctrl+C"), image),
             item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), file),
             item(Action::Rename, 0xE8AC, "Rename", Some("F2"), file),
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
             Entry::Separator,
-        ];
+        ]);
         if photo {
             e.push(item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, true));
         }
@@ -447,7 +452,7 @@ impl App {
                     return;
                 }
                 // The tracks and subtitles, as the right-click menu has them (Faye, 2026-11-13).
-                a @ (Action::AudioTrack(_) | Action::VideoTrack(_) | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubSize(_) | Action::SubStyle(_)) => self.run_action(a),
+                a @ (Action::AudioTrack(_) | Action::VideoTrack(_) | Action::SubOff | Action::SubStream(_) | Action::SubFile(_) | Action::SubDelay(_) | Action::SubStyle(_)) => self.run_action(a),
                 _ => {}
             }
             let entries = self.video_settings_entries();
@@ -479,7 +484,6 @@ impl App {
                 | Action::SubStream(_)
                 | Action::SubFile(_)
                 | Action::SubDelay(_)
-                | Action::SubSize(_)
                 | Action::SubStyle(_)
                 | Action::ToggleCheckerboard
                 | Action::ToggleExplorer
@@ -618,7 +622,6 @@ impl App {
             }
             Action::SubAdd => self.add_subtitle_file(),
             Action::SubDelay(d) => self.subtitle_delay(d),
-            Action::SubSize(s) => self.subtitle_size(s as u32),
             Action::SubStyle(i) => self.pick_subtitle_style(i),
             Action::SubStyles => self.open_sub_styles(),
             _ => {}

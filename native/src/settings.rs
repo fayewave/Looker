@@ -172,9 +172,6 @@ impl Settings {
     }
 }
 
-/// The sizes the Subtitles menu offers, percent.
-pub const SUBTITLE_SIZES: [u32; 5] = [75, 100, 125, 150, 200];
-
 /// The loop lengths the Settings page offers, in seconds.
 pub const LOOP_CHOICES: [u32; 6] = [0, 5, 10, 30, 60, u32::MAX];
 /// Videos at least this long are resumed where they were left.
@@ -330,7 +327,7 @@ fn file() -> Option<PathBuf> {
 pub fn parse(text: &str) -> Settings {
     let mut s = Settings::default();
     // The first style line replaces the presets; before styles, `subtitle_size` was the one setting.
-    let (mut styles_read, mut legacy_size) = (false, None);
+    let (mut styles_read, mut legacy_size, mut styles_v) = (false, None, 1);
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         let v = v.trim();
@@ -385,6 +382,7 @@ pub fn parse(text: &str) -> Settings {
                 }
             }
             "subtitle_style_active" => s.subtitle_style = v.parse().unwrap_or(0),
+            "subtitle_styles_v" => styles_v = v.parse().unwrap_or(1),
             "click_hides_ui" => s.click_hides_ui = v == "1",
             "text_scale" => s.text_scale = v.parse::<f32>().ok().filter(|x| x.is_finite()).map_or(1.0, |x| x.clamp(TEXT_SCALES.0, TEXT_SCALES.1)),
             "theme" => s.theme = crate::theme::ThemeId::parse(v).unwrap_or(crate::theme::ThemeId::Black),
@@ -439,8 +437,13 @@ pub fn parse(text: &str) -> Settings {
     if s.subtitle_styles.is_empty() {
         s.subtitle_styles = crate::substyle::presets();
     }
-    if let (false, Some(size)) = (styles_read, legacy_size) {
+    // Before styles, 100 % was the default the file always held: only another size carries over.
+    if let (false, Some(size)) = (styles_read, legacy_size.filter(|v| *v != 100.0)) {
         s.subtitle_styles[0].set(crate::substyle::Num::Size, size);
+    }
+    // Version 2 made the presets 80 % (Faye, 2026-11-14): presets still at the old 100 % follow.
+    if styles_read && styles_v < 2 {
+        crate::substyle::migrate_sizes(&mut s.subtitle_styles);
     }
     s.subtitle_style = s.subtitle_style.min(s.subtitle_styles.len() - 1);
     s
@@ -484,6 +487,7 @@ pub fn format(s: &Settings) -> String {
     }
     out.push_str(&format!("video_start_muted={}\n", s.video_start_muted as i32));
     out.push_str(&format!("video_resume={}\n", s.video_resume as i32));
+    out.push_str("subtitle_styles_v=2\n");
     out.push_str(&format!("subtitle_style_active={}\n", s.subtitle_style));
     for st in &s.subtitle_styles {
         out.push_str(&format!("subtitle_style={}\n", st.to_line()));

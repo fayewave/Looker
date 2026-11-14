@@ -92,7 +92,7 @@ impl App {
     /// The styles card's colour button `i` (`Paint::ALL`): the picker for that colour of the style in use.
     pub(super) fn open_style_picker(&mut self, i: usize) {
         let Some(paint) = crate::substyle::Paint::ALL.get(i).copied() else { return };
-        let c = self.settings.sub_style().paint(paint);
+        let c = self.shown_sub_style().paint(paint);
         let (h, s, v) = rgb_to_hsv(c);
         let mut hex = TextField::new(crate::textedit::TextEdit::new(&format!("#{c:06X}")));
         hex.edit.select_all();
@@ -119,8 +119,7 @@ impl App {
             p.hex.edit = crate::textedit::TextEdit::new(&format!("#{c:06X}"));
         }
         if let Some((paint, _)) = p.target {
-            self.settings.sub_style_mut().set_paint(paint, c);
-            self.invalidate();
+            self.style_set_paint(paint, c);
             return;
         }
         self.settings.accent = Accent::Custom;
@@ -138,9 +137,8 @@ impl App {
         p.hex_focused = false;
         if let Some((paint, was)) = p.target {
             if !keep {
-                self.settings.sub_style_mut().set_paint(paint, was);
+                self.style_set_paint(paint, was);
             }
-            settings::save(&self.settings);
             self.invalidate();
             return;
         }

@@ -201,6 +201,8 @@ enum Hit {
     PickerDone,
     PickerCancel,
     PageLink(u8),
+    /// The styles card's footer (only its rise animates under it).
+    StyleFooter,
     /// The Subtitle styles card (substyle.rs): a style in its list (and the id its wash eases under), a button
     /// (`substyle::act`), a stepper's − (0), + (1) or number (2) for `substyle::Num::ALL[n]`, a colour button
     /// (`substyle::Paint::ALL`), a preview scene.
@@ -1138,7 +1140,7 @@ impl App {
     /// A file is about to open from outside the viewer: menus, the Settings page and a slideshow give way.
     fn make_way(&mut self) {
         self.close_menu();
-        self.close_page();
+        self.close_page_now();
         self.stop_slideshow();
     }
 

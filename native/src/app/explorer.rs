@@ -2103,7 +2103,7 @@ impl App {
                     }
                 }
                 SideSection::Places => {
-                    out.push(heading(sec, "Places", 0xE8B7));
+                    out.push(heading(sec, "Places", 0xE7F4));
                     self.read_places();
                     let (known, drives) = self.explorer.places.clone().unwrap_or_default();
                     for (name, path, glyph) in known {
@@ -3105,24 +3105,24 @@ impl App {
         if browse - card >= 24.0 { (browse, true) } else { (card, false) }
     }
 
-    /// While the explorer's edge is dragged towards the middle, a soft line down the window shows the sticky line,
-    /// where it will hold (Faye, 2026-11-13): under the cards, fading in near it and out away from it or let go.
+    /// While the explorer's edge is dragged towards the middle, a line from the window's top to its bottom shows the
+    /// sticky line, where it will hold (Faye, 2026-11-13): over everything (the explorer too), fading in slowly near
+    /// it and out away from it or let go (2026-11-14).
     pub(super) fn draw_sticky_guide(&mut self, g: &Gfx) -> bool {
         /// How near (DIPs) the dragged edge brings it in.
         const NEAR: f32 = 240.0;
         let (line, _) = self.sticky_target();
         let near = self.explorer.drag.is_some() && (self.explorer.last_side - line).abs() < NEAR;
-        let k = self.fades.get(Hit::StickyGuide, near);
+        // A slow fade in (Faye, 2026-11-14), three times the usual ease.
+        let k = self.fades.get_over(Hit::StickyGuide, near, crate::motion::EASE * 3.0);
         if k <= 0.0 {
             return false;
         }
-        // Where the card's edge (its grip line) sits at that width, top to bottom of the cards, fading at both ends.
+        // Where the card's edge (its grip line) sits at that width: a solid line the window's whole height.
         let v = self.viewport();
+        let (_, wh) = self.size_dip();
         let x = g.snap(v.left + line - MARGIN);
-        let r = rect(x - 1.0, v.top + MARGIN, 2.0, v.bottom - v.top - 2.0 * MARGIN);
-        let ink = theme::t().ink;
-        let a = 0.32 * k;
-        g.fill_vgradient(r, &[(0.0, gfx::rgba(ink, 0.0)), (0.18, gfx::rgba(ink, a)), (0.82, gfx::rgba(ink, a)), (1.0, gfx::rgba(ink, 0.0))]);
+        g.fill(rect(x - 1.0, 0.0, 2.0, wh), gfx::rgba(theme::t().ink, 0.32 * k));
         k < 1.0
     }
 
