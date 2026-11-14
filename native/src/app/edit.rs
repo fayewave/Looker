@@ -1670,8 +1670,13 @@ impl App {
 
 /// Whether a file is the kind edit mode can take (a still picture; an animation turns out not to be once open).
 pub(super) fn editable_format(path: &std::path::Path) -> bool {
+    editable_kind(format::of_path(path))
+}
+
+/// `editable_format` by the format itself: a still picture (the toolbar's Rotate and Edit are for these only).
+pub(super) fn editable_kind(f: format::Format) -> bool {
     use format::Format as F;
-    !matches!(format::of_path(path), F::Unknown | F::Pdf | F::Mtl | F::Text | F::Model | F::Video | F::Audio | F::Archive)
+    !matches!(f, F::Unknown | F::Pdf | F::Mtl | F::Text | F::Model | F::Video | F::Audio | F::Archive)
 }
 
 pub(super) fn is_edit_hit(h: Hit) -> bool {

@@ -180,7 +180,7 @@ impl App {
         };
         let dropped = |t: Tool, given: &[Give]| given.iter().any(|g| matches!(g, Give::Drop(d) if d.contains(&t)));
         let left_of = |given: &[Give]| {
-            let mut v: Vec<Tool> = LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|&t| !dropped(t, given)).collect();
+            let mut v: Vec<Tool> = LEFT_TOOLS.iter().map(|&(t, _)| t).filter(|&t| !dropped(t, given) && self.tool_applies(t)).collect();
             if self.turns != 0 {
                 v.push(Tool::SaveRotation);
             }
@@ -223,6 +223,23 @@ impl App {
             prev = Some(t);
         }
         out
+    }
+
+    /// Whether a toolbar button means anything for the file showing: one that doesn't is left off the bar, not
+    /// greyed (Faye, 2026-11-14: Rotate and Edit on a video). What only isn't ready yet (a decode, a save) is still
+    /// greyed by `tool_enabled`; an animation or a multi-page file shows as one once decoded.
+    pub(super) fn tool_applies(&self, t: Tool) -> bool {
+        use format::Format as F;
+        let Some(e) = self.viewer.current_entry() else { return true };
+        // A file Looker can't open covers the photo: nothing to turn, edit or zoom.
+        let cover = self.placeholder.is_some();
+        let picture = !cover && super::edit::editable_kind(e.format) && e.pages == 0;
+        match t {
+            Tool::Rotate => picture,
+            Tool::Edit => picture && e.frames.borrow().len() <= 1,
+            Tool::ZoomOut | Tool::Zoom | Tool::ZoomIn | Tool::Fit => !cover && !matches!(e.format, F::Audio | F::Text | F::Archive),
+            _ => true,
+        }
     }
 
     pub(super) fn tool_enabled(&self, t: Tool) -> bool {

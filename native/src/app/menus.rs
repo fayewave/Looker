@@ -145,8 +145,15 @@ impl App {
         let file = has || self.placeholder.is_some();
         let rotate = image && self.can_rotate();
         // Set as wallpaper for photos only (not videos, documents or 3D models: Faye, 2026-11-10).
-        let photo = image
-            && self.viewer.current_entry().is_some_and(|e| !matches!(e.format, format::Format::Video | format::Format::Audio | format::Format::Pdf | format::Format::Text | format::Format::Model | format::Format::Mtl));
+        use format::Format as F;
+        let kind = self.viewer.current_entry().map(|e| e.format);
+        let photo = image && kind.is_some_and(|f| !matches!(f, F::Video | F::Audio | F::Pdf | F::Text | F::Model | F::Mtl | F::Archive));
+        // Copy (the picture) for what shows one: a photo, a page, a video's first picture, an audio file's cover;
+        // not a text file (its own menu copies text), an archive or a file Looker can't open (Faye, 2026-11-14).
+        let copyable = image && !kind.is_some_and(|f| matches!(f, F::Text | F::Archive));
+        // The checkerboard only where it shows behind something: not an audio file (it sits on the page), text, an
+        // archive's card or a file Looker can't open.
+        let checker = image && !kind.is_some_and(|f| matches!(f, F::Audio | F::Text | F::Archive));
         // Rotate only for what can turn: otherwise not there at all, rather than greyed (Faye, 2026-11-14).
         let mut e = Vec::new();
         if rotate {
@@ -165,8 +172,10 @@ impl App {
         if !e.is_empty() {
             e.push(Entry::Separator);
         }
+        if copyable {
+            e.push(item(Action::CopyImage, 0xE8C8, "Copy", Some("Ctrl+C"), true));
+        }
         e.extend([
-            item(Action::CopyImage, 0xE8C8, "Copy", Some("Ctrl+C"), image),
             item(Action::CopyPath, 0xE71B, "Copy path", Some("Ctrl+Shift+C"), file),
             item(Action::Rename, 0xE8AC, "Rename", Some("F2"), file),
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
@@ -186,10 +195,10 @@ impl App {
             // one picked by hand; delay, size.
             e.extend(self.track_entries());
         }
-        e.extend([
-            Entry::Separator,
+        e.push(Entry::Separator);
+        if checker {
             // The checkerboard for this kind of file: videos have a setting of their own (Faye, 2026-11-11).
-            Entry::Item(MenuItem {
+            e.push(Entry::Item(MenuItem {
                 icon: None,
                 tint: None,
                 action: Action::ToggleCheckerboard,
@@ -197,9 +206,11 @@ impl App {
                 label: "Checkerboard background".into(),
                 accel: None,
                 check: Some(self.checkerboard_on()),
-                enabled: image,
+                enabled: true,
                 current: false,
-            }),
+            }));
+        }
+        e.extend([
             toggle(Action::ToggleExplorer, 0xE8B7, "File explorer", "Ctrl+E", has || self.home_explorer(), self.explorer_shown()),
             toggle(Action::ToggleStrip, 0xE90E, "Thumbnail strip", "Ctrl+Shift+T", has, self.strip_shown()),
             toggle(Action::ToggleInfo, 0xE946, "Info panel", "Ctrl+I", has, self.info_shown()),
