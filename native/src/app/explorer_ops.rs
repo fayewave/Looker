@@ -439,7 +439,13 @@ impl App {
                         e.push(item(Action::RipDvd, 0xE958, "Rip DVD\u{2026}", None, self.ripping.is_none()));
                     }
                 }
-                Kind::Image => e.push(item(Action::OpenItem, 0xE8A7, "Open", Some("Enter"), true)),
+                Kind::Image => {
+                    e.push(item(Action::OpenItem, 0xE8A7, "Open", Some("Enter"), true));
+                    // A still picture: Edit opens it in edit mode (Faye, 2026-11-14).
+                    if super::edit::editable_format(&r.path) {
+                        e.push(item(Action::Edit, 0xE70F, "Edit", None, true));
+                    }
+                }
                 Kind::Other => e.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true)),
             }
             e.push(Entry::Separator);
@@ -781,6 +787,11 @@ impl App {
                 if let Some(f) = first {
                     self.open_folder(f);
                     self.leave_browse();
+                }
+            }
+            (Action::Edit, MenuKind::Rows(_)) => {
+                if let Some(p) = first {
+                    self.edit_file(p);
                 }
             }
             (Action::RipDvd, _) => {

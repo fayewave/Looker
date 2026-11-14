@@ -717,6 +717,8 @@ pub struct App {
     a11y_marks: Vec<(Hit, a11y::Mark)>,
     /// Edit mode, while it's up.
     edit: Option<edit::Edit>,
+    /// The explorer's Edit on a file not yet up: edit mode starts once it's decoded (`edit_when_up`).
+    edit_pending: Option<(PathBuf, std::time::Instant)>,
     a11y_hits: Vec<(i32, Hit)>,
     /// The hit whose tooltip is showing (after `ui::TOOLTIP_DELAY_MS` of hovering it).
     tooltip: Option<Hit>,
@@ -1563,6 +1565,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             uia: None,
             a11y_marks: Vec::new(),
             edit: None,
+            edit_pending: None,
             a11y_hits: Vec::new(),
             tooltip: None,
             dialog: None,

@@ -15,6 +15,8 @@ pub(super) enum Action {
     Rename,
     Delete,
     Wallpaper,
+    /// Edit mode (app/edit.rs), from the viewer's menu or a row's in the explorer.
+    Edit,
     Reveal,
     ToggleExplorer,
     ToggleStrip,
@@ -148,8 +150,14 @@ impl App {
             e.extend([
                 item(Action::RotateRight, 0xE7AD, "Rotate right", Some("Ctrl+R"), true),
                 item(Action::RotateLeft, 0xE7AD, "Rotate left", Some("Ctrl+Shift+R"), true),
-                Entry::Separator,
             ]);
+        }
+        // Edit for what edit mode takes (Faye, 2026-11-14), not there otherwise, as Rotate.
+        if self.can_edit() {
+            e.push(item(Action::Edit, 0xE70F, "Edit", Some("E"), true));
+        }
+        if !e.is_empty() {
+            e.push(Entry::Separator);
         }
         e.extend([
             item(Action::CopyImage, 0xE8C8, "Copy", Some("Ctrl+C"), image),
@@ -237,7 +245,7 @@ impl App {
         let mut out: Vec<Entry<Action>> = Vec::new();
         for e in self.context_entries() {
             match &e {
-                Entry::Item(m) if matches!(m.action, Action::RotateRight | Action::Delete | Action::ToggleExplorer | Action::ToggleStrip | Action::ToggleInfo) => {}
+                Entry::Item(m) if matches!(m.action, Action::RotateRight | Action::Edit | Action::Delete | Action::ToggleExplorer | Action::ToggleStrip | Action::ToggleInfo) => {}
                 Entry::Separator if matches!(out.last(), None | Some(Entry::Separator)) => {}
                 _ => out.push(e),
             }
@@ -594,6 +602,7 @@ impl App {
             Action::RotateLeft => self.rotate_preview(false),
             Action::Delete => self.confirm_delete(false),
             Action::Wallpaper => self.set_wallpaper(),
+            Action::Edit => self.begin_edit(),
             Action::Reveal => self.reveal(),
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.viewer_sort() }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.viewer_sort() }),

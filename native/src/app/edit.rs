@@ -27,11 +27,14 @@ const SLIDER_H: f32 = 28.0;
 const CORNER: f32 = 26.0;
 const EDGE: f32 = 14.0;
 const MIN_SIDE: f32 = 16.0;
+/// The room around the frame in the area, for its handles and to turn the photo in (Faye, 2026-11-14: was 24).
+const FRAME_MARGIN: f32 = 56.0;
 pub(super) const STRAIGHTEN_MAX: f32 = 45.0;
 pub(super) const EXPOSURE_MAX: f32 = 3.0;
 
 /// The aspect choices, by place: Free, Original, Square, 4:3, 3:2, 16:9.
 const ASPECTS: [&str; 6] = ["Free", "Original", "Square", "4:3", "3:2", "16:9"];
+const ORIGINAL: u8 = 1;
 
 pub(super) struct Edit {
     pub path: PathBuf,
@@ -174,6 +177,49 @@ impl Edit {
         !photoedit::is_identity(&self.p, self.w, self.h)
     }
 
+    /// From crop `from` (on the image) as far towards `to` as stays on it.
+    fn toward(&self, from: [f32; 4], to: [f32; 4]) -> [f32; 4] {
+        if self.fits(to) {
+            return to;
+        }
+        let at = |m: f32| [0, 1, 2, 3].map(|i| from[i] + (to[i] - from[i]) * m);
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..24 {
+            let m = (lo + hi) / 2.0;
+            if self.fits(at(m)) {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        at(lo)
+    }
+
+    /// The wheel (Faye, 2026-11-14): the photo zooms under the frame, the crop shrinking (`f` > 1) or growing in
+    /// image pixels with its aspect kept, about image point `at` (under the pointer, which stays there) or the
+    /// crop's middle. Zooming out stops at the photo's edge: from the pointer or the middle, whichever gets
+    /// further.
+    fn zoom(&mut self, f: f32, at: Option<(f32, f32)>) {
+        let c = self.p.crop;
+        let mid = ((c[0] + c[2]) / 2.0, (c[1] + c[3]) / 2.0);
+        let about = |p: (f32, f32)| {
+            let m = 1.0 / f;
+            self.toward(c, [p.0 + (c[0] - p.0) * m, p.1 + (c[1] - p.1) * m, p.0 + (c[2] - p.0) * m, p.1 + (c[3] - p.1) * m])
+        };
+        let w = |c: [f32; 4]| c[2] - c[0];
+        let mut to = about(at.unwrap_or(mid));
+        if at.is_some() && f < 1.0 {
+            let m = about(mid);
+            if w(m) > w(to) + 0.01 {
+                to = m;
+            }
+        }
+        if to != c && self.fits(to) {
+            self.p.crop = to;
+            self.auto = false;
+        }
+    }
+
     /// A handle's drag to pointer `(x, y)`: the crop from where the drag began, moved or resized, kept to the
     /// aspect and on the image (as far as it can go towards where the pointer asks).
     fn drag_to(&mut self, x: f32, y: f32) {
@@ -260,19 +306,16 @@ impl Edit {
             }
         };
         if !self.fits(c) {
-            // As far from where it was as stays on the image.
-            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            // As far from where it was as stays on the image. Free goes each way on its own (Faye, 2026-11-14): a
+            // corner pulled past the photo's edge one way still follows the pointer the other way, instead of the
+            // whole drag shrinking back towards where it began.
             let from = d.crop;
-            let at = |m: f32| [0, 1, 2, 3].map(|i| from[i] + (c[i] - from[i]) * m);
-            for _ in 0..24 {
-                let m = (lo + hi) / 2.0;
-                if self.fits(at(m)) {
-                    lo = m;
-                } else {
-                    hi = m;
-                }
-            }
-            c = at(lo);
+            c = if self.ratio().is_none() {
+                let across = self.toward(from, [c[0], from[1], c[2], from[3]]);
+                self.toward(across, [across[0], c[1], across[2], c[3]])
+            } else {
+                self.toward(from, c)
+            };
             if !self.fits(c) {
                 return;
             }
@@ -329,7 +372,8 @@ impl App {
             w,
             h,
             p: Params { turns, angle: 0.0, crop: [0.0; 4], ev: 0.0 },
-            aspect: 0,
+            // Original's aspect to begin with (Faye, 2026-11-14).
+            aspect: ORIGINAL,
             portrait: h > w,
             drag: None,
             auto: true,
@@ -348,6 +392,43 @@ impl App {
         self.invalidate();
     }
 
+    /// The explorer's Edit: the file opens in the viewer and edit mode follows once it's decoded (`edit_when_up`).
+    pub(super) fn edit_file(&mut self, path: PathBuf) {
+        if self.current_path().is_some_and(|p| crate::explorer::same_path(p, &path)) && self.can_edit() {
+            self.leave_browse();
+            self.begin_edit();
+            return;
+        }
+        self.edit_pending = Some((path.clone(), Instant::now()));
+        self.open_file(path);
+        self.leave_browse();
+        self.invalidate();
+    }
+
+    /// Each frame: an Edit asked for before its photo was up starts once it is (or is dropped, when another
+    /// file is showing or this one can't be edited).
+    pub(super) fn edit_when_up(&mut self) {
+        let Some((want, asked)) = &self.edit_pending else { return };
+        if !self.current_path().is_some_and(|cur| crate::explorer::same_path(cur, want)) {
+            // Not there yet (a folder still being listed), or left for another file: given a few seconds.
+            if asked.elapsed().as_secs() >= 5 {
+                self.edit_pending = None;
+            }
+            return;
+        }
+        if self.placeholder.is_some() {
+            self.edit_pending = None;
+            return;
+        }
+        if self.viewer.current_entry().is_none() {
+            return; // still decoding
+        }
+        self.edit_pending = None;
+        if self.can_edit() {
+            self.begin_edit();
+        }
+    }
+
     pub(super) fn cancel_edit(&mut self) {
         if self.edit.as_ref().is_some_and(|e| e.saving) {
             return;
@@ -361,7 +442,7 @@ impl App {
         if let Some(e) = &mut self.edit {
             e.p.angle = 0.0;
             e.p.ev = 0.0;
-            e.aspect = 0;
+            e.aspect = ORIGINAL;
             e.portrait = e.h > e.w;
             e.auto = true;
             e.p.crop = e.full();
@@ -491,7 +572,7 @@ impl App {
         let Some(e) = &mut self.edit else { return };
         // The frame as big as fits in the middle (with room around it for its handles), the photo placed under it.
         let now = Instant::now();
-        let target = e.target(ui::grow(area, -24.0));
+        let target = e.target(ui::grow(area, -FRAME_MARGIN));
         if !e.placed {
             e.view.jump(target);
             e.placed = true;
@@ -511,23 +592,21 @@ impl App {
         let (uw, uh) = if e.p.turns & 1 == 1 { (e.h, e.w) } else { (e.w, e.h) };
         let dest = rect(e.centre.0 - uw * k / 2.0, e.centre.1 - uh * k / 2.0, uw * k, uh * k);
         let angle = e.p.turns as f32 * 90.0 + e.p.angle;
-        // Zoomed in under a turned or small frame the photo is bigger than its room: kept off the title bar and the
-        // panel.
+        // The room the frame's hits take: off the title bar and the panel. The photo and the dim go under both
+        // (Faye, 2026-11-14: the page showed undimmed round the panel and under the title bar).
         let room = rect(0.0, area.top - GAP, w - PANEL_W - GAP * 2.0, h - area.top + GAP);
-        g.push_clip(room);
         if g.draw_photo_edit(frame, dest, angle, e.p.ev).is_err() {
             g.draw_photo(frame, dest, 1.0, true);
         }
         let cr = e.crop_rect();
         let dragging = e.drag.is_some();
-        // Outside the crop dimmed (over the whole area the image could cover).
+        // Outside the crop dimmed, over the whole window.
         let dim = gfx::rgba(0x000000, 0.6);
-        let top = area.top - GAP;
-        g.fill(rect(0.0, top, w - PANEL_W - GAP * 2.0, (cr.top - top).max(0.0)), dim);
-        g.fill(rect(0.0, cr.bottom, w - PANEL_W - GAP * 2.0, (h - cr.bottom).max(0.0)), dim);
-        g.fill(rect(0.0, cr.top, cr.left.max(0.0), cr.bottom - cr.top), dim);
-        g.fill(rect(cr.right, cr.top, (w - PANEL_W - GAP * 2.0 - cr.right).max(0.0), cr.bottom - cr.top), dim);
-        g.pop_clip();
+        let (ct, cb) = (cr.top.clamp(0.0, h), cr.bottom.clamp(0.0, h));
+        g.fill(rect(0.0, 0.0, w, ct), dim);
+        g.fill(rect(0.0, cb, w, (h - cb).max(0.0)), dim);
+        g.fill(rect(0.0, ct, cr.left.clamp(0.0, w), (cb - ct).max(0.0)), dim);
+        g.fill(rect(cr.right.clamp(0.0, w), ct, (w - cr.right).max(0.0), (cb - ct).max(0.0)), dim);
         let white = gfx::rgba(0xFFFFFF, 0.95);
         let px = g.px();
         // Thirds while it's handled (finer while straightening, to line things up against).
@@ -831,7 +910,23 @@ impl App {
                 self.invalidate();
                 Some(LRESULT(0))
             }
-            WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_XBUTTONDOWN | WM_XBUTTONUP => Some(LRESULT(0)),
+            WM_MOUSEWHEEL => {
+                let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f32;
+                let (x, y) = self.screen_to_dip(lp);
+                let panel = self.edit_panel_rect();
+                let over_panel = x >= panel.left && x <= panel.right && y >= panel.top && y <= panel.bottom;
+                if self.pressed.is_none() && !over_panel {
+                    if let Some(e) = self.edit.as_mut().filter(|e| !e.saving) {
+                        let cr = e.crop_rect();
+                        let inside = x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom;
+                        let at = inside.then(|| ((x - e.centre.0) / e.k, (y - e.centre.1) / e.k));
+                        e.zoom(1.1f32.powf(delta / 120.0), at);
+                    }
+                    self.invalidate();
+                }
+                Some(LRESULT(0))
+            }
+            WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MOUSEHWHEEL | WM_XBUTTONDOWN | WM_XBUTTONUP => Some(LRESULT(0)),
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
@@ -916,6 +1011,12 @@ impl App {
             _ => None,
         }
     }
+}
+
+/// Whether a file is the kind edit mode can take (a still picture; an animation turns out not to be once open).
+pub(super) fn editable_format(path: &std::path::Path) -> bool {
+    use format::Format as F;
+    !matches!(format::of_path(path), F::Unknown | F::Pdf | F::Mtl | F::Text | F::Model | F::Video | F::Audio | F::Archive)
 }
 
 pub(super) fn is_edit_hit(h: Hit) -> bool {

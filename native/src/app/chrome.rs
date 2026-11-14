@@ -468,6 +468,7 @@ impl App {
         *g.texts.borrow_mut() = self.a11y_recording().then(Vec::new);
         self.fades.begin();
         let text_moving = self.step_text_scale(&mut g);
+        self.edit_when_up();
         // Clean view's opacity: what floats over the photo is drawn at it, and not at all (nor hit) once gone.
         let ui_k = self.step_clean();
         let ui_on = ui_k > 0.0;
