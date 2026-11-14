@@ -1048,11 +1048,12 @@ impl Gfx {
         }
     }
 
-    /// A photo being edited (app/edit.rs): `bmp` drawn into `dest` turned `angle` degrees clockwise about its
-    /// middle, its exposure moved `ev` stops, clipped at SDR white: as `photoedit::apply` will write it (a gain
-    /// of 2^(ev / 2.2) on sRGB values; 2^ev on linear scRGB ones). Resampled inside the effect graph, as
-    /// `draw_clamped` does.
-    pub fn draw_photo_edit(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, angle: f32, ev: f32) -> Result<()> {
+    /// A photo being edited (app/edit.rs): `bmp` drawn into `dest`, mirrored left to right first (`flip`), turned
+    /// `angle` degrees clockwise about its middle, through `p`'s tone and colour, clipped at SDR white: as
+    /// `photoedit::apply` will write it (its curves as a table transfer on sRGB values, its saturation as a colour
+    /// matrix; on scRGB the values go down to 0..1 and through the sRGB curve on the way in, back on the way out).
+    /// Resampled inside the effect graph, as `draw_clamped` does.
+    pub fn draw_photo_edit(&self, bmp: &ID2D1Bitmap1, dest: D2D_RECT_F, angle: f32, flip: bool, p: &crate::photoedit::Params) -> Result<()> {
         unsafe {
             let dc = &self.dev.dc;
             let size = bmp.GetSize();
@@ -1061,12 +1062,13 @@ impl Gfx {
             }
             let mut world = windows_numerics::Matrix3x2::identity();
             dc.GetTransform(&mut world);
+            let sx = (dest.right - dest.left) / size.width;
             let place = windows_numerics::Matrix3x2 {
-                M11: (dest.right - dest.left) / size.width,
+                M11: if flip { -sx } else { sx },
                 M12: 0.0,
                 M21: 0.0,
                 M22: (dest.bottom - dest.top) / size.height,
-                M31: dest.left,
+                M31: if flip { dest.right } else { dest.left },
                 M32: dest.top,
             };
             let (cx, cy) = ((dest.left + dest.right) / 2.0, (dest.top + dest.bottom) / 2.0);
@@ -1080,13 +1082,26 @@ impl Gfx {
             let bytes: Vec<u8> = m.iter().flat_map(|v| v.to_le_bytes()).collect();
             affine.SetValue(D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_3X2, &bytes)?;
             set_u32(&affine, D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE.0 as u32, D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC.0 as u32)?;
+            use crate::photoedit as pe;
+            let wb = pe::wb_gains(p);
+            // The curves over sRGB values, `n` steps from 0 to 1 (`f` maps a step's input first).
+            let curves = |n: usize, f: &dyn Fn(f32) -> f32| -> [Vec<f32>; 3] { std::array::from_fn(|c| (0..n).map(|i| pe::tone(p, &wb, c, f(i as f32 / (n - 1) as f32))).collect()) };
+            let saturate = |src: &ID2D1Image| -> Result<ID2D1Effect> { saturation(dc, src, &pe::saturation_matrix(p)) };
             let out = if self.space.is_scrgb() {
-                // Linear: the gain itself, then SDR white is the ceiling (down to 1, clamped, back up).
+                // Linear: down to SDR white = 1 (clamped), into sRGB values with the curves on top (a fine table: linear
+                // steps are coarse in the shadows), the saturation, back to linear and up again.
                 let k = self.space.white_scale();
-                let down = color_matrix(dc, &affine.GetOutput()?, 2f32.powf(ev) / k, 1.0, true)?;
-                color_matrix(dc, &down.GetOutput()?, k, 1.0, false)?
+                let down = color_matrix(dc, &affine.GetOutput()?, 1.0 / k, 1.0, true)?;
+                let encode = |v: f32| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                let decode = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+                let toned = table_transfer(dc, &down.GetOutput()?, &curves(4096, &encode))?;
+                let sat = saturate(&toned.GetOutput()?)?;
+                let back: Vec<f32> = (0..1024).map(|i| decode(i as f32 / 1023.0)).collect();
+                let lin = table_transfer(dc, &sat.GetOutput()?, &[back.clone(), back.clone(), back])?;
+                color_matrix(dc, &lin.GetOutput()?, k, 1.0, false)?
             } else {
-                color_matrix(dc, &affine.GetOutput()?, crate::photoedit::gain(ev), 1.0, true)?
+                let toned = table_transfer(dc, &affine.GetOutput()?, &curves(1024, &|v| v))?;
+                saturate(&toned.GetOutput()?)?
             };
             dc.SetTransform(&windows_numerics::Matrix3x2::identity());
             dc.SetUnitMode(D2D1_UNIT_MODE_PIXELS);
@@ -2082,6 +2097,42 @@ fn ui_over(dc: &ID2D1DeviceContext, photo: &ID2D1Bitmap1, ui: &ID2D1Bitmap1, whi
 /// `src` (premultiplied) with its colour times `k`.
 fn scale_rgb(dc: &ID2D1DeviceContext, src: &ID2D1Image, k: f32) -> Result<ID2D1Effect> {
     color_matrix(dc, src, k, 1.0, false)
+}
+
+/// `src` through a table per channel (R, G, B; evenly spaced over 0..1, interpolated), alpha left alone, clamped.
+fn table_transfer(dc: &ID2D1DeviceContext, src: &ID2D1Image, t: &[Vec<f32>; 3]) -> Result<ID2D1Effect> {
+    unsafe {
+        let fx = dc.CreateEffect(&CLSID_D2D1TableTransfer)?;
+        fx.SetInput(0, src, true);
+        for (prop, table) in [(D2D1_TABLETRANSFER_PROP_RED_TABLE, &t[0]), (D2D1_TABLETRANSFER_PROP_GREEN_TABLE, &t[1]), (D2D1_TABLETRANSFER_PROP_BLUE_TABLE, &t[2])] {
+            let bytes: Vec<u8> = table.iter().flat_map(|v| v.to_le_bytes()).collect();
+            fx.SetValue(prop.0 as u32, D2D1_PROPERTY_TYPE_UNKNOWN, &bytes)?;
+        }
+        fx.SetValue(D2D1_TABLETRANSFER_PROP_ALPHA_DISABLE.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        fx.SetValue(D2D1_TABLETRANSFER_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        Ok(fx)
+    }
+}
+
+/// `src` through saturation matrix `m` (`m[i][j]`: input i's share of output j, R G B), clamped.
+fn saturation(dc: &ID2D1DeviceContext, src: &ID2D1Image, m: &[[f32; 3]; 3]) -> Result<ID2D1Effect> {
+    unsafe {
+        let fx = dc.CreateEffect(&CLSID_D2D1ColorMatrix)?;
+        fx.SetInput(0, src, true);
+        #[rustfmt::skip]
+        let mm: [f32; 20] = [
+            m[0][0], m[0][1], m[0][2], 0.0,
+            m[1][0], m[1][1], m[1][2], 0.0,
+            m[2][0], m[2][1], m[2][2], 0.0,
+            0.0, 0.0, 0.0, 1.0,
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        let bytes: Vec<u8> = mm.iter().flat_map(|v| v.to_le_bytes()).collect();
+        fx.SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32, D2D1_PROPERTY_TYPE_MATRIX_5X4, &bytes)?;
+        set_u32(&fx, D2D1_COLORMATRIX_PROP_ALPHA_MODE.0 as u32, 1)?; // premultiplied
+        fx.SetValue(D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        Ok(fx)
+    }
 }
 
 /// `src` (premultiplied) with its colour times `k` and its alpha times `a`; `clamp` then limits the colour to 0..1.

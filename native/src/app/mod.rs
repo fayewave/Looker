@@ -399,8 +399,16 @@ enum Hit {
     EditAspect(u8),
     /// The fixed aspects' Landscape (0) and Portrait (1).
     EditOrient(u8),
+    /// Rotate left, Rotate right, Flip horizontal, Flip vertical.
+    EditTool(u8),
     EditStraighten,
     EditExposure,
+    /// Contrast, Highlights, Shadows, Temperature, Tint, Saturation (`edit::SLIDERS` from 2).
+    EditAdjust(u8),
+    /// The panel's head: undo, redo, and Before (held: the photo as it was).
+    EditUndo,
+    EditRedo,
+    EditBefore,
     EditReset,
     EditCancel,
     EditSave,

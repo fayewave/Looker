@@ -614,6 +614,15 @@ impl App {
                 let v = self.edit.as_ref().map_or(0.0, |e| e.p.ev);
                 Info { value: Some(format!("{} stops", super::edit::ev_text(v))), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, "Exposure") }.help("Left and right arrows: 0.1 stop, Shift: 0.5")
             }
+            Hit::EditAdjust(i) => {
+                let s = i as usize + 2;
+                let v = self.edit.as_ref().map_or(0.0, |e| super::edit::slider_get(&e.p, s));
+                Info { value: Some(super::edit::slider_text(s, v)), invoke: false, focusable: true, ..Info::new(UIA_SliderControlTypeId, super::edit::slider_name(s)) }.help("Left and right arrows: 1, Shift: 10; double-click for 0")
+            }
+            Hit::EditTool(i) => Info { focusable: true, ..Info::button(super::edit::tool_name(i)) },
+            Hit::EditUndo => Info { accel: "Ctrl+Z".into(), ..Info::button("Undo") },
+            Hit::EditRedo => Info { accel: "Ctrl+Y".into(), ..Info::button("Redo") },
+            Hit::EditBefore => Info { accel: "\\".into(), ..Info::button("Hold to see the photo before") },
             Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy => {
                 let name = match h {
                     Hit::EditReset => "Reset",

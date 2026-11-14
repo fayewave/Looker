@@ -396,7 +396,7 @@ impl App {
                         Some(Hit::EditCrop(3 | 7)) => IDC_SIZENESW,
                         Some(Hit::EditCrop(2 | 6)) => IDC_SIZENS,
                         Some(Hit::EditCrop(4 | 8)) => IDC_SIZEWE,
-                        Some(Hit::EditStraighten | Hit::EditExposure) => IDC_HAND,
+                        Some(Hit::EditStraighten | Hit::EditExposure | Hit::EditAdjust(_)) => IDC_HAND,
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,

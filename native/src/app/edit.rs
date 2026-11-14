@@ -35,6 +35,89 @@ pub(super) const EXPOSURE_MAX: f32 = 3.0;
 /// The aspect choices, by place: Free, Original, Square, 4:3, 3:2, 16:9.
 const ASPECTS: [&str; 6] = ["Free", "Original", "Square", "4:3", "3:2", "16:9"];
 const ORIGINAL: u8 = 1;
+/// The buttons under the aspects, by place (`Hit::EditTool`).
+const TOOLS: [&str; 4] = ["Rotate left", "Rotate right", "Flip horizontal", "Flip vertical"];
+
+/// The sliders, by place (round 2, Faye 2026-11-14): name, reach either side of 0, the arrow keys' step and
+/// Shift's. 0 is `Hit::EditStraighten`, 1 `Hit::EditExposure`, the rest `Hit::EditAdjust(place - 2)`.
+const SLIDERS: [(&str, f32, f32, f32); 8] = [
+    ("Straighten", STRAIGHTEN_MAX, 0.1, 1.0),
+    ("Exposure", EXPOSURE_MAX, 0.1, 0.5),
+    ("Contrast", 100.0, 1.0, 10.0),
+    ("Highlights", 100.0, 1.0, 10.0),
+    ("Shadows", 100.0, 1.0, 10.0),
+    ("Temperature", 100.0, 1.0, 10.0),
+    ("Tint", 100.0, 1.0, 10.0),
+    ("Saturation", 100.0, 1.0, 10.0),
+];
+
+/// Undo groups: changes of one kind in a row (the wheel's notches, a slider's key presses) make one step.
+const GROUP_WHEEL: u8 = 1;
+const GROUP_NUDGE: u8 = 2;
+const GROUP_ASPECT: u8 = 3;
+const GROUP_BUTTON: u8 = 4;
+const GROUP_SLIDER: u8 = 16;
+
+fn slider_hit(s: usize) -> Hit {
+    match s {
+        0 => Hit::EditStraighten,
+        1 => Hit::EditExposure,
+        _ => Hit::EditAdjust(s as u8 - 2),
+    }
+}
+
+pub(super) fn slider_index(h: Hit) -> Option<usize> {
+    match h {
+        Hit::EditStraighten => Some(0),
+        Hit::EditExposure => Some(1),
+        Hit::EditAdjust(i) if (i as usize) < SLIDERS.len() - 2 => Some(i as usize + 2),
+        _ => None,
+    }
+}
+
+fn adjust_mut(p: &mut Params, i: usize) -> &mut f32 {
+    match i {
+        0 => &mut p.contrast,
+        1 => &mut p.highlights,
+        2 => &mut p.shadows,
+        3 => &mut p.temp,
+        4 => &mut p.tint,
+        _ => &mut p.saturation,
+    }
+}
+
+pub(super) fn slider_get(p: &Params, s: usize) -> f32 {
+    match s {
+        0 => p.angle,
+        1 => p.ev,
+        _ => *adjust_mut(&mut p.clone(), s - 2),
+    }
+}
+
+/// A slider's name and value, for the panel and readers.
+pub(super) fn slider_name(s: usize) -> &'static str {
+    SLIDERS.get(s).map_or("", |s| s.0)
+}
+
+pub(super) fn slider_text(s: usize, v: f32) -> String {
+    match s {
+        0 => degrees_text(v),
+        1 => ev_text(v),
+        _ if v.abs() < 0.5 => "0".into(),
+        _ => format!("{v:+.0}"),
+    }
+}
+
+/// What undo puts back: the edit and the crop's settings (and the image's size, which a quarter turn swaps).
+#[derive(Clone, Copy, PartialEq)]
+struct Snap {
+    p: Params,
+    aspect: u8,
+    portrait: bool,
+    auto: bool,
+    w: f32,
+    h: f32,
+}
 
 pub(super) struct Edit {
     pub path: PathBuf,
@@ -64,6 +147,21 @@ pub(super) struct Edit {
     /// frame holds still and the photo zooms smoothly under it.
     zoom: crate::motion::Ease<4>,
     zooming: bool,
+    /// Undo and redo (`record` makes the steps), where the edit began (Reset), the state when the press now held
+    /// began, and the last step's group and time (`GROUP_*`).
+    undo: Vec<Snap>,
+    redo: Vec<Snap>,
+    start: Snap,
+    press: Option<Snap>,
+    group: Option<(u8, Instant)>,
+    /// The photo as it was (tone and colour) while the Before button or \ is held.
+    pub before: bool,
+    before_key: bool,
+    /// The panel's middle scrolled down by `scroll` DIPs (at most `scroll_max`, last frame's); `reveal` brings the
+    /// keyboard's control into view on the next frame.
+    scroll: f32,
+    scroll_max: f32,
+    reveal: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -226,6 +324,69 @@ impl Edit {
         [cx - hw, cy - hh, cx + hw, cy + hh]
     }
 
+    /// The edit as it stands (a zoom under way as where it's going).
+    fn snap_now(&self) -> Snap {
+        let mut p = self.p;
+        if self.zooming {
+            p.crop = self.zoom.target();
+        }
+        Snap { p, aspect: self.aspect, portrait: self.portrait, auto: self.auto, w: self.w, h: self.h }
+    }
+
+    fn restore(&mut self, s: Snap) {
+        self.zooming = false;
+        self.drag = None;
+        self.p = s.p;
+        self.aspect = s.aspect;
+        self.portrait = s.portrait;
+        self.auto = s.auto;
+        self.w = s.w;
+        self.h = s.h;
+        self.glide = true;
+    }
+
+    /// Makes `before` an undo step if the edit has changed since; a change in `group` close after the last one in
+    /// it joins that step instead.
+    fn record(&mut self, before: Snap, group: Option<u8>) {
+        if self.snap_now() == before {
+            return;
+        }
+        let now = Instant::now();
+        if let (Some(g), Some((last, at))) = (group, self.group) {
+            if g == last && now.duration_since(at).as_millis() < 800 {
+                self.group = Some((g, now));
+                return;
+            }
+        }
+        self.undo.push(before);
+        if self.undo.len() > 200 {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.group = group.map(|g| (g, now));
+    }
+
+    /// A quarter turn of the whole photo (`cw` clockwise), the crop turned with it.
+    fn quarter(&mut self, cw: bool) {
+        let [l, t, r, b] = self.p.crop;
+        self.p.crop = if cw { [-b, l, -t, r] } else { [t, -r, b, -l] };
+        self.p.turns = (self.p.turns + if cw { 1 } else { 3 }) % 4;
+        std::mem::swap(&mut self.w, &mut self.h);
+        self.portrait = !self.portrait;
+        self.glide = true;
+    }
+
+    /// Mirrors the photo as seen, left to right (or top to bottom: `vertical`), the crop and the straightening
+    /// with it. As `Params` holds it (a mirror first, then the quarter turns): the turns run the other way after.
+    fn mirror(&mut self, vertical: bool) {
+        let [l, t, r, b] = self.p.crop;
+        self.p.crop = if vertical { [l, -b, r, -t] } else { [-r, t, -l, b] };
+        self.p.angle = -self.p.angle;
+        self.p.turns = if vertical { (6 - self.p.turns) % 4 } else { (4 - self.p.turns) % 4 };
+        self.p.flip = !self.p.flip;
+        self.glide = true;
+    }
+
     /// A wheel zoom still easing ends where it was going (before anything else changes the crop).
     fn settle_zoom(&mut self) {
         if self.zooming {
@@ -385,7 +546,7 @@ impl App {
             path,
             w,
             h,
-            p: Params { turns, angle: 0.0, crop: [0.0; 4], ev: 0.0 },
+            p: Params { turns, ..Params::default() },
             // Original's aspect to begin with (Faye, 2026-11-14).
             aspect: ORIGINAL,
             portrait: h > w,
@@ -401,10 +562,21 @@ impl App {
             glide: false,
             zoom: crate::motion::Ease::at([0.0; 4]),
             zooming: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            start: Snap { p: Params::default(), aspect: ORIGINAL, portrait: false, auto: true, w, h },
+            press: None,
+            group: None,
+            before: false,
+            before_key: false,
+            scroll: 0.0,
+            scroll_max: 0.0,
+            reveal: false,
         };
         e.p.crop = e.full();
+        e.start = e.snap_now();
         self.edit = Some(e);
-        self.a11y_say("Edit mode. Tab moves through the panel; Enter saves a copy, Esc cancels.");
+        self.a11y_say("Edit mode. Tab moves through the panel; Ctrl+Z undoes, hold backslash to see the photo before; Enter saves a copy, Esc cancels.");
         self.invalidate();
     }
 
@@ -454,16 +626,12 @@ impl App {
         self.invalidate();
     }
 
+    /// Back to where the edit began (a step undo can take back).
     fn edit_reset(&mut self) {
         if let Some(e) = &mut self.edit {
             e.settle_zoom();
-            e.p.angle = 0.0;
-            e.p.ev = 0.0;
-            e.aspect = ORIGINAL;
-            e.portrait = e.h > e.w;
-            e.auto = true;
-            e.p.crop = e.full();
-            e.glide = true;
+            let start = e.start;
+            e.restore(start);
         }
         self.invalidate();
     }
@@ -624,7 +792,8 @@ impl App {
         // The room the frame's hits take: off the title bar and the panel. The photo and the dim go under both
         // (Faye, 2026-11-14: the page showed undimmed round the panel and under the title bar).
         let room = rect(0.0, area.top - GAP, w - PANEL_W - GAP * 2.0, h - area.top + GAP);
-        if g.draw_photo_edit(frame, dest, angle, e.p.ev).is_err() {
+        let look = if e.before { e.p.geometry_only() } else { e.p };
+        if g.draw_photo_edit(frame, dest, angle, e.p.flip, &look).is_err() {
             g.draw_photo(frame, dest, 1.0, true);
         }
         let cr = e.crop_rect();
@@ -671,6 +840,14 @@ impl App {
         g.fill(rect(mx - bar / 2.0, b - th, bar, th), white);
         g.fill(rect(l, my - bar / 2.0, th, bar), white);
         g.fill(rect(r - th, my - bar / 2.0, th, bar), white);
+        // "Before" over the frame's corner while the photo shows as it was.
+        if e.before {
+            let label = ui::wide("Before");
+            let tw = g.measure(&label, &g.fonts.body).ceil();
+            let r = rect(l + 12.0, t + 12.0, tw + 20.0, 26.0);
+            g.fill_round(r, 6.0, gfx::rgba(0x000000, 0.65));
+            g.text(&label, &g.fonts.body, r, gfx::rgba(0xFFFFFF, 0.95), Align::Center);
+        }
         // Hits: outside the frame turns the photo, inside moves it, edges and corners (on top) resize the frame.
         let saving = e.saving;
         if moving {
@@ -691,86 +868,39 @@ impl App {
         }
     }
 
-    /// The panel: the crop's aspect, Straighten, Exposure, and the buttons.
+    /// The panel: undo, redo and before in its head; the crop's aspect, rotate and flip, the sliders (scrolling
+    /// when they don't fit); the buttons at its foot.
     pub(super) fn draw_edit_panel(&mut self, g: &Gfx) {
         let Some(e) = &self.edit else { return };
-        let (aspect, portrait, angle, ev, saving, changed, writable, focus, ring) = (e.aspect, e.portrait, e.p.angle, e.p.ev, e.saving, e.changed(), photoedit::writable(&e.path), e.focus, e.focus_visible);
+        let (aspect, portrait, p, saving, changed, writable, focus, ring, before) = (e.aspect, e.portrait, e.p, e.saving, e.changed(), photoedit::writable(&e.path), e.focus, e.focus_visible, e.before);
+        let (can_undo, can_redo, scroll, reveal) = (!e.undo.is_empty(), !e.redo.is_empty(), e.scroll, e.reveal);
         let panel = self.edit_panel_rect();
         ui::card(g, panel);
         self.hits.add(Hit::EditPanel, panel);
         let t = theme::raised();
         let (x, w) = (panel.left + PAD, panel.right - panel.left - PAD * 2.0);
-        let mut y = panel.top + PAD;
-        g.text(&ui::wide("Edit"), &g.fonts.title, rect(x, y, w, 26.0), rgb(t.text), Align::Left);
-        y += 40.0;
-        let ring_on = |me: &App, h: Hit, r: D2D_RECT_F| {
+        let ring_on = |h: Hit, r: D2D_RECT_F| {
             if ring && focus == Some(h) {
                 ui::focus_ring(g, ui::grow(r, 2.0), 6.0);
             }
-            let _ = me;
         };
 
-        ui::section(g, "Crop", rect(x, y, w, 20.0));
-        y += 26.0;
-        let (cw, ch, cg) = ((w - 12.0) / 3.0, 32.0, 6.0);
-        for (i, name) in ASPECTS.iter().enumerate() {
-            let r = rect(x + (i % 3) as f32 * (cw + cg), y + (i / 3) as f32 * (ch + cg), cw, ch);
-            let hit = Hit::EditAspect(i as u8);
-            if !saving {
+        // The head: the title, and Before, Redo, Undo from the right.
+        let top = panel.top + PAD;
+        g.text(&ui::wide("Edit"), &g.fonts.title, rect(x, top, w, 26.0), rgb(t.text), Align::Left);
+        let ib = 30.0;
+        for (i, (hit, glyph, enabled, on)) in [(Hit::EditBefore, 0xE7B3u16, !saving, before), (Hit::EditRedo, 0xE7A6, !saving && can_redo, false), (Hit::EditUndo, 0xE7A7, !saving && can_undo, false)].into_iter().enumerate() {
+            let r = rect(x + w - ib - i as f32 * (ib + 6.0), top - 2.0, ib, ib);
+            if enabled {
                 self.hits.add(hit, r);
             }
-            self.a11y_mark(hit, super::a11y::Mark::Selected(aspect == i as u8));
-            let st = self.state(hit, !saving);
-            let fg = ui::button_frame(g, r, ui::Kind::Toggle(aspect == i as u8), &st);
-            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
-            ring_on(self, hit, r);
-        }
-        y += 2.0 * (ch + cg) + 4.0;
-        // Landscape | Portrait, for the aspects that have both (not Free, not Square).
-        let orient_ok = !saving && aspect != 0 && aspect != 2;
-        let half = (w - cg) / 2.0;
-        for (i, name) in ["Landscape", "Portrait"].into_iter().enumerate() {
-            let r = rect(x + i as f32 * (half + cg), y, half, ch);
-            let hit = Hit::EditOrient(i as u8);
-            if orient_ok {
-                self.hits.add(hit, r);
-            }
-            let on = orient_ok && portrait == (i == 1);
-            self.a11y_mark(hit, super::a11y::Mark::Selected(on));
-            let st = self.state(hit, orient_ok);
+            let st = self.state(hit, enabled);
             let fg = ui::button_frame(g, r, ui::Kind::Toggle(on), &st);
-            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
-            ring_on(self, hit, r);
-        }
-        y += ch + 22.0;
-
-        for (hit, name, value, v, max) in [
-            (Hit::EditStraighten, "Straighten", degrees_text(angle), angle, STRAIGHTEN_MAX),
-            (Hit::EditExposure, "Exposure", ev_text(ev), ev, EXPOSURE_MAX),
-        ] {
-            ui::section(g, name, rect(x, y, w, 20.0));
-            g.text_tabular(&ui::wide(&value), &g.fonts.body, rect(x, y - 2.0, w, 22.0), rgb(t.label), Align::Right);
-            y += 24.0;
-            let r = rect(x, y, w, SLIDER_H);
-            if !saving {
-                self.hits.add(hit, r);
-            }
-            let held = self.pressed == Some(hit);
-            let k = self.fades.get(hit, self.hover == Some(hit) || held);
-            let track = slider_track(r);
-            g.fill_round(track, 2.0, rgb(t.track));
-            let mid = (track.left + track.right) / 2.0;
-            let at = mid + (track.right - track.left) / 2.0 * (v / max);
-            let (a, b) = if at < mid { (at, mid) } else { (mid, at) };
-            g.fill(rect(a, track.top, b - a, track.bottom - track.top), rgb(t.text));
-            g.fill(rect(g.snap(mid), track.top - 4.0, g.px(), track.bottom - track.top + 8.0), rgb(t.label));
-            let knob = 7.0 + 2.0 * k;
-            g.fill_round(rect(at - knob, (track.top + track.bottom) / 2.0 - knob, knob * 2.0, knob * 2.0), knob, rgb(t.text));
-            ring_on(self, hit, r);
-            y += SLIDER_H + 22.0;
+            g.text(&[glyph], &g.fonts.icons, r, fg, Align::Center);
+            ring_on(hit, r);
         }
 
-        // The buttons, from the bottom: Save a copy (the one to press), then Cancel | Save, then Reset.
+        // The foot, from the bottom: Save a copy (the one to press), then Cancel | Save, then Reset.
         let bh = 32.0;
         let mut by = panel.bottom - PAD - bh;
         let buttons: [(Hit, &str, ui::Kind, bool, D2D_RECT_F); 4] = {
@@ -795,19 +925,163 @@ impl App {
             let st = self.state(hit, enabled);
             let fg = ui::button_frame(g, r, kind, &st);
             g.text(&ui::wide(label), &g.fonts.body, r, fg, Align::Center);
-            ring_on(self, hit, r);
+            ring_on(hit, r);
         }
+        let mut foot = by;
         if !writable {
             let note = "This format can't be written back: Save a copy makes a JPEG or PNG.";
             let nh = g.measure_height(&ui::wide(note), &g.fonts.caption_wrap, w).ceil();
-            g.text(&ui::wide(note), &g.fonts.caption_wrap, rect(x, by - nh - 4.0, w, nh), rgb(t.label), Align::Left);
+            foot = by - nh - 4.0;
+            g.text(&ui::wide(note), &g.fonts.caption_wrap, rect(x, foot, w, nh), rgb(t.label), Align::Left);
+        }
+
+        // The middle scrolls (the wheel over the panel) when it's taller than its room.
+        let view = D2D_RECT_F { left: panel.left + 1.0, top: top + 40.0, right: panel.right - 1.0, bottom: (foot - 12.0).max(top + 40.0) };
+        let shown = |r: D2D_RECT_F| -> Option<D2D_RECT_F> {
+            let c = D2D_RECT_F { top: r.top.max(view.top), bottom: r.bottom.min(view.bottom), ..r };
+            (c.bottom - c.top >= 4.0).then_some(c)
+        };
+        let mut placed: Vec<(Hit, D2D_RECT_F)> = Vec::new();
+        g.push_clip(view);
+        let y0 = view.top - scroll;
+        let mut y = y0;
+
+        ui::section(g, "Crop", rect(x, y, w, 20.0));
+        y += 26.0;
+        let (cw, ch, cg) = ((w - 12.0) / 3.0, 32.0, 6.0);
+        for (i, name) in ASPECTS.iter().enumerate() {
+            let r = rect(x + (i % 3) as f32 * (cw + cg), y + (i / 3) as f32 * (ch + cg), cw, ch);
+            let hit = Hit::EditAspect(i as u8);
+            if let Some(v) = shown(r).filter(|_| !saving) {
+                self.hits.add(hit, v);
+            }
+            placed.push((hit, r));
+            self.a11y_mark(hit, super::a11y::Mark::Selected(aspect == i as u8));
+            let st = self.state(hit, !saving);
+            let fg = ui::button_frame(g, r, ui::Kind::Toggle(aspect == i as u8), &st);
+            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
+            ring_on(hit, r);
+        }
+        y += 2.0 * (ch + cg);
+        // Landscape | Portrait, for the aspects that have both (not Free, not Square).
+        let orient_ok = !saving && aspect != 0 && aspect != 2;
+        let half = (w - cg) / 2.0;
+        for (i, name) in ["Landscape", "Portrait"].into_iter().enumerate() {
+            let r = rect(x + i as f32 * (half + cg), y, half, ch);
+            let hit = Hit::EditOrient(i as u8);
+            if let Some(v) = shown(r).filter(|_| orient_ok) {
+                self.hits.add(hit, v);
+            }
+            placed.push((hit, r));
+            let on = orient_ok && portrait == (i == 1);
+            self.a11y_mark(hit, super::a11y::Mark::Selected(on));
+            let st = self.state(hit, orient_ok);
+            let fg = ui::button_frame(g, r, ui::Kind::Toggle(on), &st);
+            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
+            ring_on(hit, r);
+        }
+        y += ch + cg;
+        // Rotate left | Rotate right, Flip horizontal | Flip vertical.
+        for (i, name) in TOOLS.iter().enumerate() {
+            let r = rect(x + (i % 2) as f32 * (half + cg), y + (i / 2) as f32 * (ch + cg), half, ch);
+            let hit = Hit::EditTool(i as u8);
+            if let Some(v) = shown(r).filter(|_| !saving) {
+                self.hits.add(hit, v);
+            }
+            placed.push((hit, r));
+            let st = self.state(hit, !saving);
+            let fg = ui::button_frame(g, r, ui::Kind::Standard, &st);
+            g.text(&ui::wide(name), &g.fonts.body, r, fg, Align::Center);
+            ring_on(hit, r);
+        }
+        y += 2.0 * (ch + cg) + 14.0;
+
+        for s in 0..SLIDERS.len() {
+            match s {
+                1 => {
+                    ui::section(g, "Light", rect(x, y, w, 20.0));
+                    y += 26.0;
+                }
+                5 => {
+                    ui::section(g, "Colour", rect(x, y, w, 20.0));
+                    y += 26.0;
+                }
+                _ => {}
+            }
+            let (name, max, ..) = SLIDERS[s];
+            let hit = slider_hit(s);
+            let v = slider_get(&p, s);
+            g.text(&ui::wide(name), &g.fonts.body, rect(x, y, w, 20.0), rgb(t.text), Align::Left);
+            g.text_tabular(&ui::wide(&slider_text(s, v)), &g.fonts.body, rect(x, y, w, 20.0), rgb(t.label), Align::Right);
+            y += 20.0;
+            let r = rect(x, y, w, SLIDER_H);
+            if let Some(vr) = shown(r).filter(|_| !saving) {
+                self.hits.add(hit, vr);
+            }
+            placed.push((hit, r));
+            let held = self.pressed == Some(hit);
+            let k = self.fades.get(hit, self.hover == Some(hit) || held);
+            let track = slider_track(r);
+            let mid = (track.left + track.right) / 2.0;
+            // Temperature and tint show which way is which: blue | amber, green | magenta.
+            match s {
+                5 | 6 => {
+                    let (a, b) = if s == 5 { (0x4A8FE0, 0xE0A24A) } else { (0x4CB86A, 0xC85AC4) };
+                    g.fill_round(rect(track.left, track.top, mid - track.left, track.bottom - track.top), 2.0, gfx::rgba(a, 0.75));
+                    g.fill_round(rect(mid, track.top, track.right - mid, track.bottom - track.top), 2.0, gfx::rgba(b, 0.75));
+                }
+                _ => g.fill_round(track, 2.0, rgb(t.track)),
+            }
+            let at = mid + (track.right - track.left) / 2.0 * (v / max).clamp(-1.0, 1.0);
+            if s < 5 {
+                let (a, b) = if at < mid { (at, mid) } else { (mid, at) };
+                g.fill(rect(a, track.top, b - a, track.bottom - track.top), rgb(t.text));
+            }
+            g.fill(rect(g.snap(mid), track.top - 4.0, g.px(), track.bottom - track.top + 8.0), rgb(t.label));
+            let knob = 7.0 + 2.0 * k;
+            g.fill_round(rect(at - knob, (track.top + track.bottom) / 2.0 - knob, knob * 2.0, knob * 2.0), knob, rgb(t.text));
+            ring_on(hit, r);
+            y += SLIDER_H + 14.0;
+        }
+        let content = y - y0;
+        g.pop_clip();
+
+        // A thin bar at the right while it scrolls; the scroll kept in range, and the keyboard's control shown.
+        let room = view.bottom - view.top;
+        let most = (content - room).max(0.0);
+        let mut next = scroll.clamp(0.0, most);
+        if reveal {
+            if let Some(&(_, r)) = placed.iter().find(|(h, _)| Some(*h) == focus) {
+                if r.top < view.top {
+                    next -= view.top - r.top + 8.0;
+                } else if r.bottom > view.bottom {
+                    next += r.bottom - view.bottom + 8.0;
+                }
+                next = next.clamp(0.0, most);
+            }
+        }
+        if most > 0.0 {
+            let bar_h = (room * room / content).max(24.0);
+            let bar_y = view.top + (room - bar_h) * (next / most);
+            g.fill_round(rect(panel.right - 7.0, bar_y, 3.0, bar_h), 1.5, gfx::rgba(t.label, 0.5));
+        }
+        if let Some(e) = &mut self.edit {
+            e.reveal = false;
+            e.scroll_max = most;
+            if (next - e.scroll).abs() > 0.01 {
+                e.scroll = next;
+                self.invalidate();
+            }
         }
     }
 
     /// The panel's controls in Tab order.
     fn edit_tab_order(&self) -> Vec<Hit> {
         let mut v: Vec<Hit> = (0..6).map(Hit::EditAspect).collect();
-        v.extend([Hit::EditOrient(0), Hit::EditOrient(1), Hit::EditStraighten, Hit::EditExposure, Hit::EditReset, Hit::EditCancel, Hit::EditSave, Hit::EditSaveCopy]);
+        v.extend([Hit::EditOrient(0), Hit::EditOrient(1)]);
+        v.extend((0..TOOLS.len() as u8).map(Hit::EditTool));
+        v.extend((0..SLIDERS.len()).map(slider_hit));
+        v.extend([Hit::EditReset, Hit::EditCancel, Hit::EditSave, Hit::EditSaveCopy]);
         v
     }
 
@@ -815,11 +1089,58 @@ impl App {
         match h {
             Hit::EditAspect(i) => self.edit_aspect(i),
             Hit::EditOrient(i) => self.edit_orient(i == 1),
+            Hit::EditTool(i) => {
+                if let Some(e) = &mut self.edit {
+                    e.settle_zoom();
+                    match i {
+                        0 => e.quarter(false),
+                        1 => e.quarter(true),
+                        2 => e.mirror(false),
+                        _ => e.mirror(true),
+                    }
+                }
+                self.invalidate();
+            }
+            Hit::EditUndo => self.edit_undo(false),
+            Hit::EditRedo => self.edit_undo(true),
             Hit::EditReset => self.edit_reset(),
             Hit::EditCancel => self.cancel_edit(),
             Hit::EditSave => self.edit_save(false),
             Hit::EditSaveCopy => self.edit_save(true),
             _ => {}
+        }
+    }
+
+    /// Undo (`redo` false) or redo one step.
+    fn edit_undo(&mut self, redo: bool) {
+        if let Some(e) = &mut self.edit {
+            if e.saving {
+                return;
+            }
+            e.settle_zoom();
+            let now = e.snap_now();
+            let (from, to) = if redo { (&mut e.redo, &mut e.undo) } else { (&mut e.undo, &mut e.redo) };
+            if let Some(s) = from.pop() {
+                to.push(now);
+                e.restore(s);
+            }
+            e.group = None;
+        }
+        self.a11y_say(if redo { "Redone" } else { "Undone" });
+        self.invalidate();
+    }
+
+    /// A slider's value (`s`: its place in `SLIDERS`) set from the slider, the keys or a double-click.
+    fn edit_set_slider(&mut self, s: usize, v: f32) {
+        match s {
+            0 => self.edit_set_angle(v),
+            1 => self.edit_set_ev(v),
+            _ => {
+                if let Some(e) = &mut self.edit {
+                    *adjust_mut(&mut e.p, s - 2) = v.round().clamp(-100.0, 100.0);
+                }
+                self.invalidate();
+            }
         }
     }
 
@@ -841,17 +1162,19 @@ impl App {
                 self.hide_tooltip();
                 let h = self.hit(x, y);
                 let Some(h) = h.filter(|h| is_edit_hit(*h)) else { return Some(LRESULT(0)) };
+                let before = self.edit.as_ref().map(Edit::snap_now)?;
                 if let Some(e) = &mut self.edit {
                     e.focus_visible = false;
                 }
                 // A double-click on a slider puts it back to 0.
-                if msg == WM_LBUTTONDBLCLK && matches!(h, Hit::EditStraighten | Hit::EditExposure) {
-                    if h == Hit::EditStraighten {
-                        self.edit_set_angle(0.0);
-                    } else {
-                        self.edit_set_ev(0.0);
+                if msg == WM_LBUTTONDBLCLK {
+                    if let Some(s) = slider_index(h) {
+                        self.edit_set_slider(s, 0.0);
+                        if let Some(e) = &mut self.edit {
+                            e.record(before, None);
+                        }
+                        return Some(LRESULT(0));
                     }
-                    return Some(LRESULT(0));
                 }
                 unsafe {
                     SetCapture(self.hwnd);
@@ -859,21 +1182,18 @@ impl App {
                 self.pressed = Some(h);
                 if let Some(e) = &mut self.edit {
                     // The panel's controls take the keys; the frame and the photo leave them where they were.
-                    if !matches!(h, Hit::EditCrop(_) | Hit::EditRotate | Hit::EditPanel) {
+                    if !matches!(h, Hit::EditCrop(_) | Hit::EditRotate | Hit::EditPanel | Hit::EditBefore | Hit::EditUndo | Hit::EditRedo) {
                         e.focus = Some(h);
                     }
                     e.drag = Some(Drag { hit: h, from: (x, y), crop: e.p.crop, angle: e.p.angle });
+                    e.press = Some(before);
+                    if h == Hit::EditBefore {
+                        e.before = true;
+                    }
                 }
-                match h {
-                    Hit::EditStraighten => {
-                        let r = self.hits.rect_of(h).unwrap_or_default();
-                        self.edit_set_angle(slider_value(r, x, STRAIGHTEN_MAX));
-                    }
-                    Hit::EditExposure => {
-                        let r = self.hits.rect_of(h).unwrap_or_default();
-                        self.edit_set_ev(slider_value(r, x, EXPOSURE_MAX));
-                    }
-                    _ => {}
+                if let Some(s) = slider_index(h) {
+                    let r = self.hits.rect_of(h).unwrap_or_default();
+                    self.edit_set_slider(s, slider_value(r, x, SLIDERS[s].1));
                 }
                 self.invalidate();
                 Some(LRESULT(0))
@@ -909,13 +1229,10 @@ impl App {
                             self.edit_set_angle(a);
                         }
                     }
-                    Some(h @ (Hit::EditStraighten | Hit::EditExposure)) => {
+                    Some(h) if slider_index(h).is_some() => {
+                        let s = slider_index(h).unwrap_or(0);
                         let r = self.hits.rect_of(h).unwrap_or_default();
-                        if h == Hit::EditStraighten {
-                            self.edit_set_angle(slider_value(r, x, STRAIGHTEN_MAX));
-                        } else {
-                            self.edit_set_ev(slider_value(r, x, EXPOSURE_MAX));
-                        }
+                        self.edit_set_slider(s, slider_value(r, x, SLIDERS[s].1));
                     }
                     _ => {}
                 }
@@ -937,9 +1254,16 @@ impl App {
                         e.glide = true;
                     }
                     e.drag = None;
+                    e.before = e.before_key;
                 }
                 if self.hit(x, y) == Some(pressed) {
                     self.edit_click(pressed);
+                }
+                // One step for the whole press (a drag, a slider's run, a button), unless it was undo or redo.
+                if let Some(e) = &mut self.edit {
+                    if let Some(b) = e.press.take().filter(|_| !matches!(pressed, Hit::EditUndo | Hit::EditRedo)) {
+                        e.record(b, None);
+                    }
                 }
                 self.invalidate();
                 Some(LRESULT(0))
@@ -949,8 +1273,15 @@ impl App {
                 let (x, y) = self.screen_to_dip(lp);
                 let panel = self.edit_panel_rect();
                 let over_panel = x >= panel.left && x <= panel.right && y >= panel.top && y <= panel.bottom;
-                if self.pressed.is_none() && !over_panel {
+                if over_panel {
+                    // The panel scrolls (kept in range as it's drawn).
+                    if let Some(e) = &mut self.edit {
+                        e.scroll = (e.scroll - delta / 120.0 * 48.0).clamp(0.0, e.scroll_max);
+                    }
+                    self.invalidate();
+                } else if self.pressed.is_none() {
                     if let Some(e) = self.edit.as_mut().filter(|e| !e.saving) {
+                        let before = e.snap_now();
                         let cr = e.crop_rect();
                         let inside = x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom;
                         let at = inside.then(|| ((x - e.centre.0) / e.k, (y - e.centre.1) / e.k));
@@ -965,18 +1296,45 @@ impl App {
                             e.zooming = true;
                             e.auto = false;
                         }
+                        e.record(before, Some(GROUP_WHEEL));
                     }
                     self.invalidate();
                 }
                 Some(LRESULT(0))
             }
             WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MOUSEHWHEEL | WM_XBUTTONDOWN | WM_XBUTTONUP => Some(LRESULT(0)),
+            WM_KEYUP => {
+                if VIRTUAL_KEY(wp.0 as u16) == VK_OEM_5 {
+                    let held = self.pressed == Some(Hit::EditBefore);
+                    if let Some(e) = &mut self.edit {
+                        e.before_key = false;
+                        e.before = held;
+                    }
+                    self.invalidate();
+                    return Some(LRESULT(0));
+                }
+                None
+            }
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+                let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
                 let focus = self.edit.as_ref().and_then(|e| e.focus);
+                let before = self.edit.as_ref().map(Edit::snap_now)?;
+                // What the key changed is one undo step with the same key's changes just before it.
+                let mut group = None;
                 match vk {
                     VK_ESCAPE => self.cancel_edit(),
+                    // \ held shows the photo as it was (its tone and colour; the crop stays).
+                    VK_OEM_5 => {
+                        if let Some(e) = &mut self.edit {
+                            e.before_key = true;
+                            e.before = true;
+                        }
+                        self.invalidate();
+                    }
+                    VK_Z if ctrl => self.edit_undo(shift),
+                    VK_Y if ctrl => self.edit_undo(true),
                     VK_TAB => {
                         let order = self.edit_tab_order();
                         let i = focus.and_then(|f| order.iter().position(|&o| o == f));
@@ -990,19 +1348,19 @@ impl App {
                         if let Some(e) = &mut self.edit {
                             e.focus = Some(order[next]);
                             e.focus_visible = true;
+                            e.reveal = true;
                         }
                         self.invalidate();
                     }
                     VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN => {
                         let dir = if matches!(vk, VK_RIGHT | VK_UP) { 1.0 } else { -1.0 };
                         match focus {
-                            Some(Hit::EditStraighten) => {
-                                let a = self.edit.as_ref().map_or(0.0, |e| e.p.angle);
-                                self.edit_set_angle(a + dir * if shift { 1.0 } else { 0.1 });
-                            }
-                            Some(Hit::EditExposure) => {
-                                let v = self.edit.as_ref().map_or(0.0, |e| e.p.ev);
-                                self.edit_set_ev(v + dir * if shift { 0.5 } else { 0.1 });
+                            Some(h) if slider_index(h).is_some() => {
+                                let s = slider_index(h).unwrap_or(0);
+                                let (_, _, step, big) = SLIDERS[s];
+                                let v = self.edit.as_ref().map_or(0.0, |e| slider_get(&e.p, s));
+                                self.edit_set_slider(s, v + dir * if shift { big } else { step });
+                                group = Some(GROUP_SLIDER + s as u8);
                             }
                             Some(Hit::EditOrient(_)) => {
                                 let portrait = dir > 0.0;
@@ -1010,6 +1368,7 @@ impl App {
                                     e.focus = Some(Hit::EditOrient(portrait as u8));
                                 }
                                 self.edit_orient(portrait);
+                                group = Some(GROUP_ASPECT);
                             }
                             Some(Hit::EditAspect(i)) => {
                                 let j = (i as i32 + dir as i32).rem_euclid(6) as u8;
@@ -1017,6 +1376,7 @@ impl App {
                                     e.focus = Some(Hit::EditAspect(j));
                                 }
                                 self.edit_aspect(j);
+                                group = Some(GROUP_ASPECT);
                             }
                             _ => {
                                 // Nothing in the panel has the keys: the arrows nudge the crop (Shift: further).
@@ -1035,19 +1395,30 @@ impl App {
                                         e.auto = false;
                                     }
                                 }
+                                group = Some(GROUP_NUDGE);
                                 self.invalidate();
                             }
                         }
                     }
                     VK_RETURN | VK_SPACE => match focus {
-                        Some(h @ (Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy)) => self.edit_click(h),
+                        Some(h @ (Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditTool(_) | Hit::EditReset)) => {
+                            self.edit_click(h);
+                            group = Some(GROUP_BUTTON);
+                        }
+                        Some(h @ (Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy)) => self.edit_click(h),
                         _ if vk == VK_RETURN => self.edit_save(true),
                         _ => {}
                     },
                     // Ctrl+S saves over the photo, as elsewhere.
-                    VK_S if unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0 => self.edit_save(false),
+                    VK_S if ctrl => self.edit_save(false),
                     VK_F11 => return None,
                     _ => {}
+                }
+                if let (Some(g), Some(e)) = (group, &mut self.edit) {
+                    e.record(before, Some(g));
+                    if g == GROUP_BUTTON {
+                        e.group = None;
+                    }
                 }
                 Some(LRESULT(0))
             }
@@ -1066,8 +1437,28 @@ pub(super) fn editable_format(path: &std::path::Path) -> bool {
 pub(super) fn is_edit_hit(h: Hit) -> bool {
     matches!(
         h,
-        Hit::EditCrop(_) | Hit::EditRotate | Hit::EditAspect(_) | Hit::EditOrient(_) | Hit::EditStraighten | Hit::EditExposure | Hit::EditReset | Hit::EditCancel | Hit::EditSave | Hit::EditSaveCopy | Hit::EditPanel
+        Hit::EditCrop(_)
+            | Hit::EditRotate
+            | Hit::EditAspect(_)
+            | Hit::EditOrient(_)
+            | Hit::EditTool(_)
+            | Hit::EditStraighten
+            | Hit::EditExposure
+            | Hit::EditAdjust(_)
+            | Hit::EditUndo
+            | Hit::EditRedo
+            | Hit::EditBefore
+            | Hit::EditReset
+            | Hit::EditCancel
+            | Hit::EditSave
+            | Hit::EditSaveCopy
+            | Hit::EditPanel
     )
+}
+
+/// A rotate or flip button's name, for readers.
+pub(super) fn tool_name(i: u8) -> &'static str {
+    TOOLS.get(i as usize).copied().unwrap_or("")
 }
 
 /// The aspect choice's name, for readers.
