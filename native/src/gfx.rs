@@ -1100,9 +1100,13 @@ impl Gfx {
                 // steps are coarse in the shadows), the saturation, back to linear and up again.
                 let k = self.space.white_scale();
                 let down = color_matrix(dc, &affine.GetOutput()?, 1.0 / k, 1.0, true)?;
+                // The table can't be indexed by linear values directly (it'd need thousands of steps for the
+                // shadows, and a table that long is refused: E_INVALIDARG, the preview fell back to the plain photo
+                // under HDR): a 1/2.2 gamma first, the table indexed by that.
                 let encode = |v: f32| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
                 let decode = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
-                let toned = table_transfer(dc, &down.GetOutput()?, &curves(4096, &encode))?;
+                let gamma = gamma_transfer(dc, &down.GetOutput()?, 1.0 / 2.2)?;
+                let toned = table_transfer(dc, &gamma.GetOutput()?, &curves(1024, &|g: f32| encode(g.powf(2.2))))?;
                 let sat = saturate(&toned.GetOutput()?)?;
                 let back: Vec<f32> = (0..1024).map(|i| decode(i as f32 / 1023.0)).collect();
                 let lin = table_transfer(dc, &sat.GetOutput()?, &[back.clone(), back.clone(), back])?;
@@ -2118,6 +2122,20 @@ fn table_transfer(dc: &ID2D1DeviceContext, src: &ID2D1Image, t: &[Vec<f32>; 3]) 
         }
         fx.SetValue(D2D1_TABLETRANSFER_PROP_ALPHA_DISABLE.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
         fx.SetValue(D2D1_TABLETRANSFER_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        Ok(fx)
+    }
+}
+
+/// `src`'s colour raised to `exponent` per channel (alpha left alone), clamped.
+fn gamma_transfer(dc: &ID2D1DeviceContext, src: &ID2D1Image, exponent: f32) -> Result<ID2D1Effect> {
+    unsafe {
+        let fx = dc.CreateEffect(&CLSID_D2D1GammaTransfer)?;
+        fx.SetInput(0, src, true);
+        for prop in [D2D1_GAMMATRANSFER_PROP_RED_EXPONENT, D2D1_GAMMATRANSFER_PROP_GREEN_EXPONENT, D2D1_GAMMATRANSFER_PROP_BLUE_EXPONENT] {
+            set_f32(&fx, prop.0 as u32, exponent)?;
+        }
+        fx.SetValue(D2D1_GAMMATRANSFER_PROP_ALPHA_DISABLE.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
+        fx.SetValue(D2D1_GAMMATRANSFER_PROP_CLAMP_OUTPUT.0 as u32, D2D1_PROPERTY_TYPE_BOOL, &1u32.to_le_bytes())?;
         Ok(fx)
     }
 }

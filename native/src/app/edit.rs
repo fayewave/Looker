@@ -821,7 +821,9 @@ impl App {
         // (Faye, 2026-11-14: the page showed undimmed round the panel and under the title bar).
         let room = rect(0.0, area.top - GAP, w - PANEL_W - GAP * 2.0, h - area.top + GAP);
         let look = if e.before { e.p.geometry_only() } else { e.p };
-        if g.draw_photo_edit(frame, dest, angle, e.p.flip, &look).is_err() {
+        if let Err(err) = g.draw_photo_edit(frame, dest, angle, e.p.flip, &look) {
+            crate::trace::mark(format!("edit preview failed: {err}"));
+            crate::trace::flush("edit preview failed");
             g.draw_photo(frame, dest, 1.0, true);
         }
         let cr = e.crop_rect();
