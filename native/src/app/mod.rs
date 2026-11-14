@@ -186,6 +186,8 @@ enum Hit {
     Toggle(page::Setting),
     /// Settings > Appearance's text size stepper: its − (0) and + (1).
     TextSizeStep(u8),
+    /// Its interface size stepper: − (0), + (1), the number (2).
+    UiScaleStep(u8),
     ToggleAnim(page::Setting),
     ThemeChip(u8),
     /// Appearance's accent chips, by place in `theme::Accent::ALL`.
@@ -445,13 +447,15 @@ pub struct Placement {
     pub maximized: bool,
     /// The work area of the monitor the window opens on (a maximized window's client area).
     pub work: RECT,
+    /// The interface size setting (`Settings::ui_scale`): DIPs are this much bigger again.
+    pub ui: f32,
 }
 
 impl Placement {
     /// The space the first image will be fitted into, in device pixels: the viewport minus what the info
     /// card and the thumbnail strip (if they will show) take from the right and the bottom, in DIPs.
     pub fn viewport_px(&self, right_inset: f32, bottom_inset: f32) -> (u32, u32) {
-        let s = self.dpi as f32 / 96.0;
+        let s = self.dpi as f32 / 96.0 * self.ui;
         let (w, h) = if self.maximized {
             ((self.work.right - self.work.left).max(1) as u32, (self.work.bottom - self.work.top).max(1) as u32)
         } else {
@@ -484,6 +488,10 @@ pub fn dpi_override() -> Option<u32> {
 
 /// The saved window placement when it is still on a connected monitor, else the default window.
 pub fn initial_placement(settings: &Settings) -> Placement {
+    Placement { ui: settings.ui_scale, ..monitor_placement(settings) }
+}
+
+fn monitor_placement(settings: &Settings) -> Placement {
     if let Some(w) = settings.window.filter(|_| settings.remember_window) {
         let rect = RECT { left: w.left, top: w.top, right: w.right, bottom: w.bottom };
         unsafe {
@@ -493,7 +501,7 @@ pub fn initial_placement(settings: &Settings) -> Placement {
                 let _ = GetMonitorInfoW(mon, &mut mi);
                 let (mut dx, mut dy) = (96u32, 96u32);
                 let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-                return Placement { rect, dpi: dpi_override().unwrap_or(dx), maximized: w.maximized, work: mi.rcWork };
+                return Placement { rect, dpi: dpi_override().unwrap_or(dx), maximized: w.maximized, work: mi.rcWork, ui: 1.0 };
             }
         }
     }
@@ -518,7 +526,7 @@ fn default_placement() -> Placement {
         let h = ((DEFAULT_H * s) as i32 + fy).min(wh * 9 / 10);
         let x = work.left + (ww - w) / 2;
         let y = work.top + (wh - h) / 2;
-        Placement { rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, dpi: dx, maximized: false, work }
+        Placement { rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, dpi: dx, maximized: false, work, ui: 1.0 }
     }
 }
 
@@ -812,13 +820,21 @@ pub struct App {
     zoom_scrub: Option<(f32, bool)>,
     /// A drag on the text size stepper's number: where it began, and the size then.
     text_size_drag: Option<(f32, f32)>,
+    /// The interface size stepper's number held: where (device pixels) and the size then.
+    ui_scale_drag: Option<(f32, f32)>,
     cap_hover: Option<Caption>,
     cap_pressed: Option<Caption>,
 }
 
 impl App {
+    /// Device pixels per DIP: the monitor's DPI and the interface size together.
     fn scale(&self) -> f32 {
-        self.dpi as f32 / 96.0
+        self.ui_dpi() / 96.0
+    }
+
+    /// The DPI everything is drawn at: the monitor's times the interface size.
+    fn ui_dpi(&self) -> f32 {
+        self.dpi as f32 * self.settings.ui_scale
     }
     fn size_dip(&self) -> (f32, f32) {
         (self.client_w as f32 / self.scale(), self.client_h as f32 / self.scale())
@@ -1608,6 +1624,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
             pan_drag: None,
             zoom_scrub: None,
             text_size_drag: None,
+            ui_scale_drag: None,
             cap_hover: None,
             cap_pressed: None,
         });
@@ -1632,7 +1649,7 @@ pub fn run(path: Option<PathBuf>, launch_keys: Vec<Key>, settings: Settings, pla
 
         if let Some(Some((ready, icon))) = gfx_thread.join().ok() {
             let (dev, text) = ready.0;
-            match Gfx::attach(dev, text, hwnd, app.client_w, app.client_h, dpi as f32, crate::colour::current().space.clone()) {
+            match Gfx::attach(dev, text, hwnd, app.client_w, app.client_h, app.ui_dpi(), crate::colour::current().space.clone()) {
                 Ok(g) => {
                     if let Some(i) = &icon {
                         app.icon = g.bitmap(i.width, i.height, &i.frames[0].pixels).ok();

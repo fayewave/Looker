@@ -853,6 +853,8 @@ impl App {
         self.accent_chips(g, rows, open);
         let r = rows.row_room(g, "Text size", "Bigger or smaller text everywhere in Looker; icons stay as they are", 144.0, 0.0);
         self.text_size_stepper(g, right_part(r, 120.0, 30.0), open);
+        let r = rows.row_room(g, "Interface size", "Everything bigger or smaller: text, icons, buttons and panels. Photos at 100% still show every pixel as one", 144.0, 0.0);
+        self.ui_scale_stepper(g, right_part(r, 120.0, 30.0), open);
         let r = rows.switch_row(g, "Solid status bar", "A solid bar behind the file details at the bottom. Off: they sit on the photo");
         self.switch(g, r, Setting::BarsOpaque, self.settings.bars_opaque, open);
         // Both checkerboards here, with the rest of how things look (Faye, 2026-11-13).
@@ -995,6 +997,59 @@ impl App {
             hot[k] = self.state(id, open && can[k]).hover;
         }
         ui::stepper(g, b, &format!("{:.0}%", v * 100.0), can, hot);
+    }
+
+    /// The interface size: − 100% +, in 5 % steps, as the text size's stepper.
+    fn ui_scale_stepper(&mut self, g: &Gfx, b: D2D_RECT_F, open: bool) {
+        let (lo, hi, _) = settings::UI_SCALES;
+        let v = self.settings.ui_scale;
+        let can = [v > lo + 1e-3, v < hi - 1e-3];
+        let (minus, plus) = ui::stepper_buttons(b);
+        if open {
+            self.hits.add(Hit::UiScaleStep(2), D2D_RECT_F { left: minus.right, right: plus.left, ..b });
+        }
+        let mut hot = [0.0; 2];
+        for (k, r) in [(0usize, minus), (1, plus)] {
+            let id = Hit::UiScaleStep(k as u8);
+            if open && can[k] {
+                self.hits.add(id, r);
+            }
+            hot[k] = self.state(id, open && can[k]).hover;
+        }
+        ui::stepper(g, b, &format!("{:.0}%", v * 100.0), can, hot);
+    }
+
+    /// The interface size set: the window drawn at the new DPI at once (the layout and the photo's fit follow).
+    fn set_ui_scale(&mut self, v: f32) {
+        let (lo, hi, _) = settings::UI_SCALES;
+        let v = (v.clamp(lo, hi) * 100.0).round() / 100.0;
+        if v == self.settings.ui_scale {
+            return;
+        }
+        self.settings.ui_scale = v;
+        let dpi = self.ui_dpi();
+        if let Some(g) = &mut self.gfx {
+            let _ = g.resize(self.client_w, self.client_h, dpi);
+        }
+        self.layout_changed();
+        self.invalidate();
+    }
+
+    /// The stepper's − (0) or +.
+    pub(super) fn ui_scale_step(&mut self, k: u8) {
+        let step = settings::UI_SCALES.2;
+        self.set_ui_scale(self.settings.ui_scale + if k == 0 { -step } else { step });
+        settings::save(&self.settings);
+    }
+
+    /// The number dragged to `x` (DIPs at the size now): a step for every 6 device-independent pixels of the
+    /// monitor from where the press began, measured in device pixels (the DIPs change size as it goes).
+    pub(super) fn ui_scale_drag_to(&mut self, x: f32) {
+        let Some((x0, v0)) = self.ui_scale_drag else { return };
+        let px = x * self.scale();
+        let step = settings::UI_SCALES.2;
+        let monitor = self.dpi as f32 / 96.0;
+        self.set_ui_scale(v0 + ((px - x0) / (6.0 * monitor)).round() * step);
     }
 
     /// The stepper's number dragged to `x`: a step for every 6 DIPs from where the press began.

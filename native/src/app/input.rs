@@ -304,6 +304,9 @@ impl App {
                     if self.pressed == Some(Hit::TextSizeStep(2)) {
                         self.text_size_drag_to(x);
                     }
+                    if self.pressed == Some(Hit::UiScaleStep(2)) {
+                        self.ui_scale_drag_to(x);
+                    }
                     if matches!(self.pressed, Some(Hit::StyleStep(_, 2))) {
                         self.style_drag_to(x);
                     }
@@ -397,9 +400,9 @@ impl App {
                         Some(Hit::SideHeader(_)) => IDC_SIZEALL,
                         Some(Hit::DialogField | Hit::ExplorerFilter | Hit::ExplorerRename | Hit::ExplorerPath | Hit::TextView | Hit::TextField(_) | Hit::InfoField) => IDC_IBEAM,
                         Some(Hit::Tool(t)) if self.tool_enabled(t) => IDC_HAND,
-                        _ if self.text_size_drag.is_some() => IDC_SIZEWE,
-                        Some(Hit::TextSizeStep(2) | Hit::StyleStep(_, 2)) => IDC_SIZEWE,
-                        Some(Hit::TextSizeStep(_)) => IDC_HAND,
+                        _ if self.text_size_drag.is_some() || self.ui_scale_drag.is_some() => IDC_SIZEWE,
+                        Some(Hit::TextSizeStep(2) | Hit::UiScaleStep(2) | Hit::StyleStep(_, 2)) => IDC_SIZEWE,
+                        Some(Hit::TextSizeStep(_) | Hit::UiScaleStep(_)) => IDC_HAND,
                         Some(
                             Hit::Reveal
                             | Hit::InfoPath
@@ -570,6 +573,7 @@ impl App {
                         Some(Hit::VideoSeek) => self.scrub_start(x),
                         Some(Hit::VideoVolume) => self.volume_at(x),
                         Some(Hit::TextSizeStep(2)) => self.text_size_drag = Some((x, self.settings.text_scale)),
+                        Some(Hit::UiScaleStep(2)) => self.ui_scale_drag = Some((x * self.scale(), self.settings.ui_scale)),
                         Some(Hit::StyleStep(n, 2)) => self.style_drag_start(n, x),
                         Some(Hit::AudioWave) => self.audio_press(x),
                         Some(Hit::AudioScroll) => self.audio_scroll_press(x),
@@ -628,6 +632,9 @@ impl App {
                         self.text_scroll_release();
                     }
                     if pressed == Some(Hit::VideoVolume) {
+                        settings::save(&self.settings);
+                    }
+                    if self.ui_scale_drag.take().is_some() {
                         settings::save(&self.settings);
                     }
                     if self.text_size_drag.take().is_some() {
@@ -697,6 +704,7 @@ impl App {
                             Some(Hit::MenuSwatch(i, k)) => self.activate_swatch(i, k),
                             Some(Hit::Tool(t)) => self.act(t),
                             Some(Hit::TextSizeStep(k @ (0 | 1))) => self.text_size_step(k),
+                            Some(Hit::UiScaleStep(k @ (0 | 1))) => self.ui_scale_step(k),
                             Some(Hit::Reveal | Hit::InfoPath) => self.reveal(),
                             Some(Hit::InfoRow(i)) => self.info_copy(i),
                             Some(Hit::InfoEdit(i)) => {
@@ -1019,6 +1027,8 @@ impl App {
                     // Over the text size stepper the wheel steps it (Transient's), not the page.
                     if self.page_open() && matches!(self.hit(x, y), Some(Hit::TextSizeStep(_))) {
                         self.text_size_step(if delta > 0.0 { 1 } else { 0 });
+                    } else if self.page_open() && matches!(self.hit(x, y), Some(Hit::UiScaleStep(_))) {
+                        self.ui_scale_step(if delta > 0.0 { 1 } else { 0 });
                     } else if let (true, Some(Hit::StyleStep(n, _))) = (self.page_open(), self.hit(x, y)) {
                         self.style_step(n, if delta > 0.0 { 1 } else { 0 });
                     } else if self.page_open() {
@@ -1485,8 +1495,9 @@ impl App {
                     self.menu = None;
                     self.tooltip = None;
                     if self.client_w > 0 && self.client_h > 0 {
+                        let dpi = self.ui_dpi();
                         if let Some(g) = &mut self.gfx {
-                            let _ = g.resize(self.client_w, self.client_h, self.dpi as f32);
+                            let _ = g.resize(self.client_w, self.client_h, dpi);
                         }
                         self.layout_changed();
                         self.render();
