@@ -855,6 +855,25 @@ impl Decoder {
         Decoder::open_with(path, d3d11, pass & (PASS_AC3 | PASS_EAC3 | PASS_DTS | PASS_TRUEHD), video, audio)
     }
 
+    /// The picture showing at `us` on the player's clock in the video stream `video` (else the file's best): full
+    /// size, upright, as straight RGBA (width, height, pixels). Decoded on the CPU by a decoder of its own: Copy in
+    /// the viewer. Past the last picture (the end), the last one.
+    pub fn picture_at(path: &Path, video: Option<i32>, us: i64) -> Result<(u32, u32, Vec<u8>), String> {
+        let (mut d, info) = Decoder::open_with(path, std::ptr::null_mut(), LV_NO_AUDIO, video, None)?;
+        let (w, h) = (info.width.max(1) as u32, info.height.max(1) as u32);
+        for at in [us.max(0), us - 500_000, 0] {
+            d.seek(at.max(0), true)?;
+            loop {
+                match d.next()? {
+                    Item::Picture(p) => return p.rgba(info.rotation, w, h),
+                    Item::Audio(..) => {}
+                    Item::End | Item::Interrupted => break,
+                }
+            }
+        }
+        Err("no picture".into())
+    }
+
     fn open_with(path: &Path, d3d11: *mut c_void, flags: c_int, video: Option<i32>, audio: Option<i32>) -> Result<(Decoder, Info), String> {
         let l = lib()?;
         let mut info = Info::zeroed();
@@ -1455,6 +1474,31 @@ mod tests {
                 info.fps().unwrap_or(0.0),
                 dec.passthrough()
             );
+        }
+    }
+
+    /// Copy's picture of `LOOKER_DECODE` at 0, a third of the way, two thirds and past the end, written to %TEMP%
+    /// as `looker-copy-<n>.png` (a test pattern's clock shows whether it's the right one).
+    /// `LOOKER_CODECS=... LOOKER_DECODE=x.mp4 cargo test --release -- --ignored --nocapture copies_the_picture_at`
+    #[test]
+    #[ignore]
+    fn copies_the_picture_at() {
+        use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory2;
+        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+        let f: IWICImagingFactory = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let path = std::path::PathBuf::from(std::env::var("LOOKER_DECODE").expect("set LOOKER_DECODE"));
+        let (_, info) = Decoder::open(&path, std::ptr::null_mut(), true).expect("opens");
+        let d = info.duration_us;
+        for (n, at) in [0, d / 3, d * 2 / 3, d + 1_000_000].into_iter().enumerate() {
+            let t = std::time::Instant::now();
+            let (w, h, px) = Decoder::picture_at(&path, None, at).expect("a picture");
+            assert_eq!((w, h), (info.width as u32, info.height as u32), "full size, upright");
+            let out = std::env::temp_dir().join(format!("looker-copy-{n}.png"));
+            crate::imaging::wic::save_png(&f, &out, w, h, &crate::fileops::premultiplied_bgra(px)).unwrap();
+            println!("  {:.2} s -> {} ({w}x{h}, {} ms)", at as f64 / 1e6, out.display(), t.elapsed().as_millis());
         }
     }
 

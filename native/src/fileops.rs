@@ -429,6 +429,19 @@ pub(crate) fn replace_file(temp: &Path, dest: &Path) -> Result<(), String> {
 // --- Pixels for the clipboard and the wallpaper -----------------------------------------------------
 
 /// The whole image (first frame) at full size, capped at the largest bitmap edge; for a document, `page`.
+/// Straight RGBA as `Image` holds pixels: premultiplied BGRA.
+pub fn premultiplied_bgra(mut px: Vec<u8>) -> Vec<u8> {
+    for p in px.chunks_exact_mut(4) {
+        let a = p[3] as u32;
+        let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+        let (r, g, b) = (pm(p[0]), pm(p[1]), pm(p[2]));
+        p[0] = b;
+        p[1] = g;
+        p[2] = r;
+    }
+    px
+}
+
 pub fn full_image(path: &Path, page: usize) -> Option<Image> {
     let f = wic()?;
     if format::sniff_file(path) == Format::Pdf {

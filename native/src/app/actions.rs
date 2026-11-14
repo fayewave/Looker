@@ -129,6 +129,19 @@ impl App {
     /// image editors alike.
     pub(super) fn copy_image(&mut self) {
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
+        // A video: the picture on screen, full size (Faye, 2026-11-14), decoded again from the file at that time;
+        // its first picture if that fails.
+        if let Some((video, at)) = self.video_copy_spot() {
+            fileops::spawn(self.hwnd, false, move || {
+                let image = crate::imaging::video::Decoder::picture_at(&path, video, at)
+                    .map_err(|e| crate::trace::mark(format!("video frame copy failed: {e}")))
+                    .ok()
+                    .map(|(width, height, rgba)| fileops::Image { width, height, pixels: fileops::premultiplied_bgra(rgba) })
+                    .or_else(|| fileops::full_image(&path, 0));
+                Done::Copied { path, image }
+            });
+            return;
+        }
         let page = self.pdf_page_of_current();
         fileops::spawn(self.hwnd, false, move || {
             let image = fileops::full_image(&path, page);

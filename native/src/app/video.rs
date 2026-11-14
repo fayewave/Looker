@@ -516,6 +516,15 @@ impl App {
         });
     }
 
+    /// For Copy: the video stream showing (None: the file's best) and the time of the picture on screen, while a
+    /// video (not an audio file) is showing.
+    pub(super) fn video_copy_spot(&self) -> Option<(Option<i32>, i64)> {
+        if !self.video_shown() || self.audio_shown() {
+            return None;
+        }
+        self.video.as_ref().map(|v| (v.video_track, v.position()))
+    }
+
     /// A video is the current file (its keys and wheel apply, even before its first picture).
     pub(super) fn video_shown(&self) -> bool {
         self.placeholder.is_none() && self.video.as_ref().is_some_and(|v| !v.failed && (!v.motion || !self.motion_held))
