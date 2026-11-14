@@ -181,6 +181,12 @@ fn ts_is_text(path: &Path) -> bool {
     t
 }
 
+/// A picture, still or animated (what Print and Set as wallpaper are for): not a video, audio, document, text,
+/// 3D model, archive or unknown file.
+pub fn is_photo(f: Format) -> bool {
+    !matches!(f, Format::Unknown | Format::Video | Format::Audio | Format::Pdf | Format::Text | Format::Model | Format::Mtl | Format::Archive)
+}
+
 pub fn is_supported(path: &Path) -> bool {
     ext_of(path).is_some_and(|e| EXTENSIONS.contains(&e.as_str()))
 }

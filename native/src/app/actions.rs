@@ -45,12 +45,7 @@ pub(super) enum DialogKind {
     StyleUnsaved(super::substyle::Pending),
 }
 
-/// A picture, still or animated (what Print and Set as wallpaper are for): not a video, audio, document, text, 3D
-/// model, archive or unknown file.
-pub(super) fn photo_format(f: crate::format::Format) -> bool {
-    use crate::format::Format as F;
-    !matches!(f, F::Unknown | F::Video | F::Audio | F::Pdf | F::Text | F::Model | F::Mtl | F::Archive)
-}
+pub(super) use crate::format::is_photo as photo_format;
 
 impl App {
     // --- Toast --------------------------------------------------------------------------------------
@@ -212,28 +207,20 @@ impl App {
         }
     }
 
-    /// Print: the photos made ready on a thread (formats Windows' Print Pictures can't read rendered to PNGs),
-    /// then its dialog (`print_ready`).
+    /// Print: Windows' print dialog (print.rs) for photos and PDFs; the pages are decoded as it asks for them.
     pub(super) fn print(&mut self, paths: Vec<PathBuf>) {
-        if paths.is_empty() {
-            return;
+        if let Err(e) = crate::print::print(self.hwnd, paths) {
+            self.show_toast(e, false);
         }
-        fileops::spawn(self.hwnd, false, move || Done::PrintReady(fileops::print_files(&paths)));
     }
 
-    /// Ctrl+P and the viewer's Print: the photo showing (not a video, document or file Looker can't open).
+    /// Ctrl+P and the viewer's Print: the photo or PDF showing (not a video, text or file Looker can't open).
     pub(super) fn print_current(&mut self) {
-        if self.placeholder.is_some() || !self.viewer.current_entry().is_some_and(|e| photo_format(e.format)) {
+        if self.placeholder.is_some() || !self.viewer.current_entry().is_some_and(|e| e.format == crate::format::Format::Pdf || photo_format(e.format)) {
             return;
         }
         if let Some(p) = self.current_path().map(Path::to_path_buf) {
             self.print(vec![p]);
-        }
-    }
-
-    fn print_ready(&mut self, files: Result<Vec<PathBuf>, String>) {
-        if let Err(e) = files.and_then(|f| crate::shellverbs::print(&f)) {
-            self.show_toast(e, false);
         }
     }
 
@@ -681,7 +668,6 @@ impl App {
             Done::Edited { path, out, copy } => self.on_edited(path, out, copy),
             Done::Recycled { path, ok } => self.on_recycled(path, ok),
             Done::Renamed { from, to } => self.on_renamed(from, to),
-            Done::PrintReady(files) => self.print_ready(files),
             Done::Wallpaper { ok } => self.show_toast(if ok { "Wallpaper set" } else { "Couldn't set the wallpaper" }, false),
             Done::Copied { path, image } => {
                 if clipboard::set_image(self.hwnd, &path, image.as_ref()) {

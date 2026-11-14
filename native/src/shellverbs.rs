@@ -1,6 +1,5 @@
 //! Windows' own ways to hand files on, as Explorer's menu offers them: Open with (the apps registered for the
-//! file's type, then Windows' app picker), Share (the share sheet) and Print (the Print Pictures wizard that
-//! Explorer's Print opens for photos, `photowiz.dll`'s drop target).
+//! file's type, then Windows' app picker) and Share (the share sheet). Print is print.rs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,20 +9,18 @@ use std::time::{Duration, Instant};
 use windows::ApplicationModel::DataTransfer::{DataRequestedEventArgs, DataTransferManager};
 use windows::Foundation::TypedEventHandler;
 use windows::Storage::{IStorageItem, StorageFile};
-use windows::Win32::Foundation::{HWND, POINTL};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree,
     IDataObject,
 };
-use windows::Win32::System::Ole::{DROPEFFECT, DROPEFFECT_COPY, IDropTarget};
-use windows::Win32::System::SystemServices::MK_LBUTTON;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     ASSOC_FILTER_RECOMMENDED, BHID_DataObject, IAssocHandler, IDataTransferManagerInterop, IShellItemArray, OAIF_ALLOW_REGISTRATION,
     OAIF_EXEC, OPENASINFO, SHAssocEnumHandlers, SHCreateShellItemArrayFromIDLists, SHLoadIndirectString, SHOpenWithDialog,
     SHParseDisplayName,
 };
-use windows::core::{GUID, HSTRING, Interface, PCWSTR, PWSTR};
+use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 
 // --- Open with --------------------------------------------------------------------------------------
 
@@ -208,26 +205,6 @@ pub fn choose_app(hwnd: HWND, path: &Path) {
     }
 }
 
-// --- Print ------------------------------------------------------------------------------------------
-
-/// The Photo Printing Wizard's drop target (`HKCR\SystemFileAssociations\image\shell\print\DropTarget`).
-const PRINT_WIZARD: GUID = GUID::from_u128(0x60fd46de_f830_4894_a628_6fa81bc0190d);
-
-/// Windows' Print Pictures dialog (printer, paper, layouts from full page to contact sheet) on these files,
-/// which must be ones it reads (`fileops::print_files` makes them so).
-pub fn print(paths: &[PathBuf]) -> Result<(), String> {
-    let data = data_object(paths).ok_or("Couldn't hand the photos to Windows")?;
-    unsafe {
-        let target: IDropTarget =
-            CoCreateInstance(&PRINT_WIZARD, None, CLSCTX_INPROC_SERVER).map_err(|e| format!("Windows' Print Pictures isn't available: {}", e.message()))?;
-        let mut effect: DROPEFFECT = DROPEFFECT_COPY;
-        target.DragEnter(&data, MK_LBUTTON, POINTL::default(), &mut effect).map_err(|e| e.message().to_string())?;
-        let mut effect: DROPEFFECT = DROPEFFECT_COPY;
-        target.Drop(&data, MK_LBUTTON, POINTL::default(), &mut effect).map_err(|e| e.message().to_string())?;
-    }
-    Ok(())
-}
-
 // --- Share ------------------------------------------------------------------------------------------
 
 /// What the share sheet is sharing: set before it's shown, read when it asks (`DataRequested`).
@@ -296,30 +273,6 @@ fn fill(args: &DataRequestedEventArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The print path up to the wizard's window, which never shows: files made printable (`LOOKER_DECODE`, any
-    /// format Looker opens), handed over as Explorer does, and the wizard's drop target accepting them as a copy.
-    /// `LOOKER_DECODE=x.webp cargo test --release -- --ignored --nocapture print_wizard_takes_files`.
-    #[test]
-    #[ignore]
-    fn print_wizard_takes_files() {
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        }
-        let src = PathBuf::from(std::env::var("LOOKER_DECODE").expect("LOOKER_DECODE"));
-        let files = crate::fileops::print_files(&[src]).expect("print files");
-        println!("files: {files:?}");
-        assert!(files.iter().all(|f| f.is_file()));
-        let data = data_object(&files).expect("data object");
-        unsafe {
-            let target: IDropTarget = CoCreateInstance(&PRINT_WIZARD, None, CLSCTX_INPROC_SERVER).expect("wizard");
-            let mut effect: DROPEFFECT = DROPEFFECT_COPY;
-            target.DragEnter(&data, MK_LBUTTON, POINTL::default(), &mut effect).expect("drag enter");
-            println!("effect: {effect:?}");
-            assert!(effect.0 & DROPEFFECT_COPY.0 != 0);
-            let _ = target.DragLeave();
-        }
-    }
 
     /// Lists the apps for a type, to see what Windows gives: `LOOKER_EXT=.jpg cargo test --release -- --ignored
     /// --nocapture lists_apps`.

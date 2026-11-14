@@ -13,6 +13,7 @@ kamadak-exif = "0.6.1"
 serde_json = "1"
 windows-collections = "0.3"
 windows-core = "0.62"
+windows-future = "0.3"
 windows-numerics = "0.3"
 xcf = "0.4.0"
 # 3MF models are zips (deflate only).
@@ -26,6 +27,8 @@ features = [
     "Data_Pdf",
     "Foundation",
     "Foundation_Collections",
+    "Graphics_Printing",
+    "Graphics_Printing_OptionDetails",
     "Graphics_Imaging",
     "Management_Deployment",
     "Media",
@@ -48,6 +51,7 @@ features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Imaging",
+    "Win32_Graphics_Printing",
     "Win32_Media_Audio",
     "Win32_Media_KernelStreaming",
     "Win32_NetworkManagement_WNet",
@@ -55,6 +59,7 @@ features = [
     "Win32_Storage_FileSystem",
     "Win32_Storage_Packaging_Appx",
     "Win32_Storage_Xps",
+    "Win32_Storage_Xps_Printing",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
@@ -65,11 +70,12 @@ features = [
     "Win32_System_Ole",
     "Win32_System_Performance",
     "Win32_System_SystemInformation",
-    "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_System_Time",
     "Win32_System_Variant",
     "Win32_System_WinRT",
+    "Win32_System_WinRT_Pdf",
+    "Win32_System_WinRT_Printing",
     "Win32_UI_Accessibility",
     "Win32_UI_ColorSystem",
     "Win32_UI_Controls",

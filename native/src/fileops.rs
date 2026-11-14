@@ -67,8 +67,6 @@ pub enum Done {
     Edited { path: PathBuf, out: Result<PathBuf, String>, copy: bool },
     /// Paste edits onto photos picked in the explorer (app/batchedit.rs).
     EditsPasted(crate::app::PasteResult),
-    /// Print: the files for Windows' Print Pictures (the photos, or PNGs made of those it can't read).
-    PrintReady(Result<Vec<PathBuf>, String>),
 }
 
 /// Runs `job` on a new thread with COM initialised and posts its result to `hwnd`. `sta` for shell work
@@ -499,42 +497,6 @@ pub fn set_wallpaper(path: &Path, page: usize) -> bool {
     let mut w: Vec<u16> = absolute.as_os_str().encode_wide().collect();
     w.push(0);
     unsafe { SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, Some(w.as_mut_ptr() as _), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE).is_ok() }
-}
-
-// --- Print ------------------------------------------------------------------------------------------
-
-/// The files to give Windows' Print Pictures for these photos: JPEG, PNG, BMP, GIF and TIFF as they are (it
-/// reads those), anything else rendered to a PNG in `%TEMP%\looker-print` first, as the wallpaper is, so every
-/// format Looker opens prints. Those PNGs stay a day (the wizard reads them while it's open), then go.
-pub fn print_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    let dir = std::env::temp_dir().join("looker-print");
-    if let Ok(old) = std::fs::read_dir(&dir) {
-        for e in old.flatten() {
-            if e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age.as_secs() > 86_400)) {
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-    }
-    let mut out = Vec::new();
-    for (i, path) in paths.iter().enumerate() {
-        match format::sniff_file(path) {
-            Format::Jpeg | Format::Png | Format::Bmp | Format::Gif | Format::Tiff => out.push(path.clone()),
-            _ => {
-                let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "photo".into());
-                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-                let dest = dir.join(format!("{name} {stamp}-{i}.png"));
-                let (Some(img), Some(f)) = (full_image(path, 0), wic()) else { return Err(format!("Couldn't read \u{201c}{}\u{201d}", file_name(path))) };
-                let _ = std::fs::create_dir_all(&dir);
-                imaging::wic::save_png(&f, &dest, img.width, img.height, &img.pixels).map_err(|e| format!("Couldn't prepare \u{201c}{}\u{201d}: {}", file_name(path), err(e)))?;
-                out.push(dest);
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 #[cfg(test)]

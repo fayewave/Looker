@@ -38,8 +38,8 @@ it keeps itself up to date.
 - Info panel with EXIF, a histogram and a summary of several selected files; edit titles, captions, keywords,
   ratings, author and copyright in JPEG, TIFF, PNG and HEIC, one file or a whole selection at once.
 - Filter a folder by field: `keyword:beach`, `camera:x100`, `rating:4+`, `taken:2024`, `ext:png`.
-- Rotate, rename, copy, set as wallpaper, show in File Explorer; open in another app, share, and print with
-  Windows' Print Pictures (full page, photo sizes, contact sheets).
+- Rotate, rename, copy, set as wallpaper, show in File Explorer; open in another app, share, and print photos
+  and PDFs through Windows 11's print dialog, with a preview.
 - Edit (`E`): crop (free or to an aspect), straighten, rotate and flip; exposure, contrast, highlights, shadows,
   white balance, vibrance, saturation and a tone curve; undo, and a before view. Copy an edit and paste it onto
   other photos. Save a copy beside the photo, or over it with the original sent to the Recycle Bin; wide-gamut

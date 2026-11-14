@@ -458,7 +458,7 @@ impl App {
                 e.extend(self.open_with_entry(&paths));
             }
             e.push(item(Action::Share, 0xE72D, "Share\u{2026}", None, true));
-            if paths.iter().all(|p| super::actions::photo_format(crate::format::of_path(p))) {
+            if paths.iter().all(|p| crate::print::printable(p)) {
                 e.push(item(Action::Print, 0xE749, "Print\u{2026}", None, true));
             }
         }

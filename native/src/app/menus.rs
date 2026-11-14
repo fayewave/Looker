@@ -192,8 +192,11 @@ impl App {
             e.extend(self.open_with_entry(std::slice::from_ref(&path)));
             e.push(item(Action::Share, 0xE72D, "Share\u{2026}", None, true));
         }
-        if photo {
+        // Print for photos and PDFs (Faye, 2026-11-14).
+        if photo || (image && kind == Some(F::Pdf)) {
             e.push(item(Action::Print, 0xE749, "Print\u{2026}", Some("Ctrl+P"), true));
+        }
+        if photo {
             e.push(item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, true));
         }
         e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", Some("Ctrl+Shift+E"), file));

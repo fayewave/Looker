@@ -512,6 +512,7 @@ dependencies = [
  "windows",
  "windows-collections",
  "windows-core",
+ "windows-future",
  "windows-numerics",
  "xcf",
  "zip",
