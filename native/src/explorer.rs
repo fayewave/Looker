@@ -1297,6 +1297,109 @@ pub fn known_places() -> Vec<(String, PathBuf, u16)> {
     out
 }
 
+/// A cloud folder Explorer pins at the top of its sidebar (Dropbox, iCloud Drive, OneDrive, Google Drive, …).
+#[derive(Clone, Debug)]
+pub struct CloudPlace {
+    pub name: String,
+    pub path: PathBuf,
+    /// Its shell entry, `::{CLSID}`: Windows' icon for it (the app's logo) comes from this.
+    pub shell: String,
+}
+
+/// The cloud folders, as Explorer finds them: each sync app registers a shell folder under the desktop
+/// namespace, pinned to the navigation pane, pointing at its real folder (`TargetFolderPath`, or a known folder
+/// as OneDrive's). Those whose folder exists, in Explorer's order (its sort index, then name).
+pub fn cloud_places() -> Vec<CloudPlace> {
+    use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW};
+    use windows::core::PWSTR;
+    const NAMESPACE: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace";
+    let mut clsids = Vec::new();
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(NAMESPACE), Some(0), KEY_READ, &mut key).is_err() {
+            return Vec::new();
+        }
+        for i in 0.. {
+            let mut buf = [0u16; 128];
+            let mut len = buf.len() as u32;
+            if RegEnumKeyExW(key, i, Some(PWSTR(buf.as_mut_ptr())), &mut len, None, None, None, None).is_err() {
+                break;
+            }
+            clsids.push(String::from_utf16_lossy(&buf[..len as usize]));
+        }
+        let _ = RegCloseKey(key);
+    }
+    let mut out: Vec<(u32, CloudPlace)> = Vec::new();
+    for c in clsids {
+        let class = format!(r"Software\Classes\CLSID\{c}");
+        if reg_dword(&class, "System.IsPinnedToNameSpaceTree") != Some(1) {
+            continue;
+        }
+        let bag = format!(r"{class}\Instance\InitPropertyBag");
+        let path = reg_string(&bag, "TargetFolderPath").filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| known_folder(&reg_string(&bag, "TargetKnownFolder")?));
+        let Some(path) = path.filter(|p| p.is_dir()) else { continue };
+        let name = reg_string(&class, "")
+            .map(|n| indirect(&n))
+            .filter(|n| !n.is_empty())
+            .or_else(|| reg_string(&format!(r"{NAMESPACE}\{c}"), ""))
+            .unwrap_or_else(|| folder_name(&path));
+        if out.iter().any(|(_, o)| same_path(&o.path, &path)) {
+            continue;
+        }
+        let sort = reg_dword(&class, "SortOrderIndex").unwrap_or(u32::MAX);
+        out.push((sort, CloudPlace { name, path, shell: format!("::{c}") }));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| natural(&a.1.name, &b.1.name)));
+    out.into_iter().map(|(_, c)| c).collect()
+}
+
+/// A per-user registry string (environment variables expanded); `value` "" is the key's default.
+fn reg_string(key: &str, value: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
+    let (key, value) = (HSTRING::from(key), HSTRING::from(value));
+    let mut size = 0u32;
+    unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, &key, &value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, None, None, Some(&mut size)).ok().ok()?;
+        let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+        size = (buf.len() * 2) as u32;
+        RegGetValueW(HKEY_CURRENT_USER, &key, &value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, None, Some(buf.as_mut_ptr() as _), Some(&mut size)).ok().ok()?;
+        Some(String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(buf.len())]))
+    }
+}
+
+fn reg_dword(key: &str, value: &str) -> Option<u32> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut v = 0u32;
+    let mut size = 4u32;
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(key), &HSTRING::from(value), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as _), Some(&mut size)) }.ok().ok()?;
+    Some(v)
+}
+
+/// A known folder's path, by its GUID in text (`{a52bba46-…}`).
+fn known_folder(guid: &str) -> Option<PathBuf> {
+    use windows::Win32::System::Com::{CLSIDFromString, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    unsafe {
+        let id = CLSIDFromString(&HSTRING::from(guid)).ok()?;
+        let p = SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None).ok()?;
+        let s = p.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(p.0 as _));
+        (!s.is_empty()).then(|| PathBuf::from(s))
+    }
+}
+
+/// A name that may be a resource reference (`@C:\…\app.dll,-101`), resolved; any other text as it is.
+fn indirect(s: &str) -> String {
+    if !s.starts_with('@') {
+        return s.to_string();
+    }
+    let mut buf = [0u16; 260];
+    match unsafe { windows::Win32::UI::Shell::SHLoadIndirectString(&HSTRING::from(s), &mut buf, None) } {
+        Ok(()) => String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(0)]),
+        Err(_) => String::new(),
+    }
+}
+
 // --- Network ----------------------------------------------------------------------------------------
 
 /// `\\server` alone (a computer on the network, no share): listed by its shares, not read as a folder.
@@ -1533,6 +1636,25 @@ mod tests {
         assert_eq!(c[1], Place::Folder(PathBuf::from(r"\\nas")));
         assert_eq!(c.len(), 4);
         assert_eq!(crumbs(&Place::Folder(PathBuf::from(r"\\nas"))).len(), 2);
+    }
+
+    /// The cloud folders Places shows on this machine (Dropbox, iCloud Drive, OneDrive, …).
+    #[test]
+    #[ignore]
+    fn finds_cloud_places() {
+        let all = cloud_places();
+        for c in &all {
+            println!("{} | {} | {}", c.name, c.path.display(), c.shell);
+            assert!(c.path.is_dir() && c.shell.starts_with("::{"));
+        }
+    }
+
+    #[test]
+    fn registry_reads() {
+        assert!(reg_string(r"Software\Microsoft\Windows\CurrentVersion\Explorer\NoSuchKey", "").is_none());
+        assert_eq!(indirect("Plain"), "Plain");
+        assert!(known_folder("{374DE290-123F-4565-9164-39C4925E467B}").is_some_and(|p| p.is_absolute())); // Downloads
+        assert!(known_folder("not a guid").is_none());
     }
 
     /// What the sidebar's Network finds on this machine's network.

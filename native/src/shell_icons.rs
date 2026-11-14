@@ -24,7 +24,7 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1D
 use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::{
     FOLDERID_ComputerFolder, KF_FLAG_DEFAULT, SHFILEINFOW, SHGFI_FLAGS, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
-    SHGetImageList, SHGetKnownFolderIDList, SHIL_EXTRALARGE, SHIL_LARGE, SHIL_SMALL,
+    SHGetImageList, SHGetKnownFolderIDList, SHParseDisplayName, SHIL_EXTRALARGE, SHIL_LARGE, SHIL_SMALL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO, PostMessageW, WM_APP};
 use windows::core::PCWSTR;
@@ -40,6 +40,9 @@ pub enum Kind {
     Path(PathBuf),
     /// This PC.
     Computer,
+    /// A shell namespace item by parsing name (`::{CLSID}`): a cloud folder's entry, for the app's own logo
+    /// as Explorer's sidebar shows it.
+    Shell(String),
     /// A file type's icon, by extension (lower case, no dot), by attributes only: never reads the file, so cloud
     /// files stay online-only, and one lookup serves every file of the type.
     Extension(String),
@@ -198,6 +201,13 @@ fn icon_index(kind: &Kind) -> Option<i32> {
                 CoTaskMemFree(Some(pidl as _));
                 r
             }
+            Kind::Shell(name) => {
+                let mut pidl = std::ptr::null_mut();
+                SHParseDisplayName(&windows::core::HSTRING::from(name.as_str()), None, &mut pidl, 0, None).ok()?;
+                let r = SHGetFileInfoW(PCWSTR(pidl as *const u16), FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size, SHGFI_FLAGS(SHGFI_SYSICONINDEX.0 | SHGFI_PIDL.0));
+                CoTaskMemFree(Some(pidl as _));
+                r
+            }
         };
         (ok != 0).then_some(sfi.iIcon)
     }
@@ -314,6 +324,9 @@ mod tests {
         }
         // The drive's own icon, not the folder's.
         assert_ne!(icon_index(&Kind::Folder), icon_index(&Kind::Path(PathBuf::from("C:\\"))));
+        // A shell item by parsing name (This PC's CLSID) has its own icon.
+        let pc = icon_index(&Kind::Shell("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}".into()));
+        assert!(pc.is_some() && pc != icon_index(&Kind::Folder));
     }
 
     #[test]
