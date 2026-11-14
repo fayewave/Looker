@@ -1246,7 +1246,14 @@ impl App {
                     let ix = x + 18.0;
                     // Windows' icons for places, drives, bookmarks and history (by path: Downloads' arrow, a
                     // drive's own), the one folder icon for the folders opened under them, as Transient's tree.
-                    let shell = if it.depth > 1 { Some(shell_icons::Kind::Folder) } else { place_icon(p) };
+                    // A cloud folder (Places' "c" rows): its app's logo, from its shell entry.
+                    let cloud = match p {
+                        Place::Folder(f) if it.depth == 1 && it.node.as_ref().is_some_and(|k| k.starts_with("c:")) => {
+                            self.explorer.cloud.iter().find(|c| explorer::same_path(&c.path, f)).map(|c| shell_icons::Kind::Shell(c.shell.clone()))
+                        }
+                        _ => None,
+                    };
+                    let shell = if it.depth > 1 { Some(shell_icons::Kind::Folder) } else { cloud.or_else(|| place_icon(p)) };
                     let drew = shell.is_some_and(|k| shell_icon(g, &k, rect(ix, row.top, 16.0, row_h()), 1.0, None));
                     if drew {
                         // Drawn.

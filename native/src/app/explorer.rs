@@ -533,6 +533,8 @@ pub(super) struct Explorer {
     tags_listed: u64,
     /// The sidebar's Places (the user's folders, the drives), read once and again on F5.
     pub(super) places: Option<(Vec<(String, PathBuf, u16)>, Vec<Row>)>,
+    /// Places' cloud folders (Dropbox, iCloud Drive, OneDrive, …), atop it as in Explorer; read with it.
+    pub(super) cloud: Vec<explorer::CloudPlace>,
     /// The sidebar's Network: the drives mapped to shares (read with Places). Its computers, found off the UI
     /// thread, are `children[NET_KEY]`.
     pub(super) net_drives: Vec<Row>,
@@ -630,6 +632,7 @@ impl Explorer {
             tags: crate::tags::Tags::load(),
             tags_listed: 0,
             places: None,
+            cloud: Vec::new(),
             net_drives: Vec::new(),
             net_gen: 0,
             net_searching: 0,
@@ -2106,6 +2109,10 @@ impl App {
                     out.push(heading(sec, "Places", 0xE7F4));
                     self.read_places();
                     let (known, drives) = self.explorer.places.clone().unwrap_or_default();
+                    // The cloud folders first, as Explorer's sidebar has them (Faye, 2026-11-14).
+                    for c in self.explorer.cloud.clone() {
+                        self.push_tree(&mut out, "c", &c.path, c.name, 0xE753, 1);
+                    }
                     for (name, path, glyph) in known {
                         self.push_tree(&mut out, "p", &path, name, glyph, 1);
                     }
@@ -2150,6 +2157,7 @@ impl App {
             let drives = explorer::drives();
             self.explorer.net_drives = explorer::network_drives_of(&drives);
             self.explorer.places = Some((explorer::known_places(), drives));
+            self.explorer.cloud = explorer::cloud_places();
         }
     }
 
