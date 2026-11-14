@@ -945,6 +945,8 @@ impl App {
             settings::save(&self.settings);
         }
         self.trail.record(&path);
+        // Open with's apps for this type, found off the UI thread so the menu opens at once.
+        crate::shellverbs::warm(&path);
         self.explorer_follow();
         self.sync_model();
         self.sync_video();

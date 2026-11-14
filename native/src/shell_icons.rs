@@ -24,7 +24,7 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1D
 use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
 use windows::Win32::UI::Shell::{
     FOLDERID_ComputerFolder, KF_FLAG_DEFAULT, SHFILEINFOW, SHGFI_FLAGS, SHGFI_PIDL, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
-    SHGetImageList, SHGetKnownFolderIDList, SHParseDisplayName, SHIL_EXTRALARGE, SHIL_LARGE, SHIL_SMALL,
+    SHGetImageList, SHGetKnownFolderIDList, SHParseDisplayName, SHIL_EXTRALARGE, SHIL_LARGE, SHIL_SMALL, Shell_GetCachedImageIndexW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO, PostMessageW, WM_APP};
 use windows::core::PCWSTR;
@@ -46,6 +46,10 @@ pub enum Kind {
     /// A file type's icon, by extension (lower case, no dot), by attributes only: never reads the file, so cloud
     /// files stay online-only, and one lookup serves every file of the type.
     Extension(String),
+    /// An icon in a file, by index, as the registry names one (`C:\...\app.exe`, 0): an app in Open with.
+    Location(String, i32),
+    /// A picture file (a packaged app's PNG logo), read through WIC and scaled to fit.
+    Picture(PathBuf),
 }
 
 pub struct Icon {
@@ -159,10 +163,14 @@ fn worker() {
                 st = sh.cv.wait(st).unwrap();
             }
         };
-        let icon = lists.pick(key.1).and_then(|li| {
+        let icon = if let Kind::Picture(p) = &key.0 {
+            unsafe { picture(p, key.1) }.map(Arc::new)
+        } else {
+            lists.pick(key.1).and_then(|li| {
             let index = icon_index(&key.0)?;
             extracted.entry((li, index)).or_insert_with(|| unsafe { extract(&lists.0[li].0, index) }.map(Arc::new)).clone()
-        });
+            })
+        };
         {
             let mut st = sh.state.lock().unwrap();
             st.queued.remove(&key);
@@ -208,8 +216,42 @@ fn icon_index(kind: &Kind) -> Option<i32> {
                 CoTaskMemFree(Some(pidl as _));
                 r
             }
+            Kind::Location(file, index) => {
+                let i = Shell_GetCachedImageIndexW(&windows::core::HSTRING::from(file.as_str()), *index, 0);
+                return (i >= 0).then_some(i);
+            }
+            Kind::Picture(_) => return None,
         };
         (ok != 0).then_some(sfi.iIcon)
+    }
+}
+
+/// A picture file as an icon at most `px` across, aspect kept, premultiplied BGRA.
+unsafe fn picture(path: &std::path::Path, px: u32) -> Option<Icon> {
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory2, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
+        WICBitmapPaletteTypeMedianCut, WICDecodeMetadataCacheOnDemand,
+    };
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    unsafe {
+        let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).ok()?;
+        let d = f.CreateDecoderFromFilename(&windows::core::HSTRING::from(path.as_os_str()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand).ok()?;
+        let frame = d.GetFrame(0).ok()?;
+        let (mut w, mut h) = (0, 0);
+        frame.GetSize(&mut w, &mut h).ok()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let k = (px.max(1) as f32 / w.max(h) as f32).min(1.0);
+        let (tw, th) = (((w as f32 * k).round() as u32).max(1), ((h as f32 * k).round() as u32).max(1));
+        let scaler = f.CreateBitmapScaler().ok()?;
+        scaler.Initialize(&frame, tw, th, WICBitmapInterpolationModeFant).ok()?;
+        let conv = f.CreateFormatConverter().ok()?;
+        conv.Initialize(&scaler, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut).ok()?;
+        let mut bgra = vec![0u8; (tw * th * 4) as usize];
+        conv.CopyPixels(std::ptr::null(), tw * 4, &mut bgra).ok()?;
+        Some(Icon { w: tw, h: th, bgra })
     }
 }
 

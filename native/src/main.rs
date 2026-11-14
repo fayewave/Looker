@@ -35,6 +35,7 @@ mod photoedit;
 mod player;
 mod settings;
 mod shell_icons;
+mod shellverbs;
 mod spell;
 mod store;
 mod subs;

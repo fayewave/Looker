@@ -5,7 +5,8 @@
 use super::*;
 use crate::fileops::{self, Done};
 use crate::textedit::{Move, TextEdit};
-use crate::ui::{Dialog, DialogButton, Focus, TextField, Toast};
+use crate::ui::{Dialog, DialogButton, Entry, Focus, MenuItem, TextField, Toast};
+use super::menus::{Action, item};
 use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, HIMC, IACE_DEFAULT, ImmAssociateContextEx, ImmGetContext,
     ImmReleaseContext, ImmSetCompositionWindow,
@@ -42,6 +43,13 @@ pub(super) enum DialogKind {
     DeleteStyle(usize),
     /// Unsaved changes to a subtitle style: Save, Discard or Cancel, then what was asked.
     StyleUnsaved(super::substyle::Pending),
+}
+
+/// A picture, still or animated (what Print and Set as wallpaper are for): not a video, audio, document, text, 3D
+/// model, archive or unknown file.
+pub(super) fn photo_format(f: crate::format::Format) -> bool {
+    use crate::format::Format as F;
+    !matches!(f, F::Unknown | F::Video | F::Audio | F::Pdf | F::Text | F::Model | F::Mtl | F::Archive)
 }
 
 impl App {
@@ -165,6 +173,68 @@ impl App {
         let Some(path) = self.current_path().map(Path::to_path_buf) else { return };
         let page = self.pdf_page_of_current();
         fileops::spawn(self.hwnd, false, move || Done::Wallpaper { ok: fileops::set_wallpaper(&path, page) });
+    }
+
+    // --- Open with, Share, Print (shellverbs.rs) ----------------------------------------------------
+
+    /// Open with's submenu for these files: the apps Windows recommends for their type, each with its icon, then
+    /// Windows' own picker.
+    pub(super) fn open_with_entry(&self, paths: &[PathBuf]) -> Option<Entry<Action>> {
+        let first = paths.first()?;
+        let mut rows: Vec<Entry<Action>> = crate::shellverbs::apps_for(first)
+            .iter()
+            .take(u8::MAX as usize)
+            .enumerate()
+            .map(|(i, a)| {
+                Entry::Item(MenuItem { icon: a.icon.clone(), tint: None, action: Action::OpenWith(i as u8), glyph: Some(0xE737), label: a.name.clone(), accel: None, check: None, enabled: true, current: false })
+            })
+            .collect();
+        if !rows.is_empty() {
+            rows.push(Entry::Separator);
+        }
+        rows.push(item(Action::ChooseApp, 0xE712, "Choose another app\u{2026}", None, paths.len() == 1));
+        Some(Entry::Sub(Some(0xE7AC), "Open with".into(), rows))
+    }
+
+    pub(super) fn open_with(&mut self, index: usize, paths: &[PathBuf]) {
+        if let Err(e) = crate::shellverbs::open_with(index, paths) {
+            self.show_toast(e, false);
+        }
+    }
+
+    pub(super) fn choose_app(&mut self, path: &Path) {
+        crate::shellverbs::choose_app(self.hwnd, path);
+    }
+
+    pub(super) fn share(&mut self, paths: Vec<PathBuf>) {
+        if let Err(e) = crate::shellverbs::share(self.hwnd, paths) {
+            self.show_toast(e, false);
+        }
+    }
+
+    /// Print: the photos made ready on a thread (formats Windows' Print Pictures can't read rendered to PNGs),
+    /// then its dialog (`print_ready`).
+    pub(super) fn print(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        fileops::spawn(self.hwnd, false, move || Done::PrintReady(fileops::print_files(&paths)));
+    }
+
+    /// Ctrl+P and the viewer's Print: the photo showing (not a video, document or file Looker can't open).
+    pub(super) fn print_current(&mut self) {
+        if self.placeholder.is_some() || !self.viewer.current_entry().is_some_and(|e| photo_format(e.format)) {
+            return;
+        }
+        if let Some(p) = self.current_path().map(Path::to_path_buf) {
+            self.print(vec![p]);
+        }
+    }
+
+    fn print_ready(&mut self, files: Result<Vec<PathBuf>, String>) {
+        if let Err(e) = files.and_then(|f| crate::shellverbs::print(&f)) {
+            self.show_toast(e, false);
+        }
     }
 
     // --- Delete -------------------------------------------------------------------------------------
@@ -611,6 +681,7 @@ impl App {
             Done::Edited { path, out, copy } => self.on_edited(path, out, copy),
             Done::Recycled { path, ok } => self.on_recycled(path, ok),
             Done::Renamed { from, to } => self.on_renamed(from, to),
+            Done::PrintReady(files) => self.print_ready(files),
             Done::Wallpaper { ok } => self.show_toast(if ok { "Wallpaper set" } else { "Couldn't set the wallpaper" }, false),
             Done::Copied { path, image } => {
                 if clipboard::set_image(self.hwnd, &path, image.as_ref()) {

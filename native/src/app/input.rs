@@ -1246,6 +1246,7 @@ impl App {
                         VK_C if ctrl && shift => self.copy_path(),
                         VK_C if ctrl => self.copy_image(),
                         VK_R if ctrl => self.rotate_preview(!shift),
+                        VK_P if ctrl && !shift => self.print_current(),
                         VK_S if ctrl => {
                             self.save_rotation();
                             self.save_info_edits();

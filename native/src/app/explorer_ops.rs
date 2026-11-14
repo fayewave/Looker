@@ -448,6 +448,21 @@ impl App {
                 }
                 Kind::Other => e.push(item(Action::OpenItem, 0xE8A7, "Preview", None, true)),
             }
+        }
+        // Open with, Share and Print (shellverbs.rs), as Explorer's menu has them: files only, Open with for one
+        // type at a time (one app gets them all), Print for photos.
+        let files = !paths.is_empty() && paths.iter().all(|p| !p.is_dir());
+        if files {
+            let ext = |p: &PathBuf| p.extension().map(|x| x.to_ascii_lowercase());
+            if paths.iter().all(|p| ext(p) == ext(&paths[0])) {
+                e.extend(self.open_with_entry(&paths));
+            }
+            e.push(item(Action::Share, 0xE72D, "Share\u{2026}", None, true));
+            if paths.iter().all(|p| super::actions::photo_format(crate::format::of_path(p))) {
+                e.push(item(Action::Print, 0xE749, "Print\u{2026}", None, true));
+            }
+        }
+        if single || files {
             e.push(Entry::Separator);
         }
         // Paste edits (round 3): the edit copied or last saved, onto every photo picked.
@@ -838,6 +853,14 @@ impl App {
                     self.reveal_path(&p);
                 }
             }
+            (Action::OpenWith(i), MenuKind::Rows(_)) => self.open_with(i as usize, &paths),
+            (Action::ChooseApp, MenuKind::Rows(_)) => {
+                if let Some(p) = first {
+                    self.choose_app(&p);
+                }
+            }
+            (Action::Share, MenuKind::Rows(_)) => self.share(paths),
+            (Action::Print, MenuKind::Rows(_)) => self.print(paths),
             (Action::Properties, _) => {
                 if let Some(p) = first {
                     self.properties(&p);

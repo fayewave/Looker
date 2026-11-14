@@ -121,6 +121,12 @@ pub(super) enum Action {
     ArchiveExtractTo,
     ArchiveCopy,
     ArchiveSelectAll,
+    /// Open with (shellverbs.rs): the app at this place in the list for the file's type, or Windows' picker.
+    OpenWith(u8),
+    ChooseApp,
+    /// Windows' share sheet, and its Print Pictures dialog (photos).
+    Share,
+    Print,
 }
 
 pub(super) fn item(action: Action, glyph: u16, label: &str, accel: Option<&'static str>, enabled: bool) -> Entry<Action> {
@@ -181,7 +187,13 @@ impl App {
             item(Action::Delete, 0xE74D, "Delete", Some("Del"), file),
             Entry::Separator,
         ]);
+        // Open with, Share and Print, as Explorer's menu has them (Faye, 2026-11-14): Print for photos only.
+        if let Some(path) = self.target_path().filter(|_| file) {
+            e.extend(self.open_with_entry(std::slice::from_ref(&path)));
+            e.push(item(Action::Share, 0xE72D, "Share\u{2026}", None, true));
+        }
         if photo {
+            e.push(item(Action::Print, 0xE749, "Print\u{2026}", Some("Ctrl+P"), true));
             e.push(item(Action::Wallpaper, 0xE91B, "Set as wallpaper", None, true));
         }
         e.push(item(Action::Reveal, 0xEC50, "Reveal in Explorer\u{2026}", Some("Ctrl+Shift+E"), file));
@@ -633,6 +645,22 @@ impl App {
                 self.edit_paste();
             }
             Action::Reveal => self.reveal(),
+            Action::OpenWith(i) => {
+                if let Some(p) = self.target_path() {
+                    self.open_with(i as usize, &[p]);
+                }
+            }
+            Action::ChooseApp => {
+                if let Some(p) = self.target_path() {
+                    self.choose_app(&p);
+                }
+            }
+            Action::Share => {
+                if let Some(p) = self.target_path() {
+                    self.share(vec![p]);
+                }
+            }
+            Action::Print => self.print_current(),
             Action::SortField(f) => self.set_sort(Sort { field: f, ..self.viewer_sort() }),
             Action::SortDescending(d) => self.set_sort(Sort { descending: d, ..self.viewer_sort() }),
             Action::Rename => self.begin_rename(false),
