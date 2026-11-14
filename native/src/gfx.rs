@@ -1531,9 +1531,10 @@ impl Gfx {
     }
 
     /// A card's left (`right` false) or right edge stroked `width` wide in `color`: down the side, round both
-    /// corners (`radius`, the card's) and `tail` DIPs along the top and bottom, fading out there as the accent on
-    /// the tab in front fades (Faye, 2026-11-14).
-    pub fn stroke_edge(&self, r: D2D_RECT_F, radius: f32, right: bool, tail: f32, width: f32, color: D2D1_COLOR_F) {
+    /// corners (`radius`, the card's) and `tail` DIPs along the top and bottom, as the accent on the tab in front
+    /// fades: solid in the middle, fading from `lead` DIPs short of each corner on the side, through the corner,
+    /// gone at the tail's end (Faye, 2026-11-14).
+    pub fn stroke_edge(&self, r: D2D_RECT_F, radius: f32, right: bool, tail: f32, lead: f32, width: f32, color: D2D1_COLOR_F) {
         let x = if right { r.right } else { r.left };
         // Inwards from the edge: towards the card's middle.
         let dir = if right { -1.0 } else { 1.0 };
@@ -1556,20 +1557,33 @@ impl Gfx {
             }
             geo
         };
-        // Solid down the side and round most of each corner, eased out (smoothstep) along the tails.
+        // Each half has its own gradient, on a diagonal from where the fade starts on the side to the tail's end:
+        // every step along the line (side, corner, tail) moves along it, so the line fades as it goes. The halves
+        // are clipped at the middle, on a pixel, so they meet without a seam or an overlap.
+        let lead = lead.min(((r.bottom - r.top) / 2.0 - radius).max(0.0));
         let stops: Vec<D2D1_GRADIENT_STOP> = (0..=12)
             .map(|i| {
                 let u = i as f32 / 12.0;
-                let k = 1.0 - u * u * (3.0 - 2.0 * u);
+                let k = u * u * (3.0 - 2.0 * u);
                 D2D1_GRADIENT_STOP { position: u, color: D2D1_COLOR_F { a: color.a * k, ..color } }
             })
             .collect();
+        let mid = self.snap((r.top + r.bottom) / 2.0);
+        let pad = width + radius + tail + 2.0;
+        let (lo, hi) = (x.min(x + dir * pad) - width, x.max(x + dir * pad) + width);
         unsafe {
             let rt: &ID2D1RenderTarget = &self.dev.dc;
             let Ok(coll) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
-            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: v(x + dir * radius * 0.6, r.top), endPoint: v(x + dir * (radius + tail), r.top) };
-            if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
-                self.dev.dc.DrawGeometry(&geo, &b, width, None);
+            for (end_y, solid_y, clip) in [
+                (r.top, r.top + radius + lead, D2D_RECT_F { left: lo, top: r.top - width - 1.0, right: hi, bottom: mid }),
+                (r.bottom, r.bottom - radius - lead, D2D_RECT_F { left: lo, top: mid, right: hi, bottom: r.bottom + width + 1.0 }),
+            ] {
+                let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: v(x + dir * (radius + tail), end_y), endPoint: v(x, solid_y) };
+                if let Ok(b) = self.dev.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                    self.push_clip(clip);
+                    self.dev.dc.DrawGeometry(&geo, &b, width, None);
+                    self.pop_clip();
+                }
             }
         }
     }
