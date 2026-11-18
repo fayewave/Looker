@@ -30,7 +30,7 @@ Explorer: folders, drives, Win+E and "Show in folder" from any app open in Looke
 - The Recycle Bin, phones and cameras.
 - Windows' own right-click menu items, beside Looker's.
 - Files dragged in from zips, emails and other apps; folders that spring open under a drag.
-- Every File Explorer view (List, Tiles, Small to Extra large icons) and a command bar.
+- Every File Explorer view: List, Tiles, Small to Extra large icons.
 
 Buy it on [veil.page](https://veil.page/looker/buy), then paste the key into Settings > Looker Pro. The licence is
 checked online about once a week and works offline for two weeks; free Looker never goes online for it
