@@ -35,9 +35,7 @@ Explorer: folders, drives, Win+E and "Show in folder" from any app open in Looke
 - Files dragged in from zips, emails and other apps; folders that spring open under a drag.
 - Every File Explorer view: List, Tiles, Small to Extra large icons.
 
-Buy it on [veil.page](https://veil.page/looker/buy), then paste the key into Settings > Looker Pro. The licence is
-checked online about once a week and works offline for two weeks; free Looker never goes online for it
-([privacy](PRIVACY.md)).
+Get it on [veil.page](https://veil.page/looker/buy), then paste the key into Settings > Looker Pro.
 
 ## File explorer
 
