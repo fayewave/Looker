@@ -21,22 +21,6 @@ it keeps itself up to date.
 
 <img src="brand/screenshots/readme-fit.jpg" alt="A photo in Looker" width="700">
 
-## Looker Pro
-
-Looker is free. **Looker Pro** (US$19.99 once, two PCs, every Looker 3 update) makes it the ultimate modern File
-Explorer: folders, drives, Win+E and "Show in folder" from any app open in Looker instead of File Explorer.
-
-- Seriously fast and light: opens in under a tenth of a second, lists 100,000 files almost instantly, runs in
-  around 50 MB of memory.
-- Panes side by side, up to twelve, each with its own preview.
-- Instant search across your drives, from Looker's own index.
-- The Recycle Bin, phones and cameras.
-- Windows' own right-click menu items, beside Looker's.
-- Files dragged in from zips, emails and other apps; folders that spring open under a drag.
-- Every File Explorer view: List, Tiles, Small to Extra large icons.
-
-Get it on [veil.page](https://veil.page/looker/buy), then paste the key into Settings > Looker Pro.
-
 ## File explorer
 
 - Beside the photo, or widened to half the window with the photo as a preview (`Ctrl+B`); drag its edge for more.
@@ -101,6 +85,22 @@ Get it on [veil.page](https://veil.page/looker/buy), then paste the key into Set
 - Works with screen readers.
 
 <img src="brand/screenshots/readme-light.jpg" alt="The Light theme, with the file explorer beside the photo" width="700">
+
+## Looker Pro
+
+Looker is free. **Looker Pro** (US$19.99 once, two PCs, every Looker 3 update) makes it the ultimate modern File
+Explorer: folders, drives, Win+E and "Show in folder" from any app open in Looker instead of File Explorer.
+
+- Seriously fast and light: opens in under a tenth of a second, lists 100,000 files almost instantly, runs in
+  around 50 MB of memory.
+- Panes side by side, up to twelve, each with its own preview.
+- Instant search across your drives, from Looker's own index.
+- The Recycle Bin, phones and cameras.
+- Windows' own right-click menu items, beside Looker's.
+- Files dragged in from zips, emails and other apps; folders that spring open under a drag.
+- Every File Explorer view: List, Tiles, Small to Extra large icons.
+
+Get it on [veil.page](https://veil.page/looker/buy), then paste the key into Settings > Looker Pro.
 
 ## Formats
 
