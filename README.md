@@ -1,5 +1,8 @@
 <p align="left">
-  <img src="brand/slices/looker_v3_full.svg" alt="Looker" width="400">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/slices/looker_v4_full_white.png">
+    <img src="brand/slices/looker_v4_full_black.png" alt="Looker" width="400">
+  </picture>
 </p>
 
 A fast, minimal photo and file viewer for Windows 11, with a proper file explorer built in.
