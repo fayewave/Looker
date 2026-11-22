@@ -18,7 +18,7 @@ File Explorer.
 Or open `Looker.appinstaller` from the [latest release](https://github.com/fayewave/Looker/releases/latest); it
 keeps itself up to date.
 
-<img src="brand/screenshots/readme-viewer.jpg" alt="A photo in Looker" width="700">
+<img src="brand/screenshots/readme-viewer.jpg" alt="A photo in Looker, filling the window behind the file explorer" width="700">
 
 ## Viewer
 
